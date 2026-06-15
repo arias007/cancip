@@ -42,6 +42,40 @@ type SearchHit = {
   score: number;
 };
 
+type LocalVersionKind = "manual" | "daily";
+
+type LocalVersionFile = {
+  path: string;
+  size: number;
+  mtime: number;
+  hash: string;
+  snapshotPath: string;
+};
+
+type LocalVersionCommit = {
+  id: string;
+  kind: LocalVersionKind;
+  message: string;
+  createdAt: string;
+  scannedCount: number;
+  fileCount: number;
+  files: LocalVersionFile[];
+};
+
+type LocalVersionIndex = {
+  schemaVersion: number;
+  lastDailyDate: string;
+  commits: Array<Omit<LocalVersionCommit, "files">>;
+  latestHashes: Record<string, string>;
+};
+
+type LocalVersionResult = {
+  status: "created" | "no-changes" | "baseline";
+  commit?: LocalVersionCommit;
+  scannedCount: number;
+  changedCount: number;
+};
+
 type MentionKind = "file" | "folder" | "skill" | "action";
 type MentionSource = "file" | "folder" | "virtual";
 
@@ -83,6 +117,9 @@ type Settings = {
   includeCurrentFile: boolean;
   includeCoreMemory: boolean;
   useVaultSearchByDefault: boolean;
+  dailyLocalVersioning: boolean;
+  localVersionHour: number;
+  localVersionMaxFileBytes: number;
   systemPrompt: string;
 };
 
@@ -100,12 +137,18 @@ const DEFAULT_SETTINGS: Settings = {
   includeCurrentFile: true,
   includeCoreMemory: true,
   useVaultSearchByDefault: true,
+  dailyLocalVersioning: true,
+  localVersionHour: 4,
+  localVersionMaxFileBytes: 524288,
   systemPrompt: DEFAULT_SYSTEM_PROMPT
 };
 
 const CANCIP_CONFIG_DIR = ".cancip";
 const CANCIP_CONFIG_PATH = `${CANCIP_CONFIG_DIR}/config.json`;
 const CANCIP_CONFIG_SCHEMA_VERSION = 1;
+const LOCAL_VERSION_DIR = `${CANCIP_CONFIG_DIR}/versions`;
+const LOCAL_VERSION_INDEX_PATH = `${LOCAL_VERSION_DIR}/index.json`;
+const LOCAL_VERSION_SCHEMA_VERSION = 1;
 
 const EN = {
   openCancip: "Open Cancip",
@@ -113,6 +156,7 @@ const EN = {
   commandNewChat: "New chat",
   commandAddSelection: "Add selection to chat",
   commandRebuildIndex: "Rebuild light index",
+  commandLocalVersionCommit: "Create local version commit",
   noSelection: "No selection to add",
   newChatStatus: "New chat",
   contextAdded: "Context added: {label}",
@@ -130,6 +174,8 @@ const EN = {
   addCurrentFile: "Add current file",
   previewVaultSearch: "Preview Vault Search",
   addCoreMemory: "Add core memory",
+  localVersionCommit: "Local commit",
+  dailyVersionStatus: "Daily versions",
   stop: "Stop",
   send: "Send",
   modelEffort: "Extra High",
@@ -198,6 +244,10 @@ const EN = {
   settingsIncludeCurrentFile: "Include current file",
   settingsIncludeCoreMemory: "Include core memory",
   settingsUseVaultSearch: "Use Vault Search by default",
+  settingsDailyLocalVersioning: "Daily local versioning",
+  settingsDailyLocalVersioningDesc: "Creates one lightweight snapshot per day under .cancip/versions when Obsidian is open. First daily run initializes a hash baseline without copying the whole vault.",
+  settingsLocalVersionHour: "Daily version hour",
+  settingsLocalVersionMaxFileBytes: "Max versioned file bytes",
   settingsSystemPrompt: "System prompt",
   settingsSystemPromptDesc: "Applied to every chat.",
   selectionFrom: "Selection from {path}",
@@ -218,7 +268,11 @@ const EN = {
   actionRename: "rename {path} -> {newPath}",
   actionCopy: "copy {path} -> {newPath}",
   invalidActionPath: "Invalid action path: {path}",
-  noActions: "No valid actions found."
+  noActions: "No valid actions found.",
+  localVersionCreated: "Local version created: {id} ({count} files)",
+  localVersionNoChanges: "No local version changes",
+  localVersionBaseline: "Local version baseline initialized ({count} files)",
+  localVersionFailed: "Local version failed: {reason}"
 } as const;
 
 type I18nKey = keyof typeof EN;
@@ -231,6 +285,7 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     commandNewChat: "新对话",
     commandAddSelection: "把选中文本加入聊天",
     commandRebuildIndex: "重建轻量索引",
+    commandLocalVersionCommit: "创建本地版本提交",
     noSelection: "没有可加入的选中文本",
     newChatStatus: "新对话",
     contextAdded: "已加入上下文：{label}",
@@ -248,6 +303,8 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     addCurrentFile: "加入当前文件",
     previewVaultSearch: "预览 Vault Search",
     addCoreMemory: "加入核心记忆",
+    localVersionCommit: "本地提交",
+    dailyVersionStatus: "每日版本",
     stop: "停止",
     send: "发送",
     modelEffort: "Extra High",
@@ -316,6 +373,10 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     settingsIncludeCurrentFile: "包含当前文件",
     settingsIncludeCoreMemory: "包含核心记忆",
     settingsUseVaultSearch: "默认使用 Vault Search",
+    settingsDailyLocalVersioning: "每日本地版本",
+    settingsDailyLocalVersioningDesc: "Obsidian 打开时每天在 .cancip/versions 下创建一个轻量快照。首次每日运行只建立 hash 基线，不复制整个库。",
+    settingsLocalVersionHour: "每日版本小时",
+    settingsLocalVersionMaxFileBytes: "版本单文件上限字节",
     settingsSystemPrompt: "系统提示词",
     settingsSystemPromptDesc: "每次聊天都会应用。",
     selectionFrom: "选中文本：{path}",
@@ -336,12 +397,17 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     actionRename: "rename {path} -> {newPath}",
     actionCopy: "copy {path} -> {newPath}",
     invalidActionPath: "非法动作路径：{path}",
-    noActions: "没有找到有效动作。"
+    noActions: "没有找到有效动作。",
+    localVersionCreated: "已创建本地版本：{id}（{count} 个文件）",
+    localVersionNoChanges: "本地版本没有变化",
+    localVersionBaseline: "已初始化本地版本基线（{count} 个文件）",
+    localVersionFailed: "本地版本失败：{reason}"
   }
 };
 
 export default class CancipPlugin extends Plugin {
   settings: Settings = DEFAULT_SETTINGS;
+  private dailyVersionRunning = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -393,7 +459,23 @@ export default class CancipPlugin extends Plugin {
       }
     });
 
+    this.addCommand({
+      id: "create-local-version-commit",
+      name: `Cancip: ${this.t("commandLocalVersionCommit")}`,
+      callback: async () => {
+        try {
+          const result = await this.createLocalVersionCommit("manual", "manual snapshot");
+          new Notice(this.describeLocalVersionResult(result));
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          new Notice(this.t("localVersionFailed", { reason }));
+        }
+      }
+    });
+
     this.addSettingTab(new CancipSettingTab(this.app, this));
+    await this.pruneLocalVersionIndex();
+    this.scheduleDailyLocalVersioning();
   }
 
   onunload(): void {
@@ -455,6 +537,154 @@ export default class CancipPlugin extends Plugin {
     }
     await this.saveData(this.settings);
     await this.writeCancipConfig();
+  }
+
+  private scheduleDailyLocalVersioning(): void {
+    const firstRun = window.setTimeout(() => {
+      void this.maybeRunDailyLocalVersion();
+    }, 15000);
+    this.register(() => window.clearTimeout(firstRun));
+    this.registerInterval(
+      window.setInterval(() => {
+        void this.maybeRunDailyLocalVersion();
+      }, 60 * 60 * 1000)
+    );
+  }
+
+  private async maybeRunDailyLocalVersion(): Promise<void> {
+    if (!this.settings.dailyLocalVersioning || this.dailyVersionRunning) return;
+    const now = new Date();
+    if (now.getHours() < this.settings.localVersionHour) return;
+    const index = await this.loadLocalVersionIndex();
+    const today = localDateKey(now);
+    if (index.lastDailyDate === today) return;
+
+    this.dailyVersionRunning = true;
+    try {
+      const result = await this.createLocalVersionCommit("daily", `daily snapshot ${today}`, index);
+      if (result.status === "created") {
+        new Notice(this.describeLocalVersionResult(result));
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      console.warn("Cancip daily local version failed", error);
+      new Notice(this.t("localVersionFailed", { reason }));
+    } finally {
+      this.dailyVersionRunning = false;
+    }
+  }
+
+  async createLocalVersionCommit(kind: LocalVersionKind, message: string, existingIndex?: LocalVersionIndex): Promise<LocalVersionResult> {
+    const index = existingIndex ?? (await this.loadLocalVersionIndex());
+    const files = this.app.vault
+      .getFiles()
+      .filter((file) => isLocalVersionCandidate(file, this.settings.localVersionMaxFileBytes))
+      .sort((a, b) => a.path.localeCompare(b.path));
+    const scannedCount = files.length;
+    const currentHashes: Record<string, string> = {};
+    const changed: Array<{ file: TFile; content: string; hash: string }> = [];
+    const hasBaseline = Object.keys(index.latestHashes).length > 0;
+
+    for (const file of files) {
+      const content = await this.app.vault.cachedRead(file);
+      const hash = await sha256Text(content);
+      currentHashes[file.path] = hash;
+      if (index.latestHashes[file.path] !== hash) {
+        changed.push({ file, content, hash });
+      }
+    }
+
+    index.latestHashes = currentHashes;
+    if (kind === "daily") index.lastDailyDate = localDateKey(new Date());
+
+    if (kind === "daily" && !hasBaseline) {
+      await this.saveLocalVersionIndex(index);
+      return { status: "baseline", scannedCount, changedCount: changed.length };
+    }
+
+    if (!changed.length) {
+      await this.saveLocalVersionIndex(index);
+      return { status: "no-changes", scannedCount, changedCount: 0 };
+    }
+
+    const createdAt = new Date().toISOString();
+    const id = localVersionCommitId(createdAt);
+    const commitDir = `${LOCAL_VERSION_DIR}/commits/${id}`;
+    const filesDir = `${commitDir}/files`;
+    await ensureFolder(this.app.vault.adapter, filesDir);
+
+    const committedFiles: LocalVersionFile[] = [];
+    for (const item of changed) {
+      const snapshotPath = `${filesDir}/${snapshotFileName(item.file.path)}`;
+      await this.app.vault.adapter.write(snapshotPath, item.content);
+      committedFiles.push({
+        path: item.file.path,
+        size: item.file.stat.size,
+        mtime: item.file.stat.mtime,
+        hash: item.hash,
+        snapshotPath
+      });
+    }
+
+    const commit: LocalVersionCommit = {
+      id,
+      kind,
+      message,
+      createdAt,
+      scannedCount,
+      fileCount: committedFiles.length,
+      files: committedFiles
+    };
+    await this.app.vault.adapter.write(`${commitDir}/commit.json`, `${JSON.stringify(commit, null, 2)}\n`);
+    const summary = {
+      id: commit.id,
+      kind: commit.kind,
+      message: commit.message,
+      createdAt: commit.createdAt,
+      scannedCount: commit.scannedCount,
+      fileCount: commit.fileCount
+    };
+    index.commits = [summary, ...index.commits].slice(0, 200);
+    await this.saveLocalVersionIndex(index);
+    return { status: "created", commit, scannedCount, changedCount: changed.length };
+  }
+
+  private async loadLocalVersionIndex(): Promise<LocalVersionIndex> {
+    try {
+      if (!(await this.app.vault.adapter.exists(LOCAL_VERSION_INDEX_PATH))) return emptyLocalVersionIndex();
+      const raw = await this.app.vault.adapter.read(LOCAL_VERSION_INDEX_PATH);
+      return normalizeLocalVersionIndex(JSON.parse(raw));
+    } catch (error) {
+      console.warn("Cancip local version index read failed", error);
+      return emptyLocalVersionIndex();
+    }
+  }
+
+  private async saveLocalVersionIndex(index: LocalVersionIndex): Promise<void> {
+    await ensureFolder(this.app.vault.adapter, LOCAL_VERSION_DIR);
+    await this.app.vault.adapter.write(LOCAL_VERSION_INDEX_PATH, `${JSON.stringify(index, null, 2)}\n`);
+  }
+
+  private async pruneLocalVersionIndex(): Promise<void> {
+    try {
+      if (!(await this.app.vault.adapter.exists(LOCAL_VERSION_INDEX_PATH))) return;
+      const raw = await this.app.vault.adapter.read(LOCAL_VERSION_INDEX_PATH);
+      const normalized = normalizeLocalVersionIndex(JSON.parse(raw));
+      const nextRaw = `${JSON.stringify(normalized, null, 2)}\n`;
+      if (nextRaw !== raw) {
+        await this.saveLocalVersionIndex(normalized);
+      }
+    } catch (error) {
+      console.warn("Cancip local version index prune failed", error);
+    }
+  }
+
+  private describeLocalVersionResult(result: LocalVersionResult): string {
+    if (result.status === "created" && result.commit) {
+      return this.t("localVersionCreated", { id: result.commit.id, count: result.commit.fileCount });
+    }
+    if (result.status === "baseline") return this.t("localVersionBaseline", { count: result.scannedCount });
+    return this.t("localVersionNoChanges");
   }
 
   language(): Language {
@@ -1244,6 +1474,9 @@ class CancipView extends ItemView {
       action("action:preview-vault-search", this.t("previewVaultSearch"), this.t("mentionAction"), ["preview", "vault", "search", "rag", "预览", "搜索", "检索", "命中"], 84),
       action("action:add-core-memory", this.t("addCoreMemory"), this.t("mentionAction"), ["memory", "core", "remember", "记忆", "核心记忆", "长期记忆"], 82),
       action("action:rebuild-index", this.t("commandRebuildIndex"), this.t("mentionAction"), ["index", "rebuild", "refresh", "索引", "重建", "刷新"], 76),
+      action("action:local-version-commit", this.t("localVersionCommit"), this.t("mentionAction"), ["commit", "version", "snapshot", "local", "git", "提交", "版本", "快照", "本地"], 80),
+      action("action:daily-version-status", this.t("dailyVersionStatus"), this.t("mentionAction"), ["daily", "version", "auto", "commit", "每日", "每天", "自动", "版本"], 78),
+      action("action:github", "GitHub", this.t("mentionAction"), ["github", "gh", "repo", "issue", "pr", "release", "workflow", "加速", "仓库"], 74),
       action("action:clear-context", this.t("clearContext"), this.t("mentionAction"), ["clear", "context", "reset", "清空", "上下文", "重置"], 72),
       action("action:new-chat", this.t("newChatTitle"), this.t("mentionAction"), ["new", "chat", "session", "新建", "新对话", "聊天"], 70)
     ];
@@ -1289,6 +1522,9 @@ class CancipView extends ItemView {
           "action:preview-vault-search": "用户提及功能：预览 Vault Search 命中结果。",
           "action:add-core-memory": "用户提及功能：加入核心记忆文件夹上下文。",
           "action:rebuild-index": "用户提及功能：重建轻量索引。",
+          "action:local-version-commit": "用户提及功能：创建本地版本提交。Cancip 支持手动提交到 .cancip/versions，不依赖本地 git。",
+          "action:daily-version-status": "用户提及功能：每日本地版本。Cancip 支持每天自动创建轻量版本快照。",
+          "action:github": "用户提及功能：GitHub 管理。Cancip 的移动端 GitHub 能力应通过 GitHub REST/GraphQL API 实现，并支持安全的用户自有加速端点。",
           "action:clear-context": "用户提及功能：清空草稿上下文。",
           "action:new-chat": "用户提及功能：新建对话。"
         }
@@ -1301,6 +1537,9 @@ class CancipView extends ItemView {
           "action:preview-vault-search": "Mentioned function: preview Vault Search hits.",
           "action:add-core-memory": "Mentioned function: include core memory folder context.",
           "action:rebuild-index": "Mentioned function: rebuild the lightweight index.",
+          "action:local-version-commit": "Mentioned function: create a local version commit under .cancip/versions without native git.",
+          "action:daily-version-status": "Mentioned function: daily local versions. Cancip supports one lightweight snapshot per day.",
+          "action:github": "Mentioned function: GitHub management. Mobile GitHub support should use GitHub REST/GraphQL APIs and safe user-owned acceleration endpoints.",
           "action:clear-context": "Mentioned function: clear draft context.",
           "action:new-chat": "Mentioned function: start a new chat."
         };
@@ -1674,6 +1913,46 @@ class CancipSettingTab extends PluginSettingTab {
       });
 
     new Setting(advancedBody)
+      .setName(this.plugin.t("settingsDailyLocalVersioning"))
+      .setDesc(this.plugin.t("settingsDailyLocalVersioningDesc"))
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.settings.dailyLocalVersioning).onChange(async (value) => {
+          this.plugin.settings.dailyLocalVersioning = value;
+          await this.plugin.saveSettings();
+        });
+      });
+
+    new Setting(advancedBody)
+      .setName(this.plugin.t("settingsLocalVersionHour"))
+      .addText((text) => {
+        text
+          .setPlaceholder("4")
+          .setValue(String(this.plugin.settings.localVersionHour))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (Number.isFinite(parsed)) {
+              this.plugin.settings.localVersionHour = Math.max(0, Math.min(23, parsed));
+              await this.plugin.saveSettings();
+            }
+          });
+      });
+
+    new Setting(advancedBody)
+      .setName(this.plugin.t("settingsLocalVersionMaxFileBytes"))
+      .addText((text) => {
+        text
+          .setPlaceholder("524288")
+          .setValue(String(this.plugin.settings.localVersionMaxFileBytes))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            if (Number.isFinite(parsed)) {
+              this.plugin.settings.localVersionMaxFileBytes = Math.max(1024, Math.min(5242880, parsed));
+              await this.plugin.saveSettings();
+            }
+          });
+      });
+
+    new Setting(advancedBody)
       .setName(this.plugin.t("settingsSystemPrompt"))
       .setDesc(this.plugin.t("settingsSystemPromptDesc"))
       .addTextArea((text) => {
@@ -1686,6 +1965,95 @@ class CancipSettingTab extends PluginSettingTab {
           });
       });
   }
+}
+
+function emptyLocalVersionIndex(): LocalVersionIndex {
+  return {
+    schemaVersion: LOCAL_VERSION_SCHEMA_VERSION,
+    lastDailyDate: "",
+    commits: [],
+    latestHashes: {}
+  };
+}
+
+function normalizeLocalVersionIndex(raw: unknown): LocalVersionIndex {
+  if (!isRecord(raw)) return emptyLocalVersionIndex();
+  const latestHashes: Record<string, string> = {};
+  if (isRecord(raw.latestHashes)) {
+    for (const [path, hash] of Object.entries(raw.latestHashes)) {
+      if (typeof hash === "string" && !isSensitiveLocalVersionPath(path)) latestHashes[path] = hash;
+    }
+  }
+  const commits = Array.isArray(raw.commits)
+    ? raw.commits
+        .filter(isRecord)
+        .map((item) => ({
+          id: typeof item.id === "string" ? item.id : "",
+          kind: item.kind === "daily" ? "daily" as const : "manual" as const,
+          message: typeof item.message === "string" ? item.message : "",
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+          scannedCount: typeof item.scannedCount === "number" ? item.scannedCount : 0,
+          fileCount: typeof item.fileCount === "number" ? item.fileCount : 0
+        }))
+        .filter((item) => item.id && item.createdAt)
+    : [];
+  return {
+    schemaVersion: LOCAL_VERSION_SCHEMA_VERSION,
+    lastDailyDate: typeof raw.lastDailyDate === "string" ? raw.lastDailyDate : "",
+    commits,
+    latestHashes
+  };
+}
+
+function isLocalVersionCandidate(file: TFile, maxBytes: number): boolean {
+  const path = file.path.replace(/\\/g, "/");
+  if (path.startsWith(".obsidian/")) return false;
+  if (path === ".cancip/config.json") return false;
+  if (path.startsWith(".cancip/versions/")) return false;
+  if (path.startsWith(".trash/")) return false;
+  if (isSensitiveLocalVersionPath(path)) return false;
+  if (file.stat.size > maxBytes) return false;
+  return isContextTextFile(file);
+}
+
+function isSensitiveLocalVersionPath(path: string): boolean {
+  const lower = path.toLowerCase();
+  if (lower.endsWith("config.json") || lower.includes(".config.")) return true;
+  return /(^|[\/._-])(secret|secrets|password|passwd|token|tokens|credential|credentials|recovery|codes|config|apikey|api-key|api_key|private-key|private_key|ssh-key|ssh_key)([\/._-]|$)/i.test(lower);
+}
+
+function localDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function localVersionCommitId(iso: string): string {
+  return iso.replace(/\.\d{3}Z$/, "Z").replace(/[:.]/g, "-");
+}
+
+function snapshotFileName(path: string): string {
+  const name = path.split("/").pop() || "file";
+  const safeName = name.replace(/[^A-Za-z0-9._-]+/g, "_").slice(-80) || "file";
+  return `${stableTextHash(path)}-${safeName}.txt`;
+}
+
+function stableTextHash(input: string): string {
+  let hash = 2166136261;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+async function sha256Text(input: string): Promise<string> {
+  const data = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function tokenize(input: string): string[] {
@@ -1874,6 +2242,8 @@ function normalizeSettings(input: Partial<Settings>): Settings {
   const temperature = Number(merged.temperature);
   const maxOutputTokens = Number.parseInt(String(merged.maxOutputTokens), 10);
   const maxContextFiles = Number.parseInt(String(merged.maxContextFiles), 10);
+  const localVersionHour = Number.parseInt(String(merged.localVersionHour), 10);
+  const localVersionMaxFileBytes = Number.parseInt(String(merged.localVersionMaxFileBytes), 10);
   return {
     ...merged,
     language: isLanguageMode(merged.language) ? merged.language : DEFAULT_SETTINGS.language,
@@ -1889,6 +2259,9 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     includeCurrentFile: Boolean(merged.includeCurrentFile),
     includeCoreMemory: Boolean(merged.includeCoreMemory),
     useVaultSearchByDefault: Boolean(merged.useVaultSearchByDefault),
+    dailyLocalVersioning: typeof merged.dailyLocalVersioning === "boolean" ? merged.dailyLocalVersioning : DEFAULT_SETTINGS.dailyLocalVersioning,
+    localVersionHour: Number.isFinite(localVersionHour) ? Math.max(0, Math.min(23, localVersionHour)) : DEFAULT_SETTINGS.localVersionHour,
+    localVersionMaxFileBytes: Number.isFinite(localVersionMaxFileBytes) ? Math.max(1024, Math.min(5242880, localVersionMaxFileBytes)) : DEFAULT_SETTINGS.localVersionMaxFileBytes,
     systemPrompt: typeof merged.systemPrompt === "string" ? merged.systemPrompt : DEFAULT_SETTINGS.systemPrompt
   };
 }
@@ -1909,6 +2282,9 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     includeCurrentFile: settings.includeCurrentFile,
     includeCoreMemory: settings.includeCoreMemory,
     useVaultSearchByDefault: settings.useVaultSearchByDefault,
+    dailyLocalVersioning: settings.dailyLocalVersioning,
+    localVersionHour: settings.localVersionHour,
+    localVersionMaxFileBytes: settings.localVersionMaxFileBytes,
     systemPrompt: settings.systemPrompt
   };
 }
@@ -1929,6 +2305,9 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.includeCurrentFile === "boolean") config.includeCurrentFile = raw.includeCurrentFile;
   if (typeof raw.includeCoreMemory === "boolean") config.includeCoreMemory = raw.includeCoreMemory;
   if (typeof raw.useVaultSearchByDefault === "boolean") config.useVaultSearchByDefault = raw.useVaultSearchByDefault;
+  if (typeof raw.dailyLocalVersioning === "boolean") config.dailyLocalVersioning = raw.dailyLocalVersioning;
+  if (typeof raw.localVersionHour === "number" || typeof raw.localVersionHour === "string") config.localVersionHour = Number.parseInt(String(raw.localVersionHour), 10);
+  if (typeof raw.localVersionMaxFileBytes === "number" || typeof raw.localVersionMaxFileBytes === "string") config.localVersionMaxFileBytes = Number.parseInt(String(raw.localVersionMaxFileBytes), 10);
   if (typeof raw.systemPrompt === "string") config.systemPrompt = raw.systemPrompt;
   return config;
 }

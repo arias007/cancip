@@ -17,6 +17,7 @@ Smart Composer-style right sidebar AI chat for Obsidian, reshaped toward a Codex
 - Four icon-first modes: Ask, Search, Plan, Edit.
 - Context from current note, selected text, dynamic `@` mentions, core memory folder, and lightweight Vault Search.
 - Codex-style `@` picker for files, folders, Skills, and Cancip functions; folder mentions include matching text files under that folder.
+- Lightweight local versioning under `.cancip/versions/`: manual commits and one daily auto snapshot, without native git and without per-edit history.
 - Mobile-friendly UI with bottom composer and compact source panel.
 - Safe default: it reads and suggests. It does not automatically delete, move, merge, or rewrite vault files.
 

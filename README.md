@@ -13,6 +13,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
 - Codex-style rounded composer with embedded access/model controls and a mobile-friendly send button.
 - Codex-style `@` picker for files, folders, Skills, and Cancip functions. Empty `@` shows useful entries like modes/current file/recent files/skills; typed text dynamically filters all categories. Selected mentions are inserted as `@[path]` or `@[action:name]`, while hand-typed `@keyword` still resolves by fuzzy match.
+- Lightweight local versioning under `.cancip/versions/`: manual commits and one daily auto snapshot, without native git and without per-edit history.
 
 ## Build
 
@@ -67,8 +68,8 @@ Do not commit or share `.cancip/config.json` if it contains an API key.
 - Support GitHub management from mobile: status, issues, branches, commits,
   pushes, PRs, releases, workflow results, and a safe API acceleration layer
   with credential redaction.
-- Support lightweight local versioning: manual commits and daily auto commits
-  under `.cancip/versions/`, instead of recording every edit.
+- Continue expanding lightweight local versioning: restore/diff UI, retention,
+  and GitHub sync from `.cancip/versions/`.
 - Support Obsidian plugin building/adaptation: source-first TypeScript/CSS
   changes, build/package/install loops, and built-JS patching only as a
   fallback.

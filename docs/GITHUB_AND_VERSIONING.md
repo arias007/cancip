@@ -158,7 +158,7 @@ Mention picker entries:
 
 ## Implementation Slices
 
-1. Local version manager: manual commit, daily commit, status, exclusions.
+1. Local version manager: manual commit, daily commit, status, exclusions. Implemented in `0.1.10` for manual commits and daily snapshots under `.cancip/versions/`; `0.1.11` excludes sensitive token/password/credential/recovery/config-like paths from version snapshots. Restore/diff UI is still pending.
 2. GitHub read-only dashboard: repo/status/issues/PRs/releases/workflows.
 3. GitHub raw API action: `gh api` equivalent with safe redaction.
 4. Remote commit through Git database API.
