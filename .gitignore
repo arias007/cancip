@@ -1,0 +1,16 @@
+node_modules/
+work/
+outputs/*.zip
+outputs/plugin-backups/
+outputs/ob-codex-composer/
+skill-observations/
+.cancip/
+.obsidian/
+*.log
+*.tmp
+*.bak
+.env
+.env.*
+data.json
+*.key
+*.pem
