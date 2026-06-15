@@ -234,6 +234,97 @@
   background: var(--background-primary);
 }
 
+.obcc-mention-popover {
+  display: grid;
+  gap: 4px;
+  max-height: 238px;
+  margin-bottom: 8px;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 16px;
+  background: var(--background-primary);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.14);
+}
+
+.obcc-mention-popover.is-hidden {
+  display: none;
+}
+
+.obcc-mention-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 6px 6px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.obcc-mention-empty {
+  padding: 10px 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.obcc-mention-item {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-normal);
+  cursor: pointer;
+  text-align: left;
+}
+
+.obcc-mention-item:hover,
+.obcc-mention-item.is-active {
+  background: var(--background-modifier-hover);
+}
+
+.obcc-mention-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+
+.obcc-mention-body {
+  min-width: 0;
+}
+
+.obcc-mention-title,
+.obcc-mention-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-mention-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.obcc-mention-path {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.obcc-mention-kind {
+  max-width: 96px;
+  overflow: hidden;
+  color: var(--text-faint);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .obcc-quick-row {
   display: flex;
   gap: 6px;
@@ -399,6 +490,7 @@
 .obcc-icon-button svg,
 .obcc-mode svg,
 .obcc-chip svg,
+.obcc-mention-icon svg,
 .obcc-tool-button svg,
 .obcc-access-button svg,
 .obcc-model-button svg,
@@ -451,6 +543,19 @@
 
   .obcc-input {
     min-height: 48px;
+  }
+
+  .obcc-mention-popover {
+    max-height: 210px;
+    border-radius: 14px;
+  }
+
+  .obcc-mention-item {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  .obcc-mention-kind {
+    display: none;
   }
 
   .obcc-access-button {

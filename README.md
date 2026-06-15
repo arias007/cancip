@@ -8,10 +8,11 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Automatic OpenAI Responses and OpenAI-compatible Chat Completions support.
 - `.cancip/config.json` as the authoritative vault-level config.
 - `ask-for-approval` and `full-access` modes.
-- Current note, selection, `@file` mentions, core memory folder, and lightweight Vault Search context.
+- Current note, selection, `@` file/folder mentions, core memory folder, and lightweight Vault Search context.
 - `cancip-action` JSON tool blocks for validated vault-relative actions.
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
 - Codex-style rounded composer with embedded access/model controls and a mobile-friendly send button.
+- `@` mention popup for Vault text files and folders. Selected mentions are inserted as `@[path]`, while hand-typed `@keyword` still resolves by fuzzy match.
 
 ## Build
 

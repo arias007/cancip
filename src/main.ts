@@ -13,6 +13,7 @@ import {
   Setting,
   setIcon,
   TFile,
+  TFolder,
   WorkspaceLeaf
 } from "obsidian";
 
@@ -39,6 +40,20 @@ type SearchHit = {
   title: string;
   excerpt: string;
   score: number;
+};
+
+type MentionTarget = {
+  kind: "file" | "folder";
+  path: string;
+  title: string;
+  detail: string;
+  score: number;
+};
+
+type ActiveMention = {
+  start: number;
+  end: number;
+  query: string;
 };
 
 type CancipAction =
@@ -114,6 +129,12 @@ const EN = {
   send: "Send",
   modelEffort: "Extra High",
   accessModeChanged: "Access mode: {mode}",
+  mentionPanelTitle: "Files and folders",
+  mentionNoResults: "No matching files or folders",
+  mentionFile: "File",
+  mentionFolder: "Folder",
+  mentionFolderDetail: "{count} files",
+  mentionContextIncluded: "Mentioned context",
   placeholder: "Ask OB: @file, summarize, find notes, make a plan, suggest edits...",
   ready: "Ready",
   missingApi: "API URL/key/model is not configured.",
@@ -223,6 +244,12 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     send: "发送",
     modelEffort: "Extra High",
     accessModeChanged: "访问模式：{mode}",
+    mentionPanelTitle: "文件和文件夹",
+    mentionNoResults: "没有匹配的文件或文件夹",
+    mentionFile: "文件",
+    mentionFolder: "文件夹",
+    mentionFolderDetail: "{count} 个文件",
+    mentionContextIncluded: "已提及上下文",
     placeholder: "问 OB：@文件名、总结、找笔记、生成计划、给当前笔记改法...",
     ready: "准备就绪",
     missingApi: "还没有配置 API URL/key/model。",
@@ -459,6 +486,10 @@ class CancipView extends ItemView {
   private inputEl!: HTMLTextAreaElement;
   private statusEl!: HTMLElement;
   private modeButtons: Record<ComposerMode, HTMLButtonElement> | null = null;
+  private mentionEl: HTMLElement | null = null;
+  private mentionItems: MentionTarget[] = [];
+  private mentionActiveIndex = 0;
+  private activeMention: ActiveMention | null = null;
   private activeRequest: AbortController | null = null;
 
   constructor(
@@ -572,6 +603,7 @@ class CancipView extends ItemView {
     this.sourcesEl = sourcesPanel.createDiv({ cls: "obcc-source-list" });
 
     const footer = shell.createDiv({ cls: "obcc-footer" });
+    this.mentionEl = footer.createDiv({ cls: "obcc-mention-popover is-hidden" });
     const form = footer.createEl("form", { cls: "obcc-composer" });
     this.inputEl = form.createEl("textarea", {
       cls: "obcc-input",
@@ -621,13 +653,19 @@ class CancipView extends ItemView {
     setIcon(sendButton, "arrow-up");
     rightControls.appendChild(sendButton);
 
-    this.inputEl.addEventListener("input", () => this.resizeInput());
+    this.inputEl.addEventListener("input", () => {
+      this.resizeInput();
+      this.updateMentionPopup();
+    });
     this.inputEl.addEventListener("keydown", (event) => {
+      if (this.handleMentionKeydown(event)) return;
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
         form.requestSubmit();
       }
     });
+    this.inputEl.addEventListener("focus", () => this.updateMentionPopup());
+    this.inputEl.addEventListener("blur", () => window.setTimeout(() => this.closeMentionPopup(), 120));
     form.addEventListener("submit", (event) => {
       event.preventDefault();
       void this.submit();
@@ -676,6 +714,121 @@ class CancipView extends ItemView {
 
   private focusInput(): void {
     window.setTimeout(() => this.inputEl?.focus(), 20);
+  }
+
+  private handleMentionKeydown(event: KeyboardEvent): boolean {
+    if (!this.activeMention) return false;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.closeMentionPopup();
+      return true;
+    }
+    if (!this.mentionItems.length) return false;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      this.mentionActiveIndex = (this.mentionActiveIndex + 1) % this.mentionItems.length;
+      this.renderMentionPopup();
+      return true;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      this.mentionActiveIndex = (this.mentionActiveIndex - 1 + this.mentionItems.length) % this.mentionItems.length;
+      this.renderMentionPopup();
+      return true;
+    }
+    if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      this.insertMention(this.mentionItems[this.mentionActiveIndex]);
+      return true;
+    }
+    return false;
+  }
+
+  private updateMentionPopup(): void {
+    const previousQuery = this.activeMention?.query;
+    const active = this.detectActiveMention();
+    this.activeMention = active;
+    if (!active) {
+      this.closeMentionPopup();
+      return;
+    }
+    if (previousQuery !== active.query) this.mentionActiveIndex = 0;
+    this.mentionItems = this.findMentionCandidates(active.query, 12);
+    this.renderMentionPopup();
+  }
+
+  private detectActiveMention(): ActiveMention | null {
+    const cursor = this.inputEl.selectionStart;
+    if (cursor !== this.inputEl.selectionEnd) return null;
+    const before = this.inputEl.value.slice(0, cursor);
+    const bracket = before.match(/(^|[\s([{，。；,;])@\[([^\]\n]*)$/);
+    if (bracket) {
+      return {
+        start: before.length - bracket[2].length - 2,
+        end: cursor,
+        query: bracket[2]
+      };
+    }
+    const simple = before.match(/(^|[\s([{，。；,;])@([^\s@[\]\n]*)$/);
+    if (!simple) return null;
+    return {
+      start: before.length - simple[2].length - 1,
+      end: cursor,
+      query: simple[2]
+    };
+  }
+
+  private renderMentionPopup(): void {
+    if (!this.mentionEl || !this.activeMention) return;
+    this.mentionEl.empty();
+    this.mentionEl.removeClass("is-hidden");
+    const head = this.mentionEl.createDiv({ cls: "obcc-mention-head" });
+    head.createSpan({ text: this.t("mentionPanelTitle") });
+    head.createSpan({ text: "@" });
+
+    if (!this.mentionItems.length) {
+      this.mentionEl.createDiv({ cls: "obcc-mention-empty", text: this.t("mentionNoResults") });
+      return;
+    }
+
+    this.mentionItems.forEach((item, index) => {
+      const row = this.mentionEl!.createEl("button", {
+        cls: `obcc-mention-item ${index === this.mentionActiveIndex ? "is-active" : ""}`,
+        attr: { type: "button", title: item.path }
+      });
+      setIcon(row.createSpan({ cls: "obcc-mention-icon" }), item.kind === "folder" ? "folder" : "file-text");
+      const body = row.createDiv({ cls: "obcc-mention-body" });
+      body.createDiv({ cls: "obcc-mention-title", text: item.title });
+      body.createDiv({ cls: "obcc-mention-path", text: item.path });
+      row.createSpan({ cls: "obcc-mention-kind", text: item.detail });
+      row.addEventListener("pointerdown", (event) => event.preventDefault());
+      row.addEventListener("mouseenter", () => {
+        this.mentionActiveIndex = index;
+        this.renderMentionPopup();
+      });
+      row.addEventListener("click", () => this.insertMention(item));
+    });
+  }
+
+  private closeMentionPopup(): void {
+    this.activeMention = null;
+    this.mentionItems = [];
+    this.mentionActiveIndex = 0;
+    if (!this.mentionEl) return;
+    this.mentionEl.empty();
+    this.mentionEl.addClass("is-hidden");
+  }
+
+  private insertMention(item: MentionTarget): void {
+    if (!this.activeMention) return;
+    const value = this.inputEl.value;
+    const replacement = `@[${item.path}] `;
+    this.inputEl.value = `${value.slice(0, this.activeMention.start)}${replacement}${value.slice(this.activeMention.end)}`;
+    const cursor = this.activeMention.start + replacement.length;
+    this.inputEl.setSelectionRange(cursor, cursor);
+    this.resizeInput();
+    this.closeMentionPopup();
+    this.focusInput();
   }
 
   private async toggleAccessMode(): Promise<void> {
@@ -777,10 +930,17 @@ class CancipView extends ItemView {
       parts.push(`## ${item.label}\n${item.content}`);
     }
 
-    const mentionFiles = this.findMentionedFiles(prompt);
-    for (const file of mentionFiles) {
-      const content = await this.app.vault.cachedRead(file);
-      parts.push(`## @${file.path}\n${trimContext(content, 8000)}`);
+    const mentionTargets = this.findMentionTargets(prompt);
+    for (const target of mentionTargets) {
+      const content = await this.readMentionTarget(target);
+      if (!content) continue;
+      parts.push(`## @${target.path}\n${content}`);
+      searchHits.push({
+        path: target.path,
+        title: target.title,
+        excerpt: `${this.t("mentionContextIncluded")} · ${target.detail}`,
+        score: 0
+      });
     }
 
     if (settings.useVaultSearchByDefault || this.mode === "search") {
@@ -941,20 +1101,99 @@ class CancipView extends ItemView {
     return chunks.join("\n\n");
   }
 
-  private findMentionedFiles(prompt: string): TFile[] {
-    const mentions = [...prompt.matchAll(/@([^\s@#|，。；,;]+)/g)].map((match) => match[1].toLowerCase());
-    if (!mentions.length) return [];
-    const files = this.app.vault.getMarkdownFiles();
-    return mentions
-      .map((mention) => {
-        return files.find((file) => {
-          const base = file.basename.toLowerCase();
-          const path = file.path.toLowerCase();
-          return base.includes(mention) || path.includes(mention);
-        });
-      })
-      .filter((file): file is TFile => Boolean(file))
-      .slice(0, 8);
+  private findMentionTargets(prompt: string): MentionTarget[] {
+    const tokens = extractMentionTokens(prompt);
+    if (!tokens.length) return [];
+    const allTargets = this.buildMentionTargets();
+    const used = new Set<string>();
+    const resolved: MentionTarget[] = [];
+    for (const token of tokens) {
+      const target = this.resolveMentionToken(token, allTargets);
+      if (!target || used.has(`${target.kind}:${target.path}`)) continue;
+      used.add(`${target.kind}:${target.path}`);
+      resolved.push(target);
+    }
+    return resolved.slice(0, 8);
+  }
+
+  private resolveMentionToken(mentionText: string, allTargets: MentionTarget[]): MentionTarget | null {
+    const query = normalizeMentionQuery(mentionText);
+    if (!query) return null;
+    const lowerQuery = query.toLowerCase();
+    const exact = allTargets.find((target) => {
+      const path = target.path.toLowerCase();
+      const title = target.title.toLowerCase();
+      return path === lowerQuery || title === lowerQuery || (target.kind === "file" && path.replace(/\.[^.]+$/, "") === lowerQuery);
+    });
+    if (exact) return exact;
+    return this.findMentionCandidates(query, 1, allTargets)[0] ?? null;
+  }
+
+  private findMentionCandidates(query: string, limit: number, targets = this.buildMentionTargets()): MentionTarget[] {
+    const normalizedQuery = normalizeMentionQuery(query);
+    return targets
+      .map((target) => ({ ...target, score: scoreMentionTarget(target, normalizedQuery) }))
+      .filter((target) => target.score > 0)
+      .sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path))
+      .slice(0, limit);
+  }
+
+  private buildMentionTargets(): MentionTarget[] {
+    const files = this.contextFiles();
+    const folderCounts = new Map<string, number>();
+    for (const file of files) {
+      const parts = file.path.split("/").slice(0, -1);
+      let current = "";
+      for (const part of parts) {
+        current = current ? `${current}/${part}` : part;
+        folderCounts.set(current, (folderCounts.get(current) ?? 0) + 1);
+      }
+    }
+    const targets: MentionTarget[] = files.map((file) => ({
+      kind: "file",
+      path: file.path,
+      title: file.basename,
+      detail: this.t("mentionFile"),
+      score: 0
+    }));
+
+    for (const item of this.app.vault.getAllLoadedFiles()) {
+      if (!(item instanceof TFolder) || !item.path || item.path === "/") continue;
+      const count = folderCounts.get(item.path) ?? 0;
+      if (!count) continue;
+      targets.push({
+        kind: "folder",
+        path: item.path,
+        title: item.name || item.path,
+        detail: this.t("mentionFolderDetail", { count }),
+        score: 0
+      });
+    }
+    return targets;
+  }
+
+  private contextFiles(): TFile[] {
+    return this.app.vault
+      .getFiles()
+      .filter((file) => isContextTextFile(file))
+      .sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  private async readMentionTarget(target: MentionTarget): Promise<string> {
+    if (target.kind === "file") {
+      const file = this.contextFiles().find((item) => item.path === target.path);
+      if (!file) return "";
+      const content = await this.app.vault.cachedRead(file);
+      return trimContext(content, 8000);
+    }
+
+    const files = this.contextFiles().filter((file) => isPathInFolder(file.path, target.path)).slice(0, Math.max(3, this.plugin.settings.maxContextFiles));
+    const chunks: string[] = [];
+    for (const file of files) {
+      const content = await this.app.vault.cachedRead(file);
+      chunks.push(`### ${file.path}\n${trimContext(content, 2600)}`);
+    }
+    return chunks.join("\n\n");
   }
 
   private async previewVaultSearch(): Promise<void> {
@@ -1343,6 +1582,77 @@ function tokenize(input: string): string[] {
   const matches = lower.match(/[a-z0-9_\-/]{2,}|[\u4e00-\u9fff]{1,2}/g) ?? [];
   const stop = new Set(["the", "and", "for", "with", "this", "that", "你", "我", "的", "了", "是", "在", "和", "就", "都", "把"]);
   return [...new Set(matches.filter((token) => !stop.has(token)))];
+}
+
+function extractMentionTokens(input: string): string[] {
+  const tokens: string[] = [];
+  const regex = /(^|[\s([{，。；,;])(?:@\[([^\]]+)\]|@([^\s@#|，。；,;]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(input)) !== null) {
+    const mentionToken = normalizeMentionQuery(match[2] || match[3] || "");
+    if (mentionToken) tokens.push(mentionToken);
+  }
+  return [...new Set(tokens)];
+}
+
+function normalizeMentionQuery(input: string): string {
+  return input
+    .trim()
+    .replace(/^@/, "")
+    .replace(/^\[/, "")
+    .replace(/\]$/, "")
+    .replace(/\\/g, "/")
+    .trim();
+}
+
+function scoreMentionTarget(target: MentionTarget, query: string): number {
+  const path = target.path.toLowerCase();
+  const title = target.title.toLowerCase();
+  const q = query.toLowerCase();
+  let score = target.kind === "folder" ? 6 : 3;
+  if (path.includes("skillob") || title.includes("skillob")) score += 40;
+  if (!q) return score;
+
+  score = 0;
+  if (title === q || path === q) score += 120;
+  if (title.startsWith(q)) score += 80;
+  if (path.startsWith(q)) score += 60;
+  if (title.includes(q)) score += 45;
+  if (path.includes(q)) score += 30;
+  for (const token of q.split(/[\/\s_-]+/).filter(Boolean)) {
+    if (title.includes(token)) score += 12;
+    if (path.includes(token)) score += 8;
+  }
+  if (target.kind === "folder") score += 4;
+  if (path.includes("skillob") || title.includes("skillob")) score += 20;
+  return score;
+}
+
+function isPathInFolder(path: string, folderPath: string): boolean {
+  const prefix = folderPath.endsWith("/") ? folderPath : `${folderPath}/`;
+  return path === folderPath || path.startsWith(prefix);
+}
+
+function isContextTextFile(file: TFile): boolean {
+  const textExtensions = new Set([
+    "md",
+    "txt",
+    "json",
+    "jsonl",
+    "csv",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "css",
+    "html",
+    "xml",
+    "yml",
+    "yaml",
+    "base",
+    "canvas"
+  ]);
+  return textExtensions.has(file.extension.toLowerCase());
 }
 
 function resolveLanguage(mode: LanguageMode): Language {
