@@ -15,8 +15,8 @@ Smart Composer-style right sidebar AI chat for Obsidian, reshaped toward a Codex
 - Vault-level `.cancip/config.json` as the primary configuration file.
 - `cancip-action` JSON blocks for tool actions: ask mode reports only, full-access mode can execute validated Vault-relative actions.
 - Four icon-first modes: Ask, Search, Plan, Edit.
-- Context from current note, selected text, `@file` mentions, core memory folder, and lightweight Vault Search.
-- `@` mention popup for Vault text files and folders; folder mentions include matching text files under that folder.
+- Context from current note, selected text, dynamic `@` mentions, core memory folder, and lightweight Vault Search.
+- Codex-style `@` picker for files, folders, Skills, and Cancip functions; folder mentions include matching text files under that folder.
 - Mobile-friendly UI with bottom composer and compact source panel.
 - Safe default: it reads and suggests. It does not automatically delete, move, merge, or rewrite vault files.
 

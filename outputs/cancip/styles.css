@@ -241,6 +241,7 @@
   margin-bottom: 8px;
   padding: 8px;
   overflow: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--background-modifier-border);
   border-radius: 16px;
   background: var(--background-primary);
@@ -319,10 +320,25 @@
 .obcc-mention-kind {
   max-width: 96px;
   overflow: hidden;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--background-secondary);
   color: var(--text-faint);
   font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.obcc-mention-kind.is-skill {
+  color: var(--text-accent);
+}
+
+.obcc-mention-kind.is-action {
+  color: var(--interactive-accent);
+}
+
+.obcc-mention-kind.is-folder {
+  color: var(--text-muted);
 }
 
 .obcc-quick-row {

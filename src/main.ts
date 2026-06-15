@@ -42,11 +42,16 @@ type SearchHit = {
   score: number;
 };
 
+type MentionKind = "file" | "folder" | "skill" | "action";
+type MentionSource = "file" | "folder" | "virtual";
+
 type MentionTarget = {
-  kind: "file" | "folder";
+  kind: MentionKind;
+  source: MentionSource;
   path: string;
   title: string;
   detail: string;
+  keywords: string[];
   score: number;
 };
 
@@ -129,10 +134,13 @@ const EN = {
   send: "Send",
   modelEffort: "Extra High",
   accessModeChanged: "Access mode: {mode}",
-  mentionPanelTitle: "Files and folders",
-  mentionNoResults: "No matching files or folders",
+  mentionPanelTitle: "Files, folders, skills, functions",
+  mentionNoResults: "No matching files, folders, skills, or functions",
   mentionFile: "File",
   mentionFolder: "Folder",
+  mentionSkill: "Skill",
+  mentionAction: "Function",
+  mentionMode: "Mode",
   mentionFolderDetail: "{count} files",
   mentionContextIncluded: "Mentioned context",
   placeholder: "Ask OB: @file, summarize, find notes, make a plan, suggest edits...",
@@ -244,10 +252,13 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     send: "发送",
     modelEffort: "Extra High",
     accessModeChanged: "访问模式：{mode}",
-    mentionPanelTitle: "文件和文件夹",
-    mentionNoResults: "没有匹配的文件或文件夹",
+    mentionPanelTitle: "文件、文件夹、Skill、功能",
+    mentionNoResults: "没有匹配的文件、文件夹、Skill 或功能",
     mentionFile: "文件",
     mentionFolder: "文件夹",
+    mentionSkill: "Skill",
+    mentionAction: "功能",
+    mentionMode: "模式",
     mentionFolderDetail: "{count} 个文件",
     mentionContextIncluded: "已提及上下文",
     placeholder: "问 OB：@文件名、总结、找笔记、生成计划、给当前笔记改法...",
@@ -754,6 +765,7 @@ class CancipView extends ItemView {
     }
     if (previousQuery !== active.query) this.mentionActiveIndex = 0;
     this.mentionItems = this.findMentionCandidates(active.query, 12);
+    if (this.mentionActiveIndex >= this.mentionItems.length) this.mentionActiveIndex = 0;
     this.renderMentionPopup();
   }
 
@@ -796,11 +808,11 @@ class CancipView extends ItemView {
         cls: `obcc-mention-item ${index === this.mentionActiveIndex ? "is-active" : ""}`,
         attr: { type: "button", title: item.path }
       });
-      setIcon(row.createSpan({ cls: "obcc-mention-icon" }), item.kind === "folder" ? "folder" : "file-text");
+      setIcon(row.createSpan({ cls: "obcc-mention-icon" }), mentionIcon(item.kind));
       const body = row.createDiv({ cls: "obcc-mention-body" });
       body.createDiv({ cls: "obcc-mention-title", text: item.title });
       body.createDiv({ cls: "obcc-mention-path", text: item.path });
-      row.createSpan({ cls: "obcc-mention-kind", text: item.detail });
+      row.createSpan({ cls: `obcc-mention-kind is-${item.kind}`, text: item.detail });
       row.addEventListener("pointerdown", (event) => event.preventDefault());
       row.addEventListener("mouseenter", () => {
         this.mentionActiveIndex = index;
@@ -1109,8 +1121,10 @@ class CancipView extends ItemView {
     const resolved: MentionTarget[] = [];
     for (const token of tokens) {
       const target = this.resolveMentionToken(token, allTargets);
-      if (!target || used.has(`${target.kind}:${target.path}`)) continue;
-      used.add(`${target.kind}:${target.path}`);
+      if (!target) continue;
+      const key = mentionTargetKey(target);
+      if (used.has(key)) continue;
+      used.add(key);
       resolved.push(target);
     }
     return resolved.slice(0, 8);
@@ -1123,7 +1137,12 @@ class CancipView extends ItemView {
     const exact = allTargets.find((target) => {
       const path = target.path.toLowerCase();
       const title = target.title.toLowerCase();
-      return path === lowerQuery || title === lowerQuery || (target.kind === "file" && path.replace(/\.[^.]+$/, "") === lowerQuery);
+      return (
+        path === lowerQuery ||
+        title === lowerQuery ||
+        `${target.kind}:${path}` === lowerQuery ||
+        ((target.source === "file" || target.kind === "skill") && path.replace(/\.[^.]+$/, "") === lowerQuery)
+      );
     });
     if (exact) return exact;
     return this.findMentionCandidates(query, 1, allTargets)[0] ?? null;
@@ -1134,12 +1153,14 @@ class CancipView extends ItemView {
     return targets
       .map((target) => ({ ...target, score: scoreMentionTarget(target, normalizedQuery) }))
       .filter((target) => target.score > 0)
-      .sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path))
+      .sort((a, b) => b.score - a.score || mentionKindRank(a.kind) - mentionKindRank(b.kind) || a.path.length - b.path.length || a.path.localeCompare(b.path))
       .slice(0, limit);
   }
 
   private buildMentionTargets(): MentionTarget[] {
     const files = this.contextFiles();
+    const currentFile = this.app.workspace.getActiveFile();
+    const recentPaths = this.recentFilePaths();
     const folderCounts = new Map<string, number>();
     for (const file of files) {
       const parts = file.path.split("/").slice(0, -1);
@@ -1149,27 +1170,83 @@ class CancipView extends ItemView {
         folderCounts.set(current, (folderCounts.get(current) ?? 0) + 1);
       }
     }
-    const targets: MentionTarget[] = files.map((file) => ({
-      kind: "file",
-      path: file.path,
-      title: file.basename,
-      detail: this.t("mentionFile"),
-      score: 0
-    }));
+    const targets: MentionTarget[] = this.buildActionMentionTargets();
+
+    for (const file of files) {
+      const skillLike = isSkillLikeMention(file.path, file.basename);
+      const recentIndex = recentPaths.indexOf(file.path);
+      const isCurrent = currentFile?.path === file.path;
+      const baseScore = isCurrent ? 98 : recentIndex >= 0 ? 68 - Math.min(recentIndex, 12) * 2 : skillLike ? 58 : 0;
+      targets.push({
+        kind: skillLike ? "skill" : "file",
+        source: "file",
+        path: file.path,
+        title: file.basename,
+        detail: isCurrent ? `${this.t("mentionFile")} · ${this.t("currentFile")}` : skillLike ? this.t("mentionSkill") : this.t("mentionFile"),
+        keywords: this.fileMentionKeywords(file),
+        score: baseScore
+      });
+    }
 
     for (const item of this.app.vault.getAllLoadedFiles()) {
       if (!(item instanceof TFolder) || !item.path || item.path === "/") continue;
       const count = folderCounts.get(item.path) ?? 0;
       if (!count) continue;
+      const skillLike = isSkillLikeMention(item.path, item.name || item.path);
+      const isMemoryFolder = normalizePath(item.path) === normalizePath(this.plugin.settings.memoryFolder || "");
       targets.push({
-        kind: "folder",
+        kind: skillLike ? "skill" : "folder",
+        source: "folder",
         path: item.path,
         title: item.name || item.path,
-        detail: this.t("mentionFolderDetail", { count }),
-        score: 0
+        detail: skillLike ? `${this.t("mentionSkill")} · ${this.t("mentionFolderDetail", { count })}` : this.t("mentionFolderDetail", { count }),
+        keywords: mentionPathKeywords(item.path, item.name || item.path),
+        score: isMemoryFolder ? 72 : skillLike ? 62 : 0
       });
     }
     return targets;
+  }
+
+  private recentFilePaths(): string[] {
+    const workspace = this.app.workspace as { getLastOpenFiles?: () => string[] };
+    try {
+      return workspace.getLastOpenFiles?.() ?? [];
+    } catch {
+      return [];
+    }
+  }
+
+  private fileMentionKeywords(file: TFile): string[] {
+    const keywords = mentionPathKeywords(file.path, file.basename);
+    const cache = this.app.metadataCache.getFileCache(file);
+    keywords.push(...frontmatterKeywords(cache?.frontmatter));
+    keywords.push(...(cache?.tags?.map((tag) => tag.tag) ?? []));
+    return uniqueStrings(keywords);
+  }
+
+  private buildActionMentionTargets(): MentionTarget[] {
+    const action = (path: string, title: string, detail: string, keywords: string[], score: number): MentionTarget => ({
+      kind: "action",
+      source: "virtual",
+      path,
+      title,
+      detail,
+      keywords,
+      score
+    });
+
+    return [
+      action("action:ask", this.t("modeAsk"), this.t("mentionMode"), ["ask", "chat", "answer", "问", "提问", "回答", "聊天"], 94),
+      action("action:search", this.t("modeSearch"), this.t("mentionMode"), ["search", "find", "rag", "index", "vault", "搜", "搜索", "检索", "查找", "索引"], 94),
+      action("action:plan", this.t("modePlan"), this.t("mentionMode"), ["plan", "todo", "steps", "roadmap", "计划", "规划", "步骤", "方案"], 92),
+      action("action:edit", this.t("modeEdit"), this.t("mentionMode"), ["edit", "patch", "rewrite", "change", "修改", "改写", "补丁", "编辑"], 92),
+      action("action:add-current-file", this.t("addCurrentFile"), this.t("mentionAction"), ["current", "file", "note", "active", "当前", "当前文件", "当前笔记", "上下文"], 88),
+      action("action:preview-vault-search", this.t("previewVaultSearch"), this.t("mentionAction"), ["preview", "vault", "search", "rag", "预览", "搜索", "检索", "命中"], 84),
+      action("action:add-core-memory", this.t("addCoreMemory"), this.t("mentionAction"), ["memory", "core", "remember", "记忆", "核心记忆", "长期记忆"], 82),
+      action("action:rebuild-index", this.t("commandRebuildIndex"), this.t("mentionAction"), ["index", "rebuild", "refresh", "索引", "重建", "刷新"], 76),
+      action("action:clear-context", this.t("clearContext"), this.t("mentionAction"), ["clear", "context", "reset", "清空", "上下文", "重置"], 72),
+      action("action:new-chat", this.t("newChatTitle"), this.t("mentionAction"), ["new", "chat", "session", "新建", "新对话", "聊天"], 70)
+    ];
   }
 
   private contextFiles(): TFile[] {
@@ -1180,7 +1257,11 @@ class CancipView extends ItemView {
   }
 
   private async readMentionTarget(target: MentionTarget): Promise<string> {
-    if (target.kind === "file") {
+    if (target.source === "virtual") {
+      return this.describeActionMention(target.path);
+    }
+
+    if (target.source === "file") {
       const file = this.contextFiles().find((item) => item.path === target.path);
       if (!file) return "";
       const content = await this.app.vault.cachedRead(file);
@@ -1194,6 +1275,36 @@ class CancipView extends ItemView {
       chunks.push(`### ${file.path}\n${trimContext(content, 2600)}`);
     }
     return chunks.join("\n\n");
+  }
+
+  private describeActionMention(path: string): string {
+    const zh = this.plugin.language() === "zh";
+    const descriptions: Record<string, string> = zh
+      ? {
+          "action:ask": "用户提及 Cancip 功能：Ask 模式。直接回答，并在有用时引用 Vault 来源路径。",
+          "action:search": "用户提及 Cancip 功能：Search 模式。优先检索 Vault，先列出相关路径，再回答。",
+          "action:plan": "用户提及 Cancip 功能：Plan 模式。输出可执行计划、风险和需要确认的动作，不要声称已执行。",
+          "action:edit": "用户提及 Cancip 功能：Edit 模式。给出可复制修改建议；写入 Vault 前必须遵守访问模式。",
+          "action:add-current-file": "用户提及功能：把当前活动笔记作为上下文。",
+          "action:preview-vault-search": "用户提及功能：预览 Vault Search 命中结果。",
+          "action:add-core-memory": "用户提及功能：加入核心记忆文件夹上下文。",
+          "action:rebuild-index": "用户提及功能：重建轻量索引。",
+          "action:clear-context": "用户提及功能：清空草稿上下文。",
+          "action:new-chat": "用户提及功能：新建对话。"
+        }
+      : {
+          "action:ask": "Mentioned Cancip function: Ask mode. Answer directly and cite Vault paths when useful.",
+          "action:search": "Mentioned Cancip function: Search mode. Search the Vault first, list related paths, then answer.",
+          "action:plan": "Mentioned Cancip function: Plan mode. Produce an executable plan, risks, and actions needing confirmation.",
+          "action:edit": "Mentioned Cancip function: Edit mode. Provide copyable edits; obey the access mode before Vault writes.",
+          "action:add-current-file": "Mentioned function: include the current active note as context.",
+          "action:preview-vault-search": "Mentioned function: preview Vault Search hits.",
+          "action:add-core-memory": "Mentioned function: include core memory folder context.",
+          "action:rebuild-index": "Mentioned function: rebuild the lightweight index.",
+          "action:clear-context": "Mentioned function: clear draft context.",
+          "action:new-chat": "Mentioned function: start a new chat."
+        };
+    return descriptions[path] ?? path;
   }
 
   private async previewVaultSearch(): Promise<void> {
@@ -1605,26 +1716,119 @@ function normalizeMentionQuery(input: string): string {
     .trim();
 }
 
+function mentionIcon(kind: MentionKind): string {
+  if (kind === "folder") return "folder";
+  if (kind === "skill") return "sparkles";
+  if (kind === "action") return "wrench";
+  return "file-text";
+}
+
+function mentionTargetKey(target: MentionTarget): string {
+  return `${target.kind}:${target.source}:${target.path}`;
+}
+
+function mentionKindRank(kind: MentionKind): number {
+  if (kind === "action") return 0;
+  if (kind === "skill") return 1;
+  if (kind === "file") return 2;
+  return 3;
+}
+
+function mentionPathKeywords(path: string, title: string): string[] {
+  const parts = path.split(/[\/\\._\-\s]+/).filter(Boolean);
+  return uniqueStrings([path, title, path.replace(/\.[^.]+$/, ""), ...parts]);
+}
+
+function frontmatterKeywords(frontmatter: Record<string, unknown> | undefined): string[] {
+  if (!frontmatter) return [];
+  const keys = ["aliases", "alias", "tags", "tag", "title", "name", "summary", "description"];
+  const values: string[] = [];
+  for (const key of keys) {
+    values.push(...flattenKeywordValue(frontmatter[key]));
+  }
+  return values;
+}
+
+function flattenKeywordValue(value: unknown): string[] {
+  if (typeof value === "string" || typeof value === "number") return [String(value)];
+  if (Array.isArray(value)) return value.flatMap((item) => flattenKeywordValue(item));
+  return [];
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+function isSkillLikeMention(path: string, title: string): boolean {
+  const text = `${path}\n${title}`.toLowerCase();
+  return /(^|[\/\\._\-\s])skills?($|[\/\\._\-\s])/.test(text) || text.includes("skillob") || text.includes("skill.md") || /技能|能力/.test(text);
+}
+
+function mentionQueryParts(query: string): string[] {
+  const q = query.toLowerCase().trim();
+  if (!q) return [];
+  const parts = q.split(/[\s\/\\._\-:]+/).filter(Boolean);
+  const cjk = q.match(/[\u4e00-\u9fff]/g) ?? [];
+  return uniqueStrings([q, ...parts, ...cjk]);
+}
+
 function scoreMentionTarget(target: MentionTarget, query: string): number {
+  const q = query.toLowerCase().trim();
+  if (!q) return target.score;
+
   const path = target.path.toLowerCase();
   const title = target.title.toLowerCase();
-  const q = query.toLowerCase();
-  let score = target.kind === "folder" ? 6 : 3;
-  if (path.includes("skillob") || title.includes("skillob")) score += 40;
-  if (!q) return score;
+  const detail = target.detail.toLowerCase();
+  const fields = [path, title, detail, ...target.keywords.map((keyword) => keyword.toLowerCase())];
+  let score = 0;
+  let matched = false;
 
-  score = 0;
-  if (title === q || path === q) score += 120;
-  if (title.startsWith(q)) score += 80;
-  if (path.startsWith(q)) score += 60;
-  if (title.includes(q)) score += 45;
-  if (path.includes(q)) score += 30;
-  for (const token of q.split(/[\/\s_-]+/).filter(Boolean)) {
-    if (title.includes(token)) score += 12;
-    if (path.includes(token)) score += 8;
+  if (title === q || path === q || `${target.kind}:${path}` === q) {
+    score += 140;
+    matched = true;
   }
-  if (target.kind === "folder") score += 4;
-  if (path.includes("skillob") || title.includes("skillob")) score += 20;
+  if ((target.source === "file" || target.kind === "skill") && path.replace(/\.[^.]+$/, "") === q) {
+    score += 120;
+    matched = true;
+  }
+  if (title.startsWith(q)) {
+    score += 92;
+    matched = true;
+  }
+  if (path.startsWith(q)) {
+    score += 72;
+    matched = true;
+  }
+  if (title.includes(q)) {
+    score += 58;
+    matched = true;
+  }
+  if (path.includes(q)) {
+    score += 42;
+    matched = true;
+  }
+
+  for (const part of mentionQueryParts(q)) {
+    for (const field of fields) {
+      if (field === part) {
+        score += 24;
+        matched = true;
+      } else if (field.startsWith(part)) {
+        score += 16;
+        matched = true;
+      } else if (field.includes(part)) {
+        score += 9;
+        matched = true;
+      }
+    }
+  }
+
+  if (!matched) return 0;
+  score += Math.min(target.score, 35);
+  if (target.kind === "action") score += 8;
+  if (target.kind === "skill") score += 6;
+  if (target.source === "folder") score += Math.min(10, target.path.split("/").length * 2);
+  if (path.includes("skillob") || title.includes("skillob")) score += 30;
   return score;
 }
 
