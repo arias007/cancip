@@ -11,6 +11,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Current note, selection, `@file` mentions, core memory folder, and lightweight Vault Search context.
 - `cancip-action` JSON tool blocks for validated vault-relative actions.
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
+- Codex-style rounded composer with embedded access/model controls and a mobile-friendly send button.
 
 ## Build
 

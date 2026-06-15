@@ -112,6 +112,8 @@ const EN = {
   addCoreMemory: "Add core memory",
   stop: "Stop",
   send: "Send",
+  modelEffort: "Extra High",
+  accessModeChanged: "Access mode: {mode}",
   placeholder: "Ask OB: @file, summarize, find notes, make a plan, suggest edits...",
   ready: "Ready",
   missingApi: "API URL/key/model is not configured.",
@@ -219,6 +221,8 @@ const I18N: Record<Language, Record<I18nKey, string>> = {
     addCoreMemory: "加入核心记忆",
     stop: "停止",
     send: "发送",
+    modelEffort: "Extra High",
+    accessModeChanged: "访问模式：{mode}",
     placeholder: "问 OB：@文件名、总结、找笔记、生成计划、给当前笔记改法...",
     ready: "准备就绪",
     missingApi: "还没有配置 API URL/key/model。",
@@ -568,24 +572,54 @@ class CancipView extends ItemView {
     this.sourcesEl = sourcesPanel.createDiv({ cls: "obcc-source-list" });
 
     const footer = shell.createDiv({ cls: "obcc-footer" });
-    const quickRow = footer.createDiv({ cls: "obcc-quick-row" });
-    this.createQuickButton(quickRow, "file-plus-2", this.t("addCurrentFile"), () => void this.addCurrentFileContext());
-    this.createQuickButton(quickRow, "folder-search", this.t("previewVaultSearch"), () => void this.previewVaultSearch());
-    this.createQuickButton(quickRow, "brain-circuit", this.t("addCoreMemory"), () => void this.addMemoryContext());
-    this.createQuickButton(quickRow, "square", this.t("stop"), () => this.stopRequest());
-
     const form = footer.createEl("form", { cls: "obcc-composer" });
     this.inputEl = form.createEl("textarea", {
+      cls: "obcc-input",
       attr: {
         rows: "1",
         placeholder: this.t("placeholder")
       }
     });
+
+    const composerBar = form.createDiv({ cls: "obcc-composer-bar" });
+    const leftControls = composerBar.createDiv({ cls: "obcc-composer-left" });
+    const addButton = leftControls.createEl("button", {
+      cls: "obcc-tool-button",
+      attr: { type: "button", title: this.t("addCurrentFile"), "aria-label": this.t("addCurrentFile") }
+    });
+    setIcon(addButton, "plus");
+    addButton.addEventListener("click", () => void this.addCurrentFileContext());
+
+    const accessMode = this.plugin.settings.accessMode;
+    const accessLabel = accessMode === "full-access" ? this.t("accessFullAccess") : this.t("accessAskApproval");
+    const accessButton = leftControls.createEl("button", {
+      cls: `obcc-access-button ${accessMode === "full-access" ? "is-full-access" : "is-ask-approval"}`,
+      attr: { type: "button", title: accessLabel, "aria-label": accessLabel }
+    });
+    setIcon(accessButton.createSpan({ cls: "obcc-access-icon" }), "shield-alert");
+    accessButton.createSpan({ cls: "obcc-access-label", text: accessLabel });
+    setIcon(accessButton.createSpan({ cls: "obcc-chevron" }), "chevron-down");
+    accessButton.addEventListener("click", () => void this.toggleAccessMode());
+
+    const rightControls = composerBar.createDiv({ cls: "obcc-composer-right" });
+    const modelButton = rightControls.createEl("button", {
+      cls: "obcc-model-button",
+      attr: { type: "button", title: this.plugin.settings.model || this.t("settingsModel"), "aria-label": this.t("settingsModel") }
+    });
+    modelButton.createSpan({ cls: "obcc-model-name", text: this.formatModelLabel(this.plugin.settings.model) });
+    modelButton.createSpan({ cls: "obcc-model-effort", text: this.t("modelEffort") });
+    setIcon(modelButton.createSpan({ cls: "obcc-chevron" }), "chevron-down");
+    modelButton.addEventListener("click", () => {
+      this.setStatus(`${this.t("settingsModel")}: ${this.plugin.settings.model || this.t("none")}`);
+      this.focusInput();
+    });
+
     const sendButton = form.createEl("button", {
       cls: "obcc-send",
       attr: { type: "submit", title: this.t("send"), "aria-label": this.t("send") }
     });
-    setIcon(sendButton, "corner-down-left");
+    setIcon(sendButton, "arrow-up");
+    rightControls.appendChild(sendButton);
 
     this.inputEl.addEventListener("input", () => this.resizeInput());
     this.inputEl.addEventListener("keydown", (event) => {
@@ -642,6 +676,25 @@ class CancipView extends ItemView {
 
   private focusInput(): void {
     window.setTimeout(() => this.inputEl?.focus(), 20);
+  }
+
+  private async toggleAccessMode(): Promise<void> {
+    this.plugin.settings.accessMode = this.plugin.settings.accessMode === "full-access" ? "ask-for-approval" : "full-access";
+    await this.plugin.saveSettings();
+    const label = this.plugin.settings.accessMode === "full-access" ? this.t("accessFullAccess") : this.t("accessAskApproval");
+    this.render();
+    this.setStatus(this.t("accessModeChanged", { mode: label }));
+    this.focusInput();
+  }
+
+  private formatModelLabel(model: string): string {
+    const trimmed = model.trim();
+    if (!trimmed) return this.t("settingsModel");
+    const compact = trimmed
+      .replace(/^openai\//i, "")
+      .replace(/^gpt-/i, "")
+      .replace(/-/g, " ");
+    return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact;
   }
 
   private async submit(): Promise<void> {

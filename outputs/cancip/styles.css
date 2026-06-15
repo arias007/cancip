@@ -1,14 +1,19 @@
 .obcc-root {
+  display: flex;
   height: 100%;
+  min-height: 0;
   padding: 0;
   overflow: hidden;
 }
 
 .obcc-shell {
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto auto;
+  flex: 1 1 auto;
   height: 100%;
+  min-height: 0;
   min-width: 0;
+  overflow: hidden;
   background: var(--background-primary);
   color: var(--text-normal);
 }
@@ -225,7 +230,7 @@
 }
 
 .obcc-footer {
-  border-top: 1px solid var(--background-modifier-border);
+  padding: 10px 10px 8px;
   background: var(--background-primary);
 }
 
@@ -248,38 +253,145 @@
 }
 
 .obcc-composer {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  padding: 8px 10px 10px;
+  min-width: 0;
+  padding: 12px 12px 9px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 22px;
+  background: var(--background-primary);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 
-.obcc-composer textarea {
+.obcc-input {
   width: 100%;
-  min-height: 38px;
+  min-height: 52px;
   max-height: 150px;
-  padding: 8px 10px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 8px;
-  background: var(--background-secondary);
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
   color: var(--text-normal);
+  font-size: 14px;
   resize: none;
   outline: none;
   line-height: 1.45;
 }
 
-.obcc-composer textarea:focus {
-  border-color: var(--interactive-accent);
+.obcc-input::placeholder {
+  color: var(--text-faint);
+}
+
+.obcc-input:focus {
+  box-shadow: none;
+}
+
+.obcc-composer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  min-height: 34px;
+}
+
+.obcc-composer-left,
+.obcc-composer-right {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.obcc-composer-left {
+  flex: 1 1 auto;
+  gap: 8px;
+}
+
+.obcc-composer-right {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.obcc-tool-button,
+.obcc-access-button,
+.obcc-model-button {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.obcc-tool-button {
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 32px;
+  padding: 0;
+  color: var(--text-muted);
+}
+
+.obcc-access-button {
+  flex: 0 1 auto;
+  gap: 6px;
+  max-width: min(180px, 42vw);
+  padding: 0 6px;
+  color: var(--color-orange, #e85d1f);
+}
+
+.obcc-model-button {
+  flex: 0 1 auto;
+  gap: 5px;
+  max-width: min(180px, 45vw);
+  padding: 0 4px;
+  color: var(--text-muted);
+}
+
+.obcc-tool-button:hover,
+.obcc-access-button:hover,
+.obcc-model-button:hover {
+  background: var(--background-modifier-hover);
+}
+
+.obcc-access-label,
+.obcc-model-name,
+.obcc-model-effort {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-access-label,
+.obcc-model-name {
+  color: inherit;
+}
+
+.obcc-model-effort {
+  flex: 0 0 auto;
+  color: var(--text-faint);
 }
 
 .obcc-send {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
   padding: 0;
-  border-color: var(--interactive-accent);
+  border: 0;
+  border-radius: 50%;
+  background: var(--text-muted);
+  color: var(--background-primary);
+}
+
+.obcc-send:hover {
   background: var(--interactive-accent);
   color: var(--text-on-accent);
 }
@@ -287,6 +399,9 @@
 .obcc-icon-button svg,
 .obcc-mode svg,
 .obcc-chip svg,
+.obcc-tool-button svg,
+.obcc-access-button svg,
+.obcc-model-button svg,
 .obcc-send svg,
 .obcc-link-button svg {
   width: 16px;
@@ -298,6 +413,11 @@
 .obcc-send svg {
   width: 18px;
   height: 18px;
+}
+
+.obcc-chevron svg {
+  width: 14px;
+  height: 14px;
 }
 
 .obcc-status {
@@ -317,6 +437,44 @@
   color: var(--text-muted);
   font-size: 12px;
   line-height: 1.4;
+}
+
+@media (max-width: 420px) {
+  .obcc-footer {
+    padding: 8px;
+  }
+
+  .obcc-composer {
+    border-radius: 20px;
+    padding: 10px 10px 8px;
+  }
+
+  .obcc-input {
+    min-height: 48px;
+  }
+
+  .obcc-access-button {
+    max-width: 128px;
+  }
+
+  .obcc-model-button {
+    max-width: 118px;
+  }
+
+  .obcc-model-effort {
+    display: none;
+  }
+}
+
+@media (max-width: 330px) {
+  .obcc-access-label {
+    display: none;
+  }
+
+  .obcc-access-button {
+    gap: 4px;
+    padding: 0 4px;
+  }
 }
 
 .obcc-settings-core {
