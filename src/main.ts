@@ -339,6 +339,7 @@ type ToolRun = {
   summary: string;
   status: ToolRunStatus;
   createdAt: string;
+  startedAt?: string;
   executedAt?: string;
   result?: string;
   error?: string;
@@ -3564,6 +3565,8 @@ class CancipView extends ItemView {
   private activeHeaderMenu: HeaderMenuKind | null = null;
   private activeRequests = new Map<string, AbortController>();
   private queuedPrompts: QueuedPrompt[] = [];
+  private progressStepTimers = new Map<string, number>();
+  private toolRunTimers = new Map<string, number>();
   private drainQueueAfterRequest = true;
   private currentSessionStatus: NonNullable<SessionHistoryEntry["status"]> = "idle";
   private currentSessionCompletedNotice = false;
@@ -3647,6 +3650,7 @@ class CancipView extends ItemView {
   async onClose(): Promise<void> {
     for (const request of this.activeRequests.values()) request.abort();
     this.activeRequests.clear();
+    this.clearLiveTimers();
     this.queuedPrompts = [];
   }
 
@@ -4821,6 +4825,7 @@ class CancipView extends ItemView {
     void this.updateCurrentSessionStatus("running", false);
     let context = { system: this.modePrompt(), contextText: "", searchHits: [] as SearchHit[] };
     const contextStep = this.addProgressStep(this.t("preparingContext"));
+    const requestProgressSteps: ChatMessage[] = [contextStep];
     try {
       this.setStatus(this.t("preparingContext"));
       context = await this.buildContext(rawPrompt);
@@ -4848,6 +4853,7 @@ class CancipView extends ItemView {
 
       this.setStatus(this.t("generating"));
       const generationStep = this.addProgressStep(this.t("generating"));
+      requestProgressSteps.push(generationStep);
       const answer = await withTimeout(this.callModel(rawPrompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
       if (request.signal.aborted || !this.hasRequest(request)) return;
       const requestSessionId = this.requestSessionId(request);
@@ -4901,6 +4907,7 @@ class CancipView extends ItemView {
       this.setStatus(this.t("callFailed"));
       await this.finishCurrentSessionStatus("failed", true, request);
     } finally {
+      for (const step of requestProgressSteps) this.stopProgressStepTimer(step.id);
       if (this.hasRequest(request)) this.clearRequest(request);
       this.syncRequestControls();
       this.renderMessages();
@@ -5027,18 +5034,48 @@ class CancipView extends ItemView {
   }
 
   private addProgressStep(summary: string, detail = "", status = this.t("toolRunExecuting")): ChatMessage {
-    const body = this.formatProgressStep(summary, detail, status);
+    const body = this.formatProgressStep(summary, detail, status, 0);
     const message = this.addMessage("assistant", body);
+    this.startProgressStepTimer(message, summary, detail, status);
     this.renderMessages();
     return message;
   }
 
   private updateProgressStep(message: ChatMessage | null | undefined, summary: string, detail = "", status = this.t("toolRunExecuted")): void {
     if (!message) return;
+    this.stopProgressStepTimer(message.id);
     const elapsed = Date.now() - message.createdAt;
     message.content = this.formatProgressStep(summary, detail, status, elapsed);
     void this.saveCurrentSession();
     this.renderMessages();
+  }
+
+  private startProgressStepTimer(message: ChatMessage, summary: string, detail: string, status: string): void {
+    this.stopProgressStepTimer(message.id);
+    const tick = () => {
+      const current = this.messages.find((item) => item.id === message.id);
+      if (!current) {
+        this.stopProgressStepTimer(message.id);
+        return;
+      }
+      current.content = this.formatProgressStep(summary, detail, status, Date.now() - current.createdAt);
+      this.renderMessages();
+    };
+    tick();
+    this.progressStepTimers.set(message.id, window.setInterval(tick, 1000));
+  }
+
+  private stopProgressStepTimer(messageId: string): void {
+    const timer = this.progressStepTimers.get(messageId);
+    if (timer !== undefined) window.clearInterval(timer);
+    this.progressStepTimers.delete(messageId);
+  }
+
+  private clearLiveTimers(): void {
+    for (const timer of this.progressStepTimers.values()) window.clearInterval(timer);
+    for (const timer of this.toolRunTimers.values()) window.clearInterval(timer);
+    this.progressStepTimers.clear();
+    this.toolRunTimers.clear();
   }
 
   private formatProgressStep(summary: string, detail: string, status: string, elapsedMs?: number): string {
@@ -6531,17 +6568,20 @@ class CancipView extends ItemView {
   private async executeToolRun(run: ToolRun): Promise<string> {
     const startedAt = Date.now();
     run.status = "executing";
+    run.startedAt = new Date(startedAt).toISOString();
     run.error = undefined;
     run.result = undefined;
     void this.recordSessionEvent({ kind: "tool.start", runId: run.id, toolStatus: run.status, summary: run.summary, detail: JSON.stringify(run.action) });
-    this.upsertToolFeedbackMessage(run);
+    this.upsertToolFeedbackMessage(run, startedAt);
+    this.startToolRunTimer(run, startedAt);
     this.renderMessages();
     void this.saveCurrentSession();
     try {
       const result = await this.executeAction(run.action);
       run.status = "executed";
       run.executedAt = new Date().toISOString();
-      run.result = `${result}\n\n${this.t("elapsedSuffix", { elapsed: formatElapsed(Date.now() - startedAt) })}`;
+      run.result = result;
+      this.stopToolRunTimer(run.id);
       this.upsertToolFeedbackMessage(run);
       this.renderMessages();
       await this.recordToolFeedback({ status: "executed", summary: run.summary, detail: result, at: run.executedAt });
@@ -6553,6 +6593,7 @@ class CancipView extends ItemView {
       run.status = "failed";
       run.executedAt = new Date().toISOString();
       run.error = reason;
+      this.stopToolRunTimer(run.id);
       this.upsertToolFeedbackMessage(run);
       this.renderMessages();
       await this.recordToolFeedback({ status: "failed", summary: run.summary, detail: reason, at: run.executedAt });
@@ -6562,11 +6603,15 @@ class CancipView extends ItemView {
     }
   }
 
-  private upsertToolFeedbackMessage(run: ToolRun): void {
+  private upsertToolFeedbackMessage(run: ToolRun, startedAtMs?: number, persist = true): void {
     const marker = `${TOOL_FEEDBACK_MARKER_PREFIX}${run.id} -->`;
     const status = this.toolRunStatusLabel(run.status);
     const detail = run.error || run.result || "";
-    const elapsed = run.executedAt ? this.t("elapsedSuffix", { elapsed: formatElapsed(Date.parse(run.executedAt) - Date.parse(run.createdAt)) }) : "";
+    const startedAt = startedAtMs ?? (run.startedAt ? Date.parse(run.startedAt) : Date.parse(run.createdAt));
+    const endedAt = run.executedAt ? Date.parse(run.executedAt) : Date.now();
+    const elapsed = run.status !== "pending" && Number.isFinite(startedAt)
+      ? this.t("elapsedSuffix", { elapsed: formatElapsed(Math.max(0, endedAt - startedAt)) })
+      : "";
     const body = [
       marker,
       PROCESS_MESSAGE_MARKER,
@@ -6576,12 +6621,31 @@ class CancipView extends ItemView {
     const existing = this.messages.find((message) => message.role === "assistant" && message.content.includes(marker));
     if (existing) {
       existing.content = body;
-      existing.createdAt = Date.now();
       this.syncSessionChrome();
-      void this.saveCurrentSession();
+      if (persist) void this.saveCurrentSession();
       return;
     }
     this.addMessage("assistant", body);
+  }
+
+  private startToolRunTimer(run: ToolRun, startedAt: number): void {
+    this.stopToolRunTimer(run.id);
+    const tick = () => {
+      if (run.status !== "executing") {
+        this.stopToolRunTimer(run.id);
+        return;
+      }
+      this.upsertToolFeedbackMessage(run, startedAt, false);
+      this.renderMessages();
+    };
+    tick();
+    this.toolRunTimers.set(run.id, window.setInterval(tick, 1000));
+  }
+
+  private stopToolRunTimer(runId: string): void {
+    const timer = this.toolRunTimers.get(runId);
+    if (timer !== undefined) window.clearInterval(timer);
+    this.toolRunTimers.delete(runId);
   }
 
   private async recordToolFeedback(event: ToolFeedbackEvent): Promise<void> {
@@ -9319,7 +9383,7 @@ function migrateDefaultMemorySearchPolicy(settings: Settings): Settings {
 function isOutdatedSystemPrompt(prompt: string): boolean {
   const normalized = prompt.trim();
   if (!normalized) return true;
-  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.85")) return true;
+  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.86")) return true;
   return (
     normalized === LEGACY_SYSTEM_PROMPT ||
     normalized.includes("核心记忆和 Vault Search 上下文回答") ||

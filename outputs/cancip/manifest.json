@@ -1,7 +1,7 @@
 {
   "id": "cancip",
   "name": "Cancip",
-  "version": "0.1.85",
+  "version": "0.1.86",
   "minAppVersion": "1.5.0",
   "description": "Codex-style AI side panel for vault search, memory context, and safe note assistance.",
   "author": "Murat/Codex",
