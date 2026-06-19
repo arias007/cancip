@@ -269,6 +269,7 @@ type SessionEventKind =
   | "message.add"
   | "prompt.send"
   | "prompt.error"
+  | "prompt.recoverable_error"
   | "tool.start"
   | "tool.finish"
   | "tool.reject";
@@ -4962,6 +4963,7 @@ class CancipView extends ItemView {
       }
       const message = error instanceof Error ? error.message : String(error);
       void this.recordSessionEvent({ kind: "prompt.error", detail: message });
+      void this.recordSessionEvent({ kind: "prompt.recoverable_error", detail: message, status: "failed" });
       this.addMessage("assistant", this.localFallback(rawPrompt, context.searchHits, message));
       this.setStatus(this.t("callFailed"));
       await this.finishCurrentSessionStatus("failed", true, request);
@@ -5392,7 +5394,12 @@ class CancipView extends ItemView {
       completedNotice: true,
       path
     });
-    void this.recordSessionEvent({ kind: "session.status", sessionId, status: "completed", detail: "detached api response completed" });
+    void this.recordSessionEvent({
+      kind: "session.status",
+      sessionId,
+      status: isEmptyApiReply ? "failed" : "completed",
+      detail: isEmptyApiReply ? "detached api response failed: empty reply" : "detached api response completed"
+    });
   }
 
   private async upsertSessionHistoryIndex(entry: SessionHistoryEntry): Promise<void> {
@@ -6750,7 +6757,7 @@ class CancipView extends ItemView {
     this.setStatus(this.t("toolContinueStatus"));
     const continueStep = this.addProgressStep(this.t("toolContinueStatus"));
     const prompt = this.t(reason === "low-commitment" ? "toolActionLowCommitmentPrompt" : "toolActionRequiredPrompt", { task: rawPrompt });
-    const answer = await this.callModel(prompt, context);
+    const answer = await withTimeout(this.callModel(prompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
     if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
     this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
     const visibleAnswer = removeCancipActionBlocks(answer).trim();
@@ -6759,7 +6766,7 @@ class CancipView extends ItemView {
     if (handled || request.signal.aborted || !this.isCurrentRequest(request)) return handled;
 
     const hardPrompt = this.t("toolActionHardRequiredPrompt", { task: rawPrompt });
-    const hardAnswer = await this.callModel(hardPrompt, context);
+    const hardAnswer = await withTimeout(this.callModel(hardPrompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
     if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
     const hardVisibleAnswer = removeCancipActionBlocks(hardAnswer).trim();
     const hardAssistantMessage = this.addMessage("assistant", hardVisibleAnswer || this.t("toolActionForcedVisible"));
@@ -6785,7 +6792,9 @@ class CancipView extends ItemView {
     request: AbortController,
     originalPrompt = ""
   ): Promise<ActionHandlingResult | null> {
-    if (!this.plugin.settings.autoContinueAfterTools || !this.shouldContinueFromToolRuns(previous)) return previous;
+    const implementationTask = originalPrompt ? shouldExpectToolActionForPrompt(originalPrompt) : false;
+    const initialNeedsMoreAction = implementationTask && shouldNeedMoreActionForPrompt(originalPrompt, previous.runs);
+    if (!this.plugin.settings.autoContinueAfterTools || (!initialNeedsMoreAction && !this.shouldContinueFromToolRuns(previous))) return previous;
     const configuredIterations = Math.max(0, Math.min(10, this.plugin.settings.maxToolIterations));
     const maxIterations = originalPrompt && shouldExpectToolActionForPrompt(originalPrompt)
       ? Math.max(5, configuredIterations)
@@ -6794,8 +6803,9 @@ class CancipView extends ItemView {
     let lastHandled: ActionHandlingResult = previous;
 
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
-      if (!current || !this.shouldContinueFromToolRuns(current) || request.signal.aborted || !this.isCurrentRequest(request)) return lastHandled;
-      const implementationTask = originalPrompt ? shouldExpectToolActionForPrompt(originalPrompt) : false;
+      if (!current || request.signal.aborted || !this.isCurrentRequest(request)) return lastHandled;
+      const currentNeedsMoreAction = implementationTask && shouldNeedMoreActionForPrompt(originalPrompt, current.runs);
+      if (!currentNeedsMoreAction && !this.shouldContinueFromToolRuns(current)) return lastHandled;
       this.setStatus(this.t("toolContinueStatus"));
       const continueStep = this.addProgressStep(this.t("toolContinueStatus"));
       const experience = await this.safeContextStep(this.t("taskExperience"), () => this.readTaskExperience(originalPrompt), "", CONTEXT_STEP_TIMEOUT_MS);
@@ -6809,7 +6819,7 @@ class CancipView extends ItemView {
       const prompt = this.t("toolContinuationPrompt", {
         summary: `${this.conversationForToolContinuation(implementationTask ? 8 : undefined, implementationTask ? 500 : undefined)}\n\n${this.toolRunsForPrompt(current.runs, implementationTask ? 1200 : 4000, implementationTask ? 6 : undefined)}`.trim()
       });
-      const answer = await this.callModel(prompt, continuationContext);
+      const answer = await withTimeout(this.callModel(prompt, continuationContext), MODEL_CALL_TIMEOUT_MS, "model request timed out");
       if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
       this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
       const assistantMessage = this.addMessage("assistant", answer);
@@ -6992,7 +7002,7 @@ class CancipView extends ItemView {
   }
 
   private shouldContinueFromToolRuns(result: ActionHandlingResult): boolean {
-    return result.executed || result.runs.some((run) => run.status === "failed" || run.status === "rejected");
+    return shouldContinueToolLoopFromRuns(result.runs);
   }
 
   private async continueAfterManualToolRuns(message: ChatMessage): Promise<void> {
@@ -9403,9 +9413,20 @@ function shouldNeedMoreActionForPrompt(prompt: string, runs: ToolRun[]): boolean
     .map((run) => actionVerificationPath(run.action))
     .filter(Boolean));
   if (!writePaths.length) return true;
+  if (!hasUnverifiedWriteAction(active)) return false;
   const hasPluginWrite = writePaths.some((path) => path.startsWith(".obsidian/plugins/cancip/"));
   if (hasPluginWrite) return false;
   return writePaths.every((path) => path === ".cancip/config.json" || path.startsWith(".cancip/"));
+}
+
+function shouldContinueToolLoopFromRuns(runs: ToolRun[]): boolean {
+  if (!runs.length) return false;
+  if (runs.some((run) => run.status === "pending" || run.status === "executing" || run.status === "blocked")) return false;
+  if (runs.some((run) => run.status === "failed" || run.status === "rejected")) return true;
+  const executed = runs.filter((run) => run.status === "executed");
+  if (!executed.length) return false;
+  if (executed.every((run) => isLowCommitmentAction(run.action))) return false;
+  return hasUnverifiedWriteAction(executed);
 }
 
 function hasUnverifiedWriteAction(runs: ToolRun[]): boolean {
@@ -9719,7 +9740,7 @@ function migrateDefaultMemorySearchPolicy(settings: Settings): Settings {
 function isOutdatedSystemPrompt(prompt: string): boolean {
   const normalized = prompt.trim();
   if (!normalized) return true;
-  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.91")) return true;
+  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.93")) return true;
   return (
     normalized === LEGACY_SYSTEM_PROMPT ||
     normalized.includes("核心记忆和 Vault Search 上下文回答") ||
