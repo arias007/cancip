@@ -1,6 +1,6 @@
 {
   "name": "cancip",
-  "version": "0.1.97",
+  "version": "0.1.99",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -15,12 +15,3 @@
     "typescript": "^5.5.4"
   }
 }
-
-
-
-
-
-
-
-
-

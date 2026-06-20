@@ -3638,10 +3638,12 @@ class CancipView extends ItemView {
   private toolRunTimers = new Map<string, number>();
   private detailsOpenState = new Map<string, boolean>();
   private userPinnedScroll = false;
+  private autoFollowMessages = true;
   private userInteractingWithMessages = false;
   private programmaticScrollRestore = false;
   private pendingMessageRender = false;
   private messageInteractionIdleTimer: number | null = null;
+  private programmaticScrollReleaseTimer: number | null = null;
   private drainQueueAfterRequest = true;
   private currentSessionStatus: NonNullable<SessionHistoryEntry["status"]> = "idle";
   private currentSessionCompletedNotice = false;
@@ -3726,6 +3728,8 @@ class CancipView extends ItemView {
     for (const request of this.activeRequests.values()) request.abort();
     this.activeRequests.clear();
     this.clearLiveTimers();
+    if (this.programmaticScrollReleaseTimer !== null) window.clearTimeout(this.programmaticScrollReleaseTimer);
+    this.programmaticScrollReleaseTimer = null;
     this.queuedPrompts = [];
   }
 
@@ -3743,6 +3747,7 @@ class CancipView extends ItemView {
     this.hiddenContextKeys.clear();
     this.detailsOpenState.clear();
     this.userPinnedScroll = false;
+    this.autoFollowMessages = true;
     this.closeHeaderMenu();
     this.renderQueueStatus();
     this.syncRequestControls();
@@ -4748,6 +4753,7 @@ class CancipView extends ItemView {
       this.hiddenContextKeys.clear();
       this.detailsOpenState.clear();
       this.userPinnedScroll = false;
+      this.autoFollowMessages = true;
       this.closeHeaderMenu();
       this.renderQueueStatus();
       this.syncRequestControls();
@@ -4914,10 +4920,14 @@ class CancipView extends ItemView {
       return;
     }
 
-    const suppressToolActions = shouldSuppressToolActionsForPrompt(rawPrompt);
+    this.resetMessageAutoFollow();
     const userMessage = this.addMessage("user", rawPrompt);
+    const taskGoal = this.resolveTaskGoal(rawPrompt);
+    const modelPrompt = this.modelPromptForTurn(rawPrompt, taskGoal);
+    const suppressToolActions = shouldSuppressToolActionsForPrompt(taskGoal);
     this.syncSessionChrome();
     this.renderMessages();
+    this.scrollMessagesToBottom(false);
 
     const request = new AbortController();
     this.activeRequest = request;
@@ -4928,7 +4938,7 @@ class CancipView extends ItemView {
     const requestProgressSteps: ChatMessage[] = [contextStep];
     try {
       this.setStatus(this.t("preparingContext"));
-      context = await this.buildContext(rawPrompt);
+      context = await this.buildContext(taskGoal);
       if (request.signal.aborted || !this.hasRequest(request)) return;
       this.updateProgressStep(contextStep, this.t("preparingContext"), `${this.t("obsidianContext")}: ${context.contextText.length} chars\n${this.t("hitCount", { count: context.searchHits.length })}`);
 
@@ -4954,11 +4964,11 @@ class CancipView extends ItemView {
       this.setStatus(this.t("generating"));
       const generationStep = this.addProgressStep(this.t("generating"));
       requestProgressSteps.push(generationStep);
-      const answer = await withTimeout(this.callModel(rawPrompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
+      const answer = await withTimeout(this.callModel(modelPrompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
       if (request.signal.aborted || !this.hasRequest(request)) return;
       const requestSessionId = this.requestSessionId(request);
       if (requestSessionId && requestSessionId !== this.sessionId) {
-        await this.completeDetachedApiResponse(requestSessionId, rawPrompt, answer, startedAt, suppressToolActions);
+        await this.completeDetachedApiResponse(requestSessionId, modelPrompt, answer, startedAt, suppressToolActions);
         this.clearRequest(request);
         this.syncRequestControls();
         if (this.drainQueueAfterRequest) void this.drainQueuedPrompts();
@@ -4974,16 +4984,18 @@ class CancipView extends ItemView {
         return;
       }
       const assistantMessage = this.addMessage("assistant", visibleAnswer);
+      this.renderMessages();
       let actionReport = suppressToolActions ? null : await this.handleActionBlocks(answer, assistantMessage);
       if (!actionReport && !suppressToolActions) {
-        actionReport = await this.forceToolActionForImplementationTask(rawPrompt, context, request);
+        actionReport = await this.forceToolActionForImplementationTask(taskGoal, context, request);
       }
       if (actionReport) {
         this.addMessage("assistant", actionReport.report);
-        const finalReport = await this.continueAfterToolRuns(context, actionReport, request, rawPrompt);
+        this.renderMessages();
+        const finalReport = await this.continueAfterToolRuns(context, actionReport, request, taskGoal);
         const finalActionReport = finalReport ?? actionReport;
-        const needsMoreAction = shouldExpectToolActionForPrompt(rawPrompt) && shouldNeedMoreActionForPrompt(rawPrompt, finalActionReport.runs);
-        this.ensureFinalConclusion(finalActionReport, startedAt, needsMoreAction, rawPrompt);
+        const needsMoreAction = shouldExpectToolActionForPrompt(taskGoal) && shouldNeedMoreActionForPrompt(taskGoal, finalActionReport.runs);
+        this.ensureFinalConclusion(finalActionReport, startedAt, needsMoreAction, taskGoal);
         if (needsMoreAction) {
           this.setStatus(this.t("callFailed"));
           await this.finishCurrentSessionStatus("failed", true, request);
@@ -5005,7 +5017,7 @@ class CancipView extends ItemView {
       const message = error instanceof Error ? error.message : String(error);
       void this.recordSessionEvent({ kind: "prompt.error", detail: message });
       void this.recordSessionEvent({ kind: "prompt.recoverable_error", detail: message, status: "failed" });
-      this.addMessage("assistant", this.localFallback(rawPrompt, context.searchHits, message));
+      this.addMessage("assistant", this.localFallback(taskGoal, context.searchHits, message));
       this.setStatus(this.t("callFailed"));
       await this.finishCurrentSessionStatus("failed", true, request);
     } finally {
@@ -5018,11 +5030,13 @@ class CancipView extends ItemView {
   }
 
   private async runRepairCommand(rawPrompt: string): Promise<void> {
+    this.resetMessageAutoFollow();
     const userMessage = this.addMessage("user", rawPrompt);
     userMessage.mode = this.mode;
     userMessage.accessMode = this.plugin.settings.accessMode;
     userMessage.apiProfile = this.redactedApiProfile(this.plugin.activeApiProfile());
     this.renderMessages();
+    this.scrollMessagesToBottom(false);
 
     const request = new AbortController();
     this.activeRequest = request;
@@ -5135,6 +5149,46 @@ class CancipView extends ItemView {
     return message;
   }
 
+  private resetMessageAutoFollow(): void {
+    this.userPinnedScroll = false;
+    this.autoFollowMessages = true;
+    this.userInteractingWithMessages = false;
+    this.pendingMessageRender = false;
+    if (this.messageInteractionIdleTimer !== null) {
+      window.clearTimeout(this.messageInteractionIdleTimer);
+      this.messageInteractionIdleTimer = null;
+    }
+  }
+
+  private resolveTaskGoal(rawPrompt: string): string {
+    if (!isContinuePrompt(rawPrompt)) return rawPrompt;
+    return this.previousActionableUserPrompt() || "上一项未完成任务";
+  }
+
+  private modelPromptForTurn(rawPrompt: string, taskGoal: string): string {
+    if (!isContinuePrompt(rawPrompt) || taskGoal === rawPrompt) return rawPrompt;
+    const workingState = this.sessionWorkingState();
+    return [
+      rawPrompt,
+      "",
+      "Continue the previous user task below. Do not treat the word \"continue\" as the task itself.",
+      `Previous task: ${taskGoal}`,
+      workingState ? `Latest session state:\n${workingState}` : "",
+      "Use the latest visible tool results and session state; do not restart with a broad search unless the target is unknown."
+    ].filter(Boolean).join("\n");
+  }
+
+  private previousActionableUserPrompt(): string {
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message.role !== "user") continue;
+      const text = message.content.trim();
+      if (!text || isContinuePrompt(text) || isTrivialChatPrompt(text)) continue;
+      return text;
+    }
+    return "";
+  }
+
   private addProgressStep(summary: string, detail = "", status = this.t("toolRunExecuting")): ChatMessage {
     const body = this.formatProgressStep(summary, detail, status, 0);
     const message = this.addMessage("assistant", body);
@@ -5206,6 +5260,7 @@ class CancipView extends ItemView {
     const prompt = `${this.t("automationTask")}: ${task.title}\n\n${task.prompt}`;
     const userMessage = this.addMessage("user", prompt);
     this.renderMessages();
+    this.scrollMessagesToBottom(false);
 
     const contextStep = this.addProgressStep(this.t("preparingContext"));
     const context = await this.buildContext(task.prompt);
@@ -5237,10 +5292,12 @@ class CancipView extends ItemView {
       if (request.signal.aborted || !this.isCurrentRequest(request)) return this.t("stopped");
       this.updateProgressStep(generationStep, this.t("automationStarted", { title: task.title }), this.t("done"));
       const assistantMessage = this.addMessage("assistant", answer);
+      this.renderMessages();
       const actionReport = await this.handleActionBlocks(answer, assistantMessage);
       let result = answer;
       if (actionReport) {
         this.addMessage("assistant", actionReport.report);
+        this.renderMessages();
         result = `${result}\n\n${actionReport.report}`;
         const finalReport = await this.continueAfterToolRuns(context, actionReport, request, task.prompt);
         this.ensureFinalConclusion(finalReport ?? actionReport, startedAt, false, task.prompt);
@@ -6803,6 +6860,7 @@ class CancipView extends ItemView {
     this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
     const visibleAnswer = removeCancipActionBlocks(answer).trim();
     const assistantMessage = this.addMessage("assistant", visibleAnswer || this.t("toolActionForcedVisible"));
+    this.renderMessages();
     const handled = await this.handleActionBlocks(answer, assistantMessage);
     if (handled || request.signal.aborted || !this.isCurrentRequest(request)) return handled;
 
@@ -6811,6 +6869,7 @@ class CancipView extends ItemView {
     if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
     const hardVisibleAnswer = removeCancipActionBlocks(hardAnswer).trim();
     const hardAssistantMessage = this.addMessage("assistant", hardVisibleAnswer || this.t("toolActionForcedVisible"));
+    this.renderMessages();
     return await this.handleActionBlocks(hardAnswer, hardAssistantMessage);
   }
 
@@ -6864,11 +6923,13 @@ class CancipView extends ItemView {
       if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
       this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
       const assistantMessage = this.addMessage("assistant", answer);
+      this.renderMessages();
       current = await this.handleActionBlocks(answer, assistantMessage);
       if (!current) {
         const recovery = await this.recoverFromPatchFindFailure(lastHandled, request);
         if (recovery) {
           this.addMessage("assistant", recovery.report);
+          this.renderMessages();
           current = recovery;
           lastHandled = recovery;
           continue;
@@ -6881,6 +6942,7 @@ class CancipView extends ItemView {
         }
       }
       this.addMessage("assistant", current.report);
+      this.renderMessages();
       lastHandled = current;
     }
     if (originalPrompt && shouldExpectToolActionForPrompt(originalPrompt) && shouldNeedMoreActionForPrompt(originalPrompt, lastHandled.runs)) {
@@ -6890,6 +6952,7 @@ class CancipView extends ItemView {
       }, request, "low-commitment");
       if (forced) {
         this.addMessage("assistant", forced.report);
+        this.renderMessages();
         return forced;
       }
     }
@@ -6950,6 +7013,7 @@ class CancipView extends ItemView {
       typeof startedAt === "number" ? this.t("totalElapsed", { elapsed: formatElapsed(Date.now() - startedAt) }) : ""
     ].filter(Boolean).join("\n\n");
     this.addMessage("assistant", this.t("finalConclusionFallback", { summary }));
+    this.renderMessages();
   }
 
   private humanFinalConclusion(runs: ToolRun[], needsMoreAction = false, originalPrompt = ""): string {
@@ -7007,8 +7071,10 @@ class CancipView extends ItemView {
     if (reads.length) {
       return [
         `${goal}没完成。`,
-        "这轮只完成了读取/检索，没有产生实际改动或可验证结果。",
-        "下一步应从最后一次工具结果继续，而不是重新泛搜或套话总结。"
+        shouldExpectToolActionForPrompt(originalPrompt)
+          ? "这轮只完成了读取/检索，还没有按你的要求做实际修改。"
+          : "这轮只完成了读取/检索，没有产生实际改动或可验证结果。",
+        "下一步：直接基于最后一次工具结果继续执行具体 patch/write/验证；不要重新泛搜，也不要套话总结。"
       ].join("\n\n");
     }
 
@@ -8009,7 +8075,7 @@ class CancipView extends ItemView {
   private afterMessagesRendered(scrollSnapshot: MessageScrollSnapshot): void {
     this.messagesEl.style.minHeight = "0";
     this.messagesEl.style.overflowY = "auto";
-    if (scrollSnapshot.stickToBottom && !this.userPinnedScroll) {
+    if ((this.autoFollowMessages || scrollSnapshot.stickToBottom) && !this.userPinnedScroll) {
       this.scrollMessagesToBottom(false);
     } else {
       this.restoreMessageScrollSnapshot(scrollSnapshot);
@@ -8056,7 +8122,7 @@ class CancipView extends ItemView {
       }
       window.setTimeout(() => {
         this.programmaticScrollRestore = false;
-        this.userPinnedScroll = !this.shouldStickToMessageBottom();
+        if (!this.autoFollowMessages) this.userPinnedScroll = !this.shouldStickToMessageBottom();
         this.syncScrollBottomButton();
       }, 0);
       this.syncScrollBottomButton();
@@ -8064,10 +8130,15 @@ class CancipView extends ItemView {
   }
 
   private shouldDeferMessageRender(): boolean {
-    return this.userInteractingWithMessages || (this.userPinnedScroll && !this.shouldStickToMessageBottom());
+    return this.userInteractingWithMessages;
   }
 
   private markMessageScrollInteraction(): void {
+    if (this.programmaticScrollRestore) {
+      this.syncScrollBottomButton();
+      return;
+    }
+    this.autoFollowMessages = false;
     this.userInteractingWithMessages = true;
     if (this.messageInteractionIdleTimer !== null) {
       window.clearTimeout(this.messageInteractionIdleTimer);
@@ -8090,6 +8161,7 @@ class CancipView extends ItemView {
 
   private scrollMessagesToBottom(smooth: boolean): void {
     if (!this.messagesEl) return;
+    this.autoFollowMessages = true;
     this.userPinnedScroll = false;
     this.userInteractingWithMessages = false;
     if (this.messageInteractionIdleTimer !== null) {
@@ -8101,11 +8173,18 @@ class CancipView extends ItemView {
       this.renderMessages();
     }
     window.requestAnimationFrame(() => {
+      this.programmaticScrollRestore = true;
       this.messagesEl.scrollTo({
         top: this.messagesEl.scrollHeight,
         behavior: smooth ? "smooth" : "auto"
       });
-      window.setTimeout(() => this.syncScrollBottomButton(), smooth ? 220 : 0);
+      if (this.programmaticScrollReleaseTimer !== null) window.clearTimeout(this.programmaticScrollReleaseTimer);
+      this.programmaticScrollReleaseTimer = window.setTimeout(() => {
+        this.programmaticScrollRestore = false;
+        this.programmaticScrollReleaseTimer = null;
+        this.syncScrollBottomButton();
+      }, smooth ? 260 : 40);
+      this.syncScrollBottomButton();
     });
   }
 
@@ -9662,12 +9741,22 @@ function shouldSuppressToolActionsForPrompt(prompt: string): boolean {
   return text.length <= 12 && /^(你是谁|你是誰|你好|您好|测试|嗨|哈喽|在吗|hi|hello|test|ping)/i.test(text);
 }
 
+function isContinuePrompt(prompt: string): boolean {
+  const compact = prompt.trim().toLowerCase().replace(/[\s，。！？!?.、~～]+/g, "");
+  return /^(继续|继续修|继续做|接着|接着来|接着做|接着修|往下|往下做|下一步|继续吧|继续呀|继续啊|continue|goon|next|proceed|keepgoing)$/.test(compact);
+}
+
+function isTrivialChatPrompt(prompt: string): boolean {
+  const compact = prompt.trim().toLowerCase().replace(/[\s，。！？!?.、~～]+/g, "");
+  return /^(hi|hello|hey|yo|ok|test|ping|thanks|thankyou|你好|您好|嗨|哈喽|测试|在吗|你是谁|你是誰|你叫什么|你叫什麼|谢谢|謝謝|好的|好)$/.test(compact);
+}
+
 function shouldExpectToolActionForPrompt(prompt: string): boolean {
   const text = prompt.trim();
   if (!text) return false;
   if (shouldSuppressToolActionsForPrompt(text)) return false;
   const lower = text.toLowerCase();
-  return /(add|implement|fix|repair|change|modify|update|setting|option|manage|management|button|ui|style|css|plugin|source|install|restart|verify|build|github|automation|command|execute|patch|write|加|新增|添加|补|改|修改|更新|修|修复|设置|选项|管理|按钮|界面|样式|插件|源码|装好|安装|重启|验证|构建|自动化|命令|执行|写入|落地|自身|自己|全权)/.test(lower);
+  return /(add|implement|fix|repair|change|modify|update|setting|option|manage|management|button|ui|style|css|plugin|source|install|restart|verify|build|github|automation|command|execute|patch|write|not working|broken|failed|failure|bug|error|stuck|off.?topic|加|新增|添加|补|改|修改|更新|修|修复|设置|选项|管理|按钮|界面|样式|插件|源码|装好|安装|重启|验证|构建|自动化|命令|执行|写入|落地|自身|自己|全权|不行|没效果|沒效果|老样子|老樣子|还是|還是|失败|失敗|错误|錯誤|报错|報錯|问题|問題|坏了|壞了|卡住|不回复|不回復|乱滑|亂滑|跑偏|套话|套話|敷衍|不实时|不即時|一股脑|一股腦)/.test(lower);
 }
 
 function isWeakFinalConclusion(content: string): boolean {
@@ -10058,7 +10147,7 @@ function migrateDefaultMemorySearchPolicy(settings: Settings): Settings {
 function isOutdatedSystemPrompt(prompt: string): boolean {
   const normalized = prompt.trim();
   if (!normalized) return true;
-  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.97")) return true;
+  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.99")) return true;
   return (
     normalized === LEGACY_SYSTEM_PROMPT ||
     normalized.includes("核心记忆和 Vault Search 上下文回答") ||
