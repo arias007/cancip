@@ -134,6 +134,7 @@ Currently supported command names:
 - `cancip.rebuildIndex`: refresh Cancip's lightweight vault index.
 - `cancip.reviewGate`: programmatically build an OB Review Gate package. Example args: `{"paths":["Folder/Note.md"],"maxFiles":20}` or `{"items":[{"path":"Note.md","old_text":"...","new_text":"..."}]}`.
 - `cancip.reviewGate.list`: list recent review package index files under `AI/Cancip/Review/`.
+- `cancip.sessionInspect`: diagnose a session id across `.cancip/sessions/index.json`, session JSON, and `events.jsonl`, and list nearby candidates when the requested session is missing.
 - `cancip.previewVaultSearch`: preview local Vault Search results.
 - `cancip.localVersionCommit`: create a manual lightweight local version commit.
 - `cancip.automation.templates`: list built-in local automation presets.
