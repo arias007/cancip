@@ -202,6 +202,12 @@ type RenderedMessage = {
   index: number;
 };
 
+type MessageScrollSnapshot = {
+  stickToBottom: boolean;
+  topMessageId: string;
+  topOffset: number;
+};
+
 type ChoiceOption = {
   prefix: string;
   text: string;
@@ -3617,6 +3623,8 @@ class CancipView extends ItemView {
   private queuedPrompts: QueuedPrompt[] = [];
   private progressStepTimers = new Map<string, number>();
   private toolRunTimers = new Map<string, number>();
+  private detailsOpenState = new Map<string, boolean>();
+  private userPinnedScroll = false;
   private drainQueueAfterRequest = true;
   private currentSessionStatus: NonNullable<SessionHistoryEntry["status"]> = "idle";
   private currentSessionCompletedNotice = false;
@@ -3716,6 +3724,8 @@ class CancipView extends ItemView {
     this.currentSessionStatus = "idle";
     this.currentSessionCompletedNotice = false;
     this.hiddenContextKeys.clear();
+    this.detailsOpenState.clear();
+    this.userPinnedScroll = false;
     this.closeHeaderMenu();
     this.renderQueueStatus();
     this.syncRequestControls();
@@ -3831,7 +3841,10 @@ class CancipView extends ItemView {
 
     const messagesFrame = shell.createDiv({ cls: "obcc-messages-frame" });
     this.messagesEl = messagesFrame.createDiv({ cls: "obcc-messages" });
-    this.messagesEl.addEventListener("scroll", () => this.syncScrollBottomButton());
+    this.messagesEl.addEventListener("scroll", () => {
+      this.userPinnedScroll = !this.shouldStickToMessageBottom();
+      this.syncScrollBottomButton();
+    });
     this.scrollBottomButtonEl = messagesFrame.createEl("button", {
       cls: "obcc-scroll-bottom is-hidden",
       attr: { type: "button", title: this.t("scrollToBottom"), "aria-label": this.t("scrollToBottom") }
@@ -4707,6 +4720,8 @@ class CancipView extends ItemView {
         .map((item): ChatMessage | null => this.normalizeSessionMessage(item))
         .filter((item): item is ChatMessage => item !== null);
       this.hiddenContextKeys.clear();
+      this.detailsOpenState.clear();
+      this.userPinnedScroll = false;
       this.closeHeaderMenu();
       this.renderQueueStatus();
       this.syncRequestControls();
@@ -7771,12 +7786,12 @@ class CancipView extends ItemView {
   }
 
   private renderMessages(): void {
-    const stickToBottom = this.shouldStickToMessageBottom();
+    const scrollSnapshot = this.captureMessageScrollSnapshot();
     this.messagesEl.empty();
     if (!this.messages.length) {
       const empty = this.messagesEl.createDiv({ cls: "obcc-empty" });
       empty.createEl("strong", { text: this.t("ready") });
-      this.afterMessagesRendered(true);
+      this.afterMessagesRendered({ stickToBottom: true, topMessageId: "", topOffset: 0 });
       return;
     }
     const rendered = this.messages.map((message, index) => ({
@@ -7802,14 +7817,58 @@ class CancipView extends ItemView {
       this.renderSingleMessage(item, finalAssistantIndex);
     }
     flushProcessGroup();
-    this.afterMessagesRendered(stickToBottom);
+    this.afterMessagesRendered(scrollSnapshot);
   }
 
-  private afterMessagesRendered(stickToBottom: boolean): void {
+  private afterMessagesRendered(scrollSnapshot: MessageScrollSnapshot): void {
     this.messagesEl.style.minHeight = "0";
     this.messagesEl.style.overflowY = "auto";
-    if (stickToBottom) this.scrollMessagesToBottom(false);
-    else this.syncScrollBottomButton();
+    if (scrollSnapshot.stickToBottom && !this.userPinnedScroll) {
+      this.scrollMessagesToBottom(false);
+    } else {
+      this.restoreMessageScrollSnapshot(scrollSnapshot);
+    }
+  }
+
+  private captureMessageScrollSnapshot(): MessageScrollSnapshot {
+    if (!this.messagesEl || !this.messagesEl.isConnected) {
+      return { stickToBottom: true, topMessageId: "", topOffset: 0 };
+    }
+    const stickToBottom = this.shouldStickToMessageBottom();
+    if (stickToBottom && !this.userPinnedScroll) {
+      return { stickToBottom: true, topMessageId: "", topOffset: 0 };
+    }
+    const containerTop = this.messagesEl.getBoundingClientRect().top;
+    const messages = Array.from(this.messagesEl.querySelectorAll<HTMLElement>("[data-message-id]"));
+    const top = messages.find((message) => message.getBoundingClientRect().bottom >= containerTop + 1) ?? messages[0];
+    if (!top?.dataset.messageId) {
+      return { stickToBottom: false, topMessageId: "", topOffset: this.messagesEl.scrollTop };
+    }
+    return {
+      stickToBottom: false,
+      topMessageId: top.dataset.messageId,
+      topOffset: top.getBoundingClientRect().top - containerTop
+    };
+  }
+
+  private restoreMessageScrollSnapshot(snapshot: MessageScrollSnapshot): void {
+    window.requestAnimationFrame(() => {
+      if (!this.messagesEl) return;
+      if (snapshot.topMessageId) {
+        const target = this.messagesEl.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(snapshot.topMessageId)}"]`);
+        if (target) {
+          const containerTop = this.messagesEl.getBoundingClientRect().top;
+          const nextOffset = target.getBoundingClientRect().top - containerTop;
+          this.messagesEl.scrollTop += nextOffset - snapshot.topOffset;
+        } else {
+          this.messagesEl.scrollTop = Math.min(snapshot.topOffset, Math.max(0, this.messagesEl.scrollHeight - this.messagesEl.clientHeight));
+        }
+      } else {
+        this.messagesEl.scrollTop = Math.min(snapshot.topOffset, Math.max(0, this.messagesEl.scrollHeight - this.messagesEl.clientHeight));
+      }
+      this.userPinnedScroll = !this.shouldStickToMessageBottom();
+      this.syncScrollBottomButton();
+    });
   }
 
   private shouldStickToMessageBottom(): boolean {
@@ -7820,6 +7879,7 @@ class CancipView extends ItemView {
 
   private scrollMessagesToBottom(smooth: boolean): void {
     if (!this.messagesEl) return;
+    this.userPinnedScroll = false;
     window.requestAnimationFrame(() => {
       this.messagesEl.scrollTo({
         top: this.messagesEl.scrollHeight,
@@ -7883,14 +7943,17 @@ class CancipView extends ItemView {
 
   private renderProcessRecord(items: RenderedMessage[]): void {
     const item = this.messagesEl.createDiv({ cls: "obcc-message obcc-assistant is-process-record" });
+    item.dataset.messageId = `process-${items.map((rendered) => rendered.message.id).join("-")}`;
     const head = item.createDiv({ cls: "obcc-message-head" });
     head.createDiv({ cls: "obcc-role", text: this.t("processRecord") });
     const contentEl = item.createDiv({ cls: "obcc-content markdown-rendered obcc-process-record-content" });
     const details = contentEl.createEl("details", { cls: "obcc-process-summary obcc-process-record-details" });
+    this.wireDetails(details, `process-record:${items.map((rendered) => rendered.message.id).join(",")}`);
     this.createProcessSummary(details, `${this.t("processRecord")} (${items.length})`);
     const body = details.createDiv({ cls: "obcc-process-body" });
-    for (const rendered of items) {
+    for (const [index, rendered] of items.entries()) {
       const step = body.createEl("details", { cls: "obcc-process-summary obcc-process-step" });
+      this.wireDetails(step, `process-step:${rendered.message.id}:${index}`);
       this.createProcessSummary(step, messageOutlineText(rendered.message.content) || this.t("processDetails"));
       const stepBody = step.createDiv({ cls: "obcc-process-body" });
       if (rendered.display.visibleContent.trim()) {
@@ -7907,14 +7970,28 @@ class CancipView extends ItemView {
       event.preventDefault();
       event.stopPropagation();
       details.open = !details.open;
+      this.rememberDetailsState(details);
     });
     summary.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" && event.key !== " ") return;
       event.preventDefault();
       event.stopPropagation();
       details.open = !details.open;
+      this.rememberDetailsState(details);
     });
     return summary;
+  }
+
+  private wireDetails(details: HTMLDetailsElement, key: string, defaultOpen = false): void {
+    details.dataset.foldKey = key;
+    details.open = this.detailsOpenState.get(key) ?? defaultOpen;
+    details.addEventListener("toggle", () => this.rememberDetailsState(details));
+  }
+
+  private rememberDetailsState(details: HTMLDetailsElement): void {
+    const key = details.dataset.foldKey;
+    if (!key) return;
+    this.detailsOpenState.set(key, details.open);
   }
 
   private lastFinalAssistantMessageIndex(renderedMessages?: RenderedMessage[]): number {
@@ -7934,6 +8011,8 @@ class CancipView extends ItemView {
 
   private renderCollapsedProcessMessage(parent: HTMLElement, display: MessageDisplay): void {
     const details = parent.createEl("details", { cls: "obcc-process-summary" });
+    const messageId = parent.closest<HTMLElement>("[data-message-id]")?.dataset.messageId ?? crypto.randomUUID();
+    this.wireDetails(details, `collapsed-process:${messageId}`);
     this.createProcessSummary(details, messageOutlineText(display.visibleContent) || this.t("processDetails"));
     const body = details.createDiv({ cls: "obcc-process-body" });
     if (display.visibleContent.trim()) {
@@ -7966,6 +8045,8 @@ class CancipView extends ItemView {
   private renderHiddenToolJson(parent: HTMLElement, blocks: FoldedMessageBlock[], hasProcessFold = false): void {
     if (!blocks.length) return;
     const details = parent.createEl("details", { cls: "obcc-tool-json" });
+    const messageId = parent.closest<HTMLElement>("[data-message-id]")?.dataset.messageId ?? "unknown";
+    this.wireDetails(details, `tool-json:${messageId}:${blocks.map((block) => block.title).join("|")}`);
     details.createEl("summary", { text: `${hasProcessFold ? this.t("processDetails") : this.t("toolJsonDetails")} (${blocks.length})` });
     for (const block of blocks) {
       const title = details.createDiv({ cls: "obcc-folded-block-title", text: block.title });
@@ -8015,7 +8096,7 @@ class CancipView extends ItemView {
       const detail = run.result || run.error;
       if (detail) {
         const details = row.createEl("details", { cls: "obcc-tool-run-details" });
-        if (run.status === "executing") details.open = true;
+        this.wireDetails(details, `tool-run:${message.id}:${run.id}`, run.status === "executing");
         details.createEl("summary", { cls: "obcc-tool-run-result-label", text: this.t("toolRunResult") });
         details.createEl("pre", { cls: "obcc-tool-run-result", text: trimContext(redactSensitiveText(detail), 4000) });
       }
@@ -9740,7 +9821,7 @@ function migrateDefaultMemorySearchPolicy(settings: Settings): Settings {
 function isOutdatedSystemPrompt(prompt: string): boolean {
   const normalized = prompt.trim();
   if (!normalized) return true;
-  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.93")) return true;
+  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.94")) return true;
   return (
     normalized === LEGACY_SYSTEM_PROMPT ||
     normalized.includes("核心记忆和 Vault Search 上下文回答") ||
