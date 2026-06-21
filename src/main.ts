@@ -613,6 +613,7 @@ const VAULT_SEARCH_MAX_SCAN_FILES = 160;
 const MENTION_TARGET_TIME_BUDGET_MS = 1800;
 const MENTION_MAX_FILES = 500;
 const MODEL_CALL_TIMEOUT_MS = 90000;
+const INFORMATIONAL_ANSWER_TIMEOUT_MS = 20000;
 const FILE_WRITE_CHUNK_SIZE = 64 * 1024;
 
 const LANGUAGE_LABELS: Record<Language, string> = {
@@ -7010,23 +7011,31 @@ class CancipView extends ItemView {
 
     this.setStatus(this.t("toolContinueStatus"));
     const continueStep = this.addProgressStep(this.t("toolContinueStatus"));
-    const prompt = this.t(reason === "low-commitment" ? "toolActionLowCommitmentPrompt" : "toolActionRequiredPrompt", { task: rawPrompt });
-    const answer = await withTimeout(this.callModel(prompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
-    if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
-    this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
-    const visibleAnswer = removeCancipActionBlocks(answer).trim();
-    const assistantMessage = this.addMessage("assistant", visibleAnswer || this.t("toolActionForcedVisible"));
-    this.renderMessages();
-    const handled = await this.handleActionBlocks(answer, assistantMessage);
-    if (handled || request.signal.aborted || !this.isCurrentRequest(request)) return handled;
+    try {
+      const prompt = this.t(reason === "low-commitment" ? "toolActionLowCommitmentPrompt" : "toolActionRequiredPrompt", { task: rawPrompt });
+      const answer = await withTimeout(this.callModel(prompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
+      if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
+      this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
+      const visibleAnswer = removeCancipActionBlocks(answer).trim();
+      const assistantMessage = this.addMessage("assistant", visibleAnswer || this.t("toolActionForcedVisible"));
+      this.renderMessages();
+      const handled = await this.handleActionBlocks(answer, assistantMessage);
+      if (handled || request.signal.aborted || !this.isCurrentRequest(request)) return handled;
 
-    const hardPrompt = this.t("toolActionHardRequiredPrompt", { task: rawPrompt });
-    const hardAnswer = await withTimeout(this.callModel(hardPrompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
-    if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
-    const hardVisibleAnswer = removeCancipActionBlocks(hardAnswer).trim();
-    const hardAssistantMessage = this.addMessage("assistant", hardVisibleAnswer || this.t("toolActionForcedVisible"));
-    this.renderMessages();
-    return await this.handleActionBlocks(hardAnswer, hardAssistantMessage);
+      const hardPrompt = this.t("toolActionHardRequiredPrompt", { task: rawPrompt });
+      const hardAnswer = await withTimeout(this.callModel(hardPrompt, context), MODEL_CALL_TIMEOUT_MS, "model request timed out");
+      if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
+      const hardVisibleAnswer = removeCancipActionBlocks(hardAnswer).trim();
+      const hardAssistantMessage = this.addMessage("assistant", hardVisibleAnswer || this.t("toolActionForcedVisible"));
+      this.renderMessages();
+      return await this.handleActionBlocks(hardAnswer, hardAssistantMessage);
+    } catch (error) {
+      const reasonText = error instanceof Error ? error.message : String(error);
+      this.updateProgressStep(continueStep, this.t("toolContinueStatus"), reasonText, this.t("toolRunFailed"));
+      throw error;
+    } finally {
+      this.stopProgressStepTimer(continueStep.id);
+    }
   }
 
   private async readTaskExperience(prompt = ""): Promise<string> {
@@ -7073,23 +7082,32 @@ class CancipView extends ItemView {
       if (!currentNeedsMoreAction && !this.shouldContinueFromToolRuns(current)) return lastHandled;
       this.setStatus(this.t("toolContinueStatus"));
       const continueStep = this.addProgressStep(this.t("toolContinueStatus"));
-      const experience = await this.safeContextStep(this.t("taskExperience"), () => this.readTaskExperience(originalPrompt), "", CONTEXT_STEP_TIMEOUT_MS);
-      const continuationContext = {
-        system: this.modePrompt(),
-        contextText: [
-          trimContext(context.contextText, implementationTask ? 9000 : Math.max(9000, context.contextText.length)),
-          experience ? `## ${this.t("taskExperience")}\n${experience}` : ""
-        ].filter(Boolean).join("\n\n---\n\n")
-      };
-      const prompt = this.t("toolContinuationPrompt", {
-        summary: `${this.conversationForToolContinuation(implementationTask ? 8 : undefined, implementationTask ? 500 : undefined)}\n\n${this.toolRunsForPrompt(current.runs, implementationTask ? 1200 : 4000, implementationTask ? 6 : undefined)}`.trim()
-      });
-      const answer = await withTimeout(this.callModel(prompt, continuationContext), MODEL_CALL_TIMEOUT_MS, "model request timed out");
-      if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
-      this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
-      const assistantMessage = this.addMessage("assistant", answer);
-      this.renderMessages();
-      current = await this.handleActionBlocks(answer, assistantMessage);
+      let continuationContext: { system: string; contextText: string } = { system: this.modePrompt(), contextText: context.contextText };
+      try {
+        const experience = await this.safeContextStep(this.t("taskExperience"), () => this.readTaskExperience(originalPrompt), "", CONTEXT_STEP_TIMEOUT_MS);
+        continuationContext = {
+          system: this.modePrompt(),
+          contextText: [
+            trimContext(context.contextText, implementationTask ? 9000 : Math.max(9000, context.contextText.length)),
+            experience ? `## ${this.t("taskExperience")}\n${experience}` : ""
+          ].filter(Boolean).join("\n\n---\n\n")
+        };
+        const prompt = this.t("toolContinuationPrompt", {
+          summary: `${this.conversationForToolContinuation(implementationTask ? 8 : undefined, implementationTask ? 500 : undefined)}\n\n${this.toolRunsForPrompt(current.runs, implementationTask ? 1200 : 4000, implementationTask ? 6 : undefined)}`.trim()
+        });
+        const answer = await withTimeout(this.callModel(prompt, continuationContext), MODEL_CALL_TIMEOUT_MS, "model request timed out");
+        if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
+        this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
+        const assistantMessage = this.addMessage("assistant", answer);
+        this.renderMessages();
+        current = await this.handleActionBlocks(answer, assistantMessage);
+      } catch (error) {
+        const reasonText = error instanceof Error ? error.message : String(error);
+        this.updateProgressStep(continueStep, this.t("toolContinueStatus"), reasonText, this.t("toolRunFailed"));
+        throw error;
+      } finally {
+        this.stopProgressStepTimer(continueStep.id);
+      }
       if (!current) {
         const recovery = await this.recoverFromPatchFindFailure(lastHandled, request);
         if (recovery) {
@@ -7133,31 +7151,49 @@ class CancipView extends ItemView {
     if (request.signal.aborted || !this.isCurrentRequest(request)) return;
     this.setStatus(this.t("toolContinueStatus"));
     const continueStep = this.addProgressStep(this.t("toolContinueStatus"));
-    const continuationContext = {
-      system: this.modePrompt(),
-      contextText: [
-        trimContext(context.contextText, Math.max(9000, context.contextText.length)),
-        `## ${this.t("toolRunResult")}\n${this.toolRunsForPrompt(result.runs, 6000)}`
-      ].filter(Boolean).join("\n\n---\n\n")
-    };
-    const prompt = [
-      "Answer the user's original read/list/explain question using the tool results above.",
-      "Do not create, modify, move, delete, configure, or run write-like actions unless the user explicitly asked for that.",
-      "If the tool results are enough, give the final user-facing answer directly. If not enough, say exactly what is missing or ask for the minimum next read-only check.",
-      "",
-      `Original question: ${originalPrompt}`
-    ].join("\n");
-    const answer = await withTimeout(this.callModel(prompt, continuationContext), MODEL_CALL_TIMEOUT_MS, "model request timed out");
-    if (request.signal.aborted || !this.isCurrentRequest(request)) return;
-    this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
-    const visibleAnswer = removeCancipActionBlocks(answer).trim() || this.t("emptyApiReplyWithSuppressedTools");
-    const assistantMessage = this.addMessage("assistant", visibleAnswer);
-    this.renderMessages();
-    const followup = await this.handleActionBlocks(answer, assistantMessage, { readOnlyOnly: true });
-    if (followup) {
-      this.addMessage("assistant", followup.report);
+    try {
+      const continuationContext = {
+        system: this.modePrompt(),
+        contextText: [
+          trimContext(context.contextText, Math.max(9000, context.contextText.length)),
+          `## ${this.t("toolRunResult")}\n${this.toolRunsForPrompt(result.runs, 6000)}`
+        ].filter(Boolean).join("\n\n---\n\n")
+      };
+      const prompt = [
+        "Answer the user's original read/list/explain question using the tool results above.",
+        "Do not create, modify, move, delete, configure, or run write-like actions unless the user explicitly asked for that.",
+        "If the tool results are enough, give the final user-facing answer directly. If not enough, say exactly what is missing or ask for the minimum next read-only check.",
+        "Return a concise final answer for a normal user. Do not expose raw action JSON.",
+        "",
+        `Original question: ${originalPrompt}`
+      ].join("\n");
+      const answer = await withTimeout(this.callModel(prompt, continuationContext), INFORMATIONAL_ANSWER_TIMEOUT_MS, "informational answer timed out");
+      if (request.signal.aborted || !this.isCurrentRequest(request)) return;
+      this.updateProgressStep(continueStep, this.t("toolContinueStatus"), this.t("done"));
+      const visibleAnswer = removeCancipActionBlocks(answer).trim() || this.t("emptyApiReplyWithSuppressedTools");
+      const assistantMessage = this.addMessage("assistant", hasFinalConclusion(visibleAnswer) ? visibleAnswer : this.t("finalConclusionFallback", { summary: visibleAnswer }));
       this.renderMessages();
+      const followup = await this.handleActionBlocks(answer, assistantMessage, { readOnlyOnly: true });
+      if (followup) {
+        this.addMessage("assistant", followup.report);
+        this.addMessage("assistant", this.informationalFallbackAnswer([...result.runs, ...followup.runs], originalPrompt, ""));
+        this.renderMessages();
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.updateProgressStep(continueStep, this.t("toolContinueStatus"), reason, this.t("toolRunFailed"));
+      void this.recordSessionEvent({ kind: "prompt.recoverable_error", detail: reason, status: "informational-fallback" });
+      if (request.signal.aborted || !this.isCurrentRequest(request)) return;
+      this.addMessage("assistant", this.informationalFallbackAnswer(result.runs, originalPrompt, reason));
+      this.renderMessages();
+    } finally {
+      this.stopProgressStepTimer(continueStep.id);
     }
+  }
+
+  private informationalFallbackAnswer(runs: ToolRun[], originalPrompt: string, reason: string): string {
+    const body = summarizeInformationalToolRuns(runs, originalPrompt, reason);
+    return this.t("finalConclusionFallback", { summary: body });
   }
 
   private async recoverFromPatchFindFailure(
@@ -10134,13 +10170,13 @@ function classifyStaleRunningMessages(messages: Record<string, unknown>[]): {
       detail: "stale running session already had a final answer; marked completed"
     };
   }
-  const pluginList = extractCommunityPluginListFromMessages(messages);
-  if (pluginList.length) {
+  const readableRuns = extractReadableToolRunsFromMessages(messages);
+  if (readableRuns.length) {
     return {
       status: "completed",
       needsClosure: true,
-      content: `## 最终结论\n\n${formatRecoveredPluginListAnswer(pluginList)}`,
-      detail: "stale running session recovered from completed plugin-list tool result"
+      content: `## 最终结论\n\n${summarizeInformationalToolRuns(readableRuns, "", "stale running session repaired from completed read-only tool result")}`,
+      detail: "stale running session recovered from completed read-only tool result"
     };
   }
   return {
@@ -10162,23 +10198,75 @@ function isProcessOnlySessionContent(content: string): boolean {
     || normalized.includes("正在准备上下文");
 }
 
-function extractCommunityPluginListFromMessages(messages: Record<string, unknown>[]): string[] {
+function extractReadableToolRunsFromMessages(messages: Record<string, unknown>[]): ToolRun[] {
+  const runs: ToolRun[] = [];
   for (const message of [...messages].reverse()) {
     const toolRuns = Array.isArray(message.toolRuns) ? message.toolRuns.filter(isRecord) : [];
-    for (const run of toolRuns) {
-      if (!isRecord(run.action)) continue;
-      if (run.action.type !== "read" || run.action.path !== ".obsidian/community-plugins.json") continue;
-      if (typeof run.result !== "string") continue;
-      const parsed = parseJsonArrayFromText(run.result);
-      if (parsed.length) return parsed;
+    for (const item of toolRuns) {
+      const action = parseCancipAction(item.action);
+      if (!action || !isReadOnlyAction(action)) continue;
+      if (item.status !== "executed" || typeof item.result !== "string" || !item.result.trim()) continue;
+      runs.push({
+        id: typeof item.id === "string" && item.id ? item.id : crypto.randomUUID(),
+        action,
+        summary: typeof item.summary === "string" && item.summary ? item.summary : describeActionPlain(action),
+        status: "executed",
+        createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+        startedAt: typeof item.startedAt === "string" ? item.startedAt : undefined,
+        executedAt: typeof item.executedAt === "string" ? item.executedAt : undefined,
+        result: item.result
+      });
     }
+    if (runs.length) return runs;
   }
   for (const message of [...messages].reverse()) {
-    if (typeof message.content !== "string" || !message.content.includes(".obsidian/community-plugins.json")) continue;
-    const parsed = parseJsonArrayFromText(message.content);
-    if (parsed.length) return parsed;
+    if (typeof message.content !== "string") continue;
+    const recovered = recoverToolRunsFromMessageContent(message.content);
+    if (recovered.length) return recovered;
   }
   return [];
+}
+
+function recoverToolRunsFromMessageContent(content: string): ToolRun[] {
+  const runs: ToolRun[] = [];
+  const blocks = content
+    .split(/\n\n(?=(?:read|command)\s+[^\n\r]+\r?\n)/i)
+    .map((block) => block.trim())
+    .filter(Boolean);
+  for (const block of blocks) {
+    const read = block.match(/^read\s+([^\n\r]+)\r?\n([\s\S]*)$/i);
+    if (read) {
+      const path = read[1]?.trim();
+      const result = read[2]?.trim();
+      if (!path || !result) continue;
+      const action: CancipAction = { type: "read", path };
+      runs.push({
+        id: crypto.randomUUID(),
+        action,
+        summary: describeActionPlain(action),
+        status: "executed",
+        createdAt: new Date().toISOString(),
+        result: `read ${path}\n${result}`
+      });
+      continue;
+    }
+    const commandMatch = block.match(/^command\s+([^\n\r]+)\r?\n([\s\S]*)$/i);
+    if (!commandMatch) continue;
+    const command = commandMatch[1]?.trim();
+    const result = commandMatch[2]?.trim();
+    if (!command || !result) continue;
+    const action: CancipAction = { type: "command", command };
+    if (!isReadOnlyAction(action)) continue;
+    runs.push({
+      id: crypto.randomUUID(),
+      action,
+      summary: describeActionPlain(action),
+      status: "executed",
+      createdAt: new Date().toISOString(),
+      result: `command ${command}\n${result}`
+    });
+  }
+  return runs;
 }
 
 function parseJsonArrayFromText(text: string): string[] {
@@ -10193,13 +10281,88 @@ function parseJsonArrayFromText(text: string): string[] {
   }
 }
 
-function formatRecoveredPluginListAnswer(plugins: string[]): string {
-  return `${formatPluginListConclusion(plugins)}\n\n这条会话之前卡在“正在根据工具结果继续”，但工具结果已经读到了插件列表；现在已把会话状态收口为完成，不会继续转圈。`;
+function summarizeInformationalToolRuns(runs: ToolRun[], originalPrompt = "", reason = ""): string {
+  const executed = runs.filter((run) => run.status === "executed" && isReadOnlyAction(run.action) && run.result?.trim());
+  if (!executed.length) {
+    return [
+      originalPrompt.trim() ? `针对“${trimContext(originalPrompt.replace(/\s+/g, " "), 80)}”：还没拿到可回答的只读结果。` : "还没拿到可回答的只读结果。",
+      reason ? `原因：${trimContext(redactSensitiveText(reason), 220)}` : "",
+      "下一步：需要重新执行最小读取/列表/状态检查。"
+    ].filter(Boolean).join("\n\n");
+  }
+
+  const sections: string[] = [];
+  for (const run of executed.slice(0, 4)) {
+    const title = informationalRunTitle(run);
+    const result = run.result ?? "";
+    const jsonItems = parseJsonArrayFromText(result);
+    if (jsonItems.length) {
+      sections.push(`${title} 共 ${jsonItems.length} 项：\n\n${jsonItems.map((item) => `- ${item}`).join("\n")}`);
+      continue;
+    }
+    const folderSummary = summarizeFolderListing(result);
+    if (folderSummary) {
+      sections.push(`${title}\n\n${folderSummary}`);
+      continue;
+    }
+    const lines = usefulResultLines(result).slice(0, 40);
+    sections.push(`${title}\n\n${lines.length ? lines.join("\n") : trimContext(redactSensitiveText(result), 1600)}`);
+  }
+
+  const prefix = originalPrompt.trim()
+    ? `针对“${trimContext(originalPrompt.replace(/\s+/g, " "), 80)}”：已根据工具结果收口。`
+    : "已根据已有工具结果收口。";
+  const suffix = reason && reason !== "完成" && reason !== "Done"
+    ? `\n\n说明：模型续答没有及时返回（${trimContext(redactSensitiveText(reason), 160)}），所以上面直接使用已完成的只读工具结果回答，避免会话继续转圈。`
+    : "";
+  return `${prefix}\n\n${sections.join("\n\n")}${suffix}`;
 }
 
-function formatPluginListConclusion(plugins: string[]): string {
-  const list = plugins.map((plugin) => `- ${plugin}`).join("\n");
-  return `已完成。你当前启用的社区插件共 ${plugins.length} 个：\n\n${list}`;
+function informationalRunTitle(run: ToolRun): string {
+  if (run.action.type === "read") return `读取结果：${run.action.path}`;
+  if (run.action.type === "command") return `命令结果：${run.action.command}`;
+  if (run.action.type === "todo") return "待办列表";
+  if (run.action.type === "automation") return "自动化列表";
+  return run.summary || describeActionPlain(run.action);
+}
+
+function usefulResultLines(result: string): string[] {
+  return result
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      if (/^(read|command)\s+[^\n]+$/i.test(trimmed)) return false;
+      return true;
+    })
+    .map((line) => trimContext(redactSensitiveText(line), 220));
+}
+
+function summarizeFolderListing(result: string): string {
+  const lines = usefulResultLines(result);
+  const folderLine = lines.find((line) => /^folder\s+/i.test(line));
+  const folderCount = lines.find((line) => /^folders:\s*\d+/i.test(line));
+  const fileCount = lines.find((line) => /^files:\s*\d+/i.test(line));
+  const entries = lines.filter((line) => /^\[(file|folder)\]\s+/i.test(line)).slice(0, 50);
+  if (!folderLine && !folderCount && !fileCount && !entries.length) return "";
+  return [folderLine, folderCount, fileCount, entries.length ? entries.join("\n") : ""].filter(Boolean).join("\n");
+}
+
+function describeActionPlain(action: CancipAction): string {
+  if (action.type === "read") return `read ${action.path}`;
+  if (action.type === "command") return `command ${action.command}`;
+  if (action.type === "todo") return `todo ${action.op}`;
+  if (action.type === "automation") return `automation ${action.op}`;
+  if (action.type === "config") return `config ${action.path?.trim() || CANCIP_CONFIG_PATH}`;
+  if (action.type === "write") return `write ${action.path}`;
+  if (action.type === "append") return `append ${action.path}`;
+  if (action.type === "patch") return `patch ${action.path}`;
+  if (action.type === "mkdir") return `mkdir ${action.path}`;
+  if (action.type === "rename") return `rename ${action.path} -> ${action.newPath}`;
+  if (action.type === "move") return `move ${action.path} -> ${action.newPath}`;
+  if (action.type === "delete") return `delete ${action.path}`;
+  return `copy ${action.path} -> ${action.newPath}`;
 }
 
 function formatInstalledPluginsSummary(plugins: InstalledPluginInfo[], enabledCount: number, includeDisabled: boolean): string {
@@ -10608,7 +10771,7 @@ function migrateDefaultMemorySearchPolicy(settings: Settings): Settings {
 function isOutdatedSystemPrompt(prompt: string): boolean {
   const normalized = prompt.trim();
   if (!normalized) return true;
-  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.103")) return true;
+  if (/Cancip Core Prompt v0\.1\.\d+/i.test(normalized) && !normalized.includes("Cancip Core Prompt v0.1.104")) return true;
   return (
     normalized === LEGACY_SYSTEM_PROMPT ||
     normalized.includes("核心记忆和 Vault Search 上下文回答") ||
