@@ -24,7 +24,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - On-demand Vault Search hits are metadata-only source suggestions until the agent explicitly reads selected files. They are not added to the composer chip row or model `contextText` by default. Exports keep the real full session snapshot, so the exported `contextText` is the authoritative record of what was sent as context.
 - Codex-style rounded composer with floating upward icon trays for context, access mode, and model selection; trays overlay from their buttons and close after selection or outside taps.
 - Header mode controls are reduced to a single Codex-style Plan button. The Plan button toggles a planning/todo layer and opens a floating todo panel; it does not change read/write permission.
-- The header includes an OB Review Gate button wired to a programmatic TypeScript builder adapted from `arias007/ob-review-gate-skill`: it scans selected vault files, writes a mobile HTML review package under `AI/Cancip/Review/`, and does not apply note edits by itself.
+- The header includes an OB Review Gate button wired to a programmatic TypeScript builder adapted from `arias007/ob-review-gate-skill`: it scans selected vault files, writes review data under `AI/Cancip/Review/`, and opens it inside a native Cancip audit panel with file lists, structure changes, diffs, old text, and new text.
 - Structured Plan todos are available as `cancip-action` tools, so the agent can set/add/update/remove/list/clear the visible Plan panel during an agent run instead of only describing a plan in prose.
 - The composer keeps the access selector visible and wider for mobile tapping, with a paperclip attachment button beside it for quickly adding file/folder context.
 - Settings keep core items up front and move optional controls into advanced folded groups for interface, context, plan, command bus, local versioning, export, payment QR codes, and advanced model behavior.
@@ -132,8 +132,8 @@ Currently supported command names:
 - `obsidian.listCommands`: list Obsidian internal command ids from `app.commands.commands`.
 - `obsidian.execute`: execute an Obsidian command by id, for example `{"id":"app:open-settings"}`.
 - `cancip.rebuildIndex`: refresh Cancip's lightweight vault index.
-- `cancip.reviewGate`: programmatically build an OB Review Gate package. Example args: `{"paths":["Folder/Note.md"],"maxFiles":20}` or `{"items":[{"path":"Note.md","old_text":"...","new_text":"..."}]}`.
-- `cancip.reviewGate.list`: list recent review package index files under `AI/Cancip/Review/`.
+- `cancip.reviewGate`: programmatically build native Cancip audit-panel data. Example args: `{"paths":["Folder/Note.md"],"maxFiles":20}` or `{"items":[{"path":"Note.md","old_text":"...","new_text":"..."}]}`.
+- `cancip.reviewGate.list`: list recent review data packages under `AI/Cancip/Review/`.
 - `cancip.previewVaultSearch`: preview local Vault Search results.
 - `cancip.localVersionCommit`: create a manual lightweight local version commit.
 - `cancip.automation.templates`: list built-in local automation presets.
