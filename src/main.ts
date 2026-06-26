@@ -5,6 +5,7 @@ import {
   ItemView,
   MarkdownRenderer,
   MarkdownView,
+  Modal,
   Notice,
   normalizePath,
   Plugin,
@@ -926,7 +927,7 @@ const EN = {
   reviewGateRender: "Render",
   reviewGateApprove: "Approve",
   reviewGateCorrection: "Correction",
-  reviewGateCorrectionPlaceholder: "Leave blank and tap Correction to approve; type text to record a correction or instruction...",
+  reviewGateCorrectionPlaceholder: "Input modification notes",
   reviewGateCorrectionSaved: "Review decision saved",
   reviewGateCorrectionEmpty: "Review this item first.",
   reviewPendingTool: "Review",
@@ -1379,7 +1380,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGateRender: "渲染",
     reviewGateApprove: "通过",
     reviewGateCorrection: "指正",
-    reviewGateCorrectionPlaceholder: "留空点击指正=通过；输入内容=指正/修改意见...",
+    reviewGateCorrectionPlaceholder: "输入修改意见",
     reviewGateCorrectionSaved: "审核决定已保存",
     reviewGateCorrectionEmpty: "请先审核这一项。",
     reviewPendingTool: "审核",
@@ -4929,10 +4930,10 @@ class CancipReviewLeafView extends ItemView {
     });
     syncChangesButton();
 
-    const sources = main.createDiv({ cls: "obcc-review-sources obcc-review-sources-paired" });
     const oldLineCount = Math.max(1, item.old_text.split(/\r?\n/).length);
     const newLineCount = Math.max(1, item.new_text.split(/\r?\n/).length);
     const pairedLineCount = Math.max(oldLineCount, newLineCount);
+    const sources = main.createDiv({ cls: "obcc-review-sources obcc-review-sources-paired" });
     const oldPane = this.renderReviewSource(sources, this.t("reviewGateOld"), item.old_text, false, pairedLineCount);
     const newPane = this.renderReviewSource(sources, this.t("reviewGateNew"), item.new_text, true, pairedLineCount);
     this.syncReviewSourceScroll(oldPane.sourceBody, newPane.sourceBody);
@@ -4954,29 +4955,24 @@ class CancipReviewLeafView extends ItemView {
     renderToggleButton.addEventListener("click", () => setMode(this.sourceMode === "render" ? "source" : "render"));
     setMode(this.sourceMode);
 
-    const correction = content.createDiv({ cls: "obcc-review-correction is-hidden" });
-    const textarea = correction.createEl("textarea", {
-      cls: "obcc-review-correction-input",
-      attr: {
-        placeholder: this.t("reviewGateCorrectionPlaceholder"),
-        rows: "1"
-      }
-    });
-    const correctionButton = correction.createEl("button", { cls: "obcc-review-correction-button", attr: { type: "button" } });
-    setIcon(correctionButton.createSpan({ cls: "obcc-command-icon" }), "edit-3");
-    correctionButton.createSpan({ text: this.t("reviewGateCorrection") });
-    const toggleCorrection = () => {
-      const willShow = correction.hasClass("is-hidden");
-      correction.toggleClass("is-hidden", !willShow);
-      editCorrectionButton.toggleClass("is-active", willShow);
-      editCorrectionButton.setAttr("aria-expanded", willShow ? "true" : "false");
-    };
     approveButton.addEventListener("click", () => {
-      void this.saveReviewGateCorrection(data.folder, item, "", textarea, data);
+      void this.saveReviewGateCorrection(data.folder, item, "", data);
     });
-    editCorrectionButton.addEventListener("click", toggleCorrection);
-    correctionButton.addEventListener("click", () => {
-      void this.saveReviewGateCorrection(data.folder, item, textarea.value, textarea, data);
+    editCorrectionButton.addEventListener("click", () => {
+      editCorrectionButton.toggleClass("is-active", true);
+      editCorrectionButton.setAttr("aria-expanded", "true");
+      const modal = new ReviewCorrectionModal(
+        this.app,
+        this.plugin,
+        async (note) => {
+          await this.saveReviewGateCorrection(data.folder, item, note, data);
+        },
+        () => {
+          editCorrectionButton.toggleClass("is-active", false);
+          editCorrectionButton.setAttr("aria-expanded", "false");
+        }
+      );
+      modal.open();
     });
   }
 
@@ -5044,7 +5040,6 @@ class CancipReviewLeafView extends ItemView {
     folder: string,
     item: ReviewGateManifestItem,
     note: string,
-    textarea: HTMLTextAreaElement,
     data?: ReviewGatePackageData
   ): Promise<void> {
     const trimmed = note.trim();
@@ -5063,7 +5058,6 @@ class CancipReviewLeafView extends ItemView {
         structure: item.structure ?? []
       };
       await this.app.vault.adapter.write(path, `${existing}${JSON.stringify(payload)}\n`);
-      textarea.value = "";
       this.plugin.refreshStatusBarAttention();
       if (trimmed) {
         await this.plugin.submitReviewCorrectionPrompt({ item, note: trimmed, reviewFolder: folder });
@@ -5092,6 +5086,81 @@ class CancipReviewLeafView extends ItemView {
       this.selectedItemPath = "";
     }
     await this.render();
+  }
+}
+
+function bindReviewCorrectionInput(textarea: HTMLTextAreaElement, button: HTMLButtonElement, requireText: boolean): void {
+  const updateButtonState = () => {
+    const enabled = !requireText || Boolean(textarea.value.trim());
+    button.disabled = !enabled;
+    button.toggleClass("is-disabled", !enabled);
+  };
+  textarea.addEventListener("input", updateButtonState);
+  updateButtonState();
+}
+
+class ReviewCorrectionModal extends Modal {
+  private textareaEl: HTMLTextAreaElement | null = null;
+  private submitButtonEl: HTMLButtonElement | null = null;
+  private submitting = false;
+
+  constructor(
+    app: App,
+    private readonly plugin: CancipPlugin,
+    private readonly onSubmit: (note: string) => Promise<void>,
+    private readonly afterClose: () => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.addClass("obcc-review-correction-modal");
+    contentEl.createDiv({ cls: "obcc-review-correction-modal-title", text: this.plugin.t("reviewGateCorrection") });
+    const textarea = contentEl.createEl("textarea", {
+      cls: "obcc-review-correction-modal-input",
+      attr: { placeholder: this.plugin.t("reviewGateCorrectionPlaceholder"), rows: "4" }
+    });
+    const actions = contentEl.createDiv({ cls: "obcc-review-correction-modal-actions" });
+    const cancelButton = actions.createEl("button", { text: this.plugin.t("clearContext"), attr: { type: "button" } });
+    const submitButton = actions.createEl("button", {
+      cls: "mod-cta",
+      text: this.plugin.t("reviewGateCorrection"),
+      attr: { type: "button" }
+    });
+    this.textareaEl = textarea;
+    this.submitButtonEl = submitButton;
+    bindReviewCorrectionInput(textarea, submitButton, true);
+    cancelButton.addEventListener("click", () => this.close());
+    submitButton.addEventListener("click", () => {
+      void this.submit();
+    });
+    window.setTimeout(() => textarea.focus(), 60);
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+    this.textareaEl = null;
+    this.submitButtonEl = null;
+    this.afterClose();
+  }
+
+  private async submit(): Promise<void> {
+    if (this.submitting) return;
+    const note = this.textareaEl?.value.trim() ?? "";
+    if (!note) return;
+    this.submitting = true;
+    if (this.submitButtonEl) this.submitButtonEl.disabled = true;
+    try {
+      await this.onSubmit(note);
+      this.close();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.plugin.t("reviewGateFailed", { reason }));
+      if (this.submitButtonEl) this.submitButtonEl.disabled = false;
+      this.submitting = false;
+    }
   }
 }
 
@@ -5308,8 +5377,18 @@ class CancipView extends ItemView {
     this.closeCommandMenu();
     this.closeMentionPopup();
     if (!this.attachmentInputEl) return;
-    this.attachmentInputEl.value = "";
-    this.attachmentInputEl.click();
+    const input = this.attachmentInputEl;
+    input.value = "";
+    const picker = input as HTMLInputElement & { showPicker?: () => void };
+    if (typeof picker.showPicker === "function") {
+      try {
+        picker.showPicker();
+        return;
+      } catch {
+        // Fall through to click() when the native picker is not available.
+      }
+    }
+    input.click();
   }
 
   private async handleAttachmentSelection(sourceInput?: HTMLInputElement): Promise<void> {
@@ -5529,15 +5608,14 @@ class CancipView extends ItemView {
     accessButton.addEventListener("click", () => this.toggleAccessMenu());
 
     if (this.plugin.settings.showAttachmentButton) {
-      const attachmentButton = leftControls.createEl("button", {
+      const attachmentButton = leftControls.createEl("label", {
         cls: "obcc-tool-button obcc-attachment-button",
-        attr: { type: "button", title: this.t("addAttachment"), "aria-label": this.t("addAttachment") }
+        attr: { title: this.t("addAttachment"), "aria-label": this.t("addAttachment") }
       });
       setIcon(attachmentButton, "paperclip");
-      attachmentButton.addEventListener("click", () => this.openAttachmentPicker());
-      const hiddenAttachmentInput = form.createEl("input", {
+      const hiddenAttachmentInput = attachmentButton.createEl("input", {
         cls: "obcc-attachment-input",
-        attr: { type: "file", multiple: "true", "aria-hidden": "true", tabindex: "-1" }
+        attr: { type: "file", multiple: "true" }
       });
       this.attachmentInputEl = hiddenAttachmentInput;
       hiddenAttachmentInput.addEventListener("change", () => {
@@ -6702,6 +6780,7 @@ class CancipView extends ItemView {
     const correctionButton = correctionBar.createEl("button", { cls: "obcc-review-correction-button", attr: { type: "button" } });
     setIcon(correctionButton.createSpan({ cls: "obcc-command-icon" }), "edit-3");
     correctionButton.createSpan({ text: this.t("reviewGateCorrection") });
+    bindReviewCorrectionInput(textarea, correctionButton, false);
     correctionButton.addEventListener("click", () => {
       void this.saveReviewGateCorrection(folder, item, textarea.value, textarea);
     });
@@ -16787,16 +16866,3 @@ function ensureDisplayText(value: unknown): string {
   }
   return String(value ?? "");
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
