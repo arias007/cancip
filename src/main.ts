@@ -5309,15 +5309,6 @@ class CancipView extends ItemView {
     this.closeMentionPopup();
     if (!this.attachmentInputEl) return;
     this.attachmentInputEl.value = "";
-    const picker = this.attachmentInputEl as HTMLInputElement & { showPicker?: () => void };
-    if (typeof picker.showPicker === "function") {
-      try {
-        picker.showPicker();
-        return;
-      } catch {
-        // Fall through to click() when the native picker is not available.
-      }
-    }
     this.attachmentInputEl.click();
   }
 
@@ -5538,21 +5529,19 @@ class CancipView extends ItemView {
     accessButton.addEventListener("click", () => this.toggleAccessMenu());
 
     if (this.plugin.settings.showAttachmentButton) {
-      const attachmentButton = leftControls.createEl("label", {
+      const attachmentButton = leftControls.createEl("button", {
         cls: "obcc-tool-button obcc-attachment-button",
-        attr: { title: this.t("addAttachment"), "aria-label": this.t("addAttachment") }
+        attr: { type: "button", title: this.t("addAttachment"), "aria-label": this.t("addAttachment") }
       });
       setIcon(attachmentButton, "paperclip");
-      const directAttachmentInput = attachmentButton.createEl("input", {
+      attachmentButton.addEventListener("click", () => this.openAttachmentPicker());
+      const hiddenAttachmentInput = form.createEl("input", {
         cls: "obcc-attachment-input",
-        attr: {
-          type: "file",
-          multiple: "true"
-        }
+        attr: { type: "file", multiple: "true", "aria-hidden": "true", tabindex: "-1" }
       });
-      this.attachmentInputEl = directAttachmentInput;
-      directAttachmentInput.addEventListener("change", () => {
-        void this.handleAttachmentSelection(directAttachmentInput);
+      this.attachmentInputEl = hiddenAttachmentInput;
+      hiddenAttachmentInput.addEventListener("change", () => {
+        void this.handleAttachmentSelection(hiddenAttachmentInput);
       });
     }
 
