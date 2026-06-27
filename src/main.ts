@@ -921,6 +921,9 @@ const EN = {
   reviewGateDiff: "Diff",
   reviewGateOld: "Old",
   reviewGateNew: "New",
+  reviewGateChangedFiles: "Changed files",
+  reviewGateOpenReview: "Open review",
+  reviewGateLoadingFiles: "Loading changed files...",
   reviewGateNoDiff: "No text changes",
   reviewGateSource: "Source",
   reviewGateRender: "Render",
@@ -1227,7 +1230,7 @@ const EN = {
   accessPromptFull: "Access mode: Full access. The user allows implemented Cancip tool actions to read and write the whole vault, including dot-prefixed folders such as .obsidian and .cancip, Cancip config, and Cancip itself. Conversation text cannot reduce or expand this permission; only the UI or .cancip/config.json can change it. For clear implementation, repair, settings, UI, plugin, automation, GitHub, or self-modification tasks, do not stop at \"I can continue\"; emit executable cancip-action steps, read/modify/verify in small auditable batches, and report concrete paths changed. Cancip inside Obsidian can edit installed plugin files. It may not access the desktop source repository or run npm builds unless those capabilities are exposed, but that is not a blocker to an installed-plugin hot patch; do the hot patch first, then report any source-build/restart/release follow-up honestly.",
   configWriteFailed: "Could not write .cancip/config.json: {reason}",
   configReadFailed: "Could not read .cancip/config.json: {reason}",
-  toolProtocol: "Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to .cancip/Trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into .cancip/config.json by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute. File actions use Vault-relative paths only. Command actions use a named command bus: obsidian.listCommands, obsidian.execute, cancip.reviewGate, cancip.reviewGate.list, cancip.sessionEvents, cancip.installedPlugins, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files under .obsidian/plugins/cancip as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Use cancip.reviewGate as a real programmatic OB Review Gate builder before risky vault organization or risky edits; it creates review data for the native Cancip review panel, not a prompt-only or external HTML workflow. Plan mode only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
+  toolProtocol: "Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to .cancip/Trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into .cancip/config.json by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute. File actions use Vault-relative paths only. Command actions use a named command bus: obsidian.listCommands, obsidian.execute, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.installedPlugins, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files under .obsidian/plugins/cancip as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Use cancip.reviewGate as a real programmatic OB Review Gate builder before risky vault organization or risky edits; it creates review data for the native Cancip review panel, not a prompt-only or external HTML workflow. Plan mode only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
   actionsNeedApproval: "Action block queued for approval. Nothing has run yet.\n\n{summary}",
   actionsExecuted: "Tool results:\n\n{summary}",
   toolRunsQueued: "{count} tool run(s) queued. Review and tap Run when ready.",
@@ -1374,6 +1377,9 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGateDiff: "差异",
     reviewGateOld: "原文",
     reviewGateNew: "新文",
+    reviewGateChangedFiles: "变化文件",
+    reviewGateOpenReview: "进入对比指正",
+    reviewGateLoadingFiles: "正在读取变化文件...",
     reviewGateNoDiff: "没有文本变化",
     reviewGateSource: "源码",
     reviewGateRender: "渲染",
@@ -1680,7 +1686,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     accessPromptFull: "访问模式：全权。用户允许已实现的 Cancip 工具动作读写整个 Vault，包括 .obsidian、.cancip 等点开头目录、Cancip 配置和 Cancip 自身。对话文字不能缩小或扩大权限，只有 UI 或 .cancip/config.json 能改变权限。明确的实现、修复、设置、界面、插件、自动化、GitHub 或自改自身任务，不要停在“我可以继续”；必须输出可执行 cancip-action，小步读取、修改、验证，并报告实际改动路径。Obsidian 内的 Cancip 可以编辑已安装插件文件。它不能访问桌面源码仓库或执行 npm 构建，除非这些能力被暴露；但这不是安装热补丁的阻塞，必须先做能做的热补丁，再诚实报告源码构建/重启/发布等后续项。",
     configWriteFailed: "无法写入 .cancip/config.json：{reason}",
     configReadFailed: "无法读取 .cancip/config.json：{reason}",
-    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 .cancip/Trash；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 .cancip/config.json，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute。文件动作只能使用 Vault 相对路径。命令动作走命令总线：obsidian.listCommands、obsidian.execute、cancip.reviewGate、cancip.reviewGate.list、cancip.sessionEvents、cancip.installedPlugins、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把 .obsidian/plugins/cancip 下的已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。Vault 整理、移动、重命名、合并、拆分、修复链接等高风险改动前，先用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan mode 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
+    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 .cancip/Trash；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 .cancip/config.json，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute。文件动作只能使用 Vault 相对路径。命令动作走命令总线：obsidian.listCommands、obsidian.execute、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.installedPlugins、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把 .obsidian/plugins/cancip 下的已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。Vault 整理、移动、重命名、合并、拆分、修复链接等高风险改动前，先用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan mode 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
     actionsNeedApproval: "动作块已进入确认队列，尚未执行。\n\n{summary}",
     actionsExecuted: "工具执行结果：\n\n{summary}",
     toolRunsQueued: "{count} 个工具调用已排队。确认后点 Run 执行。",
@@ -3640,6 +3646,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return result;
   }
 
+  async buildMarkdownReviewTestGate(): Promise<ReviewGateBuildResult> {
+    const item = markdownReviewTestItem();
+    const result = await this.buildReviewGate({
+      hidden: true,
+      title: "Cancip Markdown Review Render Test",
+      output: `${REVIEW_GATE_HIDDEN_DIR}/test-markdown-features-${new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z").replace("T", "-")}`,
+      items: [item],
+      maxFiles: 1,
+      maxFileChars: REVIEW_GATE_MAX_FILE_CHARS
+    });
+    return result;
+  }
+
   async listReviewGates(limit = 12): Promise<string[]> {
     const cappedLimit = clampInt(limit, 12, 1, 50);
     const visible = await listReviewGatePackages(this.app.vault.adapter, REVIEW_GATE_DIR, cappedLimit);
@@ -4602,7 +4621,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return "";
   }
 
-  async activateReviewView(path = ""): Promise<CancipReviewLeafView | null> {
+  async activateReviewView(path = "", itemPath = ""): Promise<CancipReviewLeafView | null> {
     let leaf = this.app.workspace.getLeavesOfType(CANCIP_REVIEW_VIEW_TYPE)[0];
     if (!leaf) {
       leaf = this.app.workspace.getLeaf("tab");
@@ -4614,7 +4633,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     };
     workspaceWithFocus.setActiveLeaf?.(leaf, { focus: true });
     if (leaf.view instanceof CancipReviewLeafView) {
-      await leaf.view.openPackage(path);
+      await leaf.view.openPackage(path, itemPath);
       return leaf.view;
     }
     return null;
@@ -4682,12 +4701,12 @@ class CancipReviewLeafView extends ItemView {
     await this.render();
   }
 
-  async openPackage(path = ""): Promise<void> {
+  async openPackage(path = "", itemPath = ""): Promise<void> {
     const nextPath = path.trim() ? normalizePath(path.replace(/\\/g, "/")) : "";
     if (nextPath) {
       this.packagePath = nextPath;
     }
-    this.selectedItemPath = "";
+    this.selectedItemPath = itemPath.trim() ? normalizePath(itemPath.replace(/\\/g, "/")) : "";
     await this.render();
   }
 
@@ -4949,6 +4968,8 @@ class CancipReviewLeafView extends ItemView {
     const changesBody = changes.createDiv({ cls: "obcc-review-changes-body" });
     const diffBody = changesBody.createDiv({ cls: "obcc-review-diff" });
     this.renderReviewDiff(diffBody, item.old_text, item.new_text);
+    const diffRender = changesBody.createDiv({ cls: "obcc-review-diff-render markdown-rendered is-hidden" });
+    void this.renderReviewDiffMarkdown(diffRender, item.old_text, item.new_text);
     const syncChangesButton = () => {
       changesButton.toggleClass("is-active", changes.open);
       changesButton.setAttr("aria-expanded", changes.open ? "true" : "false");
@@ -5009,6 +5030,8 @@ class CancipReviewLeafView extends ItemView {
         pane.sourceBody.toggleClass("is-hidden", showRender);
         pane.renderBody.toggleClass("is-hidden", !showRender);
       }
+      diffBody.toggleClass("is-hidden", showRender);
+      diffRender.toggleClass("is-hidden", !showRender);
       renderToggleButton.toggleClass("is-active", showRender);
       renderToggleButton.setAttr("title", showRender ? this.t("reviewGateSource") : this.t("reviewGateRender"));
       renderToggleButton.setAttr("aria-label", showRender ? this.t("reviewGateSource") : this.t("reviewGateRender"));
@@ -5055,8 +5078,8 @@ class CancipReviewLeafView extends ItemView {
   }
 
   private renderReviewDiff(parent: HTMLElement, oldText: string, newText: string): void {
-    const lines = makeReviewDiffLines(oldText, newText);
-    if (!lines.some((line) => line.kind !== "context")) {
+    const lines = changedReviewDiffLines(oldText, newText);
+    if (!lines.length) {
       parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
       return;
     }
@@ -5066,6 +5089,22 @@ class CancipReviewLeafView extends ItemView {
       row.createSpan({ cls: "obcc-review-line-no", text: line.newLine ? String(line.newLine) : "" });
       row.createSpan({ cls: "obcc-review-diff-prefix", text: line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " " });
       row.createEl("pre", { cls: "obcc-review-diff-text", text: line.text || " " });
+    }
+  }
+
+  private async renderReviewDiffMarkdown(parent: HTMLElement, oldText: string, newText: string): Promise<void> {
+    const sections = reviewChangedMarkdownSections(oldText, newText);
+    if (!sections.length) {
+      parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
+      return;
+    }
+    for (const section of sections) {
+      const card = parent.createDiv({ cls: `obcc-review-diff-render-section is-${section.kind}` });
+      const head = card.createDiv({ cls: "obcc-review-diff-render-head" });
+      head.createSpan({ cls: "obcc-review-diff-prefix", text: section.kind === "added" ? "+" : "-" });
+      head.createSpan({ text: section.kind === "added" ? this.t("reviewGateNew") : this.t("reviewGateOld") });
+      const body = card.createDiv({ cls: "obcc-review-diff-render-body markdown-rendered" });
+      await MarkdownRenderer.render(this.app, section.markdown || " ", body, this.markdownSourcePath(), this);
     }
   }
 
@@ -6664,6 +6703,11 @@ class CancipView extends ItemView {
     this.setStatus(this.t("reviewGatePanelOpen", { path }));
   }
 
+  private openReviewGateItem(path: string, itemPath: string): void {
+    void this.plugin.activateReviewView(path, itemPath);
+    this.setStatus(this.t("reviewGatePanelOpen", { path }));
+  }
+
   private async renderReviewGatePanel(parent: HTMLElement, path: string): Promise<void> {
     parent.empty();
     let selectedPath = path;
@@ -6753,6 +6797,8 @@ class CancipView extends ItemView {
     const diff = parent.createEl("details", { cls: "obcc-review-section obcc-review-changes", attr: { open: "true" } });
     const diffBody = diff.createDiv({ cls: "obcc-review-diff" });
     this.renderReviewDiff(diffBody, item.old_text, item.new_text);
+    const diffRender = diff.createDiv({ cls: "obcc-review-diff-render markdown-rendered is-hidden" });
+    void this.renderReviewDiffMarkdown(diffRender, item.old_text, item.new_text);
 
     const sources = parent.createDiv({ cls: "obcc-review-sources" });
     const oldPane = this.renderReviewSource(sources, this.t("reviewGateOld"), item.old_text);
@@ -6766,6 +6812,8 @@ class CancipView extends ItemView {
         pane.sourceBody.toggleClass("is-hidden", showRender);
         pane.renderBody.toggleClass("is-hidden", !showRender);
       }
+      diffBody.toggleClass("is-hidden", showRender);
+      diffRender.toggleClass("is-hidden", !showRender);
       sourceButton.toggleClass("is-active", !showRender);
       renderButton.toggleClass("is-active", showRender);
     };
@@ -6801,18 +6849,33 @@ class CancipView extends ItemView {
   }
 
   private renderReviewDiff(parent: HTMLElement, oldText: string, newText: string): void {
-    const lines = makeReviewDiffLines(oldText, newText);
-    if (!lines.some((line) => line.kind !== "context")) {
+    const lines = changedReviewDiffLines(oldText, newText);
+    if (!lines.length) {
       parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
       return;
     }
     for (const line of lines) {
-      if (line.kind === "context") continue;
       const row = parent.createDiv({ cls: `obcc-review-diff-row is-${line.kind}` });
       row.createSpan({ cls: "obcc-review-line-no", text: line.oldLine ? String(line.oldLine) : "" });
       row.createSpan({ cls: "obcc-review-line-no", text: line.newLine ? String(line.newLine) : "" });
       row.createSpan({ cls: "obcc-review-diff-prefix", text: line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " " });
       row.createEl("pre", { cls: "obcc-review-diff-text", text: line.text || " " });
+    }
+  }
+
+  private async renderReviewDiffMarkdown(parent: HTMLElement, oldText: string, newText: string): Promise<void> {
+    const sections = reviewChangedMarkdownSections(oldText, newText);
+    if (!sections.length) {
+      parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
+      return;
+    }
+    for (const section of sections) {
+      const card = parent.createDiv({ cls: `obcc-review-diff-render-section is-${section.kind}` });
+      const head = card.createDiv({ cls: "obcc-review-diff-render-head" });
+      head.createSpan({ cls: "obcc-review-diff-prefix", text: section.kind === "added" ? "+" : "-" });
+      head.createSpan({ text: section.kind === "added" ? this.t("reviewGateNew") : this.t("reviewGateOld") });
+      const body = card.createDiv({ cls: "obcc-review-diff-render-body markdown-rendered" });
+      await MarkdownRenderer.render(this.app, section.markdown || " ", body, this.markdownSourcePath(), this);
     }
   }
 
@@ -9522,6 +9585,7 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.listCommands", "obsidian.listCommands", ["command", "commands", "obsidian", "list", "cmd", "cli", "命令", "命令库", "列表"], 84),
       commandTarget("command:cancip.reviewGate", "cancip.reviewGate", ["review", "gate", "audit", "approve", "ob", "审核", "审查", "批准", "审核门"], 84),
       commandTarget("command:cancip.reviewGate.list", "cancip.reviewGate.list", ["review", "gate", "list", "audit", "审核", "审查", "审核数据", "列表"], 80),
+      commandTarget("command:cancip.reviewGate.testMarkdown", "cancip.reviewGate.testMarkdown", ["review", "gate", "markdown", "render", "diff", "test", "审核", "审查", "渲染", "变化", "测试"], 79),
       commandTarget("command:cancip.sessionEvents", "cancip.sessionEvents", ["session", "events", "audit", "trace", "history", "log", "会话", "事件", "审计", "日志", "复盘"], 83),
       commandTarget("command:cancip.installedPlugins", "cancip.installedPlugins", ["plugin", "plugins", "installed", "enabled", "obsidian", "插件", "已安装", "启用", "清单", "列表"], 84),
       commandTarget("command:cancip.searchVault", "cancip.searchVault", ["search", "vault", "rag", "find", "搜索", "检索", "查找", "搜库"], 82),
@@ -9698,6 +9762,7 @@ class CancipView extends ItemView {
       "obsidian.execute": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.execute\",\"args\":{\"id\":\"command-id\"}}]}",
       "cancip.reviewGate": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.reviewGate\",\"args\":{\"paths\":[\"Folder/Note.md\"],\"maxFiles\":20}}]}",
       "cancip.reviewGate.list": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.reviewGate.list\",\"args\":{\"limit\":10}}]}",
+      "cancip.reviewGate.testMarkdown": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.reviewGate.testMarkdown\"}]}",
       "cancip.sessionEvents": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.sessionEvents\",\"args\":{\"limit\":50}}]}",
       "cancip.installedPlugins": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.installedPlugins\"}]}",
       "cancip.searchVault": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}",
@@ -11487,6 +11552,12 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: formatReviewGateResult(result) });
     }
 
+    if (normalized === "cancip.reviewGate.testMarkdown") {
+      const result = await this.plugin.buildMarkdownReviewTestGate();
+      this.openReviewGatePackage(result.indexPath);
+      return this.t("commandExecuted", { command: normalized, result: formatReviewGateResult(result) });
+    }
+
     if (normalized === "cancip.reviewGate.list") {
       const limit = clampInt(args.limit, 12, 1, 50);
       const packages = await this.plugin.listReviewGates(limit);
@@ -12598,7 +12669,67 @@ class CancipView extends ItemView {
         details.createEl("summary", { cls: "obcc-tool-run-result-label", text: this.t("toolRunResult") });
         this.renderDeferredPre(details, detail, "obcc-tool-run-result", TOOL_RESULT_DETAIL_MAX_CHARS);
       }
+      if (run.reviewPath) {
+        this.renderToolRunReviewFiles(row, run);
+      }
     }
+  }
+
+  private renderToolRunReviewFiles(parent: HTMLElement, run: ToolRun): void {
+    if (!run.reviewPath) return;
+    const details = parent.createEl("details", { cls: "obcc-tool-run-review-files" });
+    details.createEl("summary", { cls: "obcc-tool-run-review-summary", text: this.t("reviewGateChangedFiles") });
+    const body = details.createDiv({ cls: "obcc-tool-run-review-body" });
+    body.createDiv({ cls: "obcc-tool-run-review-loading", text: this.t("reviewGateLoadingFiles") });
+    void this.loadReviewGatePackage(run.reviewPath).then((data) => {
+      body.empty();
+      const items = data.items.filter(isReviewGateItemChanged);
+      if (!items.length) {
+        body.createDiv({ cls: "obcc-tool-run-review-loading", text: this.t("reviewGateNoDiff") });
+        return;
+      }
+      for (const item of items) {
+        const row = body.createDiv({ cls: "obcc-tool-run-review-file" });
+        const text = row.createDiv({ cls: "obcc-tool-run-review-file-text" });
+        text.createDiv({ cls: "obcc-tool-run-review-file-name", text: reviewFileName(item.path) });
+        text.createDiv({ cls: "obcc-tool-run-review-file-path", text: item.path });
+        const actions = row.createDiv({ cls: "obcc-tool-run-review-actions" });
+        const openButton = actions.createEl("button", {
+          cls: "obcc-tool-run-review-button",
+          attr: { type: "button", title: this.t("reviewGateOpenNote"), "aria-label": this.t("reviewGateOpenNote") }
+        });
+        setIcon(openButton, "file-text");
+        openButton.addEventListener("click", () => {
+          void this.openReviewItemSource(item.path);
+        });
+        const reviewButton = actions.createEl("button", {
+          cls: "obcc-tool-run-review-button",
+          attr: { type: "button", title: this.t("reviewGateOpenReview"), "aria-label": this.t("reviewGateOpenReview") }
+        });
+        setIcon(reviewButton, "git-compare");
+        reviewButton.addEventListener("click", () => {
+          if (run.reviewPath) this.openReviewGateItem(run.reviewPath, item.path);
+        });
+      }
+    }).catch((error) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      body.empty();
+      body.createDiv({ cls: "obcc-tool-run-review-loading", text: this.t("reviewGateLoadFailed", { reason }) });
+    });
+  }
+
+  private async openReviewItemSource(path: string): Promise<void> {
+    const target = this.app.vault.getAbstractFileByPath(path);
+    if (target instanceof TFile) {
+      const leaf = this.app.workspace.getLeaf("tab");
+      await leaf.openFile(target, { active: true });
+      return;
+    }
+    if (target instanceof TFolder) {
+      await this.revealFolderInNavigator(target);
+      return;
+    }
+    new Notice(`未找到可跳转文件：${path}`);
   }
 
   private toolRunStatusLabel(status: ToolRunStatus): string {
@@ -14081,6 +14212,83 @@ function isReviewGateStructureKind(value: unknown): value is ReviewGateStructure
   return value === "rename" || value === "move" || value === "merge" || value === "split" || value === "folder";
 }
 
+function markdownReviewTestItem(): ReviewGateManifestItem {
+  const oldText = [
+    "# Cancip Markdown 审核测试",
+    "",
+    "这是一份用于测试审核面板变化渲染的旧版 Markdown。",
+    "",
+    "## 任务列表",
+    "- [ ] 旧任务：检查差异面板",
+    "- [x] 已完成：基础对照",
+    "",
+    "## 表格",
+    "| 模块 | 状态 | 备注 |",
+    "| --- | --- | --- |",
+    "| Diff | 旧 | 显示上下文太多 |",
+    "| Render | 旧 | 还未支持变化渲染 |",
+    "",
+    "## 代码块",
+    "```ts",
+    "const mode = \"source\";",
+    "console.log(mode);",
+    "```",
+    "",
+    "> [!note] 旧提示",
+    "> 这里是旧 callout 内容。",
+    "",
+    "<div class=\"cancip-test\">旧 HTML 块</div>",
+    "",
+    "链接：[[AI/Cancip/Memory/CANCIP_INDEX]]",
+    "",
+    "结尾：旧版内容。"
+  ].join("\n");
+  const newText = [
+    "# Cancip Markdown 审核测试",
+    "",
+    "这是一份用于测试审核面板变化渲染的新版 Markdown。",
+    "",
+    "## 任务列表",
+    "- [x] 新任务：检查差异面板只显示变化",
+    "- [x] 已完成：基础对照",
+    "- [ ] 新增：渲染模式检查表格、代码和 callout",
+    "",
+    "## 表格",
+    "| 模块 | 状态 | 备注 |",
+    "| --- | --- | --- |",
+    "| Diff | 新 | 只显示增删变化 |",
+    "| Render | 新 | 支持变化渲染 |",
+    "| Review | 新增 | 手机上查看更紧凑 |",
+    "",
+    "## 代码块",
+    "```ts",
+    "const mode = \"render\";",
+    "console.log({ mode, changedOnly: true });",
+    "```",
+    "",
+    "> [!success] 新提示",
+    "> 这里是新的 callout 内容。",
+    "> 支持审核时快速识别新增块。",
+    "",
+    "<div class=\"cancip-test\">新版 HTML 块</div>",
+    "",
+    "链接：[[AI/Cancip/Memory/CANCIP_INDEX]]、[[AI/Cancip/Review]]",
+    "",
+    "结尾：新版内容。"
+  ].join("\n");
+  return {
+    path: "AI/Cancip/Test/Markdown审核特性测试.md",
+    old_text: oldText,
+    new_text: newText,
+    changes: ["markdown-render", "diff-only", "mobile-review"],
+    links: {
+      current: ["AI/Cancip/Memory/CANCIP_INDEX"],
+      added: ["AI/Cancip/Review"]
+    },
+    structure: []
+  };
+}
+
 function makeReviewDiffLines(oldText: string, newText: string): ReviewDiffLine[] {
   const oldLines = oldText.split(/\r?\n/);
   const newLines = newText.split(/\r?\n/);
@@ -14099,6 +14307,112 @@ function makeReviewDiffLines(oldText: string, newText: string): ReviewDiffLine[]
     if (newLine !== undefined) rows.push({ kind: "added", newLine: index + 1, text: newLine });
   }
   return rows;
+}
+
+function changedReviewDiffLines(oldText: string, newText: string): ReviewDiffLine[] {
+  return makeReviewDiffLines(oldText, newText).filter((line) => line.kind === "added" || line.kind === "removed");
+}
+
+function reviewChangedMarkdownSections(oldText: string, newText: string): Array<{ kind: "added" | "removed"; markdown: string }> {
+  const changed = changedReviewDiffLines(oldText, newText);
+  if (!changed.length) return [];
+  const oldLines = oldText.split(/\r?\n/);
+  const newLines = newText.split(/\r?\n/);
+  const removed = new Map<number, string>();
+  const added = new Map<number, string>();
+  for (const line of changed) {
+    if (line.kind === "removed" && line.oldLine) removed.set(line.oldLine, line.text);
+    if (line.kind === "added" && line.newLine) added.set(line.newLine, line.text);
+  }
+  const sections: Array<{ kind: "added" | "removed"; markdown: string }> = [];
+  const removedMarkdown = reviewChangedMarkdownForLineMap(oldLines, removed);
+  const addedMarkdown = reviewChangedMarkdownForLineMap(newLines, added);
+  if (removedMarkdown.trim()) sections.push({ kind: "removed", markdown: removedMarkdown });
+  if (addedMarkdown.trim()) sections.push({ kind: "added", markdown: addedMarkdown });
+  return sections;
+}
+
+function reviewChangedMarkdownForLineMap(lines: string[], changed: Map<number, string>): string {
+  if (!changed.size) return "";
+  const selected = new Set<number>();
+  for (const lineNo of changed.keys()) {
+    const index = lineNo - 1;
+    selected.add(index);
+    const tableHeader = reviewFindTableHeader(lines, index);
+    if (tableHeader !== null) {
+      selected.add(tableHeader);
+      if (lines[tableHeader + 1] && isMarkdownTableSeparator(lines[tableHeader + 1])) selected.add(tableHeader + 1);
+    }
+    const fence = reviewFindFenceRange(lines, index);
+    if (fence) {
+      selected.add(fence.start);
+      selected.add(fence.end);
+    }
+    const calloutStart = reviewFindCalloutStart(lines, index);
+    if (calloutStart !== null) selected.add(calloutStart);
+  }
+  const ordered = [...selected].filter((index) => index >= 0 && index < lines.length).sort((a, b) => a - b);
+  const chunks: string[] = [];
+  let previous = -2;
+  for (const index of ordered) {
+    if (previous >= 0 && index > previous + 1) chunks.push("");
+    chunks.push(lines[index] ?? "");
+    previous = index;
+  }
+  return chunks.join("\n");
+}
+
+function reviewFindTableHeader(lines: string[], index: number): number | null {
+  if (!looksLikeMarkdownTableLine(lines[index] ?? "")) return null;
+  for (let cursor = index; cursor >= Math.max(0, index - 8); cursor -= 1) {
+    if (isMarkdownTableSeparator(lines[cursor] ?? "")) {
+      const header = cursor - 1;
+      return header >= 0 && looksLikeMarkdownTableLine(lines[header] ?? "") ? header : null;
+    }
+  }
+  return null;
+}
+
+function looksLikeMarkdownTableLine(line: string): boolean {
+  const trimmed = line.trim();
+  return trimmed.includes("|") && trimmed.length > 1;
+}
+
+function isMarkdownTableSeparator(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return false;
+  return /^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$/.test(trimmed);
+}
+
+function reviewFindFenceRange(lines: string[], index: number): { start: number; end: number } | null {
+  let start = -1;
+  for (let cursor = index; cursor >= 0; cursor -= 1) {
+    if (/^\s*(```|~~~)/.test(lines[cursor] ?? "")) {
+      start = cursor;
+      break;
+    }
+  }
+  if (start < 0) return null;
+  let end = -1;
+  for (let cursor = start + 1; cursor < lines.length; cursor += 1) {
+    if (/^\s*(```|~~~)\s*$/.test(lines[cursor] ?? "")) {
+      end = cursor;
+      break;
+    }
+  }
+  if (end < 0 || index <= start || index >= end) return null;
+  return { start, end };
+}
+
+function reviewFindCalloutStart(lines: string[], index: number): number | null {
+  const current = lines[index] ?? "";
+  if (!/^\s*>\s?/.test(current)) return null;
+  for (let cursor = index; cursor >= 0; cursor -= 1) {
+    const line = lines[cursor] ?? "";
+    if (/^\s*>\s?\[![^\]]+\]/.test(line)) return cursor;
+    if (!/^\s*>\s?/.test(line)) break;
+  }
+  return null;
 }
 
 function makeReviewDiffLinesByLcs(oldLines: string[], newLines: string[]): ReviewDiffLine[] {

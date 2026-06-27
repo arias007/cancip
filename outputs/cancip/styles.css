@@ -1010,6 +1010,102 @@
   word-break: break-word;
 }
 
+.obcc-tool-run-review-files {
+  max-width: 100%;
+  min-width: 0;
+  margin-top: 6px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.obcc-tool-run-review-summary {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
+.obcc-tool-run-review-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding-top: 5px;
+}
+
+.obcc-tool-run-review-loading {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.obcc-tool-run-review-file {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  min-width: 0;
+  padding: 5px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+}
+
+.obcc-tool-run-review-file-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.obcc-tool-run-review-file-name,
+.obcc-tool-run-review-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-tool-run-review-file-name {
+  color: var(--text-normal);
+  font-size: 11.5px;
+  font-weight: 650;
+}
+
+.obcc-tool-run-review-file-path {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.obcc-tool-run-review-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.obcc-tool-run-review-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+}
+
+.obcc-tool-run-review-button svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-tool-run-review-button:hover {
+  color: var(--text-normal);
+  background: var(--background-modifier-hover);
+}
+
 .obcc-link-button {
   min-height: 24px;
   padding: 0 8px;
@@ -2192,7 +2288,9 @@
 }
 
 .obcc-review-source-body.is-hidden,
-.obcc-review-render-body.is-hidden {
+.obcc-review-render-body.is-hidden,
+.obcc-review-diff.is-hidden,
+.obcc-review-diff-render.is-hidden {
   display: none;
 }
 
@@ -2270,6 +2368,48 @@
   padding: 10px;
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.obcc-review-diff-render {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.obcc-review-diff-render-section {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-primary);
+}
+
+.obcc-review-diff-render-section.is-added {
+  border-color: rgba(34, 197, 94, 0.45);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.obcc-review-diff-render-section.is-removed {
+  border-color: rgba(239, 68, 68, 0.42);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.obcc-review-diff-render-head {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.obcc-review-diff-render-body {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .obcc-review-sources {
@@ -2757,10 +2897,14 @@ input.obcc-review-correction-input {
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
-  margin-top: 5px;
+  position: sticky;
+  bottom: max(8px, env(safe-area-inset-bottom));
+  z-index: 12;
+  margin: 5px 4px 4px;
   padding: 5px;
   border-radius: 8px;
   background: var(--background-primary);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
 }
 
 .obcc-review-detail-content > form.obcc-review-correction {
@@ -2835,7 +2979,8 @@ input.obcc-review-correction-input {
   gap: 5px;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .obcc-review-changes {
@@ -2869,7 +3014,7 @@ input.obcc-review-correction-input {
 .obcc-review-detail-view .obcc-review-render-body {
   max-height: none;
   min-height: 0;
-  overflow: auto;
+  overflow: visible;
 }
 
 .obcc-review-sources-paired {
@@ -2877,8 +3022,8 @@ input.obcc-review-correction-input {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 0;
   min-width: 0;
-  min-height: 0;
-  overflow: hidden;
+  min-height: min-content;
+  overflow: visible;
   border: 2px solid var(--background-modifier-border);
   border-radius: 9px;
   background: var(--background-modifier-border);
@@ -2886,14 +3031,14 @@ input.obcc-review-correction-input {
 
 .obcc-review-source-pane {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  grid-template-rows: auto auto;
   width: 100%;
   min-width: 0;
-  min-height: 0;
+  min-height: min-content;
   border: 0;
   border-radius: 0;
   background: var(--background-primary);
-  overflow: hidden;
+  overflow: visible;
 }
 
 .obcc-review-sources-paired .obcc-review-source-pane + .obcc-review-source-pane {
@@ -2917,7 +3062,7 @@ input.obcc-review-correction-input {
 
 .obcc-review-source-pane .obcc-review-source-body,
 .obcc-review-source-pane .obcc-review-render-body {
-  height: 100%;
+  height: auto;
 }
 
 .obcc-review-source-pane .obcc-review-source-body pre,
@@ -3118,9 +3263,9 @@ input.obcc-review-correction-input {
 
   .obcc-review-detail-content > .obcc-review-correction {
     display: grid;
-    position: static;
-    margin-top: 6px;
-    margin-bottom: 8px;
+    position: sticky;
+    bottom: max(8px, env(safe-area-inset-bottom));
+    margin: 6px 2px 8px;
   }
 
   input.obcc-review-correction-input {
@@ -3168,9 +3313,9 @@ input.obcc-review-correction-input {
   .obcc-review-detail-view .obcc-review-diff,
   .obcc-review-detail-view .obcc-review-source-body,
   .obcc-review-detail-view .obcc-review-render-body {
-    max-height: 38vh;
-    min-height: 130px;
-    overflow: auto;
+    max-height: none;
+    min-height: 0;
+    overflow: visible;
   }
 
   .obcc-review-diff-row {
