@@ -5,6 +5,7 @@ releases/*.zip
 outputs/plugin-backups/
 outputs/ob-codex-composer/
 reports/install-backups/
+reports/release-verify-*/
 skill-observations/
 .cancip/
 .obsidian/
