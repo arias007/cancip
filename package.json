@@ -1,9 +1,10 @@
 {
   "name": "cancip",
-  "version": "0.1.178",
+  "version": "0.1.206",
   "private": true,
   "main": "main.js",
   "scripts": {
+    "postinstall": "node scripts/patch-piper-plus.mjs",
     "build": "tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
     "check": "tsc --noEmit --skipLibCheck"
   },
@@ -13,5 +14,8 @@
     "esbuild": "^0.21.5",
     "obsidian": "^1.5.12",
     "typescript": "^5.5.4"
+  },
+  "dependencies": {
+    "piper-plus": "^0.6.0"
   }
 }

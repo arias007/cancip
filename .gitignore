@@ -1,14 +1,17 @@
 node_modules/
 work/
 outputs/*.zip
+releases/*.zip
 outputs/plugin-backups/
 outputs/ob-codex-composer/
+reports/install-backups/
 skill-observations/
 .cancip/
 .obsidian/
 *.log
 *.tmp
 *.bak
+*.tgz
 .env
 .env.*
 data.json
