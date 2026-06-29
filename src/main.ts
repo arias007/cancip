@@ -307,7 +307,7 @@ type OrtInferenceSessionLike = {
 };
 
 type OrtModuleLike = {
-  env: { wasm?: { numThreads?: number; proxy?: boolean; wasmPaths?: string } };
+  env: { wasm?: { numThreads?: number; proxy?: boolean; wasmPaths?: string | { mjs?: string; wasm?: string }; wasmBinary?: ArrayBufferLike | Uint8Array } };
   InferenceSession: {
     create: (model: ArrayBuffer | Uint8Array, options?: Record<string, unknown>) => Promise<OrtInferenceSessionLike>;
   };
@@ -4196,13 +4196,14 @@ export default class CancipPlugin extends Plugin {
   private async createBuiltinPrimeTts(): Promise<PrimeTtsRuntime> {
     await this.assertBuiltinPrimeTtsAssets();
     const ort = await import("onnxruntime-web/wasm") as unknown as OrtModuleLike;
-    this.configureBuiltinPrimeOrt(ort);
-    const [encoderBuffer, decoderBuffer, vocoderBuffer, metaText] = await Promise.all([
+    const [encoderBuffer, decoderBuffer, vocoderBuffer, metaText, wasmBuffer] = await Promise.all([
       this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_ENCODER),
       this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_DECODER),
       this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_VOCODER),
-      this.app.vault.adapter.read(BUILTIN_PRIME_TTS_META)
+      this.app.vault.adapter.read(BUILTIN_PRIME_TTS_META),
+      this.app.vault.adapter.readBinary(`${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm`)
     ]);
+    this.configureBuiltinPrimeOrt(ort, wasmBuffer.slice(0));
     const meta = parsePrimeTtsMeta(metaText);
     const options = { executionProviders: ["wasm"] };
     const [encoder, decoder, vocoder] = await Promise.all([
@@ -4232,52 +4233,13 @@ export default class CancipPlugin extends Plugin {
     }
   }
 
-  private configureBuiltinPrimeOrt(ort: OrtModuleLike): void {
+  private configureBuiltinPrimeOrt(ort: OrtModuleLike, wasmBinary: ArrayBuffer): void {
     const wasm = ort.env?.wasm;
     if (!wasm) return;
-    this.installBuiltinTtsFetchShim(window.fetch.bind(window));
     wasm.numThreads = 1;
     wasm.proxy = false;
-    wasm.wasmPaths = this.builtinTtsVirtualResourceUrl(`${BUILTIN_PRIME_TTS_ORT_BASE}/`);
-  }
-
-  private installBuiltinTtsFetchShim(nativeFetch: typeof window.fetch): void {
-    const win = window as typeof window & { __cancipBuiltinTtsFetchShim?: boolean; __cancipBuiltinTtsNativeFetch?: typeof window.fetch };
-    if (win.__cancipBuiltinTtsFetchShim) return;
-    win.__cancipBuiltinTtsFetchShim = true;
-    win.__cancipBuiltinTtsNativeFetch = nativeFetch;
-    window.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
-      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-      if (url.startsWith("https://cancip.local/tts/")) {
-        return this.fetchBuiltinTtsResource(url);
-      }
-      return nativeFetch(input, init);
-    }) as typeof window.fetch;
-  }
-
-  private async fetchBuiltinTtsResource(url: string): Promise<Response> {
-    const path = this.builtinTtsVirtualUrlToPath(url);
-    const mimeType = mimeTypeForPath(path);
-    try {
-      if (path.endsWith(".json") || path.endsWith(".mjs") || path.endsWith(".js")) {
-        const text = await this.app.vault.adapter.read(path);
-        return new Response(text, { status: 200, headers: { "Content-Type": mimeType } });
-      }
-      const buffer = await this.app.vault.adapter.readBinary(path);
-      return new Response(buffer, { status: 200, headers: { "Content-Type": mimeType, "Content-Length": String(buffer.byteLength) } });
-    } catch {
-      return new Response("Not found", { status: 404, statusText: "Not Found" });
-    }
-  }
-
-  private builtinTtsVirtualResourceUrl(path: string): string {
-    return `https://cancip.local/tts/${normalizePath(path).replace(/^\.obsidian\/plugins\/cancip\/tts\//, "")}`;
-  }
-
-  private builtinTtsVirtualUrlToPath(url: string): string {
-    const parsed = new URL(url);
-    const relative = decodeURIComponent(parsed.pathname.replace(/^\/tts\//, ""));
-    return normalizePath(`.obsidian/plugins/cancip/tts/${relative}`);
+    wasm.wasmPaths = undefined;
+    wasm.wasmBinary = wasmBinary;
   }
 
   private async synthesizeBuiltinPrimeTts(runtime: PrimeTtsRuntime, text: string): Promise<ArrayBuffer> {
