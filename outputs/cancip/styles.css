@@ -653,7 +653,7 @@
 
 .obcc-tts-floating-handle {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -725,9 +725,45 @@
   min-width: 0;
 }
 
+.obcc-tts-floating-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-secondary);
+}
+
+.obcc-tts-floating-settings.is-hidden {
+  display: none;
+}
+
+.obcc-tts-floating-select,
+.obcc-tts-floating-input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 3px 6px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.obcc-tts-floating-setting-row {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
 .obcc-tts-floating-controls {
   display: grid;
-  grid-template-columns: 32px 32px 32px minmax(0, 1fr);
+  grid-template-columns: 32px 32px 32px minmax(72px, 1fr);
   align-items: center;
   gap: 6px;
   min-width: 0;
@@ -748,6 +784,11 @@
 
 .obcc-tts-floating-icon:hover {
   background: var(--background-modifier-hover);
+}
+
+.obcc-tts-floating-icon.is-active {
+  border-color: var(--interactive-accent);
+  color: var(--interactive-accent);
 }
 
 .obcc-tts-floating-icon:disabled {
@@ -4003,12 +4044,16 @@ input.obcc-review-correction-input {
   }
 
   .obcc-tts-floating-controls {
-    grid-template-columns: 30px 30px 30px minmax(0, 1fr);
+    grid-template-columns: 30px 30px 30px minmax(66px, 1fr);
     gap: 5px;
   }
 
   .obcc-tts-floating-rate {
-    grid-template-columns: 48px minmax(0, 1fr);
+    grid-template-columns: 42px minmax(0, 1fr);
+  }
+
+  .obcc-tts-floating-setting-row {
+    grid-template-columns: 42px minmax(0, 1fr);
   }
 
   .obcc-messages {
