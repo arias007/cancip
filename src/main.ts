@@ -14,7 +14,6 @@ import {
   PluginSettingTab,
   requestUrl,
   Setting,
-  type SettingDefinitionItem,
   setIcon,
   type TAbstractFile,
   TextComponent,
@@ -14862,18 +14861,7 @@ class CancipSettingTab extends PluginSettingTab {
     super(app, plugin);
   }
 
-  getSettingDefinitions(): SettingDefinitionItem[] {
-    return [
-      {
-        name: PLUGIN_NAME,
-        render: () => {
-          this.renderSettings();
-        }
-      }
-    ];
-  }
-
-  private renderSettings(): void {
+  display(): void {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("obcc-settings");
@@ -14895,7 +14883,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.language = value as LanguageMode;
             await this.plugin.saveSettings();
             this.plugin.refreshOpenViews();
-            this.update();
+            this.display();
           });
       });
 
@@ -15233,7 +15221,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onClick(async () => {
             this.plugin.settings.githubApiBaseUrl = DEFAULT_SETTINGS.githubApiBaseUrl;
             await this.plugin.saveSettings();
-            this.update();
+            this.display();
           });
       })
       .addButton((button) => {
@@ -15407,7 +15395,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.ttsQualityMode = "quality-first";
             if (!this.plugin.settings.ttsVoice.trim()) this.plugin.settings.ttsVoice = DEFAULT_SETTINGS.ttsVoice;
             await this.plugin.saveSettings();
-            this.update();
+            this.display();
             new Notice(this.plugin.ttsProbe(), 10000);
           });
       })
@@ -15418,7 +15406,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.ttsProvider = "android-system";
             this.plugin.settings.ttsQualityMode = "quality-first";
             await this.plugin.saveSettings();
-            this.update();
+            this.display();
             new Notice(this.plugin.ttsProbe(), 10000);
           });
       });
@@ -15478,27 +15466,27 @@ class CancipSettingTab extends PluginSettingTab {
     this.addToggleSetting(parent, "settingsShowSupportCodes", this.plugin.settings.showSupportCodes, async (value) => {
       this.plugin.settings.showSupportCodes = value;
       await this.plugin.saveSettings();
-      this.update();
+      this.display();
     }, "settingsSupportCodesDesc");
     this.addTextSetting(parent, "settingsSupportCodeOneLabel", this.plugin.settings.supportCodeOneLabel, this.plugin.t("settingsSupportCodeOneLabel"), async (value) => {
       this.plugin.settings.supportCodeOneLabel = value.trim() || DEFAULT_SETTINGS.supportCodeOneLabel;
       await this.plugin.saveSettings();
-      this.update();
+      this.display();
     });
     this.addTextSetting(parent, "settingsSupportCodeOnePath", this.plugin.settings.supportCodeOnePath, DEFAULT_SUPPORT_CODE_ONE_PATH, async (value) => {
       this.plugin.settings.supportCodeOnePath = value.trim();
       await this.plugin.saveSettings();
-      this.update();
+      this.display();
     });
     this.addTextSetting(parent, "settingsSupportCodeTwoLabel", this.plugin.settings.supportCodeTwoLabel, this.plugin.t("settingsSupportCodeTwoLabel"), async (value) => {
       this.plugin.settings.supportCodeTwoLabel = value.trim() || DEFAULT_SETTINGS.supportCodeTwoLabel;
       await this.plugin.saveSettings();
-      this.update();
+      this.display();
     });
     this.addTextSetting(parent, "settingsSupportCodeTwoPath", this.plugin.settings.supportCodeTwoPath, DEFAULT_SUPPORT_CODE_TWO_PATH, async (value) => {
       this.plugin.settings.supportCodeTwoPath = value.trim();
       await this.plugin.saveSettings();
-      this.update();
+      this.display();
     });
   }
 
@@ -15542,7 +15530,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.modelOptions = normalizeModelOptions(MODEL_PRESETS, this.plugin.activeApiProfile().model);
             await this.plugin.saveSettings();
             this.plugin.refreshOpenViews();
-            this.update();
+            this.display();
           });
       });
   }
@@ -15592,7 +15580,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             await this.plugin.selectApiProfile(value);
             this.plugin.refreshOpenViews();
-            this.update();
+            this.display();
           });
       })
       .addButton((button) => {
@@ -15602,7 +15590,7 @@ class CancipSettingTab extends PluginSettingTab {
             const profile = await this.plugin.addApiProfile();
             new Notice(this.plugin.t("apiProfileChanged", { profile: profile.name }));
             this.plugin.refreshOpenViews();
-            this.update();
+            this.display();
           });
       })
       .addButton((button) => {
@@ -15612,7 +15600,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onClick(async () => {
             await this.plugin.removeActiveApiProfile();
             this.plugin.refreshOpenViews();
-            this.update();
+            this.display();
           });
       });
 
