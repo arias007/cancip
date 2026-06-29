@@ -1,0 +1,8 @@
+{
+ "sample_rate": 24000,
+ "abs_frame_bins": 512,
+ "max_frames": 1400,
+ "hop_size": 256,
+ "n_mels": 80,
+ "use_frame_pitch": true
+}

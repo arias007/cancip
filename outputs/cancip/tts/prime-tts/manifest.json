@@ -1,0 +1,44 @@
+{
+  "source": "Luigi/PrimeTTS",
+  "sourceUrl": "https://huggingface.co/Luigi/PrimeTTS",
+  "license": "Apache-2.0",
+  "variant": "v3_4.6M",
+  "language": [
+    "zh-TW",
+    "en"
+  ],
+  "sampleRate": 24000,
+  "preparedAt": "2026-06-29T01:37:08.627Z",
+  "modelFiles": [
+    {
+      "path": "acoustic_encoder.onnx",
+      "bytes": 5782030
+    },
+    {
+      "path": "acoustic_decoder.onnx",
+      "bytes": 8539948
+    },
+    {
+      "path": "vocoder.onnx",
+      "bytes": 4788666
+    },
+    {
+      "path": "meta.json",
+      "bytes": 129
+    },
+    {
+      "path": "symbol_table.json",
+      "bytes": 1890
+    }
+  ],
+  "runtimeFiles": [
+    {
+      "path": "ort/ort-wasm-simd-threaded.mjs",
+      "bytes": 24180
+    },
+    {
+      "path": "ort/ort-wasm-simd-threaded.wasm",
+      "bytes": 13479978
+    }
+  ]
+}

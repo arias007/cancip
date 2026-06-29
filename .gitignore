@@ -6,6 +6,7 @@ outputs/plugin-backups/
 outputs/ob-codex-composer/
 reports/install-backups/
 reports/release-verify-*/
+reports/tts-prime-investigation/
 skill-observations/
 .cancip/
 .obsidian/

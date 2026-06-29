@@ -17,6 +17,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
 - Long-term/core memory defaults to visible `AI/Cancip/Memory/` and is included in every model interaction.
 - Full-vault search is not attached by default. Cancip should first use long-term memory and necessary short-term/session context, then decide whether to run `cancip.searchVault` and read only the necessary matched files.
+- Model calls use a payload policy: trivial chat stays lightweight, informational turns add only targeted context, and implementation/self-repair turns include the full tool protocol and compact memory.
 - Full session export from the chat header to Markdown and JSON under visible `AI/Cancip/Exports/`.
 - Lightweight project session history stays under `.cancip/sessions/`, opened from the compact history button beside the new-chat button.
 - Compact context chips live inside the rounded composer/input box: the current active file is shown automatically with its extension, and source/context chips no longer occupy a separate panel.
@@ -32,7 +33,8 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Built-in model presets include GPT, Claude, Gemini, DeepSeek, Qwen, and Kimi-style names while still allowing a custom model string.
 - Codex-style `@` picker for files, folders, Skills, Cancip functions, command bus entries, and real Obsidian commands. Empty `@` shows useful entries like modes/current file/recent files/skills; typed text dynamically filters all categories. Selected mentions are inserted as `@[path]`, `@[action:name]`, `@[command:name]`, or `@[obsidian-command:id]`, while hand-typed `@keyword` still resolves by fuzzy match.
 - Lightweight local versioning under `.cancip/versions/`: manual commits and one daily auto snapshot, without native git and without per-edit history.
-- Built-in local automation templates for non-desktop Codex-style tasks: review-gate package generation, Codex memory import, lightweight local version snapshots, GitHub status checks, and vault index refresh.
+- Built-in local automation templates for non-desktop Codex-style tasks: review-gate package generation, Codex memory import, lightweight local version snapshots, GitHub status checks, vault index refresh, and a daily read-only Vault maintenance/merge-candidate report.
+- Built-in offline TTS defaults to the small PrimeTTS v3_4.6M Chinese/English ONNX package under `tts/prime-tts/` (about 19 MB model assets, about 32 MB including the ONNX Runtime Web files needed on Android, 24 kHz). It is bundled with the plugin, not an APK, share-sheet handoff, public network TTS, or eSpeak-style fallback. Piper Plus remains a manual legacy large-package provider only when its assets are present.
 
 ## Build
 
@@ -60,6 +62,7 @@ versions.json
 README.md
 extras/code-1.jpg
 extras/code-2.png
+tts/prime-tts/
 ```
 
 Then enable `Cancip` in Obsidian.
@@ -136,8 +139,10 @@ Currently supported command names:
 - `cancip.reviewGate.list`: list recent review data packages under `AI/Cancip/Review/`.
 - `cancip.previewVaultSearch`: preview local Vault Search results.
 - `cancip.localVersionCommit`: create a manual lightweight local version commit.
+- `cancip.vaultDailyReport`: generate a read-only Vault maintenance and merge-candidate daily report.
 - `cancip.automation.templates`: list built-in local automation presets.
 - `cancip.automation.addTemplate`: add a built-in preset, e.g. `{"id":"auto-review-gate-current-vault"}`.
+- `cancip.automation.addVaultDailyReport`: add or refresh the daily Vault maintenance report automation.
 - `todo` action type: maintain the current session's visible Plan todos. Supported operations are `set`, `add`, `update`, `remove`, `list`, and `clear`.
 - `github.help`: list mobile GitHub command targets.
 - `github.repo`: show repository status from GitHub REST.

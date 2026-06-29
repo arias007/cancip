@@ -34,6 +34,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Codex-style `@` picker for files, folders, Skills, Cancip functions, command bus entries, and real Obsidian commands. Empty `@` shows useful entries like modes/current file/recent files/skills; typed text dynamically filters all categories. Selected mentions are inserted as `@[path]`, `@[action:name]`, `@[command:name]`, or `@[obsidian-command:id]`, while hand-typed `@keyword` still resolves by fuzzy match.
 - Lightweight local versioning under `.cancip/versions/`: manual commits and one daily auto snapshot, without native git and without per-edit history.
 - Built-in local automation templates for non-desktop Codex-style tasks: review-gate package generation, Codex memory import, lightweight local version snapshots, GitHub status checks, vault index refresh, and a daily read-only Vault maintenance/merge-candidate report.
+- Built-in offline TTS defaults to the small PrimeTTS v3_4.6M Chinese/English ONNX package under `tts/prime-tts/` (about 19 MB model assets, about 32 MB including the ONNX Runtime Web files needed on Android, 24 kHz). It is bundled with the plugin, not an APK, share-sheet handoff, public network TTS, or eSpeak-style fallback. Piper Plus remains a manual legacy large-package provider only when its assets are present.
 
 ## Build
 
@@ -61,6 +62,7 @@ versions.json
 README.md
 extras/code-1.jpg
 extras/code-2.png
+tts/prime-tts/
 ```
 
 Then enable `Cancip` in Obsidian.
