@@ -753,6 +753,23 @@
   font-size: 12px;
 }
 
+.obcc-tts-floating-install {
+  width: 100%;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: 6px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.obcc-tts-floating-install:disabled {
+  opacity: 0.65;
+}
+
 .obcc-tts-floating-setting-row {
   display: grid;
   grid-template-columns: 62px minmax(0, 1fr);

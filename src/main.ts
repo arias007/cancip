@@ -73,6 +73,22 @@ const BUILTIN_PRIME_TTS_VOCODER = `${BUILTIN_PRIME_TTS_BASE}/vocoder.onnx`;
 const BUILTIN_PRIME_TTS_META = `${BUILTIN_PRIME_TTS_BASE}/meta.json`;
 const BUILTIN_PRIME_TTS_SYMBOLS = `${BUILTIN_PRIME_TTS_BASE}/symbol_table.json`;
 const BUILTIN_PRIME_TTS_ORT_BASE = `${BUILTIN_PRIME_TTS_BASE}/ort`;
+const BUILTIN_PRIME_TTS_PACKAGE_TAG = "prime-tts";
+const BUILTIN_PRIME_TTS_PACKAGE_ASSET = "prime-tts.zip";
+const BUILTIN_PRIME_TTS_PACKAGE_URL = `https://github.com/arias007/cancip/releases/download/${BUILTIN_PRIME_TTS_PACKAGE_TAG}/${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`;
+const BUILTIN_PRIME_TTS_REQUIRED_ASSETS = [
+  { relative: "acoustic_encoder.onnx", path: BUILTIN_PRIME_TTS_ENCODER },
+  { relative: "acoustic_decoder.onnx", path: BUILTIN_PRIME_TTS_DECODER },
+  { relative: "vocoder.onnx", path: BUILTIN_PRIME_TTS_VOCODER },
+  { relative: "meta.json", path: BUILTIN_PRIME_TTS_META },
+  { relative: "symbol_table.json", path: BUILTIN_PRIME_TTS_SYMBOLS },
+  { relative: "ort/ort-wasm-simd-threaded.wasm", path: `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm` },
+  { relative: "ort/ort-wasm-simd-threaded.mjs", path: `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.mjs` }
+] as const;
+const BUILTIN_PRIME_TTS_OPTIONAL_ASSETS = [
+  { relative: "manifest.json", path: `${BUILTIN_PRIME_TTS_BASE}/manifest.json` },
+  { relative: "README.md", path: `${BUILTIN_PRIME_TTS_BASE}/README.md` }
+] as const;
 const LANGUAGE_VALUES = ["zh", "zh-TW", "en", "ug", "tr", "ru", "ja", "ko", "es", "fr", "de", "ar"] as const;
 type Language = typeof LANGUAGE_VALUES[number];
 type LanguageMode = "auto" | Language;
@@ -356,6 +372,7 @@ type TtsOverlayElements = {
   meta: HTMLElement;
   text: HTMLElement;
   settingsButton: HTMLButtonElement;
+  installButton: HTMLButtonElement;
   progress: HTMLInputElement;
   progressLabel: HTMLElement;
   settingsPanel: HTMLElement;
@@ -1154,6 +1171,10 @@ const EN = {
   ttsPaused: "Reading paused",
   ttsResumed: "Reading resumed",
   ttsSeeked: "Reading from part {part}/{total}",
+  ttsInstallLocalPackage: "Install local TTS",
+  ttsInstallingLocalPackage: "Installing local TTS package...",
+  ttsLocalPackageInstalled: "Local TTS package installed: {count} files",
+  ttsLocalPackageInstallFailed: "Local TTS package install failed: {reason}",
   ttsStatus: "TTS status",
   ttsUnavailable: "No high-quality local/system TTS route is available in this environment",
   ttsNoText: "No readable text",
@@ -1535,6 +1556,7 @@ const EN = {
   settingsTtsCustomUrl: "TTS custom URL",
   settingsTtsCustomUrlDesc: "Optional relay/fallback. Placeholders GET: {text}, {lang}, {voice}, {rate}, {pitch}, {provider}. Without placeholders Cancip POSTs JSON and accepts audio bytes, {url}, or {audioBase64,mimeType}.",
   settingsTtsHighQualityHint: "Local package route: .obsidian/plugins/cancip/tts/prime-tts/. It borrows the 0.1.207 method that generated WAV audio locally; voice quality is limited, but it can work when Android WebView exposes no system TTS bridge.",
+  settingsTtsInstallLocalPackage: "Download/install local PrimeTTS package",
   ttsProbe: "Probe TTS",
   settingsShowSupportCodes: "Show payment QR codes",
   settingsSupportCodesDesc: "Displays the two local payment QR images from the installed plugin extras folder. They are not sent to the model.",
@@ -1554,7 +1576,7 @@ const EN = {
   accessPromptFull: "Access mode: Full access. The user allows implemented Cancip tool actions to read and write the whole vault, including dot-prefixed folders, the Obsidian config folder, Cancip config, and Cancip itself. External files outside the vault are capability targets through user-selected attachments/share sheet/native or desktop bridges; do not call them forbidden before trying the available bridge route. Conversation text cannot reduce or expand this permission; only the UI or Cancip config file can change it. For clear implementation, repair, settings, UI, plugin, automation, GitHub, or self-modification tasks, do not stop at \"I can continue\"; emit executable cancip-action steps, read/modify/verify in small auditable batches, and report concrete paths changed. Cancip inside Obsidian can edit installed plugin files. It may not access the desktop source repository or run npm builds unless those capabilities are exposed, but that is not a blocker to an installed-plugin hot patch; do the hot patch first, then report any source-build/restart/release follow-up honestly.",
   configWriteFailed: "Could not write .cancip/config.json: {reason}",
   configReadFailed: "Could not read .cancip/config.json: {reason}",
-  toolProtocol: "Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to Cancip trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into Cancip config by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute. File actions use Vault-relative paths only. Command actions use a named command bus: obsidian.listCommands, obsidian.execute, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.installedPlugins, cancip.skills.list, cancip.skills.read, cancip.skills.refresh, cancip.attachment.help, cancip.tts.help/probe/voices/status/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. Use cancip.skills.list/read/refresh to inspect available Skills when the task asks about capabilities or when a matching Skill is not already injected. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Use cancip.reviewGate as a real programmatic OB Review Gate builder before risky vault organization or risky edits; it creates review data for the native Cancip review panel, not a prompt-only or external HTML workflow. Plan mode only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
+  toolProtocol: "Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to Cancip trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into Cancip config by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute. File actions use Vault-relative paths only. Command actions use a named command bus: obsidian.listCommands, obsidian.execute, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.installedPlugins, cancip.skills.list, cancip.skills.read, cancip.skills.refresh, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. Use cancip.skills.list/read/refresh to inspect available Skills when the task asks about capabilities or when a matching Skill is not already injected. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Use cancip.reviewGate as a real programmatic OB Review Gate builder before risky vault organization or risky edits; it creates review data for the native Cancip review panel, not a prompt-only or external HTML workflow. Plan mode only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
   actionsNeedApproval: "Action block queued for approval. Nothing has run yet.\n\n{summary}",
   actionsExecuted: "Tool results:\n\n{summary}",
   toolRunsQueued: "{count} tool run(s) queued. Review and tap Run when ready.",
@@ -1692,6 +1714,10 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     ttsPaused: "已暂停朗读",
     ttsResumed: "继续朗读",
     ttsSeeked: "从第 {part}/{total} 段开始朗读",
+    ttsInstallLocalPackage: "安装本地 TTS",
+    ttsInstallingLocalPackage: "正在安装本地 TTS 包...",
+    ttsLocalPackageInstalled: "本地 TTS 包已安装：{count} 个文件",
+    ttsLocalPackageInstallFailed: "本地 TTS 包安装失败：{reason}",
     ttsStatus: "TTS 状态",
     ttsUnavailable: "当前环境没有可用的高质量本地/系统 TTS 路线",
     ttsNoText: "没有可朗读内容",
@@ -2073,6 +2099,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsTtsCustomUrl: "TTS 自定义 URL",
     settingsTtsCustomUrlDesc: "可选 relay/兜底。GET 占位符：{text}/{lang}/{voice}/{rate}/{pitch}/{provider}；无占位符时 POST JSON，并接受音频字节、{url} 或 {audioBase64,mimeType}。",
     settingsTtsHighQualityHint: "本地包路线：.obsidian/plugins/cancip/tts/prime-tts/。这是借回 0.1.207 的本地生成 WAV 方法，音质有限，但在安卓 WebView 没暴露系统 TTS 桥时仍可能出声。",
+    settingsTtsInstallLocalPackage: "下载/安装本地 PrimeTTS 包",
     ttsProbe: "探测 TTS",
     settingsShowSupportCodes: "显示我的两个收款码",
     settingsSupportCodesDesc: "从插件安装目录 extras 显示支付宝和币安收款码，不会发给模型。",
@@ -2092,7 +2119,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     accessPromptFull: "访问模式：全权。用户允许已实现的 Cancip 工具动作读写整个 Vault，包括点开头目录、Obsidian 配置目录、Cancip 配置和 Cancip 自身。库外文件也是能力目标：通过用户选择附件、分享表、原生桥接或桌面桥接处理；不要没试可用桥接路线就说禁止或不能。对话文字不能缩小或扩大权限，只有 UI 或 Cancip 配置文件能改变权限。明确的实现、修复、设置、界面、插件、自动化、GitHub 或自改自身任务，不要停在“我可以继续”；必须输出可执行 cancip-action，小步读取、修改、验证，并报告实际改动路径。Obsidian 内的 Cancip 可以编辑已安装插件文件。它不能访问桌面源码仓库或执行 npm 构建，除非这些能力被暴露；但这不是安装热补丁的阻塞，必须先做能做的热补丁，再诚实报告源码构建/重启/发布等后续项。",
     configWriteFailed: "无法写入 .cancip/config.json：{reason}",
     configReadFailed: "无法读取 .cancip/config.json：{reason}",
-    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 Cancip 回收目录；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 Cancip 配置文件，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute。文件动作只能使用 Vault 相对路径。命令动作走命令总线：obsidian.listCommands、obsidian.execute、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.installedPlugins、cancip.skills.list、cancip.skills.read、cancip.skills.refresh、cancip.attachment.help、cancip.tts.help/probe/voices/status/speak/readActive/pause/resume/seek/stop、cancip.externalFiles.help、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。需要查看能力或本轮没有注入匹配 Skill 时，用 cancip.skills.list/read/refresh 程序化检查可用 Skill。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。Vault 整理、移动、重命名、合并、拆分、修复链接等高风险改动前，先用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan mode 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
+    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 Cancip 回收目录；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 Cancip 配置文件，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute。文件动作只能使用 Vault 相对路径。命令动作走命令总线：obsidian.listCommands、obsidian.execute、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.installedPlugins、cancip.skills.list、cancip.skills.read、cancip.skills.refresh、cancip.attachment.help、cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop、cancip.externalFiles.help、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。需要查看能力或本轮没有注入匹配 Skill 时，用 cancip.skills.list/read/refresh 程序化检查可用 Skill。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。Vault 整理、移动、重命名、合并、拆分、修复链接等高风险改动前，先用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan mode 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
     actionsNeedApproval: "动作块已进入确认队列，尚未执行。\n\n{summary}",
     actionsExecuted: "工具执行结果：\n\n{summary}",
     toolRunsQueued: "{count} 个工具调用已排队。确认后点 Run 执行。",
@@ -3731,6 +3758,9 @@ export default class CancipPlugin extends Plugin {
   private builtinPrimeTtsPromise: Promise<PrimeTtsRuntime> | null = null;
   private builtinPrimeTtsRuntime: PrimeTtsRuntime | null = null;
   private builtinPrimeTtsWarmupTimer: number | null = null;
+  private builtinPrimeTtsInstallPromise: Promise<string> | null = null;
+  private builtinPrimeTtsInstallStatus = "";
+  private builtinPrimeTtsInstallLastError = "";
   private ttsOverlay: TtsOverlayElements | null = null;
   private ttsOverlayHideTimer: number | null = null;
   private ttsOverlayDragging = false;
@@ -3928,6 +3958,7 @@ export default class CancipPlugin extends Plugin {
     this.stopTts(false);
     this.builtinPrimeTtsRuntime = null;
     this.builtinPrimeTtsPromise = null;
+    this.builtinPrimeTtsInstallPromise = null;
     if (this.builtinPrimeTtsWarmupTimer !== null) {
       window.clearTimeout(this.builtinPrimeTtsWarmupTimer);
       this.builtinPrimeTtsWarmupTimer = null;
@@ -3975,6 +4006,12 @@ export default class CancipPlugin extends Plugin {
 
   pluginInstallDir(pluginId = this.manifest.id): string {
     return `${this.obsidianPluginsDir()}/${pluginId}`;
+  }
+
+  accelerateGithubDownloadUrl(url: string): string {
+    const prefix = this.settings.githubDownloadBaseUrl.trim().replace(/\/+$/, "");
+    if (!prefix) return url;
+    return `${prefix}/${url}`;
   }
 
   communityPluginsPath(): string {
@@ -4174,6 +4211,7 @@ export default class CancipPlugin extends Plugin {
   private async prewarmBuiltinPrimeTts(): Promise<void> {
     if (this.builtinPrimeTtsRuntime || this.builtinPrimeTtsPromise) return;
     try {
+      if ((await this.missingBuiltinPrimeTtsAssets()).length) return;
       await this.loadBuiltinPrimeTts();
     } catch (error) {
       console.debug("Cancip PrimeTTS warmup skipped", error);
@@ -4220,6 +4258,11 @@ export default class CancipPlugin extends Plugin {
     const voiceInput = settingsPanel.createEl("input", {
       cls: "obcc-tts-floating-input",
       attr: { type: "text", placeholder: this.t("settingsTtsVoice"), "aria-label": this.t("settingsTtsVoice") }
+    });
+    const installButton = settingsPanel.createEl("button", {
+      cls: "obcc-tts-floating-install",
+      text: this.t("ttsInstallLocalPackage"),
+      attr: { type: "button" }
     });
     const pitchWrap = settingsPanel.createDiv({ cls: "obcc-tts-floating-setting-row" });
     const pitchLabel = pitchWrap.createDiv({ cls: "obcc-tts-floating-rate-label" });
@@ -4301,6 +4344,10 @@ export default class CancipPlugin extends Plugin {
       this.settings.ttsVoice = voiceInput.value.trim();
       void this.saveSettings();
     });
+    installButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void this.installBuiltinPrimeTtsPackage(true);
+    });
     handle.addEventListener("pointerdown", (event) => this.startTtsOverlayDrag(event));
     const keepInView = () => this.placeTtsOverlay(root, root.getBoundingClientRect().left, root.getBoundingClientRect().top);
     window.addEventListener("resize", keepInView);
@@ -4319,6 +4366,7 @@ export default class CancipPlugin extends Plugin {
       meta,
       text,
       settingsButton,
+      installButton,
       progress,
       progressLabel,
       settingsPanel,
@@ -4380,6 +4428,8 @@ export default class CancipPlugin extends Plugin {
     if (document.activeElement !== overlay.voiceInput) {
       overlay.voiceInput.value = this.settings.ttsVoice.trim();
     }
+    overlay.installButton.disabled = Boolean(this.builtinPrimeTtsInstallPromise);
+    overlay.installButton.setText(this.builtinPrimeTtsInstallPromise ? this.t("ttsInstallingLocalPackage") : this.t("ttsInstallLocalPackage"));
     setIcon(overlay.playPauseButton, status.mode === "paused" ? "play" : "pause");
     overlay.playPauseButton.setAttribute("title", status.mode === "paused" ? this.t("resumeSpeaking") : this.t("pauseSpeaking"));
     overlay.playPauseButton.setAttribute("aria-label", status.mode === "paused" ? this.t("resumeSpeaking") : this.t("pauseSpeaking"));
@@ -4621,22 +4671,103 @@ export default class CancipPlugin extends Plugin {
   }
 
   private async assertBuiltinPrimeTtsAssets(): Promise<void> {
-    const adapter = this.app.vault.adapter;
-    const missing: string[] = [];
-    for (const path of [
-      BUILTIN_PRIME_TTS_ENCODER,
-      BUILTIN_PRIME_TTS_DECODER,
-      BUILTIN_PRIME_TTS_VOCODER,
-      BUILTIN_PRIME_TTS_META,
-      BUILTIN_PRIME_TTS_SYMBOLS,
-      `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm`,
-      `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.mjs`
-    ]) {
-      if (!(await adapter.exists(path))) missing.push(path);
+    let missing = await this.missingBuiltinPrimeTtsAssets();
+    if (missing.length) {
+      await this.installBuiltinPrimeTtsPackage(false);
+      missing = await this.missingBuiltinPrimeTtsAssets();
     }
     if (missing.length) {
       throw new Error(`local PrimeTTS package is incomplete: ${missing.join(", ")}`);
     }
+  }
+
+  private async missingBuiltinPrimeTtsAssets(): Promise<string[]> {
+    const adapter = this.app.vault.adapter;
+    const missing: string[] = [];
+    for (const asset of BUILTIN_PRIME_TTS_REQUIRED_ASSETS) {
+      if (!(await adapter.exists(asset.path))) missing.push(asset.path);
+    }
+    return missing;
+  }
+
+  async installBuiltinPrimeTtsPackage(showNotice = true): Promise<string> {
+    if (this.builtinPrimeTtsInstallPromise) return await this.builtinPrimeTtsInstallPromise;
+    this.builtinPrimeTtsInstallPromise = this.downloadAndInstallBuiltinPrimeTtsPackage(showNotice);
+    try {
+      return await this.builtinPrimeTtsInstallPromise;
+    } finally {
+      this.builtinPrimeTtsInstallPromise = null;
+      this.syncTtsOverlay();
+    }
+  }
+
+  private async downloadAndInstallBuiltinPrimeTtsPackage(showNotice: boolean): Promise<string> {
+    const beforeMissing = await this.missingBuiltinPrimeTtsAssets();
+    if (!beforeMissing.length) {
+      const result = `complete (${BUILTIN_PRIME_TTS_BASE})`;
+      this.builtinPrimeTtsInstallStatus = result;
+      this.builtinPrimeTtsInstallLastError = "";
+      return result;
+    }
+    this.builtinPrimeTtsInstallStatus = this.t("ttsInstallingLocalPackage");
+    this.builtinPrimeTtsInstallLastError = "";
+    this.syncTtsOverlay();
+    if (showNotice) new Notice(this.t("ttsInstallingLocalPackage"), 7000);
+    try {
+      const url = this.accelerateGithubDownloadUrl(BUILTIN_PRIME_TTS_PACKAGE_URL);
+      const response = await requestUrl({ url, method: "GET", throw: false });
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`HTTP ${response.status}: ${response.text?.slice(0, 160) ?? ""}`);
+      }
+      const installed = await this.installBuiltinPrimeTtsZip(response.arrayBuffer);
+      this.builtinPrimeTtsRuntime = null;
+      this.builtinPrimeTtsPromise = null;
+      const afterMissing = await this.missingBuiltinPrimeTtsAssets();
+      if (afterMissing.length) throw new Error(`still missing ${afterMissing.join(", ")}`);
+      const result = this.t("ttsLocalPackageInstalled", { count: installed });
+      this.builtinPrimeTtsInstallStatus = `${result} (${BUILTIN_PRIME_TTS_BASE})`;
+      this.builtinPrimeTtsInstallLastError = "";
+      if (showNotice) new Notice(result, 8000);
+      return this.builtinPrimeTtsInstallStatus;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.builtinPrimeTtsInstallLastError = reason;
+      this.builtinPrimeTtsInstallStatus = this.t("ttsLocalPackageInstallFailed", { reason });
+      if (showNotice) new Notice(this.t("ttsLocalPackageInstallFailed", { reason }), 10000);
+      throw error;
+    } finally {
+      this.syncTtsOverlay();
+    }
+  }
+
+  private async installBuiltinPrimeTtsZip(buffer: ArrayBuffer): Promise<number> {
+    const warnings: string[] = [];
+    const bytes = new Uint8Array(buffer);
+    const entries = readZipEntries(bytes, warnings);
+    if (!entries.length) throw new Error("downloaded PrimeTTS package is not a readable ZIP");
+    const byName = new Map<string, ZipEntry>();
+    for (const entry of entries) {
+      const relative = normalizePrimeTtsZipEntry(entry.name);
+      if (relative) byName.set(relative, entry);
+    }
+    const adapter = this.app.vault.adapter;
+    let written = 0;
+    for (const asset of [...BUILTIN_PRIME_TTS_REQUIRED_ASSETS, ...BUILTIN_PRIME_TTS_OPTIONAL_ASSETS]) {
+      const entry = byName.get(asset.relative);
+      if (!entry) {
+        if (BUILTIN_PRIME_TTS_REQUIRED_ASSETS.some((required) => required.relative === asset.relative)) {
+          throw new Error(`PrimeTTS package missing ${asset.relative}`);
+        }
+        continue;
+      }
+      const data = await extractZipEntryBytes(entry, bytes, warnings);
+      if (!data.byteLength) throw new Error(`PrimeTTS package entry is empty: ${asset.relative}`);
+      await ensureParentFolder(adapter, asset.path);
+      await adapter.writeBinary(asset.path, uint8ArrayToArrayBuffer(data));
+      written += 1;
+    }
+    if (warnings.length) console.debug("Cancip PrimeTTS package warnings", warnings);
+    return written;
   }
 
   private configureBuiltinPrimeOrt(ort: OrtModuleLike, wasmBinary: ArrayBuffer): void {
@@ -5095,16 +5226,19 @@ export default class CancipPlugin extends Plugin {
       `- Chinese quality chain: ${this.ttsProviderChain(undefined, "你好，Cancip 中文朗读测试。").join(" -> ")}`,
       `- playback: ${this.formatTtsStatus().replace(/\n/g, " | ")}`,
       `- local PrimeTTS package: ${localPrimeStatus}`,
+      `- PrimeTTS installer: ${this.builtinPrimeTtsInstallStatus || (this.builtinPrimeTtsInstallPromise ? this.t("ttsInstallingLocalPackage") : "idle")}`,
+      `- PrimeTTS package URL: ${this.accelerateGithubDownloadUrl(BUILTIN_PRIME_TTS_PACKAGE_URL)}`,
       `- native bridge: ${nativeBridge ? nativeBridge.name : "not detected"}`,
       `- Web Speech: ${synth && typeof SpeechSynthesisUtterance !== "undefined" ? `available, voices=${voices.length}` : "not available"}`,
       `- custom-url: ${configuredUrl ? `configured (${configuredUrl.replace(/\?.*$/, "?...")})` : "not configured"}`,
-      "- Official review-clean releases do not include model assets in the three release files; local PrimeTTS is loaded only when the optional tts/prime-tts folder exists in the installed plugin.",
+      "- Official review-clean releases do not include model assets in the three release files; local PrimeTTS downloads prime-tts.zip only when needed or when cancip.tts.installLocal is run.",
       "- builtin-prime-tts borrows the 0.1.207 local WAV synthesis route. It may sound rough, but it can output audio without an Android native TTS bridge.",
       "- web-speech: must start from the tap/click gesture on mobile. If it does not really start, Cancip falls through to the next provider.",
       `- language: ${this.ttsLanguageCode() || "auto"}, voice: ${this.settings.ttsVoice.trim() || defaultTtsVoiceForLanguage(this.ttsLanguageCode())}, rate: ${this.settings.ttsRate}, pitch: ${this.settings.ttsPitch}`,
       "",
       "Executable routes:",
       "- Preferred on this build: provider auto or builtin-prime-tts if local PrimeTTS package is complete.",
+      "- If local PrimeTTS is missing: run cancip.tts.installLocal or tap the local TTS install button; reading aloud with builtin-prime-tts also auto-installs.",
       "- Better quality route: configure custom-url to a trusted local/private neural TTS bridge, or use a mobile Obsidian build that exposes a native TTS bridge."
     ];
     return lines.join("\n");
@@ -5125,6 +5259,7 @@ export default class CancipPlugin extends Plugin {
       "TTS voices:",
       `- native bridge: ${nativeBridge ? nativeBridge.name : "not detected"}`,
       `- local PrimeTTS package: ${localPrimeStatus}`,
+      `- PrimeTTS installer: ${this.builtinPrimeTtsInstallStatus || (this.builtinPrimeTtsInstallPromise ? this.t("ttsInstallingLocalPackage") : "idle")}`,
       "- Providers:",
       "  - builtin-prime-tts uses the optional installed tts/prime-tts ONNX package",
       "  - android-system only if Obsidian exposes a native bridge",
@@ -11540,7 +11675,7 @@ class CancipView extends ItemView {
     return [
       "Cancip tool catalog: output a cancip-action block only when tool use is needed.",
       "Core actions: read/query lines, write/append chunks, patch exact/regex, mkdir/rename/move/copy/delete, config merge, todo, automation, command.",
-      "Command bus: obsidian.listCommands/execute, cancip.searchVault, cancip.skills.list/read/refresh, cancip.installedPlugins, cancip.reviewGate/list/testMarkdown, cancip.sessionEvents, cancip.attachment.help, cancip.tts.help/probe/voices/status/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.*, github.*.",
+      "Command bus: obsidian.listCommands/execute, cancip.searchVault, cancip.skills.list/read/refresh, cancip.installedPlugins, cancip.reviewGate/list/testMarkdown, cancip.sessionEvents, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.*, github.*.",
       "Use read/query/line ranges before editing large files. If a patch fails, read the current snippet and change strategy.",
       "For unknown plugin or Obsidian features, first list/read commands/plugins/skills, then act."
     ].join("\n");
@@ -12014,6 +12149,7 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.attachment.help", "cancip.attachment.help", ["attachment", "file", "pdf", "excel", "parser", "parse", "附件", "手机文件", "导入", "解析", "pdf", "excel"], 82),
       commandTarget("command:cancip.tts.help", "cancip.tts.help", ["tts", "speech", "speak", "read aloud", "朗读", "语音", "无障碍", "读出来"], 80),
       commandTarget("command:cancip.tts.probe", "cancip.tts.probe", ["tts", "speech", "probe", "test", "android", "朗读", "语音", "探测", "测试", "安卓"], 82),
+      commandTarget("command:cancip.tts.installLocal", "cancip.tts.installLocal", ["tts", "speech", "install", "download", "prime", "local", "朗读", "语音", "安装", "下载", "本地包", "依赖"], 83),
       commandTarget("command:cancip.tts.speak", "cancip.tts.speak", ["tts", "speech", "speak", "read aloud", "say", "朗读", "语音", "读出来", "播放"], 82),
       commandTarget("command:cancip.tts.readActive", "cancip.tts.readActive", ["tts", "speech", "read active", "note", "pdf", "selection", "朗读", "当前文件", "笔记", "pdf", "选区"], 84),
       commandTarget("command:cancip.tts.status", "cancip.tts.status", ["tts", "speech", "status", "progress", "朗读", "状态", "进度"], 80),
@@ -12212,6 +12348,7 @@ class CancipView extends ItemView {
       "cancip.tts.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.help\"}]}",
       "cancip.tts.probe": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.probe\"}]}",
       "cancip.tts.voices": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.voices\"}]}",
+      "cancip.tts.installLocal": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.installLocal\"}]}",
       "cancip.tts.speak": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.speak\",\"args\":{\"text\":\"要朗读的文字\",\"label\":\"test\"}}]}",
       "cancip.tts.readActive": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.readActive\"}]}",
       "cancip.tts.status": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.status\"}]}",
@@ -13160,6 +13297,7 @@ class CancipView extends ItemView {
       || command === "cancip.rebuildIndex"
       || command === "cancip.localVersionCommit"
       || command === "cancip.importCodexMemory"
+      || command === "cancip.tts.installLocal"
       || command === "cancip.automation.add"
       || command === "cancip.automation.addTemplate"
       || command === "cancip.automation.run"
@@ -14079,6 +14217,10 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: this.plugin.formatTtsStatus() });
     }
 
+    if (normalized === "cancip.tts.installLocal") {
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.installBuiltinPrimeTtsPackage(true) });
+    }
+
     if (normalized === "cancip.tts.pause") {
       await this.plugin.pauseTts();
       return this.t("commandExecuted", { command: normalized, result: this.t("ttsPaused") });
@@ -14300,9 +14442,9 @@ class CancipView extends ItemView {
       "TTS capability:",
       "- Cancip has message/session/note read-aloud buttons.",
       "- Providers: auto, builtin-prime-tts optional local package, android-system/native bridge, custom-url local neural bridge, web-speech probe.",
-      "- Command bus: cancip.tts.probe, cancip.tts.voices, cancip.tts.status, cancip.tts.speak {text,label,provider}, cancip.tts.readActive, cancip.tts.pause/resume/stop, cancip.tts.seek {part}. provider can be auto, builtin-prime-tts, android-system, web-speech, or custom-url.",
-      "- builtin-prime-tts borrows the old 0.1.207 route: read .obsidian/plugins/cancip/tts/prime-tts, run ONNX locally, generate WAV, play with audio/WebAudio. It is optional and may sound rough.",
-      "- Review-clean releases do not bundle model assets in release files. Optional installed assets are detected at runtime.",
+      "- Command bus: cancip.tts.probe, cancip.tts.voices, cancip.tts.status, cancip.tts.installLocal, cancip.tts.speak {text,label,provider}, cancip.tts.readActive, cancip.tts.pause/resume/stop, cancip.tts.seek {part}. provider can be auto, builtin-prime-tts, android-system, web-speech, or custom-url.",
+      "- builtin-prime-tts borrows the old 0.1.207 route: read .obsidian/plugins/cancip/tts/prime-tts, run ONNX locally, generate WAV, play with audio/WebAudio. If assets are missing during use, Cancip tries to download and install the optional prime-tts.zip package automatically.",
+      "- Review-clean releases do not bundle model assets in release files. Optional installed assets are detected at runtime and can be repaired with cancip.tts.installLocal.",
       "- custom-url contract: use URL placeholders {text}/{lang}/{voice}/{rate}/{pitch}, or POST JSON {text,lang,voice,rate,pitch,provider}. Return audio bytes, {url}, or {audioBase64,mimeType}.",
       "- Android/system uses a native TTS bridge only when Obsidian exposes one; Web Speech is separate. On Android, an empty voice list does not block a real speak attempt.",
       "- PDF/selection: cancip.tts.readActive reads selected text first, then active Markdown/text note, then best-effort text from an active Vault PDF. Scanned/OCR-only PDFs need OCR/parser Skill or external bridge.",
@@ -14526,9 +14668,7 @@ class CancipView extends ItemView {
   }
 
   private accelerateGithubDownloadUrl(url: string): string {
-    const prefix = this.plugin.settings.githubDownloadBaseUrl.trim().replace(/\/+$/, "");
-    if (!prefix) return url;
-    return `${prefix}/${url}`;
+    return this.plugin.accelerateGithubDownloadUrl(url);
   }
 
   private async githubDownloadText(url: string): Promise<string> {
@@ -16136,6 +16276,22 @@ class CancipSettingTab extends PluginSettingTab {
     new Setting(parent)
       .setName(this.plugin.t("settingsTtsHighQualityHint"))
       .setDesc(this.plugin.t("settingsTtsHighQualityHint"));
+    new Setting(parent)
+      .setName(this.plugin.t("settingsTtsInstallLocalPackage"))
+      .setDesc(`${BUILTIN_PRIME_TTS_BASE} · ${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`)
+      .addButton((button) => {
+        button
+          .setButtonText(this.plugin.t("ttsInstallLocalPackage"))
+          .onClick(async () => {
+            try {
+              new Notice(await this.plugin.installBuiltinPrimeTtsPackage(true), 10000);
+              this.display();
+            } catch (error) {
+              const reason = error instanceof Error ? error.message : String(error);
+              new Notice(this.plugin.t("ttsLocalPackageInstallFailed", { reason }), 12000);
+            }
+          });
+      });
     new Setting(parent)
       .setName(this.plugin.t("ttsProbe"))
       .addButton((button) => {
@@ -20819,18 +20975,32 @@ function readZipEntries(bytes: Uint8Array, warnings: string[]): ZipEntry[] {
 }
 
 async function extractZipEntryText(entry: ZipEntry, bytes: Uint8Array, warnings: string[]): Promise<string> {
+  return utf8Decode(await extractZipEntryBytes(entry, bytes, warnings));
+}
+
+async function extractZipEntryBytes(entry: ZipEntry, bytes: Uint8Array, warnings: string[]): Promise<Uint8Array> {
   const compressed = bytes.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
-  if (entry.compression === 0) return utf8Decode(compressed);
+  if (entry.compression === 0) return compressed;
   if (entry.compression === 8) {
     try {
-      return utf8Decode(await inflateRawBytes(compressed, entry.uncompressedSize));
+      return await inflateRawBytes(compressed, entry.uncompressedSize);
     } catch (error) {
       warnings.push(`${entry.name}: inflate failed (${error instanceof Error ? error.message : String(error)})`);
-      return "";
+      return new Uint8Array();
     }
   }
   warnings.push(`${entry.name}: unsupported ZIP compression method ${entry.compression}`);
-  return "";
+  return new Uint8Array();
+}
+
+function normalizePrimeTtsZipEntry(name: string): string | null {
+  const normalized = normalizePath(name.replace(/\\/g, "/").replace(/^\/+/, ""));
+  if (!normalized || normalized.includes("..") || /^[a-zA-Z]:/.test(normalized)) return null;
+  const parts = normalized.split("/").filter(Boolean);
+  if (!parts.length) return null;
+  const relative = parts[0] === "prime-tts" ? parts.slice(1).join("/") : parts.join("/");
+  const allowed = new Set<string>([...BUILTIN_PRIME_TTS_REQUIRED_ASSETS, ...BUILTIN_PRIME_TTS_OPTIONAL_ASSETS].map((asset) => asset.relative));
+  return allowed.has(relative) ? relative : null;
 }
 
 async function extractDocxText(entries: ZipEntry[], bytes: Uint8Array, maxChars: number, warnings: string[]): Promise<string> {
