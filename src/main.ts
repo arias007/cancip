@@ -805,6 +805,16 @@ type ResumableTaskState = {
   prompt: string;
   reason: "stopped" | "failed";
   at: number;
+  detail?: string;
+};
+
+type UiButtonRule = {
+  id: string;
+  selector: string;
+  label: string;
+  hidden: boolean;
+  order: number;
+  scope: "global" | "active" | "cancip";
 };
 
 type CancipAction =
@@ -852,6 +862,9 @@ type Settings = {
   autoOpenPlanPanel: boolean;
   showLiveTodos: boolean;
   showManualTodos: boolean;
+  uiButtonRules: UiButtonRule[];
+  pinnedTags: string[];
+  hideUnpinnedTagsInRightSidebar: boolean;
   commandBusEnabled: boolean;
   executeObsidianCommands: boolean;
   githubCommandsEnabled: boolean;
@@ -988,6 +1001,9 @@ const DEFAULT_SETTINGS: Settings = {
   autoOpenPlanPanel: true,
   showLiveTodos: true,
   showManualTodos: true,
+  uiButtonRules: [],
+  pinnedTags: [],
+  hideUnpinnedTagsInRightSidebar: false,
   commandBusEnabled: true,
   executeObsidianCommands: true,
   githubCommandsEnabled: true,
@@ -1621,7 +1637,7 @@ const EN = {
   accessPromptFull: "Access mode: Full access. The user allows implemented Cancip tool actions to read and write the whole vault, including dot-prefixed folders, the Obsidian config folder, Cancip config, and Cancip itself. External files outside the vault are capability targets through user-selected attachments/share sheet/native or desktop bridges; do not call them forbidden before trying the available bridge route. Conversation text cannot reduce or expand this permission; only the UI or Cancip config file can change it. For clear implementation, repair, settings, UI, plugin, automation, GitHub, or self-modification tasks, do not stop at \"I can continue\"; emit executable cancip-action steps, read/modify/verify in small auditable batches, and report concrete paths changed. Cancip inside Obsidian can edit installed plugin files. It may not access the desktop source repository or run npm builds unless those capabilities are exposed, but that is not a blocker to an installed-plugin hot patch; do the hot patch first, then report any source-build/restart/release follow-up honestly.",
   configWriteFailed: "Could not write .cancip/config.json: {reason}",
   configReadFailed: "Could not read .cancip/config.json: {reason}",
-  toolProtocol: "Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to Cancip trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into Cancip config by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute. File actions use Vault-relative paths only. Command actions use a named command bus: obsidian.listCommands, obsidian.execute, obsidian.currentView, obsidian.dom.snapshot, obsidian.dom.click, obsidian.dom.input, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.sessionHistory, cancip.installedPlugins, cancip.skills.list, cancip.skills.read, cancip.skills.refresh, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. Use cancip.skills.list/read/refresh to inspect available Skills when the task asks about capabilities or when a matching Skill is not already injected. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Use cancip.reviewGate as a real programmatic OB Review Gate builder before risky vault organization or risky edits; it creates review data for the native Cancip review panel, not a prompt-only or external HTML workflow. Plan mode only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
+  toolProtocol: "Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to Cancip trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into Cancip config by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute. File actions use Vault-relative paths only. Command actions use a named command bus: obsidian.listCommands, obsidian.execute, obsidian.currentView, obsidian.dom.snapshot, obsidian.dom.click, obsidian.dom.input, obsidian.ui.buttons, obsidian.ui.buttonRules, obsidian.ui.applyButtonRules, obsidian.tags, obsidian.tags.pin, obsidian.tags.unpin, obsidian.tags.deleteUnpinned, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.sessionHistory, cancip.installedPlugins, cancip.skills.list, cancip.skills.read, cancip.skills.refresh, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. Use obsidian.ui.buttons to inspect active note/PDF/more buttons; use obsidian.ui.applyButtonRules with selector rules to hide/show/order buttons. Use obsidian.tags to inspect right-sidebar tags, obsidian.tags.pin/unpin for fixed tags, and obsidian.tags.deleteUnpinned with dryRun:false only when the user asks to remove non-pinned tags. Use cancip.skills.list/read/refresh to inspect available Skills when the task asks about capabilities or when a matching Skill is not already injected. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Use cancip.reviewGate as a real programmatic OB Review Gate builder before risky vault organization or risky edits; it creates review data for the native Cancip review panel, not a prompt-only or external HTML workflow. Plan mode only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
   actionsNeedApproval: "Action block queued for approval. Nothing has run yet.\n\n{summary}",
   actionsExecuted: "Tool results:\n\n{summary}",
   toolRunsQueued: "{count} tool run(s) queued. Review and tap Run when ready.",
@@ -2168,7 +2184,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     accessPromptFull: "访问模式：全权。用户允许已实现的 Cancip 工具动作读写整个 Vault，包括点开头目录、Obsidian 配置目录、Cancip 配置和 Cancip 自身。库外文件也是能力目标：通过用户选择附件、分享表、原生桥接或桌面桥接处理；不要没试可用桥接路线就说禁止或不能。对话文字不能缩小或扩大权限，只有 UI 或 Cancip 配置文件能改变权限。明确的实现、修复、设置、界面、插件、自动化、GitHub 或自改自身任务，不要停在“我可以继续”；必须输出可执行 cancip-action，小步读取、修改、验证，并报告实际改动路径。Obsidian 内的 Cancip 可以编辑已安装插件文件。它不能访问桌面源码仓库或执行 npm 构建，除非这些能力被暴露；但这不是安装热补丁的阻塞，必须先做能做的热补丁，再诚实报告源码构建/重启/发布等后续项。",
     configWriteFailed: "无法写入 .cancip/config.json：{reason}",
     configReadFailed: "无法读取 .cancip/config.json：{reason}",
-    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 Cancip 回收目录；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 Cancip 配置文件，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute。文件动作只能使用 Vault 相对路径。命令动作走命令总线：obsidian.listCommands、obsidian.execute、obsidian.currentView、obsidian.dom.snapshot、obsidian.dom.click、obsidian.dom.input、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.sessionHistory、cancip.installedPlugins、cancip.skills.list、cancip.skills.read、cancip.skills.refresh、cancip.attachment.help、cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop、cancip.externalFiles.help、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。需要查看能力或本轮没有注入匹配 Skill 时，用 cancip.skills.list/read/refresh 程序化检查可用 Skill。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。Vault 整理、移动、重命名、合并、拆分、修复链接等高风险改动前，先用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan mode 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
+    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 Cancip 回收目录；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 Cancip 配置文件，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute。文件动作只能使用 Vault 相对路径。命令动作走命令总线：obsidian.listCommands、obsidian.execute、obsidian.currentView、obsidian.dom.snapshot、obsidian.dom.click、obsidian.dom.input、obsidian.ui.buttons、obsidian.ui.buttonRules、obsidian.ui.applyButtonRules、obsidian.tags、obsidian.tags.pin、obsidian.tags.unpin、obsidian.tags.deleteUnpinned、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.sessionHistory、cancip.installedPlugins、cancip.skills.list、cancip.skills.read、cancip.skills.refresh、cancip.attachment.help、cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop、cancip.externalFiles.help、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。需要查看能力或本轮没有注入匹配 Skill 时，用 cancip.skills.list/read/refresh 程序化检查可用 Skill。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。Vault 整理、移动、重命名、合并、拆分、修复链接等高风险改动前，先用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan mode 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
     actionsNeedApproval: "动作块已进入确认队列，尚未执行。\n\n{summary}",
     actionsExecuted: "工具执行结果：\n\n{summary}",
     toolRunsQueued: "{count} 个工具调用已排队。确认后点 Run 执行。",
@@ -3784,6 +3800,7 @@ export default class CancipPlugin extends Plugin {
   private statusBarBadgeEl: HTMLElement | null = null;
   private statusBarAttentionState: StatusBarAttentionState = { unreadSessions: 0, reviews: 0 };
   private statusBarReviewRefreshTimer: number | null = null;
+  private uiRuleStyleEl: HTMLStyleElement | null = null;
   private activeUtterance: SpeechSynthesisUtterance | null = null;
   private activeTtsParts: string[] = [];
   private activeTtsPartIndex = 0;
@@ -3942,7 +3959,11 @@ export default class CancipPlugin extends Plugin {
     this.app.workspace.onLayoutReady(() => this.refreshTtsViewActions());
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.refreshTtsViewActions()));
     this.registerEvent(this.app.workspace.on("file-open", () => this.refreshTtsViewActions()));
-    this.registerEvent(this.app.workspace.on("layout-change", () => this.refreshTtsViewActions()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => {
+      this.refreshTtsViewActions();
+      this.applyUiButtonRules();
+    }));
+    this.applyUiButtonRules();
 
     this.registerEvent(this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view: MarkdownView) => {
       menu.addItem((item) => {
@@ -4014,9 +4035,13 @@ export default class CancipPlugin extends Plugin {
     this.scheduleDailyLocalVersioning();
     this.scheduleAutomations();
     this.scheduleBuiltinPrimeTtsWarmup();
+    this.applyUiButtonRules();
   }
 
   onunload(): void {
+    this.clearUiRuleMarks();
+    this.uiRuleStyleEl?.remove();
+    this.uiRuleStyleEl = null;
     this.stopTts(false);
     this.disposeBuiltinPrimeTtsRuntime();
     this.builtinPrimeTtsRuntime = null;
@@ -6172,6 +6197,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     await this.saveData(this.settings);
     await this.writeCancipConfig();
+    this.applyUiButtonRules();
   }
 
   activeApiProfile(): ApiProfile {
@@ -6256,6 +6282,85 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.settings.apiProfiles = remaining.length ? remaining : [getDefaultApiProfile()];
     this.settings.activeApiProfileId = this.settings.apiProfiles[0].id;
     await this.saveSettings();
+  }
+
+  applyUiButtonRules(): void {
+    this.applyUiButtonRuleStyles();
+    this.clearUiRuleMarks();
+    const rules = this.settings.uiButtonRules.filter((rule) => rule.hidden || (Number.isFinite(rule.order) && rule.order !== 0));
+    window.requestAnimationFrame(() => {
+      for (const rule of rules) {
+        for (const el of this.uiRuleElements(rule)) {
+          if (rule.hidden) {
+            el.dataset.cancipUiHidden = "true";
+          }
+          if (Number.isFinite(rule.order) && rule.order !== 0) {
+            const parent = el.parentElement;
+            if (!parent) continue;
+            el.dataset.cancipUiOrder = String(rule.order);
+            el.style.order = String(rule.order);
+            if (parent.style.display !== "flex" && parent.style.display !== "inline-flex") parent.style.display = "flex";
+          }
+        }
+      }
+      if (this.settings.hideUnpinnedTagsInRightSidebar) {
+        const pinned = new Set(this.settings.pinnedTags.map((tag) => normalizeTagName(tag)).filter(Boolean));
+        for (const item of this.rightSidebarTagElements()) {
+          if (!pinned.has(item.tag)) item.el.dataset.cancipTagHidden = item.tag;
+        }
+      }
+    });
+  }
+
+  private applyUiButtonRuleStyles(): void {
+    if (!this.uiRuleStyleEl) {
+      this.uiRuleStyleEl = document.createElement("style");
+      this.uiRuleStyleEl.dataset.cancipUiRules = "1";
+      document.head.appendChild(this.uiRuleStyleEl);
+    }
+    this.uiRuleStyleEl.textContent = [
+      `[data-cancip-ui-hidden="true"] { display: none !important; }`,
+      `[data-cancip-tag-hidden] { display: none !important; }`
+    ].join("\n");
+  }
+
+  private clearUiRuleMarks(): void {
+    for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-tag-hidden]"))) {
+      delete el.dataset.cancipUiHidden;
+      delete el.dataset.cancipTagHidden;
+      if (el.dataset.cancipUiOrder !== undefined) {
+        delete el.dataset.cancipUiOrder;
+        el.style.order = "";
+      }
+    }
+  }
+
+  private uiRuleElements(rule: UiButtonRule): HTMLElement[] {
+    const root = rule.scope === "active"
+      ? ((this.app.workspace.activeLeaf?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? document)
+      : rule.scope === "cancip"
+        ? (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? document
+        : document;
+    try {
+      return Array.from(root.querySelectorAll<HTMLElement>(rule.selector));
+    } catch {
+      return [];
+    }
+  }
+
+  private rightSidebarTagElements(): Array<{ el: HTMLElement; tag: string }> {
+    const right = document.querySelector<HTMLElement>(".mod-right-split, .workspace-split.mod-right-split");
+    const root = right ?? document;
+    const elements = Array.from(root.querySelectorAll<HTMLElement>(".tree-item-self, .tag-pane-tag, [data-tag], [href^='#']"));
+    const seen = new Set<string>();
+    const results: Array<{ el: HTMLElement; tag: string }> = [];
+    for (const el of elements) {
+      const tag = normalizeTagName(el.getAttribute("data-tag") || el.getAttribute("href") || el.textContent || "");
+      if (!tag || seen.has(tag)) continue;
+      seen.add(tag);
+      results.push({ el, tag });
+    }
+    return results;
   }
 
   private scheduleDailyLocalVersioning(): void {
@@ -6468,6 +6573,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       snapshot.messages = nextMessages;
       snapshot.status = decision.status;
       snapshot.completedNotice = true;
+      if (decision.status === "failed") {
+        snapshot.resumableTask = resumableTaskFromRawMessages(messages, "failed", decision.detail);
+      }
       snapshot.updatedAt = updatedAt;
       await adapter.write(entry.path, `${JSON.stringify(snapshot, null, 2)}\n`);
       await recordCancipSessionEvent(adapter, {
@@ -9876,6 +9984,7 @@ class CancipView extends ItemView {
       this.sessionTitleOverride = typeof snapshot.title === "string" && snapshot.title.trim() ? snapshot.title.trim() : entry.title;
       this.mode = isComposerMode(snapshot.mode) ? snapshot.mode : entry.mode;
       this.taskControl = this.normalizeTaskControlState(snapshot.taskControl);
+      this.resumableTask = normalizeResumableTask(snapshot.resumableTask);
       this.draftContext = Array.isArray(snapshot.draftContext)
         ? snapshot.draftContext
             .filter(isRecord)
@@ -9900,6 +10009,9 @@ class CancipView extends ItemView {
         .filter(isRecord)
         .map((item): ChatMessage | null => this.normalizeSessionMessage(item))
         .filter((item): item is ChatMessage => item !== null);
+      if (!this.resumableTask && entry.status === "failed") {
+        this.resumableTask = this.resumableTaskFromMessages("failed", "loaded failed session");
+      }
       this.hiddenContextKeys.clear();
       this.syncCurrentFileHiddenState();
       this.detailsOpenState.clear();
@@ -10418,12 +10530,14 @@ class CancipView extends ItemView {
     this.resumableTask = { prompt: resolved, reason, at: Date.now() };
     this.setStatus(this.t(reason === "failed" ? "resumableFailed" : "resumableStopped"));
     this.syncRequestControls();
+    void this.saveCurrentSession();
   }
 
   private clearResumableTask(): void {
     if (!this.resumableTask) return;
     this.resumableTask = null;
     this.syncRequestControls();
+    void this.saveCurrentSession();
   }
 
   private async resumeLastTask(): Promise<void> {
@@ -10438,6 +10552,12 @@ class CancipView extends ItemView {
       "要求：如果还需要动作，输出一个可执行 cancip-action；如果已有足够结果，直接给用户能看懂的最终结论。"
     ].join("\n");
     await this.sendPromptNow(prompt);
+  }
+
+  private resumableTaskFromMessages(reason: "stopped" | "failed", detail = ""): ResumableTaskState | null {
+    const prompt = this.previousActionableUserPrompt();
+    if (!prompt || isTrivialChatPrompt(prompt)) return null;
+    return { prompt: this.resolveTaskGoal(prompt), reason, at: Date.now(), detail };
   }
 
   private normalizeTaskControlState(raw: unknown): TaskControlState | null {
@@ -11134,6 +11254,10 @@ class CancipView extends ItemView {
     this.syncRequestControls();
     this.currentSessionStatus = status;
     this.currentSessionCompletedNotice = completedNotice;
+    if (status === "failed" && !this.resumableTask) {
+      this.resumableTask = this.resumableTaskFromMessages("failed", "session failed");
+      this.syncRequestControls();
+    }
     if (requestSessionId && requestSessionId !== this.sessionId) {
       const summary = this.sessionNotificationSummary(status);
       void this.recordSessionEvent({ kind: "session.status", sessionId: requestSessionId, status, detail: completedNotice ? "completedNotice=true" : "completedNotice=false" });
@@ -11255,6 +11379,7 @@ class CancipView extends ItemView {
     snapshot.status = isEmptyApiReply ? "failed" : "completed";
     snapshot.completedNotice = true;
     snapshot.unread = true;
+    snapshot.resumableTask = isEmptyApiReply ? { prompt: rawPrompt, reason: "failed", at: Date.now(), detail: "detached api response empty" } : null;
     snapshot.updatedAt = new Date().toISOString();
     await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
     const existing = (await this.readSessionHistoryIndex()).find((entry) => entry.id === sessionId);
@@ -11533,6 +11658,7 @@ class CancipView extends ItemView {
         hasApiKey: Boolean(activeProfile.apiKey)
       },
       taskControl: this.taskControl ? { ...this.taskControl } : null,
+      resumableTask: this.resumableTask ? { ...this.resumableTask } : null,
       settings: {
         language: this.plugin.settings.language,
         includeCurrentFile: this.plugin.settings.includeCurrentFile,
@@ -12285,7 +12411,7 @@ class CancipView extends ItemView {
     return [
       "Cancip tool catalog: output a cancip-action block only when tool use is needed.",
       "Core actions: read/query lines, write/append chunks, patch exact/regex, mkdir/rename/move/copy/delete, config merge, todo, automation, command.",
-      "Command bus: obsidian.listCommands/execute/currentView/dom.snapshot/dom.click/dom.input, cancip.searchVault, cancip.skills.list/read/refresh, cancip.installedPlugins, cancip.reviewGate/list/testMarkdown, cancip.sessionEvents/sessionHistory, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.*, github.*.",
+      "Command bus: obsidian.listCommands/execute/currentView/dom.snapshot/dom.click/dom.input/ui.buttons/ui.buttonRules/ui.applyButtonRules/tags/tags.pin/tags.unpin/tags.deleteUnpinned, cancip.searchVault, cancip.skills.list/read/refresh, cancip.installedPlugins, cancip.reviewGate/list/testMarkdown, cancip.sessionEvents/sessionHistory, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.*, github.*.",
       "Use read/query/line ranges before editing large files. If a patch fails, read the current snippet and change strategy.",
       "For unknown plugin or Obsidian features, first list/read commands/plugins/skills, then act."
     ].join("\n");
@@ -12752,6 +12878,11 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.dom.snapshot", "obsidian.dom.snapshot", ["dom", "snapshot", "buttons", "screen", "ui", "当前界面", "按钮", "截图", "页面元素", "界面"], 84),
       commandTarget("command:obsidian.dom.click", "obsidian.dom.click", ["dom", "click", "tap", "button", "ui", "点击", "按钮", "模拟点击", "点按"], 80),
       commandTarget("command:obsidian.dom.input", "obsidian.dom.input", ["dom", "input", "type", "textarea", "ui", "输入", "模拟输入", "文本框"], 80),
+      commandTarget("command:obsidian.ui.buttons", "obsidian.ui.buttons", ["button", "buttons", "toolbar", "more", "pdf", "note", "ui", "按钮", "顶部按钮", "更多按钮", "排序", "隐藏"], 85),
+      commandTarget("command:obsidian.ui.applyButtonRules", "obsidian.ui.applyButtonRules", ["button", "buttons", "toolbar", "hide", "show", "order", "ui", "按钮", "隐藏", "显示", "排序"], 83),
+      commandTarget("command:obsidian.tags", "obsidian.tags", ["tag", "tags", "right", "sidebar", "fixed", "pin", "标签", "右侧栏", "固定", "删除"], 84),
+      commandTarget("command:obsidian.tags.pin", "obsidian.tags.pin", ["tag", "pin", "fixed", "right", "sidebar", "标签", "固定", "右侧栏"], 82),
+      commandTarget("command:obsidian.tags.deleteUnpinned", "obsidian.tags.deleteUnpinned", ["tag", "delete", "unpinned", "clean", "标签", "删除", "非固定", "清理"], 80),
       commandTarget("command:cancip.reviewGate", "cancip.reviewGate", ["review", "gate", "audit", "approve", "ob", "审核", "审查", "批准", "审核门"], 84),
       commandTarget("command:cancip.reviewGate.list", "cancip.reviewGate.list", ["review", "gate", "list", "audit", "审核", "审查", "审核数据", "列表"], 80),
       commandTarget("command:cancip.reviewGate.testMarkdown", "cancip.reviewGate.testMarkdown", ["review", "gate", "markdown", "render", "diff", "test", "审核", "审查", "渲染", "变化", "测试"], 79),
@@ -12955,6 +13086,11 @@ class CancipView extends ItemView {
       "obsidian.dom.snapshot": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.snapshot\",\"args\":{\"scope\":\"active\",\"limit\":40}}]}",
       "obsidian.dom.click": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.click\",\"args\":{\"scope\":\"active\",\"selector\":\"button[aria-label='Run']\",\"index\":0}}]}",
       "obsidian.dom.input": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.input\",\"args\":{\"scope\":\"active\",\"selector\":\"textarea\",\"index\":0,\"text\":\"输入内容\"}}]}",
+      "obsidian.ui.buttons": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.buttons\",\"args\":{\"scope\":\"active\",\"limit\":80}}]}",
+      "obsidian.ui.applyButtonRules": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.applyButtonRules\",\"args\":{\"rules\":[{\"selector\":\"button[aria-label='More options']\",\"label\":\"More options\",\"hidden\":true,\"order\":0,\"scope\":\"active\"}]}}]}",
+      "obsidian.tags": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags\",\"args\":{\"limit\":80}}]}",
+      "obsidian.tags.pin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags.pin\",\"args\":{\"tags\":[\"important\"],\"hideUnpinned\":true}}]}",
+      "obsidian.tags.deleteUnpinned": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags.deleteUnpinned\",\"args\":{\"dryRun\":true}}]}",
       "cancip.reviewGate": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.reviewGate\",\"args\":{\"paths\":[\"Folder/Note.md\"],\"maxFiles\":20}}]}",
       "cancip.reviewGate.list": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.reviewGate.list\",\"args\":{\"limit\":10}}]}",
       "cancip.reviewGate.testMarkdown": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.reviewGate.testMarkdown\"}]}",
@@ -13917,6 +14053,12 @@ class CancipView extends ItemView {
     if (action.type !== "command") return false;
     const command = action.command.trim();
     return command === "obsidian.execute"
+      || command === "obsidian.dom.click"
+      || command === "obsidian.dom.input"
+      || command === "obsidian.ui.applyButtonRules"
+      || command === "obsidian.tags.pin"
+      || command === "obsidian.tags.unpin"
+      || command === "obsidian.tags.deleteUnpinned"
       || command === "cancip.rebuildIndex"
       || command === "cancip.localVersionCommit"
       || command === "cancip.importCodexMemory"
@@ -14780,6 +14922,34 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: this.domInput(args) });
     }
 
+    if (normalized === "obsidian.ui.buttons") {
+      return this.t("commandExecuted", { command: normalized, result: this.uiButtonsSummary(args) });
+    }
+
+    if (normalized === "obsidian.ui.buttonRules") {
+      return this.t("commandExecuted", { command: normalized, result: this.uiButtonRulesSummary() });
+    }
+
+    if (normalized === "obsidian.ui.applyButtonRules") {
+      return this.t("commandExecuted", { command: normalized, result: await this.applyUiButtonRulesCommand(args) });
+    }
+
+    if (normalized === "obsidian.tags") {
+      return this.t("commandExecuted", { command: normalized, result: this.obsidianTagsSummary(args) });
+    }
+
+    if (normalized === "obsidian.tags.pin") {
+      return this.t("commandExecuted", { command: normalized, result: await this.pinTagsCommand(args, true) });
+    }
+
+    if (normalized === "obsidian.tags.unpin") {
+      return this.t("commandExecuted", { command: normalized, result: await this.pinTagsCommand(args, false) });
+    }
+
+    if (normalized === "obsidian.tags.deleteUnpinned") {
+      return this.t("commandExecuted", { command: normalized, result: await this.deleteUnpinnedTagsCommand(args) });
+    }
+
     if (normalized === "obsidian.execute") {
       if (!this.plugin.settings.executeObsidianCommands) {
         throw new Error(this.t("commandBlocked", { reason: this.t("settingsExecuteObsidianCommands") }));
@@ -15268,6 +15438,117 @@ class CancipView extends ItemView {
       text: trimContext((element.innerText || element.textContent || "").replace(/\s+/g, " ").trim(), 160),
       classes: String(element.className || "").trim()
     };
+  }
+
+  private uiButtonsSummary(args: Record<string, unknown>): string {
+    const scope = typeof args.scope === "string" ? args.scope : "active";
+    const root = this.domActionRoot({ scope });
+    const limit = clampInt(args.limit, 80, 1, 200);
+    const selector = typeof args.selector === "string" && args.selector.trim()
+      ? args.selector.trim()
+      : ".view-header button, .view-header .clickable-icon, .view-actions button, .view-actions .clickable-icon, .workspace-tab-header, .mod-right-split button, .mod-right-split .clickable-icon";
+    const elements = Array.from(root.querySelectorAll<HTMLElement>(selector)).slice(0, limit);
+    if (!elements.length) return this.t("none");
+    return elements.map((el, index) => {
+      const label = uiElementLabel(el);
+      const stable = stableSelectorForElement(el);
+      const hidden = el.offsetParent === null || getComputedStyle(el).display === "none";
+      const order = getComputedStyle(el).order;
+      return `${index}. ${label || el.tagName.toLowerCase()}${hidden ? " [hidden]" : ""}${order !== "0" ? ` order=${order}` : ""}\n   selector: ${stable}`;
+    }).join("\n");
+  }
+
+  private uiButtonRulesSummary(): string {
+    const rules = this.plugin.settings.uiButtonRules;
+    if (!rules.length) return this.t("none");
+    return rules.map((rule, index) => `${index + 1}. ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope} ${rule.label}\n   ${rule.selector}`).join("\n");
+  }
+
+  private async applyUiButtonRulesCommand(args: Record<string, unknown>): Promise<string> {
+    const clear = Boolean(args.clear);
+    const rawRules = Array.isArray(args.rules) ? args.rules : [];
+    const incoming = normalizeUiButtonRules(rawRules);
+    const next = clear ? incoming : mergeUiButtonRules(this.plugin.settings.uiButtonRules, incoming);
+    this.plugin.settings.uiButtonRules = next;
+    await this.plugin.saveSettings();
+    this.plugin.applyUiButtonRules();
+    return this.uiButtonRulesSummary();
+  }
+
+  private obsidianTagsSummary(args: Record<string, unknown>): string {
+    const query = typeof args.query === "string" ? normalizeTagName(args.query).toLowerCase() : "";
+    const pinned = new Set(this.plugin.settings.pinnedTags.map((tag) => normalizeTagName(tag)));
+    const counts = this.vaultTagCounts();
+    const rows = [...counts.entries()]
+      .filter(([tag]) => !query || tag.toLowerCase().includes(query))
+      .sort((a, b) => (pinned.has(b[0]) ? 1 : 0) - (pinned.has(a[0]) ? 1 : 0) || b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, clampInt(args.limit, 80, 1, 300));
+    const rightRows = this.plugin.settings.hideUnpinnedTagsInRightSidebar ? "hidden unless pinned" : "visible";
+    return [
+      `rightSidebarUnpinned: ${rightRows}`,
+      `pinned: ${this.plugin.settings.pinnedTags.map((tag) => `#${tag}`).join(", ") || "none"}`,
+      "",
+      ...(rows.length ? rows.map(([tag, count]) => `${pinned.has(tag) ? "📌 " : ""}#${tag} (${count})`) : [this.t("none")])
+    ].join("\n");
+  }
+
+  private async pinTagsCommand(args: Record<string, unknown>, pin: boolean): Promise<string> {
+    const tags = normalizeTagList(Array.isArray(args.tags) ? args.tags : [args.tag]).filter(Boolean);
+    if (!tags.length) throw new Error(pin ? "obsidian.tags.pin requires tag/tags" : "obsidian.tags.unpin requires tag/tags");
+    const existing = new Set(this.plugin.settings.pinnedTags.map((tag) => normalizeTagName(tag)).filter(Boolean));
+    for (const tag of tags) {
+      if (pin) existing.add(tag);
+      else existing.delete(tag);
+    }
+    this.plugin.settings.pinnedTags = [...existing].sort((a, b) => a.localeCompare(b));
+    if (typeof args.hideUnpinned === "boolean") this.plugin.settings.hideUnpinnedTagsInRightSidebar = args.hideUnpinned;
+    await this.plugin.saveSettings();
+    this.plugin.applyUiButtonRules();
+    return this.obsidianTagsSummary({});
+  }
+
+  private async deleteUnpinnedTagsCommand(args: Record<string, unknown>): Promise<string> {
+    const dryRun = args.dryRun !== false;
+    const pinned = new Set(this.plugin.settings.pinnedTags.map((tag) => normalizeTagName(tag)).filter(Boolean));
+    const explicit = normalizeTagList(Array.isArray(args.tags) ? args.tags : []);
+    const counts = this.vaultTagCounts();
+    const targets = explicit.length ? explicit.filter((tag) => !pinned.has(tag)) : [...counts.keys()].filter((tag) => !pinned.has(tag));
+    const maxFiles = clampInt(args.maxFiles, 200, 1, 2000);
+    const changes: Array<{ file: TFile; oldText: string; newText: string; removed: string[] }> = [];
+    for (const file of this.app.vault.getMarkdownFiles().slice(0, maxFiles)) {
+      const oldText = await this.app.vault.cachedRead(file);
+      const result = removeTagsFromMarkdown(oldText, targets);
+      if (result.text !== oldText) changes.push({ file, oldText, newText: result.text, removed: result.removed });
+    }
+    const summary = [
+      dryRun ? "dryRun: true" : "dryRun: false",
+      `pinned kept: ${[...pinned].map((tag) => `#${tag}`).join(", ") || "none"}`,
+      `target tags: ${targets.map((tag) => `#${tag}`).join(", ") || "none"}`,
+      `changed files: ${changes.length}`,
+      ...changes.slice(0, 30).map((item) => `- ${item.file.path}: ${[...new Set(item.removed)].map((tag) => `#${tag}`).join(", ")}`)
+    ].join("\n");
+    if (dryRun || !changes.length) return summary;
+    const reviewItems = changes.map((item) => this.makeReviewGateItem(item.file.path, item.oldText, item.newText, "patch"));
+    const result = await this.buildActionReviewGate("Cancip Tag Cleanup Review", reviewItems);
+    for (const item of changes) {
+      await this.app.vault.modify(item.file, item.newText);
+    }
+    this.plugin.refreshStatusBarAttention();
+    return `${summary}\nreview: ${result.indexPath}`;
+  }
+
+  private vaultTagCounts(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      const tags = cache ? allTagsFromCache(cache) : [];
+      for (const raw of tags) {
+        const tag = normalizeTagName(raw);
+        if (!tag) continue;
+        counts.set(tag, (counts.get(tag) ?? 0) + 1);
+      }
+    }
+    return counts;
   }
 
   private async sessionHistoryCommand(args: Record<string, unknown>): Promise<string> {
@@ -18845,6 +19126,13 @@ function classifyStaleRunningMessages(messages: Record<string, unknown>[]): {
   };
 }
 
+function resumableTaskFromRawMessages(messages: Record<string, unknown>[], reason: "stopped" | "failed", detail = ""): ResumableTaskState | null {
+  const user = [...messages].reverse().find((message) => message.role === "user" && typeof message.content === "string");
+  const prompt = typeof user?.content === "string" ? user.content.trim() : "";
+  if (!prompt || isTrivialChatPrompt(prompt)) return null;
+  return { prompt: trimContext(prompt, 2000), reason, at: Date.now(), detail };
+}
+
 function isProcessOnlySessionContent(content: string): boolean {
   const normalized = content.replace(/<!--[\s\S]*?-->/g, "").replace(/\s+/g, "");
   return normalized.includes("执行中·")
@@ -19110,6 +19398,9 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "obsidian.listCommands",
     "obsidian.currentView",
     "obsidian.dom.snapshot",
+    "obsidian.ui.buttons",
+    "obsidian.ui.buttonRules",
+    "obsidian.tags",
     "cancip.reviewGate.list",
     "cancip.sessionEvents",
     "cancip.sessionHistory",
@@ -19983,6 +20274,40 @@ function normalizeSkillRoots(raw: unknown): string[] {
   return uniqueStrings(values).slice(0, 40);
 }
 
+function normalizeTagList(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : [];
+  return uniqueStrings(values
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => normalizeTagName(item))
+    .filter(Boolean))
+    .slice(0, 200);
+}
+
+function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter(isRecord)
+    .map((item): UiButtonRule | null => {
+      const selector = typeof item.selector === "string" ? item.selector.trim() : "";
+      if (!selector) return null;
+      const label = typeof item.label === "string" && item.label.trim() ? item.label.trim() : selector;
+      const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : stableRuleId(selector);
+      const scope = item.scope === "active" || item.scope === "cancip" ? item.scope : "global";
+      const order = Number.isFinite(Number(item.order)) ? Math.max(-999, Math.min(999, Math.round(Number(item.order)))) : 0;
+      return { id, selector, label, hidden: Boolean(item.hidden), order, scope };
+    })
+    .filter((item): item is UiButtonRule => item !== null)
+    .slice(0, 200);
+}
+
+function stableRuleId(input: string): string {
+  return `rule-${input.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "button"}`;
+}
+
+function normalizeTagName(input: string): string {
+  return input.trim().replace(/^#+/, "").replace(/\\/g, "/").replace(/\s+/g, "").replace(/^\/+|\/+$/g, "");
+}
+
 function getActiveApiProfile(settings: Settings): ApiProfile {
   return settings.apiProfiles.find((profile) => profile.id === settings.activeApiProfileId) ?? settings.apiProfiles[0] ?? getDefaultApiProfile();
 }
@@ -20107,6 +20432,9 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     autoOpenPlanPanel: typeof merged.autoOpenPlanPanel === "boolean" ? merged.autoOpenPlanPanel : DEFAULT_SETTINGS.autoOpenPlanPanel,
     showLiveTodos: typeof merged.showLiveTodos === "boolean" ? merged.showLiveTodos : DEFAULT_SETTINGS.showLiveTodos,
     showManualTodos: typeof merged.showManualTodos === "boolean" ? merged.showManualTodos : DEFAULT_SETTINGS.showManualTodos,
+    uiButtonRules: normalizeUiButtonRules(merged.uiButtonRules),
+    pinnedTags: normalizeTagList(merged.pinnedTags),
+    hideUnpinnedTagsInRightSidebar: typeof merged.hideUnpinnedTagsInRightSidebar === "boolean" ? merged.hideUnpinnedTagsInRightSidebar : DEFAULT_SETTINGS.hideUnpinnedTagsInRightSidebar,
     commandBusEnabled: typeof merged.commandBusEnabled === "boolean" ? merged.commandBusEnabled : DEFAULT_SETTINGS.commandBusEnabled,
     executeObsidianCommands: typeof merged.executeObsidianCommands === "boolean" ? merged.executeObsidianCommands : DEFAULT_SETTINGS.executeObsidianCommands,
     githubCommandsEnabled: typeof merged.githubCommandsEnabled === "boolean" ? merged.githubCommandsEnabled : DEFAULT_SETTINGS.githubCommandsEnabled,
@@ -20192,6 +20520,9 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     autoOpenPlanPanel: settings.autoOpenPlanPanel,
     showLiveTodos: settings.showLiveTodos,
     showManualTodos: settings.showManualTodos,
+    uiButtonRules: settings.uiButtonRules,
+    pinnedTags: settings.pinnedTags,
+    hideUnpinnedTagsInRightSidebar: settings.hideUnpinnedTagsInRightSidebar,
     commandBusEnabled: settings.commandBusEnabled,
     executeObsidianCommands: settings.executeObsidianCommands,
     githubCommandsEnabled: settings.githubCommandsEnabled,
@@ -20290,6 +20621,9 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.autoOpenPlanPanel === "boolean") config.autoOpenPlanPanel = raw.autoOpenPlanPanel;
   if (typeof raw.showLiveTodos === "boolean") config.showLiveTodos = raw.showLiveTodos;
   if (typeof raw.showManualTodos === "boolean") config.showManualTodos = raw.showManualTodos;
+  if (Array.isArray(raw.uiButtonRules)) config.uiButtonRules = raw.uiButtonRules;
+  if (Array.isArray(raw.pinnedTags)) config.pinnedTags = raw.pinnedTags;
+  if (typeof raw.hideUnpinnedTagsInRightSidebar === "boolean") config.hideUnpinnedTagsInRightSidebar = raw.hideUnpinnedTagsInRightSidebar;
   if (typeof raw.commandBusEnabled === "boolean") config.commandBusEnabled = raw.commandBusEnabled;
   if (typeof raw.executeObsidianCommands === "boolean") config.executeObsidianCommands = raw.executeObsidianCommands;
   if (typeof raw.githubCommandsEnabled === "boolean") config.githubCommandsEnabled = raw.githubCommandsEnabled;
@@ -20412,6 +20746,7 @@ const CANCIP_CONFIG_BOOLEAN_KEYS = new Set([
   "autoOpenPlanPanel",
   "showLiveTodos",
   "showManualTodos",
+  "hideUnpinnedTagsInRightSidebar",
   "commandBusEnabled",
   "executeObsidianCommands",
   "githubCommandsEnabled",
@@ -21547,6 +21882,16 @@ function normalizeToolRuns(raw: unknown): ToolRun[] {
     .filter((item): item is ToolRun => item !== null);
 }
 
+function normalizeResumableTask(raw: unknown): ResumableTaskState | null {
+  if (!isRecord(raw)) return null;
+  const prompt = typeof raw.prompt === "string" ? raw.prompt.trim() : "";
+  const reason = raw.reason === "stopped" || raw.reason === "failed" ? raw.reason : null;
+  if (!prompt || !reason) return null;
+  const at = Number.isFinite(Number(raw.at)) ? Number(raw.at) : Date.now();
+  const detail = typeof raw.detail === "string" ? raw.detail : undefined;
+  return { prompt, reason, at, detail };
+}
+
 function normalizeChatMessage(raw: Record<string, unknown>): ChatMessage | null {
   const role = raw.role;
   if (role !== "system" && role !== "user" && role !== "assistant") return null;
@@ -21593,6 +21938,85 @@ function formatDomActionResult(result: DomActionResult): string {
     result.classes ? `classes: ${result.classes}` : "",
     result.text ? `text: ${result.text}` : ""
   ].filter(Boolean).join("\n");
+}
+
+function uiElementLabel(el: HTMLElement): string {
+  return (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.textContent || el.className || el.tagName).toString().replace(/\s+/g, " ").trim();
+}
+
+function stableSelectorForElement(el: HTMLElement): string {
+  const aria = el.getAttribute("aria-label");
+  if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssEscapeAttr(aria)}"]`;
+  const title = el.getAttribute("title");
+  if (title) return `${el.tagName.toLowerCase()}[title="${cssEscapeAttr(title)}"]`;
+  const cls = String(el.className || "").split(/\s+/).filter(Boolean).filter((item) => !/^is-|^mod-|^has-/.test(item)).slice(0, 3);
+  if (cls.length) return `${el.tagName.toLowerCase()}.${cls.map(cssClassEscape).join(".")}`;
+  return el.tagName.toLowerCase();
+}
+
+function cssEscapeAttr(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"");
+}
+
+function cssClassEscape(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]/g, "\\$&");
+}
+
+function mergeUiButtonRules(existing: UiButtonRule[], incoming: UiButtonRule[]): UiButtonRule[] {
+  const byId = new Map(existing.map((rule) => [rule.id, rule]));
+  for (const rule of incoming) byId.set(rule.id, rule);
+  return [...byId.values()].slice(0, 200);
+}
+
+function allTagsFromCache(cache: { tags?: Array<{ tag?: string }>; frontmatter?: Record<string, unknown> }): string[] {
+  const tags = new Set<string>();
+  for (const item of cache.tags ?? []) {
+    if (typeof item.tag === "string") tags.add(item.tag);
+  }
+  const frontmatterTags = cache.frontmatter?.tags ?? cache.frontmatter?.tag;
+  for (const item of flattenKeywordValue(frontmatterTags)) tags.add(item);
+  return [...tags];
+}
+
+function removeTagsFromMarkdown(content: string, tags: string[]): { text: string; removed: string[] } {
+  const normalized = new Set(tags.map((tag) => normalizeTagName(tag)).filter(Boolean));
+  const removed: string[] = [];
+  if (!normalized.size) return { text: content, removed };
+  let text = content.replace(/(^|\s)#([^\s#`.,;:!?()[\]{}<>，。！？、；：]+)/g, (match, prefix: string, raw: string) => {
+    const tag = normalizeTagName(raw);
+    if (!normalized.has(tag)) return match;
+    removed.push(tag);
+    return prefix;
+  });
+  text = text.replace(/^---\r?\n([\s\S]*?)\r?\n---/, (match, body: string) => {
+    const nextBody = body
+      .replace(/^tags:\s*\[(.*?)\]\s*$/gm, (line, inner: string) => {
+        const kept = inner.split(",").map((item: string) => item.trim().replace(/^["']|["']$/g, "")).filter((tag: string) => {
+          const normalizedTag = normalizeTagName(tag);
+          if (!normalizedTag || normalized.has(normalizedTag)) {
+            if (normalizedTag) removed.push(normalizedTag);
+            return false;
+          }
+          return true;
+        });
+        return kept.length ? `tags: [${kept.join(", ")}]` : "";
+      })
+      .replace(/^tags:\s*\r?\n((?:\s*-\s*.*\r?\n?)+)/gm, (block, lines: string) => {
+        const kept = lines.split(/\r?\n/).filter(Boolean).filter((line: string) => {
+          const value = line.replace(/^\s*-\s*/, "").trim().replace(/^["']|["']$/g, "");
+          const normalizedTag = normalizeTagName(value);
+          if (!normalizedTag || normalized.has(normalizedTag)) {
+            if (normalizedTag) removed.push(normalizedTag);
+            return false;
+          }
+          return true;
+        });
+        return kept.length ? `tags:\n${kept.join("\n")}` : "";
+      });
+    return `---\n${nextBody.replace(/\n{3,}/g, "\n\n").trim()}\n---`;
+  });
+  text = text.replace(/[ \t]{2,}/g, " ").replace(/[ \t]+\n/g, "\n");
+  return { text, removed };
 }
 
 function isToolRunStatus(value: unknown): value is ToolRunStatus {
