@@ -89,6 +89,7 @@ const BUILTIN_PRIME_TTS_OPTIONAL_ASSETS = [
   { relative: "manifest.json", path: `${BUILTIN_PRIME_TTS_BASE}/manifest.json` },
   { relative: "README.md", path: `${BUILTIN_PRIME_TTS_BASE}/README.md` }
 ] as const;
+const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
 const LANGUAGE_VALUES = ["zh", "zh-TW", "en", "ug", "tr", "ru", "ja", "ko", "es", "fr", "de", "ar"] as const;
 type Language = typeof LANGUAGE_VALUES[number];
 type LanguageMode = "auto" | Language;
@@ -1173,6 +1174,7 @@ const EN = {
   ttsSeeked: "Reading from part {part}/{total}",
   ttsInstallLocalPackage: "Install local TTS",
   ttsInstallingLocalPackage: "Installing local TTS package...",
+  ttsLocalPackageInstallStarted: "Local TTS package install started. Check TTS status/probe for progress.",
   ttsLocalPackageInstalled: "Local TTS package installed: {count} files",
   ttsLocalPackageInstallFailed: "Local TTS package install failed: {reason}",
   ttsStatus: "TTS status",
@@ -1716,6 +1718,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     ttsSeeked: "从第 {part}/{total} 段开始朗读",
     ttsInstallLocalPackage: "安装本地 TTS",
     ttsInstallingLocalPackage: "正在安装本地 TTS 包...",
+    ttsLocalPackageInstallStarted: "本地 TTS 包已开始后台安装，可用 TTS 状态/探测查看进度。",
     ttsLocalPackageInstalled: "本地 TTS 包已安装：{count} 个文件",
     ttsLocalPackageInstallFailed: "本地 TTS 包安装失败：{reason}",
     ttsStatus: "TTS 状态",
@@ -3759,6 +3762,7 @@ export default class CancipPlugin extends Plugin {
   private builtinPrimeTtsRuntime: PrimeTtsRuntime | null = null;
   private builtinPrimeTtsWarmupTimer: number | null = null;
   private builtinPrimeTtsInstallPromise: Promise<string> | null = null;
+  private builtinPrimeTtsInstallStartedAt = 0;
   private builtinPrimeTtsInstallStatus = "";
   private builtinPrimeTtsInstallLastError = "";
   private ttsOverlay: TtsOverlayElements | null = null;
@@ -4691,24 +4695,64 @@ export default class CancipPlugin extends Plugin {
   }
 
   async installBuiltinPrimeTtsPackage(showNotice = true): Promise<string> {
-    if (this.builtinPrimeTtsInstallPromise) return await this.builtinPrimeTtsInstallPromise;
+    const existing = await this.completeBuiltinPrimeTtsStatus();
+    if (existing) return existing;
+    if (this.builtinPrimeTtsInstallPromise) {
+      if (Date.now() - this.builtinPrimeTtsInstallStartedAt < BUILTIN_PRIME_TTS_INSTALL_STALE_MS) {
+        return await this.builtinPrimeTtsInstallPromise;
+      }
+      this.builtinPrimeTtsInstallPromise = null;
+      this.builtinPrimeTtsInstallStartedAt = 0;
+    }
+    this.builtinPrimeTtsInstallStartedAt = Date.now();
     this.builtinPrimeTtsInstallPromise = this.downloadAndInstallBuiltinPrimeTtsPackage(showNotice);
     try {
       return await this.builtinPrimeTtsInstallPromise;
     } finally {
       this.builtinPrimeTtsInstallPromise = null;
+      this.builtinPrimeTtsInstallStartedAt = 0;
       this.syncTtsOverlay();
     }
   }
 
-  private async downloadAndInstallBuiltinPrimeTtsPackage(showNotice: boolean): Promise<string> {
-    const beforeMissing = await this.missingBuiltinPrimeTtsAssets();
-    if (!beforeMissing.length) {
-      const result = `complete (${BUILTIN_PRIME_TTS_BASE})`;
-      this.builtinPrimeTtsInstallStatus = result;
-      this.builtinPrimeTtsInstallLastError = "";
-      return result;
+  async startBuiltinPrimeTtsPackageInstall(showNotice = true): Promise<string> {
+    const existing = await this.completeBuiltinPrimeTtsStatus();
+    if (existing) return existing;
+    if (!this.builtinPrimeTtsInstallPromise || Date.now() - this.builtinPrimeTtsInstallStartedAt >= BUILTIN_PRIME_TTS_INSTALL_STALE_MS) {
+      this.builtinPrimeTtsInstallStartedAt = Date.now();
+      this.builtinPrimeTtsInstallPromise = this.downloadAndInstallBuiltinPrimeTtsPackage(showNotice)
+        .catch((error) => {
+          const reason = error instanceof Error ? error.message : String(error);
+          console.warn("Cancip PrimeTTS background install failed", error);
+          this.builtinPrimeTtsInstallLastError = reason;
+          this.builtinPrimeTtsInstallStatus = this.t("ttsLocalPackageInstallFailed", { reason });
+          return this.builtinPrimeTtsInstallStatus;
+        })
+        .finally(() => {
+          this.builtinPrimeTtsInstallPromise = null;
+          this.builtinPrimeTtsInstallStartedAt = 0;
+          this.syncTtsOverlay();
+        });
     }
+    const message = this.t("ttsLocalPackageInstallStarted");
+    if (showNotice) new Notice(message, 7000);
+    return `${message}\n${this.formatTtsStatus()}`;
+  }
+
+  private async completeBuiltinPrimeTtsStatus(): Promise<string> {
+    const missing = await this.missingBuiltinPrimeTtsAssets();
+    if (missing.length) return "";
+    const result = `complete (${BUILTIN_PRIME_TTS_BASE})`;
+    this.builtinPrimeTtsInstallPromise = null;
+    this.builtinPrimeTtsInstallStartedAt = 0;
+    this.builtinPrimeTtsInstallStatus = result;
+    this.builtinPrimeTtsInstallLastError = "";
+    return result;
+  }
+
+  private async downloadAndInstallBuiltinPrimeTtsPackage(showNotice: boolean): Promise<string> {
+    const alreadyComplete = await this.completeBuiltinPrimeTtsStatus();
+    if (alreadyComplete) return alreadyComplete;
     this.builtinPrimeTtsInstallStatus = this.t("ttsInstallingLocalPackage");
     this.builtinPrimeTtsInstallLastError = "";
     this.syncTtsOverlay();
@@ -5284,7 +5328,7 @@ export default class CancipPlugin extends Plugin {
     for (const path of paths) {
       if (!(await this.app.vault.adapter.exists(path))) missing.push(path);
     }
-    if (!missing.length) return `complete (${BUILTIN_PRIME_TTS_BASE})`;
+    if (!missing.length) return await this.completeBuiltinPrimeTtsStatus();
     if (missing.length === paths.length) return `not installed (${BUILTIN_PRIME_TTS_BASE})`;
     return `incomplete, missing ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3}` : ""}`;
   }
@@ -14218,7 +14262,7 @@ class CancipView extends ItemView {
     }
 
     if (normalized === "cancip.tts.installLocal") {
-      return this.t("commandExecuted", { command: normalized, result: await this.plugin.installBuiltinPrimeTtsPackage(true) });
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.startBuiltinPrimeTtsPackageInstall(true) });
     }
 
     if (normalized === "cancip.tts.pause") {
