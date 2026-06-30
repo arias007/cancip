@@ -18965,6 +18965,7 @@ const PRIME_TTS_SYMBOL_IDS: Record<string, number> = {
 
 const PRIME_TTS_PUNCT = new Set([",", ".", "?", "!", "...", "-", "'"]);
 const PRIME_TTS_PINYIN_INITIALS = ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r", "z", "c", "s", "y", "w"] as const;
+const PRIME_TTS_APICAL_I_INITIALS = new Set(["zh", "ch", "sh", "r", "z", "c", "s"]);
 const PRIME_TTS_INITIAL_TO_ZHUYIN: Record<string, string> = {
   b: "ㄅ", p: "ㄆ", m: "ㄇ", f: "ㄈ", d: "ㄉ", t: "ㄊ", n: "ㄋ", l: "ㄌ", g: "ㄍ", k: "ㄎ", h: "ㄏ",
   j: "ㄐ", q: "ㄑ", x: "ㄒ", zh: "ㄓ", ch: "ㄔ", sh: "ㄕ", r: "ㄖ", z: "ㄗ", c: "ㄘ", s: "ㄙ"
@@ -19212,7 +19213,10 @@ function pinyinSyllableToZhuyin(raw: string): { symbols: string[]; tone: number 
   if ((initial === "j" || initial === "q" || initial === "x") && body.startsWith("u")) {
     body = `v${body.slice(1)}`;
   }
-  if (!body && ["zh", "ch", "sh", "r", "z", "c", "s"].includes(initial)) {
+  if (body === "i" && PRIME_TTS_APICAL_I_INITIALS.has(initial)) {
+    body = "";
+  }
+  if (!body && PRIME_TTS_APICAL_I_INITIALS.has(initial)) {
     const syllabic = PRIME_TTS_INITIAL_TO_ZHUYIN[initial];
     return { symbols: syllabic ? [syllabic, "ㄭ"] : ["UNK"], tone };
   }
