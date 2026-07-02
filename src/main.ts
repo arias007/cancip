@@ -108,11 +108,11 @@ const PRIME_TTS_PACKAGE_DEFINITIONS = [
   }
 ] as const;
 const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
-const BUILTIN_PRIME_TTS_PREFETCH_AHEAD = 12;
+const BUILTIN_PRIME_TTS_PREFETCH_AHEAD = 4;
 const BUILTIN_PRIME_TTS_CACHE_KEEP_BEHIND = 1;
-const BUILTIN_PRIME_TTS_CACHE_KEEP_AHEAD = 24;
+const BUILTIN_PRIME_TTS_CACHE_KEEP_AHEAD = 12;
 const BUILTIN_PRIME_TTS_MAIN_PREFETCH_AHEAD = 1;
-const BUILTIN_PRIME_TTS_DECODE_AHEAD = 8;
+const BUILTIN_PRIME_TTS_DECODE_AHEAD = 1;
 const BUILTIN_PRIME_TTS_WARMUP_TEXT = "好。";
 const BUILTIN_PRIME_TTS_WARMUP_SYNTH_DELAY_MS = 80;
 const PRIME_TTS_FAST_DEFAULT_CHARS = 96;
@@ -3907,12 +3907,14 @@ export default class CancipPlugin extends Plugin {
   private activeTtsPrimeCacheSessionId = 0;
   private activeTtsStoppedAt = 0;
   private activeTtsLastHighlightCursor = 0;
+  private activeTtsHighlightBaseCursor = 0;
   private activeTtsHighlightKey = "";
   private activeTtsSourcePath = "";
   private activeTtsSourceText = "";
   private activeTtsSourceHighlightNodes: HTMLElement[] = [];
   private activeTtsSourceClassNodes: HTMLElement[] = [];
   private activeTtsEditorSelectionSnapshot: { anchor: { line: number; ch: number }; head: { line: number; ch: number }; filePath: string } | null = null;
+  private ttsHighlightFrame: number | null = null;
   private activeNativeBridge: NativeTtsBridge | null = null;
   private activeWebAudioContext: AudioContext | null = null;
   private activeWebAudioSource: AudioBufferSourceNode | null = null;
@@ -4252,6 +4254,8 @@ export default class CancipPlugin extends Plugin {
       this.activeTtsPartIndex = 0;
       this.activeTtsSourcePath = sourcePath;
       this.activeTtsSourceText = sourceText || text;
+      this.activeTtsHighlightBaseCursor = sourcePath ? this.findActiveTtsSourceBaseCursor(this.activeTtsSourceText) : 0;
+      this.activeTtsLastHighlightCursor = this.activeTtsHighlightBaseCursor;
       this.syncTtsOverlay();
       const providers = this.ttsProviderChain(forcedProvider, spokenText);
       const errors: string[] = [];
@@ -4323,6 +4327,7 @@ export default class CancipPlugin extends Plugin {
     this.activeTtsStartedAudio = false;
     this.activeTtsSourcePath = "";
     this.activeTtsSourceText = "";
+    this.activeTtsHighlightBaseCursor = 0;
     this.clearTtsSourceHighlight();
     this.activeTtsPrimeCache.clear();
     this.activeTtsPrimeCacheRunId = 0;
@@ -4711,6 +4716,7 @@ export default class CancipPlugin extends Plugin {
       void this.installBuiltinPrimeTtsPackage(true);
     });
     handle.addEventListener("pointerdown", (event) => this.startTtsOverlayDrag(event));
+    panel.addEventListener("pointerdown", (event) => this.startTtsOverlayDrag(event));
     bubble.addEventListener("pointerdown", (event) => this.startTtsOverlayDrag(event));
     const keepInView = () => this.placeTtsOverlay(root, root.getBoundingClientRect().left, root.getBoundingClientRect().top);
     window.addEventListener("resize", keepInView);
@@ -4841,7 +4847,7 @@ export default class CancipPlugin extends Plugin {
         overlay.root.addClass("is-hidden");
       }, status.mode === "failed" ? 8000 : 1800);
     }
-    this.updateTtsSourceHighlight();
+    this.scheduleTtsSourceHighlightUpdate();
   }
 
   private async openActiveTtsSourceFile(): Promise<void> {
@@ -4868,7 +4874,10 @@ export default class CancipPlugin extends Plugin {
     const target = event.target as HTMLElement | null;
     const isBubbleDrag = target === overlay.bubble || Boolean(target?.closest(".obcc-tts-floating-bubble"));
     const isTitleDrag = target === overlay.title || Boolean(target?.closest(".obcc-tts-floating-title"));
-    if (!isBubbleDrag && !isTitleDrag && target?.closest("button,input,select,textarea")) return;
+    const isHandleDrag = target === overlay.handle || Boolean(target?.closest(".obcc-tts-floating-handle"));
+    const isPanelDrag = Boolean(target?.closest(".obcc-tts-floating-panel"));
+    if (!isBubbleDrag && !isTitleDrag && !isHandleDrag && !isPanelDrag) return;
+    if (!isBubbleDrag && !isTitleDrag && target?.closest("button,input,select,textarea,.obcc-tts-floating-settings,.obcc-tts-floating-text,.obcc-tts-floating-row,.obcc-tts-floating-controls")) return;
     event.preventDefault();
     const rect = overlay.root.getBoundingClientRect();
     const offsetX = event.clientX - rect.left;
@@ -5042,6 +5051,10 @@ export default class CancipPlugin extends Plugin {
   }
 
   private clearTtsSourceHighlight(): void {
+    if (this.ttsHighlightFrame !== null) {
+      window.cancelAnimationFrame(this.ttsHighlightFrame);
+      this.ttsHighlightFrame = null;
+    }
     if (this.activeTtsEditorSelectionSnapshot) {
       const editor = this.app.workspace.activeEditor?.editor;
       const file = this.app.workspace.activeEditor?.file;
@@ -5074,6 +5087,14 @@ export default class CancipPlugin extends Plugin {
     this.activeTtsHighlightKey = "";
   }
 
+  private scheduleTtsSourceHighlightUpdate(): void {
+    if (this.ttsHighlightFrame !== null) return;
+    this.ttsHighlightFrame = window.requestAnimationFrame(() => {
+      this.ttsHighlightFrame = null;
+      this.updateTtsSourceHighlight();
+    });
+  }
+
   private updateTtsSourceHighlight(): void {
     const displayIndex = this.activeTtsDisplayIndex();
     const displayText = (this.activeTtsDisplayParts[displayIndex] ?? "").trim();
@@ -5086,8 +5107,16 @@ export default class CancipPlugin extends Plugin {
     }
     if (this.activeTtsHighlightKey === key) return;
     this.clearTtsSourceHighlight();
-    const highlightedRendered = this.highlightActiveRenderedTtsPart(displayText) || this.highlightActiveRenderedTtsPart(playText);
-    const highlightedEditor = this.highlightActiveEditorTtsPart(displayText) || this.highlightActiveEditorTtsPart(playText);
+    const highlightedRendered = this.highlightActiveRenderedTtsPart(displayText);
+    const highlightedEditor = highlightedRendered ? false : this.highlightActiveEditorTtsPart(displayText);
+    if (!highlightedRendered && !highlightedEditor && playText && normalizeTtsHighlightText(playText) !== normalizeTtsHighlightText(displayText)) {
+      const highlightedPlayRendered = this.highlightActiveRenderedTtsPart(playText);
+      const highlightedPlayEditor = highlightedPlayRendered ? false : this.highlightActiveEditorTtsPart(playText);
+      if (highlightedPlayRendered || highlightedPlayEditor) {
+        this.activeTtsHighlightKey = key;
+        return;
+      }
+    }
     if (highlightedRendered || highlightedEditor) this.activeTtsHighlightKey = key;
   }
 
@@ -5146,21 +5175,24 @@ export default class CancipPlugin extends Plugin {
       const roots = Array.from(container.querySelectorAll(".markdown-preview-view, .markdown-rendered, .cm-content, .pdf-viewer, .pdf-container, .pdfViewer, .textLayer, .pdf-embed"));
       for (const root of roots) {
         if (!(root instanceof HTMLElement)) continue;
-        if (this.wrapFirstTextMatch(root, current)) return true;
         if (this.highlightRenderedPart(root, current)) return true;
+        if (this.wrapFirstTextMatch(root, current)) return true;
       }
     }
     return false;
   }
 
   private ttsSourceContainers(): HTMLElement[] {
-    const containers: HTMLElement[] = [];
+    const activeContainers: HTMLElement[] = [];
+    const otherContainers: HTMLElement[] = [];
     this.app.workspace.iterateAllLeaves((leaf) => {
       const view = leaf.view as unknown as { file?: TFile; containerEl?: HTMLElement };
       if (view.file instanceof TFile && view.file.path === this.activeTtsSourcePath && view.containerEl) {
-        containers.push(view.containerEl);
+        if (leaf === this.app.workspace.activeLeaf) activeContainers.push(view.containerEl);
+        else otherContainers.push(view.containerEl);
       }
     });
+    const containers = [...activeContainers, ...otherContainers];
     if (containers.length) return containers;
     const activeContainer = (this.app.workspace.activeLeaf?.view as unknown as { containerEl?: HTMLElement } | null)?.containerEl;
     return activeContainer ? [activeContainer] : [];
@@ -5196,6 +5228,12 @@ export default class CancipPlugin extends Plugin {
   }
 
   private ttsNormalizedHighlightCursor(): number {
+    let cursor = Math.max(0, this.activeTtsHighlightBaseCursor) + this.ttsDisplayNormalizedCursor();
+    if (Number.isFinite(cursor) && cursor >= 0) this.activeTtsLastHighlightCursor = cursor;
+    return this.activeTtsLastHighlightCursor;
+  }
+
+  private ttsDisplayNormalizedCursor(): number {
     let cursor = 0;
     if (this.activeTtsDisplayParts.length) {
       const displayIndex = this.activeTtsDisplayIndex();
@@ -5207,14 +5245,95 @@ export default class CancipPlugin extends Plugin {
         cursor += normalizeTtsHighlightText(this.activeTtsParts[index] ?? "").length;
       }
     }
-    if (Number.isFinite(cursor) && cursor >= 0) this.activeTtsLastHighlightCursor = cursor;
-    return this.activeTtsLastHighlightCursor;
+    return Number.isFinite(cursor) && cursor >= 0 ? cursor : 0;
   }
 
   private ttsSourceTextOffsetHint(): number {
     const normalizedSource = normalizedTextWithSourceOffsets(this.activeTtsSourceText || "");
-    const offset = normalizedSource.offsets[this.ttsNormalizedHighlightCursor()];
+    const offset = normalizedSource.offsets[this.ttsDisplayNormalizedCursor()];
     return Number.isFinite(offset) ? offset : 0;
+  }
+
+  private findActiveTtsSourceBaseCursor(snapshot: string): number {
+    const sourcePath = this.activeTtsSourcePath.trim();
+    if (!sourcePath) return 0;
+    for (const container of this.ttsSourceContainers()) {
+      const pdfCursor = this.normalizedPdfTtsViewportBaseCursor(container);
+      if (typeof pdfCursor === "number") return pdfCursor;
+      const markdownCursor = this.normalizedMarkdownTtsViewportBaseCursor(container);
+      if (typeof markdownCursor === "number") return markdownCursor;
+    }
+    const anchor = normalizeTtsHighlightText(snapshot).slice(0, 240);
+    if (anchor.length < 3) return 0;
+    for (const container of this.ttsSourceContainers()) {
+      const normalized = this.normalizedTtsTextStream(container);
+      if (!normalized) continue;
+      const match = findBestNormalizedNeedleMatch(normalized, anchor, true, 0);
+      if (match) return Math.max(0, match.index);
+    }
+    return 0;
+  }
+
+  private normalizedMarkdownTtsViewportBaseCursor(container: HTMLElement): number | null {
+    for (const root of innermostReadableRoots(Array.from(container.querySelectorAll<HTMLElement>(".markdown-preview-view, .markdown-rendered, .cm-content, .markdown-source-view")))) {
+      const viewport = ttsReadableViewport(root);
+      const visibleItems = markdownViewportReadableItems(root, viewport);
+      const startIndex = viewportStartIndex(visibleItems, viewport.top);
+      const startElement = visibleItems[startIndex]?.element;
+      if (!startElement) continue;
+      const allItems = markdownViewportReadableItems(root, { top: Number.NEGATIVE_INFINITY, bottom: Number.POSITIVE_INFINITY });
+      const fullIndex = allItems.findIndex((item) => item.element === startElement);
+      if (fullIndex < 0) continue;
+      const before = allItems.slice(0, fullIndex).reduce((sum, item) => sum + normalizeTtsHighlightText(item.text).length, 0);
+      return before + normalizedElementHiddenPrefixLength(startElement, viewport.top);
+    }
+    return null;
+  }
+
+  private normalizedPdfTtsViewportBaseCursor(container: HTMLElement): number | null {
+    const directLayer = container.hasClass("textLayer") ? [container] : [];
+    const textLayers = [...directLayer, ...Array.from(container.querySelectorAll<HTMLElement>(".textLayer"))];
+    if (!textLayers.length) return null;
+    const viewport = ttsReadableViewport(container);
+    const visibleItems = pdfViewportReadableItems(container, viewport);
+    const startIndex = viewportStartIndex(visibleItems, viewport.top);
+    const startElement = visibleItems[startIndex]?.element;
+    if (!startElement) return null;
+    let cursor = 0;
+    for (const layer of textLayers) {
+      for (const element of Array.from(layer.querySelectorAll<HTMLElement>("span, br"))) {
+        if (element === startElement) return cursor;
+        if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
+        const text = normalizeTtsHighlightText(element.tagName === "BR" ? "\n" : (element.innerText || element.textContent || ""));
+        cursor += text.length;
+      }
+    }
+    return null;
+  }
+
+  private normalizedTtsTextStream(container: HTMLElement): string {
+    const directLayer = container.hasClass("textLayer") ? [container] : [];
+    const textLayers = [...directLayer, ...Array.from(container.querySelectorAll<HTMLElement>(".textLayer"))];
+    const pdfLayers = this.pdfTextLayersForTtsHighlight(container, textLayers);
+    if (pdfLayers.length) {
+      let text = "";
+      for (const layer of pdfLayers) {
+        for (const element of Array.from(layer.querySelectorAll<HTMLElement>("span, br"))) {
+          if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
+          text += normalizeTtsHighlightText(element.tagName === "BR" ? "\n" : (element.innerText || element.textContent || ""));
+          if (text.length > 120000) return text;
+        }
+      }
+      if (text) return text;
+    }
+    let text = "";
+    for (const root of innermostReadableRoots(Array.from(container.querySelectorAll<HTMLElement>(".markdown-preview-view, .markdown-rendered, .cm-content, .markdown-source-view")))) {
+      for (const item of markdownViewportReadableItems(root, { top: Number.NEGATIVE_INFINITY, bottom: Number.POSITIVE_INFINITY })) {
+        text += normalizeTtsHighlightText(item.text);
+        if (text.length > 120000) return text;
+      }
+    }
+    return text;
   }
 
   private wrapFirstTextMatch(root: HTMLElement, current: string): boolean {
@@ -5254,7 +5373,7 @@ export default class CancipPlugin extends Plugin {
         try {
           range.surroundContents(mark);
           this.activeTtsSourceHighlightNodes = [mark];
-          mark.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+          scrollTtsHighlightIntoView(mark);
           return true;
         } catch {
           mark.remove();
@@ -5270,13 +5389,15 @@ export default class CancipPlugin extends Plugin {
     const textLayers = [...directLayer, ...Array.from(container.querySelectorAll<HTMLElement>(".textLayer"))];
     const needle = normalizeTtsHighlightText(current).slice(0, 220);
     if (needle.length < 2) return false;
+    if (textLayers.length && this.highlightTextStreamElementsFromRoots(textLayers, "span, br", needle, false)) return true;
     const orderedLayers = this.pdfTextLayersForTtsHighlight(container, textLayers);
+    if (orderedLayers.length && this.highlightTextStreamElementsFromRoots(orderedLayers, "span, br", needle, false)) return true;
     for (const layer of orderedLayers) {
-      const matched = this.highlightTextStreamElements(layer, "span, br", needle, false, 0);
+      const matched = this.highlightTextStreamElements(layer, "span, br", needle, false);
       if (matched) return true;
     }
     if (!textLayers.length) {
-      return this.highlightTextStreamElements(container, ".page span, [data-page-number] span, span[role='presentation']", needle, false, 0);
+      return this.highlightTextStreamElements(container, ".page span, [data-page-number] span, span[role='presentation']", needle, false);
     }
     return false;
   }
@@ -5301,19 +5422,26 @@ export default class CancipPlugin extends Plugin {
   }
 
   private highlightTextStreamElements(root: HTMLElement, selector: string, needle: string, preferShortFallback: boolean, cursorOverride?: number): boolean {
+    return this.highlightTextStreamElementsFromRoots([root], selector, needle, preferShortFallback, cursorOverride);
+  }
+
+  private highlightTextStreamElementsFromRoots(roots: HTMLElement[], selector: string, needle: string, preferShortFallback: boolean, cursorOverride?: number): boolean {
     const entries: { node: HTMLElement; start: number; end: number }[] = [];
     let haystack = "";
-    const elements = Array.from(root.querySelectorAll(selector));
-    for (const element of elements) {
-      if (!(element instanceof HTMLElement)) continue;
-      if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
-      const rawText = element.tagName === "BR" ? "\n" : (element.innerText || element.textContent || "");
-      const text = normalizeTtsHighlightText(rawText);
-      if (!text) continue;
-      const start = haystack.length;
-      haystack += text;
-      const end = haystack.length;
-      entries.push({ node: element, start, end });
+    for (const root of roots) {
+      const elements = Array.from(root.querySelectorAll(selector));
+      for (const element of elements) {
+        if (!(element instanceof HTMLElement)) continue;
+        if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
+        const rawText = element.tagName === "BR" ? "\n" : (element.innerText || element.textContent || "");
+        const text = normalizeTtsHighlightText(rawText);
+        if (!text) continue;
+        const start = haystack.length;
+        haystack += text;
+        const end = haystack.length;
+        entries.push({ node: element, start, end });
+        if (haystack.length > 120000) break;
+      }
       if (haystack.length > 120000) break;
     }
     const cursor = typeof cursorOverride === "number" && Number.isFinite(cursorOverride) ? cursorOverride : this.ttsNormalizedHighlightCursor();
@@ -5328,7 +5456,7 @@ export default class CancipPlugin extends Plugin {
       entry.node.addClass("obcc-tts-source-highlight");
       this.activeTtsSourceClassNodes.push(entry.node);
     }
-    matched[0].node.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    scrollTtsHighlightIntoView(matched[0].node);
     return true;
   }
 
@@ -5337,36 +5465,10 @@ export default class CancipPlugin extends Plugin {
     if (needle.length < 2) return false;
     const entries: { node: HTMLElement; start: number; end: number }[] = [];
     let haystack = "";
-    const renderedSelectors = [
-      ".markdown-preview-section",
-      ".markdown-preview-sizer",
-      ".markdown-rendered",
-      ".el-p",
-      ".el-li",
-      ".el-blockquote",
-      ".el-pre",
-      ".cm-line",
-      ".HyperMD-list-line",
-      ".HyperMD-codeblock",
-      "span",
-      "div",
-      "p",
-      "li",
-      "td",
-      "th",
-      "blockquote",
-      "pre",
-      "code",
-      "label",
-      "input.task-list-item-checkbox"
-    ].join(",");
-    const elements = keepTopLevelReadableItems(Array.from(root.querySelectorAll(renderedSelectors))
-      .filter((element): element is HTMLElement => element instanceof HTMLElement)
-      .map((element) => ({ element, text: renderedElementReadableText(element) })));
+    const elements = markdownViewportReadableItems(root, { top: Number.NEGATIVE_INFINITY, bottom: Number.POSITIVE_INFINITY });
     for (const { element } of elements) {
       if (!(element instanceof HTMLElement)) continue;
       if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
-      if (element.children.length && !element.matches("li, blockquote, p, td, th, div, .el-p, .el-li, .el-blockquote, .el-pre, .markdown-preview-section, .markdown-preview-sizer, .markdown-rendered")) continue;
       const text = normalizeTtsHighlightText(renderedElementReadableText(element));
       if (!text) continue;
       const start = haystack.length;
@@ -5386,7 +5488,7 @@ export default class CancipPlugin extends Plugin {
       entry.node.addClass("obcc-tts-source-highlight");
       this.activeTtsSourceClassNodes.push(entry.node);
     }
-    matched[0].node.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    scrollTtsHighlightIntoView(matched[0].node);
     return true;
   }
 
@@ -5516,7 +5618,6 @@ export default class CancipPlugin extends Plugin {
       if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
       this.activeTtsPartIndex = index;
       this.syncTtsOverlay();
-      this.refreshOpenViews();
       this.prefetchPrimeTtsWindow(runtime, playChunks, index, runId);
       this.prefetchPrimeTtsBlockLookahead(runtime, playChunks, index, runId);
       let playable: PrimeTtsPlayable | "skip" | null = null;
@@ -6299,7 +6400,6 @@ export default class CancipPlugin extends Plugin {
       if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
       this.activeTtsPartIndex = index;
       this.syncTtsOverlay();
-      this.refreshOpenViews();
       const audioUrl = await this.fetchTtsAudioUrl(url, playChunks[index], provider);
       if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
       await this.playTtsAudio(audioUrl, runId);
@@ -6629,7 +6729,6 @@ export default class CancipPlugin extends Plugin {
         if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return;
         this.activeTtsPartIndex = index;
         this.syncTtsOverlay();
-        this.refreshOpenViews();
         const lang = this.ttsLanguageCodeForText(this.activeTtsParts[index]);
         await bridge.speak(this.activeTtsParts[index], lang);
       }
@@ -6722,7 +6821,6 @@ export default class CancipPlugin extends Plugin {
       this.activeTtsStartedAudio = true;
       this.activeTtsLastError = "";
       this.syncTtsOverlay();
-      this.refreshOpenViews();
     };
     utterance.onend = () => {
       if (this.activeTtsRunId !== runId) return;
@@ -6740,7 +6838,6 @@ export default class CancipPlugin extends Plugin {
         if (this.activeTtsPaused) return;
         this.activeTtsMode = "failed";
         this.syncTtsOverlay();
-        this.refreshOpenViews();
       }
     };
     this.activeUtterance = utterance;
@@ -6904,14 +7001,11 @@ export default class CancipPlugin extends Plugin {
     if (isPdfFile(file)) {
       const visibleText = this.readActivePdfLayerText(file, maxChars);
       const fullText = await this.readPdfFileText(file, maxChars);
-      return visibleText ? textFromAnchor(fullText, visibleText, maxChars) : fullText;
+      return visibleText || fullText;
     }
     if (isMarkdownFile(file)) {
       const visibleText = this.readActiveMarkdownViewportText(file, maxChars);
-      if (visibleText) {
-        const fullRendered = await this.readMarkdownRenderedText(file, maxChars);
-        return textFromAnchor(fullRendered, visibleText, maxChars);
-      }
+      if (visibleText) return visibleText;
       return await this.readMarkdownRenderedText(file, maxChars);
     }
     return await this.app.vault.cachedRead(file);
@@ -22634,14 +22728,33 @@ function extractVisibleRenderedText(root: HTMLElement): string {
     .trim();
 }
 
-function extractVisibleMarkdownViewportText(root: HTMLElement, maxChars = TTS_CAPTURE_MAX_CHARS): string {
-  const viewport = ttsReadableViewport(root);
+type TtsViewportReadableItem = {
+  element: HTMLElement;
+  rect: DOMRect;
+  readable: boolean;
+  visible: boolean;
+  text: string;
+};
+
+function markdownViewportReadableItems(root: HTMLElement, viewport = ttsReadableViewport(root)): TtsViewportReadableItem[] {
   const selectors = [
+    ".markdown-preview-view h1",
+    ".markdown-preview-view h2",
+    ".markdown-preview-view h3",
+    ".markdown-preview-view h4",
+    ".markdown-preview-view h5",
+    ".markdown-preview-view h6",
     ".markdown-preview-view p",
     ".markdown-preview-view li",
     ".markdown-preview-view blockquote",
     ".markdown-preview-view pre",
     ".markdown-preview-view table",
+    ".markdown-rendered h1",
+    ".markdown-rendered h2",
+    ".markdown-rendered h3",
+    ".markdown-rendered h4",
+    ".markdown-rendered h5",
+    ".markdown-rendered h6",
     ".markdown-rendered p",
     ".markdown-rendered li",
     ".markdown-rendered blockquote",
@@ -22652,10 +22765,16 @@ function extractVisibleMarkdownViewportText(root: HTMLElement, maxChars = TTS_CA
     "li",
     "blockquote",
     "pre",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "h5",
+    "h6",
     "table",
     "tr"
   ].join(",");
-  let items = Array.from(root.querySelectorAll<HTMLElement>(selectors))
+  let items: TtsViewportReadableItem[] = Array.from(root.querySelectorAll<HTMLElement>(selectors))
     .map((element) => {
       const rect = element.getBoundingClientRect();
       const readable = rect.bottom >= viewport.top && rect.height > 0 && rect.width > 0;
@@ -22665,18 +22784,25 @@ function extractVisibleMarkdownViewportText(root: HTMLElement, maxChars = TTS_CA
     })
     .filter((item) => item.readable && item.text && !item.element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button"))
     .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
-  items = keepTopLevelReadableItems(items);
+  return keepTopLevelReadableItems(items);
+}
+
+function extractVisibleMarkdownViewportText(root: HTMLElement, maxChars = TTS_CAPTURE_MAX_CHARS): string {
+  const viewport = ttsReadableViewport(root);
+  let items = markdownViewportReadableItems(root, viewport);
   const startIndex = viewportStartIndex(items, viewport.top);
   if (startIndex > 0) items = items.slice(startIndex);
   const chunks: string[] = [];
   let total = 0;
   let lastNormalized = "";
-  for (const item of items) {
-    const normalized = normalizeTtsHighlightText(item.text);
+  for (let index = 0; index < items.length; index += 1) {
+    const item = items[index];
+    const text = index === 0 ? visibleElementTextFromViewportTop(item.element, viewport.top, item.text) : item.text;
+    const normalized = normalizeTtsHighlightText(text);
     if (!normalized || normalized === lastNormalized) continue;
-    chunks.push(item.text);
+    chunks.push(text);
     lastNormalized = normalized;
-    total += item.text.length;
+    total += text.length;
     if (total >= maxChars) break;
   }
   return chunks
@@ -22696,12 +22822,11 @@ function innermostReadableRoots(roots: HTMLElement[]): HTMLElement[] {
   });
 }
 
-function extractVisiblePdfViewportText(root: HTMLElement, maxChars = TTS_CAPTURE_MAX_CHARS): string {
-  const viewport = ttsReadableViewport(root);
+function pdfViewportReadableItems(root: HTMLElement, viewport = ttsReadableViewport(root)): TtsViewportReadableItem[] {
   let pdfSpans = Array.from(root.querySelectorAll<HTMLElement>(".textLayer span"));
   if (!pdfSpans.length && root.hasClass("textLayer")) pdfSpans = Array.from(root.querySelectorAll<HTMLElement>("span"));
   if (!pdfSpans.length) pdfSpans = Array.from(root.querySelectorAll<HTMLElement>(".page span, [data-page-number] span, span[role='presentation']"));
-  const spans = pdfSpans
+  return pdfSpans
     .map((element) => {
       const rect = element.getBoundingClientRect();
       const readable = rect.bottom >= viewport.top && rect.height > 0 && rect.width > 0;
@@ -22711,8 +22836,13 @@ function extractVisiblePdfViewportText(root: HTMLElement, maxChars = TTS_CAPTURE
     })
     .filter((item) => item.readable && item.text && !item.element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button"))
     .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+}
+
+function extractVisiblePdfViewportText(root: HTMLElement, maxChars = TTS_CAPTURE_MAX_CHARS): string {
+  const viewport = ttsReadableViewport(root);
+  const spans = pdfViewportReadableItems(root, viewport);
   const startIndex = viewportStartIndex(spans, viewport.top);
-  const readableSpans = startIndex > 0 ? spans.slice(startIndex) : spans;
+  const readableSpans = (startIndex > 0 ? spans.slice(startIndex) : spans).filter((item) => item.rect.bottom >= viewport.top - 2);
   if (readableSpans.length) return trimContext(normalizePdfTtsText(mergePdfTextLayerSpans(readableSpans)), maxChars);
   return extractVisibleMarkdownViewportText(root, maxChars);
 }
@@ -22745,11 +22875,19 @@ function ttsReadableScrollContainer(root?: HTMLElement): HTMLElement | null {
 function viewportStartIndex<T extends { rect: DOMRect; visible?: boolean }>(items: T[], viewportTop = 0): number {
   if (!items.length) return 0;
   const top = Math.max(0, viewportTop);
-  const visibleBelowTop = items.findIndex((item) => item.rect.top >= top - 2 && item.visible !== false);
-  if (visibleBelowTop >= 0) return visibleBelowTop;
   const crossingTop = items.findIndex((item) => item.rect.bottom >= top - 2 && item.visible !== false);
   if (crossingTop >= 0) return crossingTop;
+  const visibleBelowTop = items.findIndex((item) => item.rect.top >= top - 2 && item.visible !== false);
+  if (visibleBelowTop >= 0) return visibleBelowTop;
   return 0;
+}
+
+function scrollTtsHighlightIntoView(element: HTMLElement): void {
+  const viewport = ttsReadableViewport(element);
+  const rect = element.getBoundingClientRect();
+  const margin = 24;
+  if (rect.top >= viewport.top + margin && rect.bottom <= viewport.bottom - margin) return;
+  element.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "auto" });
 }
 
 function mergePdfTextLayerSpans(items: Array<{ rect: DOMRect; text: string }>): string {
@@ -22957,6 +23095,43 @@ function renderedElementReadableText(element: HTMLElement): string {
     return `${isRenderedTaskChecked(element) ? "已完成" : "待办"} ${raw}`;
   }
   return raw;
+}
+
+function visibleElementTextFromViewportTop(element: HTMLElement, viewportTop: number, fallbackText = renderedElementReadableText(element)): string {
+  const text = fallbackText.trim();
+  const offset = elementHiddenPrefixOffset(element, viewportTop, text);
+  return offset > 0 ? text.slice(offset).trimStart() : text;
+}
+
+function normalizedElementHiddenPrefixLength(element: HTMLElement, viewportTop: number): number {
+  const text = renderedElementReadableText(element).trim();
+  const offset = elementHiddenPrefixOffset(element, viewportTop, text);
+  return normalizeTtsHighlightText(offset > 0 ? text.slice(0, offset) : "").length;
+}
+
+function elementHiddenPrefixOffset(element: HTMLElement, viewportTop: number, text = renderedElementReadableText(element).trim()): number {
+  if (!text) return 0;
+  const rect = element.getBoundingClientRect();
+  if (rect.height <= 0 || rect.bottom <= viewportTop || rect.top >= viewportTop) return 0;
+  const hiddenRatio = Math.max(0, Math.min(0.95, (viewportTop - rect.top) / rect.height));
+  if (hiddenRatio <= 0.03) return 0;
+  const lineHeight = readableLineHeight(element);
+  const estimatedLines = Math.max(1, Math.round(rect.height / lineHeight));
+  const hiddenLines = Math.max(0, Math.floor((viewportTop - rect.top) / lineHeight));
+  if (hiddenLines <= 0) return 0;
+  const lines = text.split(/\r?\n/);
+  if (lines.length > 1 && hiddenLines < lines.length) {
+    return lines.slice(0, hiddenLines).join("\n").length + 1;
+  }
+  return Math.max(0, Math.min(text.length - 1, Math.floor(text.length * Math.min(0.95, hiddenLines / estimatedLines))));
+}
+
+function readableLineHeight(element: HTMLElement): number {
+  const style = window.getComputedStyle(element);
+  const numeric = Number.parseFloat(style.lineHeight);
+  if (Number.isFinite(numeric) && numeric > 4) return numeric;
+  const fontSize = Number.parseFloat(style.fontSize);
+  return Number.isFinite(fontSize) && fontSize > 4 ? fontSize * 1.45 : 20;
 }
 
 function isRenderedTaskChecked(element: HTMLElement): boolean {
