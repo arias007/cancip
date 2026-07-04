@@ -1,0 +1,352 @@
+{
+  "schema": 1,
+  "description": "Reusable Cancip smoke/regression cases for prompt economy, routing, tool access, and mobile-safe command bus behavior. Default run is read-only and no API.",
+  "budgets": {
+    "memoryModePromptChars": 1800,
+    "memoryContextChars": 1700,
+    "answerModePromptChars": 800,
+    "capabilityModePromptChars": 2600,
+    "implementationModePromptChars": 4200,
+    "commandMs": 7000
+  },
+  "promptCases": [
+    {
+      "id": "memory.identity.zh",
+      "prompt": "我是谁",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 1800,
+        "maxContextChars": 1700,
+        "requiredActions": [
+          { "type": "read", "path": "AI/Cancip/Memory/PROFILE.md" }
+        ],
+        "forbidCommands": [
+          "cancip.tools.index",
+          "cancip.skills.list",
+          "github.help",
+          "cancip.automation.templates"
+        ],
+        "policyFalse": [
+          "includeToolCatalog",
+          "includeAutoSkills",
+          "includePluginMemory",
+          "includeProjectMemory",
+          "includeDetailedRules"
+        ]
+      }
+    },
+    {
+      "id": "memory.profile.variant",
+      "prompt": "你记得我什么",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 1800,
+        "maxContextChars": 1900,
+        "requiredActions": [
+          { "type": "read", "path": "AI/Cancip/Memory/PROFILE.md" },
+          { "type": "read", "path": "AI/Cancip/Memory/PREFERENCES.md" }
+        ],
+        "forbidCommands": [
+          "cancip.tools.index",
+          "cancip.skills.list",
+          "github.help",
+          "cancip.automation.templates"
+        ],
+        "policyFalse": [
+          "includeToolCatalog",
+          "includeAutoSkills",
+          "includePluginMemory",
+          "includeProjectMemory",
+          "includeDetailedRules"
+        ]
+      }
+    },
+    {
+      "id": "memory.preferences.zh",
+      "prompt": "我的输出偏好是什么",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 1800,
+        "maxContextChars": 1900,
+        "requiredActions": [
+          { "type": "read", "path": "AI/Cancip/Memory/PREFERENCES.md" }
+        ],
+        "forbidCommands": [
+          "cancip.tools.index",
+          "cancip.skills.list",
+          "github.help",
+          "cancip.automation.templates"
+        ]
+      }
+    },
+    {
+      "id": "skill.discovery.pdf",
+      "prompt": "有哪些 skill 可以读 pdf 和 excel",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 1800,
+        "requiredActions": [
+          { "type": "command", "command": "cancip.skills.list" }
+        ],
+        "policyFalse": [
+          "includeToolCatalog",
+          "includeAutoSkills",
+          "includePluginMemory"
+        ]
+      }
+    },
+    {
+      "id": "plugin.list.zh",
+      "prompt": "列出已启用的 obsidian 插件",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "requiredActions": [
+          { "type": "command", "command": "cancip.installedPlugins" }
+        ]
+      }
+    },
+    {
+      "id": "ob.current-view",
+      "prompt": "查看当前 ob 页面和当前文件",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "requiredActions": [
+          { "type": "command", "command": "obsidian.currentView" }
+        ]
+      }
+    },
+    {
+      "id": "automation.templates",
+      "prompt": "自动化模板有哪些",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "requiredActions": [
+          { "type": "command", "command": "cancip.automation.templates" }
+        ]
+      }
+    },
+    {
+      "id": "session.history.route",
+      "prompt": "分析 session-2026-07-04T13-28-56Z 这次为什么没完成",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "requiredActions": [
+          { "type": "command", "command": "cancip.sessionHistory" }
+        ]
+      }
+    },
+    {
+      "id": "attachment.help.mobile",
+      "prompt": "手机附件怎么导入并发给 ai",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "requiredActions": [
+          { "type": "command", "command": "cancip.attachment.help" },
+          { "type": "command", "command": "cancip.externalFiles.help" }
+        ]
+      }
+    },
+    {
+      "id": "vault.write.markdown-syntax-route",
+      "prompt": "根目录建一个 md 常见语法文件并验证",
+      "expect": {
+        "intent": "implementation",
+        "maxModePromptChars": 4200,
+        "policyTrue": [
+          "compactStateChange",
+          "includeToolCatalog"
+        ],
+        "policyFalse": [
+          "includeToolProtocol",
+          "includeDetailedRules"
+        ]
+      }
+    },
+    {
+      "id": "config.update.route",
+      "prompt": "把 Cancip 最大工具迭代数改成 8 并读回配置确认",
+      "expect": {
+        "intent": "implementation",
+        "maxModePromptChars": 4200,
+        "policyTrue": [
+          "includeToolProtocol",
+          "includeDetailedRules"
+        ]
+      }
+    },
+    {
+      "id": "ob.command.tabs.route",
+      "prompt": "用 Obsidian 命令或工作区能力关闭右侧非固定标签页并校验",
+      "expect": {
+        "intent": "implementation",
+        "maxModePromptChars": 4200,
+        "policyTrue": [
+          "includeToolProtocol",
+          "includeDetailedRules"
+        ]
+      }
+    },
+    {
+      "id": "implementation.self-repair",
+      "prompt": "修复 cancip 侧边栏结论重复并验证",
+      "expect": {
+        "intent": "implementation",
+        "maxModePromptChars": 4200,
+        "policyTrue": [
+          "includeToolProtocol",
+          "includeDetailedRules"
+        ]
+      }
+    }
+  ],
+  "commandCases": [
+    {
+      "id": "command.tools.index",
+      "command": "cancip.tools.index",
+      "args": {},
+      "expect": {
+        "contains": ["动作路由索引"],
+        "maxMs": 2000
+      }
+    },
+    {
+      "id": "command.memory.read.profile",
+      "action": { "type": "read", "path": "AI/Cancip/Memory/PROFILE.md", "maxChars": 1600 },
+      "expect": {
+        "contains": ["姓名/称呼", "GitHub"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.skills.list",
+      "command": "cancip.skills.list",
+      "args": {},
+      "expect": {
+        "containsAny": ["Skill", "skills", "Obsidian", "PDF", "Hermes"],
+        "maxMs": 8000
+      }
+    },
+    {
+      "id": "command.skills.read",
+      "command": "cancip.skills.read",
+      "args": { "query": "obsidian" },
+      "expect": {
+        "containsAny": ["Obsidian", "vault", "note", "笔记"],
+        "maxMs": 5000
+      }
+    },
+    {
+      "id": "command.plugins.installed",
+      "command": "cancip.installedPlugins",
+      "args": { "includeDisabled": false },
+      "expect": {
+        "containsAny": ["plugin", "插件", "cancip", "enabled"],
+        "maxMs": 5000
+      }
+    },
+    {
+      "id": "command.obsidian.currentView",
+      "command": "obsidian.currentView",
+      "args": { "includeText": false, "visibleChars": 600 },
+      "expect": {
+        "containsAny": ["viewType", "activeFile", "leaf"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.listCommands",
+      "command": "obsidian.listCommands",
+      "args": { "query": "file", "limit": 20 },
+      "expect": {
+        "containsAny": ["file", "open", "command", "命令"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.automation.templates",
+      "command": "cancip.automation.templates",
+      "args": {},
+      "expect": {
+        "contains": ["自动化模板"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.automation.list",
+      "command": "cancip.automation.list",
+      "args": {},
+      "expect": {
+        "containsAny": ["自动化", "automation", "任务", "none"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.attachment.help",
+      "command": "cancip.attachment.help",
+      "args": {},
+      "expect": {
+        "containsAny": ["PDF", "Excel", "attachment", "附件", "share"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.externalFiles.help",
+      "command": "cancip.externalFiles.help",
+      "args": {},
+      "expect": {
+        "containsAny": ["external", "库外", "文件", "bridge", "附件"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.subagents.list",
+      "command": "cancip.subagents.list",
+      "args": {},
+      "expect": {
+        "containsAny": ["子 agent", "subagent", "没有子 agent", "No subagents"],
+        "maxMs": 3000
+      }
+    }
+  ],
+  "writeCases": [
+    {
+      "id": "write.vault.temp-note",
+      "action": {
+        "type": "write",
+        "path": ".cancip/test-lab/smoke-note.md",
+        "content": "# Cancip Smoke Note\n\nThis file is created by the optional smoke test and can be deleted."
+      },
+      "verify": {
+        "action": { "type": "read", "path": ".cancip/test-lab/smoke-note.md", "maxChars": 1000 },
+        "contains": ["Cancip Smoke Note"]
+      }
+    },
+    {
+      "id": "write.config.temp-json",
+      "action": {
+        "type": "config",
+        "path": ".cancip/test-lab/smoke-config.json",
+        "set": {
+          "smoke": {
+            "ok": true,
+            "source": "scripts/run-cancip-smoke.mjs"
+          }
+        }
+      },
+      "verify": {
+        "action": { "type": "read", "path": ".cancip/test-lab/smoke-config.json", "maxChars": 1000 },
+        "contains": ["\"ok\": true"]
+      }
+    },
+    {
+      "id": "write.cleanup",
+      "action": { "type": "delete", "path": ".cancip/test-lab", "permanent": false },
+      "optional": true
+    }
+  ]
+}

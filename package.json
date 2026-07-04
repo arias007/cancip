@@ -1,11 +1,14 @@
 {
   "name": "cancip",
-  "version": "0.1.268",
+  "version": "0.1.278",
   "private": true,
   "main": "main.js",
   "scripts": {
     "build": "tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
-    "check": "tsc --noEmit --skipLibCheck"
+    "check": "tsc --noEmit --skipLibCheck",
+    "smoke": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1",
+    "smoke:full": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Full",
+    "smoke:write": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Write"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",

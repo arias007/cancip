@@ -50,6 +50,39 @@ Build output is written to:
 outputs/cancip/
 ```
 
+## Smoke Tests
+
+Reusable Cancip regression cases live in:
+
+```text
+tests/cancip-regression-cases.json
+```
+
+The default smoke test is read-only and does not call the model API. It checks prompt economy, memory routing, Skill discovery, command bus access, automation templates, current Obsidian view, and attachment/external-file help:
+
+```bash
+npm run smoke
+```
+
+Run the broader read-only command set:
+
+```bash
+npm run smoke:full
+```
+
+Optional write/config tests create temporary files under `.cancip/test-lab` and then clean them up. Run them only when Vault write tests are intentionally allowed:
+
+```bash
+npm run smoke:write
+```
+
+Useful direct PowerShell filters:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Case memory
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Full -Case command
+```
+
 ## Install
 
 Copy these files into an Obsidian community plugin folder named `cancip`:
