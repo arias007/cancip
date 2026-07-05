@@ -12,12 +12,15 @@ $CasesPath = Join-Path $Root 'tests/cancip-regression-cases.json'
 $ObqPath = 'C:/Users/35007/Documents/Codex/tools/ob-cli-queue/obq.ps1'
 $OutDir = Join-Path $Root 'reports'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+$Script:OriginalSessionId = ''
+$Script:SmokeSessionId = ''
 
 $AllCases = Get-Content -Raw -LiteralPath $CasesPath -Encoding UTF8 | ConvertFrom-Json
 $DefaultCommandIds = @(
   'command.tools.index',
   'command.memory.read.profile',
   'command.obsidian.currentView',
+  'command.findTarget.daily-note',
   'command.obsidian.js.help',
   'command.obsidian.js.probe',
   'command.obsidian.eval.expression',
@@ -172,6 +175,7 @@ function Assert-CommandCase {
 
 function Write-FinalReport {
   param([int]$Code)
+  Restore-CancipSessionAfterSmoke
   $Report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
   $Report.totals.elapsedMs = [int]((Get-Date) - $Started).TotalMilliseconds
   $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH-mm-ss-fffZ')
@@ -183,13 +187,28 @@ function Write-FinalReport {
   exit $Code
 }
 
+function Restore-CancipSessionAfterSmoke {
+  if (-not $Script:OriginalSessionId) { return }
+  try {
+    $sessionId = $Script:OriginalSessionId.Replace("'", "\'")
+    $code = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;if(!v||typeof v.loadSessionById!=='function')return JSON.stringify({ok:false});await v.loadSessionById('$sessionId');return JSON.stringify({ok:true,sessionId:v.sessionId});})()"
+    Invoke-CancipEval -Code $code -TimeoutSeconds 30 | Out-Null
+  } catch {
+    Write-Host "Smoke cleanup warning: failed to restore Cancip session $Script:OriginalSessionId`: $($_.Exception.Message)"
+  }
+}
+
 try {
-  $ProbeCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!(p&&v),version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:app.workspace.getLeavesOfType('cancip-view').length,devErrors:(p?.devErrors||[]).slice(-5)});})()"
+  $ProbeCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!(p&&v),version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:app.workspace.getLeavesOfType('cancip-view').length,sessionId:v?.sessionId||'',devErrors:(p?.devErrors||[]).slice(-5)});})()"
   $probe = Invoke-CancipEval -Code $ProbeCode -TimeoutSeconds 25
   $Report.probe = $probe
   $Report.version = [string]$probe.version
   $Report.promptHead = [string]$probe.promptHead
+  $Script:OriginalSessionId = [string]$probe.sessionId
   if (-not $probe.ok) { throw 'Cancip plugin/view is not loaded' }
+  $StartSmokeSessionCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;if(!v)throw new Error('Cancip view unavailable');await v.newChat();v.sessionTitleOverride='Cancip smoke';await v.saveCurrentSession();return JSON.stringify({ok:true,sessionId:v.sessionId});})()"
+  $smokeSession = Invoke-CancipEval -Code $StartSmokeSessionCode -TimeoutSeconds 35
+  $Script:SmokeSessionId = [string]$smokeSession.sessionId
 } catch {
   Add-CaseResult 'promptCases' @{ id = 'probe'; pass = $false; error = $_.Exception.Message }
   Write-FinalReport 1
@@ -313,6 +332,200 @@ if (-not $Case -or 'programmatic.approval-review-line-delta'.Contains($Case)) {
   }
 }
 
+if (-not $Case -or 'programmatic.approval-run-continues-final'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const oldMode=p.settings.accessMode;
+  const oldAuto=p.settings.autoContinueAfterTools;
+  const oldMessages=JSON.parse(JSON.stringify(v.messages||[]));
+  const oldContinue=v.continueAfterToolRuns;
+  const oldRequestFinal=v.requestModelFinalAfterToolRuns;
+  const oldStatus=v.currentSessionStatus||null;
+  const path='.cancip/test-lab/approval-continue-smoke.md';
+  p.settings.accessMode='ask-for-approval';
+  p.settings.autoContinueAfterTools=true;
+  try{
+    await app.vault.adapter.mkdir('.cancip/test-lab').catch(()=>{});
+    v.messages=[
+      {id:'smoke-user-approval-continue',role:'user',content:'approval continue smoke write',createdAt:Date.now()-1000}
+    ];
+    const msg={id:'smoke-assistant-approval-continue',role:'assistant',content:'',createdAt:Date.now()};
+    v.messages.push(msg);
+    const answer='```cancip-action\n{"actions":[{"type":"write","path":"'+path+'","content":"approval continue ok"}]}\n```';
+    const pending=await v.handleActionBlocks(answer,msg);
+    if(!pending?.runs?.[0])throw new Error('missing pending run');
+    v.continueAfterToolRuns=async(_context,previous)=>previous;
+    v.requestModelFinalAfterToolRuns=async()=>{
+      v.addMessage('assistant','approval continued final smoke');
+      return 'answered';
+    };
+    await v.runPendingToolRun(msg.id,msg.toolRuns[0].id);
+    const finalVisible=(v.messages||[]).some((m)=>String(m.content||'').includes('approval continued final smoke'));
+    const run=msg.toolRuns[0]||null;
+    const status=run?.status||'';
+    const sessionStatus=v.currentSessionStatus||null;
+    return JSON.stringify({id:'programmatic.approval-run-continues-final',elapsedMs:Date.now()-t,finalVisible,status,sessionStatus});
+  } finally {
+    v.continueAfterToolRuns=oldContinue;
+    v.requestModelFinalAfterToolRuns=oldRequestFinal;
+    p.settings.accessMode=oldMode;
+    p.settings.autoContinueAfterTools=oldAuto;
+    await app.vault.adapter.remove(path).catch(()=>{});
+    v.messages=oldMessages;
+    if(oldStatus)v.currentSessionStatus=oldStatus;
+    if(typeof v.renderMessages==='function')v.renderMessages();
+    if(typeof v.saveCurrentSession==='function')await v.saveCurrentSession().catch(()=>{});
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 60
+    if (-not $item.finalVisible) { throw 'approval run did not continue to a visible final answer' }
+    if ($item.status -ne 'executed') { throw "approved run status expected executed got $($item.status)" }
+    if ($item.sessionStatus -and $item.sessionStatus.status -eq 'running') { throw 'session was left running after approval continuation' }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; status = $item.status }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.approval-run-continues-final'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.config-read-routing'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const leaves=app.workspace.getLeavesOfType('cancip-view');
+  const v=p&&typeof p.activateView==='function'?p.activateView():(leaves&&leaves[0]?leaves[0].view:null);
+  return Promise.resolve(v).then((view)=>{
+    if(!view)throw new Error('Cancip view unavailable');
+    const prompt='\u8bfb\u53d6 Cancip \u914d\u7f6e\uff0c\u544a\u8bc9\u6211\u5f53\u524d\u8bbf\u95ee\u6a21\u5f0f\u548c\u6a21\u578b\u540d\u79f0\uff0c\u4e0d\u8981\u4fee\u6539';
+    const actions=view.programmaticReadOnlyActionsForPrompt(prompt);
+    const policy=view.promptPayloadPolicy(prompt);
+    const run={
+      id:'smoke-config-read',
+      action:{type:'read',path:'.cancip/config.json',maxChars:9000},
+      summary:'read .cancip/config.json',
+      status:'executed',
+      createdAt:new Date().toISOString(),
+      result:'read .cancip/config.json\n{"accessMode":"full-access","activeApiProfileId":"default","apiProfiles":[{"id":"default","name":"tokenfree","apiMode":"auto","model":"gpt-5.5","apiUrl":"https://api.example/v1"}],"model":"fallback-model"}'
+    };
+    const fallback=view.informationalFallbackFromToolRuns([run],prompt,'empty model reply');
+    return JSON.stringify({id:'programmatic.config-read-routing',elapsedMs:Date.now()-t,actions,policy,fallback});
+  });
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $actions = @($item.actions)
+    $action0 = if ($actions.Count) { $actions[0] } else { $null }
+    $fallbackText = [string]$item.fallback
+    if ([int]$actions.Count -ne 1) { throw "expected one direct read action got $($actions.Count)" }
+    if ($action0.type -ne 'read' -or $action0.path -ne '.cancip/config.json') { throw "expected config read action got $($action0 | ConvertTo-Json -Compress)" }
+    if ($fallbackText -notmatch 'full-access') { throw "fallback missing access mode: $fallbackText" }
+    if ($fallbackText -notmatch 'gpt-5\.5') { throw "fallback missing model: $fallbackText" }
+    if ($fallbackText -notmatch '\.cancip/config\.json') { throw "fallback missing config path: $fallbackText" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.config-read-routing'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.plugin-manifest-read-routing'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const leaves=app.workspace.getLeavesOfType('cancip-view');
+  const v=p&&typeof p.activateView==='function'?p.activateView():(leaves&&leaves[0]?leaves[0].view:null);
+  return Promise.resolve(v).then((view)=>{
+    if(!view)throw new Error('Cancip view unavailable');
+    const prompts=[
+      'check Cancip installed plugin manifest version number',
+      '\u68c0\u67e5 Cancip \u5df2\u5b89\u88c5\u63d2\u4ef6 manifest \u7248\u672c\u53f7\u662f\u591a\u5c11'
+    ];
+    const checks=prompts.map((prompt)=>{
+      const actions=view.programmaticReadOnlyActionsForPrompt(prompt);
+      return {prompt,actions};
+    });
+    const run={
+      id:'smoke-plugin-manifest',
+      action:{type:'read',path:'.obsidian/plugins/cancip/manifest.json',maxChars:3000},
+      summary:'read .obsidian/plugins/cancip/manifest.json',
+      status:'executed',
+      createdAt:new Date().toISOString(),
+      result:'read .obsidian/plugins/cancip/manifest.json\n{"id":"cancip","name":"Cancip","version":"0.1.298","minAppVersion":"1.5.0","author":"arias007"}'
+    };
+    const fallback=view.informationalFallbackFromToolRuns([run],prompts[1],'empty model reply');
+    return JSON.stringify({id:'programmatic.plugin-manifest-read-routing',elapsedMs:Date.now()-t,checks,fallback});
+  });
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $checks = @($item.checks)
+    foreach ($check in $checks) {
+      $actions = @($check.actions)
+      $action0 = if ($actions.Count) { $actions[0] } else { $null }
+      if ([int]$actions.Count -ne 1) { throw "expected one manifest read action for prompt [$($check.prompt)] got $($actions.Count)" }
+      if ($action0.type -ne 'read' -or $action0.path -ne '.obsidian/plugins/cancip/manifest.json') { throw "expected Cancip manifest read for prompt [$($check.prompt)] got $($action0 | ConvertTo-Json -Compress)" }
+    }
+    $fallbackText = [string]$item.fallback
+    if ($fallbackText -notmatch '0\.1\.298') { throw "fallback missing manifest version: $fallbackText" }
+    if ($fallbackText -notmatch '\.obsidian/plugins/cancip/manifest\.json') { throw "fallback missing manifest path: $fallbackText" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.plugin-manifest-read-routing'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.progress-step-readable-notes'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const leaves=app.workspace.getLeavesOfType('cancip-view');
+  const v=leaves&&leaves[0]?leaves[0].view:null;
+  if(!p||!v)throw new Error('Cancip view unavailable');
+  const oldMessages=(v.messages||[]).slice();
+  try{
+    const msg=v.addProgressStep(v.t('preparingContext'));
+    const liveContent=String(msg.content||'');
+    const liveOpen=!!(v.progressStepTimers&&typeof v.progressStepTimers.has==='function'&&v.progressStepTimers.has(msg.id));
+    v.updateProgressStep(msg,v.t('preparingContext'),v.formatContextAuditDetail('progress smoke','progress smoke','progress smoke',{system:'system',contextText:'ctx',searchHits:[],images:[]}));
+    const finalContent=String(msg.content||'');
+    if(typeof v.stopProgressStepTimer==='function')v.stopProgressStepTimer(msg.id);
+      return JSON.stringify({
+        id:'programmatic.progress-step-readable-notes',
+        elapsedMs:Date.now()-t,
+        liveHasGoal:/\u76ee\u7684|Goal/.test(liveContent),
+        liveHasMethod:/\u505a\u6cd5|Method/.test(liveContent),
+        liveOpen,
+        finalHasDetail:/Step details|步骤详情|<details>/.test(finalContent),
+        finalHasGoal:/\u76ee\u7684|Goal/.test(finalContent)
+      });
+  } finally {
+    v.messages=oldMessages;
+    if(typeof v.renderMessages==='function')v.renderMessages();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if (-not $item.liveHasGoal) { throw 'live progress missing goal note' }
+    if (-not $item.liveHasMethod) { throw 'live progress missing method note' }
+    if (-not $item.liveOpen) { throw 'live progress timer not active' }
+    if (-not $item.finalHasDetail) { throw 'final progress missing folded detail' }
+    if (-not $item.finalHasGoal) { throw 'final progress missing readable goal note' }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.progress-step-readable-notes'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.system-prompt-persistence'.Contains($Case)) {
   try {
     $code = @"
@@ -345,6 +558,155 @@ if (-not $Case -or 'programmatic.system-prompt-persistence'.Contains($Case)) {
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; loadedHead = $item.loadedHead }
   } catch {
     Add-CaseResult 'programmaticCases' @{ id = 'programmatic.system-prompt-persistence'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.plan-manual-todo-separation'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const oldTodos=JSON.parse(JSON.stringify(v.manualTodos||[]));
+  const manualId='smoke-manual-'+Date.now();
+  try{
+    v.manualTodos=[{id:manualId,text:'manual-smoke-todo',done:false,sendToModel:true,source:'manual',createdAt:new Date().toISOString()}];
+    await v.executeAction({type:'todo',op:'set',items:[{text:'agent-plan-step-one'},{text:'agent-plan-step-two'}]});
+    const afterSet={manual:v.visibleManualTodos().length,agent:v.agentPlanTodos().length};
+    await v.executeAction({type:'todo',op:'update',text:'agent-plan-step-one',done:true});
+    const manual=v.visibleManualTodos()[0]||null;
+    const agentDone=!!v.agentPlanTodos().find((item)=>item.text==='agent-plan-step-one'&&item.done);
+    await v.executeAction({type:'todo',op:'clear'});
+    const afterClear={manual:v.visibleManualTodos().length,agent:v.agentPlanTodos().length,manualText:v.visibleManualTodos()[0]?.text||''};
+    return JSON.stringify({id:'programmatic.plan-manual-todo-separation',elapsedMs:Date.now()-t,afterSet,agentDone,manualDone:!!manual?.done,afterClear});
+  } finally {
+    v.manualTodos=oldTodos;
+    if(typeof v.refreshPlanPanelIfOpen==='function')v.refreshPlanPanelIfOpen();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([int]$item.afterSet.manual -ne 1) { throw "manual todo count after set expected 1 got $($item.afterSet.manual)" }
+    if ([int]$item.afterSet.agent -ne 2) { throw "agent plan count after set expected 2 got $($item.afterSet.agent)" }
+    if (-not $item.agentDone) { throw 'agent plan update did not mark the target item done' }
+    if ($item.manualDone) { throw 'manual todo was modified by agent todo update' }
+    if ([int]$item.afterClear.manual -ne 1 -or [int]$item.afterClear.agent -ne 0) { throw "todo clear did not preserve manual todo: $($item.afterClear | ConvertTo-Json -Compress)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.plan-manual-todo-separation'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.task-control-continue-reset'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const oldTask=v.taskControl?JSON.parse(JSON.stringify(v.taskControl)):null;
+  const oldMessages=JSON.parse(JSON.stringify(v.messages||[]));
+  try{
+    const now=new Date().toISOString();
+    v.taskControl={originalPrompt:'old-task',taskGoal:'old-task',startedAt:now,updatedAt:now};
+    v.messages=[
+      {id:'u-old',role:'user',content:'old-task',createdAt:Date.now()-2000},
+      {id:'u-new',role:'user',content:'new-task',createdAt:Date.now()-1000}
+    ];
+    v.noteTaskControlPrompt('new-task');
+    v.ensureTaskControl('new-task','new-task');
+    const afterNew=v.resolveTaskGoal('continue');
+    v.noteTaskControlPrompt('continue');
+    v.ensureTaskControl('continue',afterNew);
+    const afterContinue=v.resolveTaskGoal('continue');
+    return JSON.stringify({id:'programmatic.task-control-continue-reset',elapsedMs:Date.now()-t,afterNew,afterContinue,taskGoal:v.taskControl?.taskGoal||'',originalPrompt:v.taskControl?.originalPrompt||''});
+  } finally {
+    v.taskControl=oldTask;
+    v.messages=oldMessages;
+    if(typeof v.renderMessages==='function')v.renderMessages();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ($item.afterNew -ne 'new-task') { throw "continue after new task expected new-task got $($item.afterNew)" }
+    if ($item.afterContinue -ne 'new-task') { throw "continue prompt changed task unexpectedly: $($item.afterContinue)" }
+    if ($item.taskGoal -ne 'new-task') { throw "taskControl goal expected new-task got $($item.taskGoal)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.task-control-continue-reset'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.no-synthetic-empty-final'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const oldMessages=JSON.parse(JSON.stringify(v.messages||[]));
+  try{
+    v.messages=[];
+    const emptyOk=v.ensurePlainFinalConclusion(Date.now(),'empty-final-smoke');
+    const afterEmpty=v.messages.length;
+    v.messages=[{id:'blank-assistant',role:'assistant',content:'',createdAt:Date.now()}];
+    const blankOk=v.ensurePlainFinalConclusion(Date.now(),'empty-final-smoke');
+    const synthetic=(v.messages||[]).some((m)=>String(m.content||'').includes('no visible answer'));
+    return JSON.stringify({id:'programmatic.no-synthetic-empty-final',elapsedMs:Date.now()-t,emptyOk,afterEmpty,blankOk,synthetic,messageCount:v.messages.length});
+  } finally {
+    v.messages=oldMessages;
+    if(typeof v.renderMessages==='function')v.renderMessages();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ($item.emptyOk) { throw 'empty message list was treated as final answer' }
+    if ([int]$item.afterEmpty -ne 0) { throw "empty final synthesized a message count $($item.afterEmpty)" }
+    if ($item.blankOk) { throw 'blank assistant message was treated as final answer' }
+    if ($item.synthetic) { throw 'synthetic no-visible-final text was generated' }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.no-synthetic-empty-final'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.fuzzy-vault-path-resolution'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const path='.cancip/test-lab/Fuzzy-Path-Smoke.md';
+  const typo='.cancip/test-lab/Fuzzy Path Smoke.md';
+  if(v.readOnlyActionCache&&typeof v.readOnlyActionCache.clear==='function')v.readOnlyActionCache.clear();
+  await app.vault.adapter.mkdir('.cancip/test-lab').catch(()=>{});
+  await app.vault.adapter.write(path,'alpha old beta\n');
+  try{
+    const readRun=v.createToolRun({type:'read',path:typo,maxChars:200});
+    const readText=await v.executeToolRun(readRun);
+    const patchRun=v.createToolRun({type:'patch',path:typo,find:'old',replace:'new'});
+    await v.executeToolRun(patchRun);
+    const finalText=await app.vault.adapter.read(path);
+    return JSON.stringify({id:'programmatic.fuzzy-vault-path-resolution',elapsedMs:Date.now()-t,readPath:readRun.action.path,patchPath:patchRun.action.path,readOk:readText.includes('alpha old beta'),finalText});
+  } finally {
+    await app.vault.adapter.remove(path).catch(()=>{});
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ($item.readPath -ne '.cancip/test-lab/Fuzzy-Path-Smoke.md') { throw "read path not resolved: $($item.readPath)" }
+    if ($item.patchPath -ne '.cancip/test-lab/Fuzzy-Path-Smoke.md') { throw "patch path not resolved: $($item.patchPath)" }
+    if (-not $item.readOk) { throw 'fuzzy read did not return expected content' }
+    if (-not ([string]$item.finalText).Contains('alpha new beta')) { throw "fuzzy patch did not update file: $($item.finalText)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.fuzzy-vault-path-resolution'; pass = $false; error = $_.Exception.Message }
   }
 }
 

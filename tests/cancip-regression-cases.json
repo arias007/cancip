@@ -345,6 +345,16 @@
       }
     },
     {
+      "id": "command.findTarget.daily-note",
+      "command": "cancip.findTarget",
+      "args": { "query": "打开今日日记", "limit": 8 },
+      "expect": {
+        "contains": ["Target discovery", "Obsidian command fuzzy match", "next:"],
+        "containsAny": ["daily-notes", "日记", "daily"],
+        "maxMs": 5000
+      }
+    },
+    {
       "id": "command.obsidian.listCommands",
       "command": "obsidian.listCommands",
       "args": { "query": "file", "limit": 20 },

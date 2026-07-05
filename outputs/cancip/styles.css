@@ -2113,6 +2113,19 @@ body .obcc-view-tts-action {
   color: var(--interactive-accent);
 }
 
+.obcc-session-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-session-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
 .obcc-session-item.is-running .obcc-session-icon {
   color: var(--interactive-accent);
   animation: obcc-spin 0.9s linear infinite;
