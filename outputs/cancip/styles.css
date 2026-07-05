@@ -919,12 +919,12 @@
 }
 
 .obcc-ui-rule-flex-parent {
-  display: flex;
+  display: flex !important;
 }
 
 body [data-cancip-ui-hidden="true"],
 body [data-cancip-tag-hidden] {
-  display: none;
+  display: none !important;
 }
 
 body .obcc-view-tts-action {
@@ -2843,6 +2843,103 @@ body .obcc-view-tts-action {
 .obcc-tool-button.is-disabled {
   opacity: 0.35;
   cursor: default;
+}
+
+.obcc-button-edit-bubble {
+  position: fixed;
+  z-index: 100000;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 999px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  cursor: pointer;
+}
+
+.obcc-button-edit-bubble svg {
+  width: 18px;
+  height: 18px;
+}
+
+.obcc-button-edit-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.obcc-button-edit-target {
+  font-weight: 600;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.obcc-button-edit-selector {
+  padding: 7px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: 12px;
+  line-height: 1.35;
+  user-select: text;
+  word-break: break-all;
+}
+
+.obcc-button-edit-add-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-secondary);
+}
+
+.obcc-button-edit-section-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.obcc-button-edit-section-desc {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.obcc-button-edit-add-section .setting-item {
+  padding: 4px 0;
+}
+
+.obcc-button-edit-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.obcc-ui-custom-button {
+  flex: 0 0 auto;
+}
+
+.obcc-ui-custom-button svg {
+  width: var(--icon-size, 18px);
+  height: var(--icon-size, 18px);
+}
+
+.obcc-ui-custom-button-label {
+  margin-inline-start: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .obcc-access-label,

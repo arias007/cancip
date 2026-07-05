@@ -1058,7 +1058,61 @@ type UiButtonRule = {
   title?: string;
   icon?: string;
   scope: "global" | "active" | "cancip";
+  kind?: "custom";
+  anchorSelector?: string;
+  commandId?: string;
+  commandName?: string;
+  insertPosition?: "before" | "after";
 };
+
+type UiButtonCommandOption = {
+  id: string;
+  name: string;
+  icon: string;
+};
+
+const PRESET_UI_BUTTON_ICONS = [
+  "bot",
+  "plus",
+  "search",
+  "history",
+  "list-todo",
+  "shield-check",
+  "check",
+  "x",
+  "settings",
+  "sliders-horizontal",
+  "volume-2",
+  "play",
+  "pause",
+  "square",
+  "file-text",
+  "file-plus",
+  "folder-open",
+  "folder-plus",
+  "calendar-days",
+  "calendar-clock",
+  "command",
+  "terminal",
+  "refresh-cw",
+  "archive",
+  "download",
+  "upload",
+  "paperclip",
+  "pencil",
+  "bold",
+  "italic",
+  "link",
+  "hash",
+  "highlighter",
+  "palette",
+  "panel-right-open",
+  "panel-left-open",
+  "panel-bottom-open",
+  "pin",
+  "star",
+  "zap"
+];
 
 type WorkspaceTabInfo = {
   leaf: WorkspaceLeaf;
@@ -1171,6 +1225,226 @@ type Settings = {
   ttsShowViewActions: boolean;
   systemPrompt: string;
 };
+
+type UiButtonEditDescriptor = {
+  selector: string;
+  label: string;
+  scope: UiButtonRule["scope"];
+  rule: UiButtonRule | null;
+};
+
+class CancipButtonEditModal extends Modal {
+  private nameInput: HTMLInputElement | null = null;
+  private iconInput: HTMLInputElement | null = null;
+  private orderInput: HTMLInputElement | null = null;
+  private addCommandSelect: HTMLSelectElement | null = null;
+  private addIconSelect: HTMLSelectElement | null = null;
+  private addNameInput: HTMLInputElement | null = null;
+  private addCommandOptions: UiButtonCommandOption[] = [];
+  private hidden = false;
+  private buttonScope: UiButtonRule["scope"];
+
+  constructor(
+    app: App,
+    private readonly plugin: CancipPlugin,
+    private readonly descriptor: UiButtonEditDescriptor,
+    private readonly onSendToCancip: () => void | Promise<void>
+  ) {
+    super(app);
+    this.buttonScope = descriptor.rule?.scope ?? descriptor.scope;
+    this.hidden = Boolean(descriptor.rule?.hidden);
+  }
+
+  onOpen(): void {
+    this.modalEl.addClass("obcc-button-edit-modal");
+    this.setTitle(this.plugin.t("buttonEditTitle"));
+    this.contentEl.createDiv({
+      cls: "obcc-button-edit-target",
+      text: this.descriptor.label || this.descriptor.selector
+    });
+    this.contentEl.createDiv({
+      cls: "obcc-button-edit-selector",
+      text: this.descriptor.selector
+    });
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditName"))
+      .addText((text) => {
+        this.nameInput = text.inputEl;
+        text.setValue(this.descriptor.rule?.title ?? this.descriptor.label);
+        text.setPlaceholder(this.descriptor.label);
+      });
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditIcon"))
+      .addText((text) => {
+        this.iconInput = text.inputEl;
+        text.setValue(this.descriptor.rule?.icon ?? "");
+        text.setPlaceholder("settings, history, bot, shield-check");
+      });
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditOrder"))
+      .addText((text) => {
+        this.orderInput = text.inputEl;
+        text.inputEl.type = "number";
+        text.inputEl.min = "-999";
+        text.inputEl.max = "999";
+        text.setValue(String(this.descriptor.rule?.order ?? 0));
+      });
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditHidden"))
+      .addToggle((toggle) => {
+        toggle.setValue(this.hidden);
+        toggle.onChange((value) => {
+          this.hidden = value;
+        });
+      });
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditScope"))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("active", this.plugin.t("buttonEditScopeActive"))
+          .addOption("cancip", this.plugin.t("buttonEditScopeCancip"))
+          .addOption("global", this.plugin.t("buttonEditScopeGlobal"))
+          .setValue(this.buttonScope)
+          .onChange((value) => {
+            this.buttonScope = value === "active" || value === "cancip" ? value : "global";
+          });
+      });
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditRevealHidden"))
+      .setDesc(this.plugin.t("buttonEditRevealHiddenDesc"))
+      .addToggle((toggle) => {
+        toggle.setValue(this.plugin.isUiButtonHiddenRevealEnabled());
+        toggle.onChange((value) => {
+          this.plugin.setUiButtonHiddenReveal(value);
+        });
+      });
+
+    this.renderAddSiblingSection();
+
+    const actions = this.contentEl.createDiv({ cls: "obcc-button-edit-actions" });
+    const send = actions.createEl("button", { text: this.plugin.t("buttonEditSendButtonToCancip"), attr: { type: "button" } });
+    send.addEventListener("click", () => {
+      void this.onSendToCancip();
+      this.close();
+    });
+
+    if (this.descriptor.rule) {
+      const remove = actions.createEl("button", { text: this.plugin.t("buttonEditRemove"), attr: { type: "button" } });
+      remove.addClass("mod-warning");
+      remove.addEventListener("click", () => {
+        void this.plugin.removeUiButtonRule(this.descriptor.rule?.id ?? "").then(() => {
+          new Notice(this.plugin.t("buttonEditRemoved"));
+          this.close();
+        });
+      });
+    }
+
+    const save = actions.createEl("button", { text: this.plugin.t("buttonEditSave"), attr: { type: "button" } });
+    save.addClass("mod-cta");
+    save.addEventListener("click", () => {
+      void this.saveRule();
+    });
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private async saveRule(): Promise<void> {
+    const title = this.nameInput?.value.trim() || "";
+    const icon = this.iconInput?.value.trim() || "";
+    const order = clampInt(Number(this.orderInput?.value ?? 0), 0, -999, 999);
+    const selector = this.descriptor.selector;
+    const id = this.descriptor.rule?.id ?? stableRuleId(`${this.buttonScope}:${selector}`);
+    await this.plugin.upsertUiButtonRule({
+      id,
+      selector,
+      label: this.descriptor.label || selector,
+      hidden: this.hidden,
+      order,
+      title: title && title !== this.descriptor.label ? title : undefined,
+      icon: icon || undefined,
+      scope: this.buttonScope
+    });
+    new Notice(this.plugin.t("buttonEditSaved"));
+    this.close();
+  }
+
+  private renderAddSiblingSection(): void {
+    const section = this.contentEl.createDiv({ cls: "obcc-button-edit-add-section" });
+    section.createDiv({ cls: "obcc-button-edit-section-title", text: this.plugin.t("buttonEditAddSiblingTitle") });
+    section.createDiv({ cls: "obcc-button-edit-section-desc", text: this.plugin.t("buttonEditAddSiblingDesc") });
+
+    this.addCommandOptions = this.plugin.uiButtonCommandOptions();
+    new Setting(section)
+      .setName(this.plugin.t("buttonEditAddCommand"))
+      .addDropdown((dropdown) => {
+        this.addCommandSelect = dropdown.selectEl;
+        for (const option of this.addCommandOptions) {
+          dropdown.addOption(option.id, `${option.name} · ${option.id}`);
+        }
+        const first = this.addCommandOptions[0];
+        if (first) dropdown.setValue(first.id);
+        dropdown.onChange((value) => {
+          const option = this.addCommandOptions.find((item) => item.id === value);
+          if (!option) return;
+          if (this.addNameInput && !this.addNameInput.value.trim()) this.addNameInput.value = option.name;
+          if (this.addIconSelect) this.addIconSelect.value = option.icon;
+        });
+      });
+
+    new Setting(section)
+      .setName(this.plugin.t("buttonEditAddName"))
+      .addText((text) => {
+        this.addNameInput = text.inputEl;
+        const first = this.addCommandOptions[0];
+        text.setPlaceholder(first?.name ?? this.plugin.t("buttonEditAddName"));
+      });
+
+    new Setting(section)
+      .setName(this.plugin.t("buttonEditAddIcon"))
+      .addDropdown((dropdown) => {
+        this.addIconSelect = dropdown.selectEl;
+        for (const icon of this.plugin.uiButtonIconOptions()) {
+          dropdown.addOption(icon, icon);
+        }
+        const first = this.addCommandOptions[0];
+        dropdown.setValue(first?.icon ?? "zap");
+      });
+
+    const addActions = section.createDiv({ cls: "obcc-button-edit-actions" });
+    const add = addActions.createEl("button", { text: this.plugin.t("buttonEditAddSibling"), attr: { type: "button" } });
+    add.addClass("mod-cta");
+    add.addEventListener("click", () => {
+      void this.addSiblingButton();
+    });
+  }
+
+  private async addSiblingButton(): Promise<void> {
+    const commandId = this.addCommandSelect?.value.trim() ?? "";
+    const option = this.addCommandOptions.find((item) => item.id === commandId);
+    if (!commandId || !option) {
+      new Notice(this.plugin.t("buttonEditNoCommand"));
+      return;
+    }
+    const title = this.addNameInput?.value.trim() || option.name;
+    const icon = this.addIconSelect?.value.trim() || option.icon || "zap";
+    await this.plugin.addSiblingUiButton(this.descriptor, {
+      commandId,
+      commandName: option.name,
+      title,
+      icon
+    });
+    new Notice(this.plugin.t("buttonEditAddedSibling"));
+    this.close();
+  }
+}
 
 const CANCIP_AI_DIR = "AI/Cancip";
 const DEFAULT_MEMORY_FOLDER = `${CANCIP_AI_DIR}/Memory`;
@@ -1676,7 +1950,38 @@ const EN = {
   reviewGateActionResult: "OB Review Gate:\n{summary}",
   reviewGatePrompt: "Use the programmatic cancip.reviewGate builder before risky vault organization. Pass concrete paths/proposed items when possible; do not use prompt-only review.",
   noSelection: "No selection to add",
-  sendToAI: "Send to AI",
+  sendToAI: "Send to Cancip",
+  editButtonSettings: "Edit button",
+  buttonEditTitle: "Button settings",
+  buttonEditName: "Name",
+  buttonEditIcon: "Icon",
+  buttonEditOrder: "Order",
+  buttonEditHidden: "Hide",
+  buttonEditScope: "Scope",
+  buttonEditScopeActive: "Current view",
+  buttonEditScopeCancip: "Cancip panel",
+  buttonEditScopeGlobal: "Global",
+  buttonEditSendToCancip: "Send to Cancip",
+  buttonEditSendButtonToCancip: "Send button info",
+  buttonEditRevealHidden: "Show hidden buttons",
+  buttonEditRevealHiddenDesc: "Temporary reveal hidden UI button rules. Turn it off to restore hidden state.",
+  buttonEditRevealHiddenOn: "Hidden buttons are temporarily visible",
+  buttonEditRevealHiddenOff: "Hidden buttons restored",
+  buttonEditSave: "Save",
+  buttonEditRemove: "Remove rule",
+  buttonEditSaved: "Button rule saved",
+  buttonEditRemoved: "Button rule removed",
+  buttonEditAddSiblingTitle: "Add sibling button",
+  buttonEditAddSiblingDesc: "Insert a new button next to this one. Choose from prepared Obsidian commands and icon presets.",
+  buttonEditAddCommand: "Command",
+  buttonEditAddName: "Button name",
+  buttonEditAddIcon: "Icon",
+  buttonEditAddSibling: "Add button",
+  buttonEditAddedSibling: "Sibling button added",
+  buttonEditNoCommand: "Choose a command first",
+  buttonEditCustomButton: "Custom button",
+  buttonEditCommandMissing: "Command not found: {command}",
+  buttonEditCommandFailed: "Command failed: {command}",
   editContext: "Edit context",
   contextUpdated: "Context updated",
   cursorContext: "Cursor at {path}",
@@ -2297,7 +2602,38 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGateActionResult: "OB 审核门：\n{summary}",
     reviewGatePrompt: "高风险整理前使用程序化 cancip.reviewGate 生成原生审核面板数据；尽量传入具体路径/提案，不要只发提示词。",
     noSelection: "没有可加入的选中文本",
-    sendToAI: "发给 AI",
+    sendToAI: "发给 Cancip",
+    editButtonSettings: "编辑按钮",
+    buttonEditTitle: "按钮设置",
+    buttonEditName: "名称",
+    buttonEditIcon: "图标",
+    buttonEditOrder: "排序",
+    buttonEditHidden: "隐藏",
+    buttonEditScope: "范围",
+    buttonEditScopeActive: "当前视图",
+    buttonEditScopeCancip: "Cancip 面板",
+    buttonEditScopeGlobal: "全局",
+    buttonEditSendToCancip: "发给 Cancip",
+    buttonEditSendButtonToCancip: "把按钮信息发给 Cancip",
+    buttonEditRevealHidden: "显示所有按钮",
+    buttonEditRevealHiddenDesc: "临时显示被隐藏的按钮，方便找回；手动关掉后恢复隐藏状态。",
+    buttonEditRevealHiddenOn: "已临时显示隐藏按钮",
+    buttonEditRevealHiddenOff: "已恢复隐藏按钮",
+    buttonEditSave: "保存",
+    buttonEditRemove: "删除规则",
+    buttonEditSaved: "按钮规则已保存",
+    buttonEditRemoved: "按钮规则已删除",
+    buttonEditAddSiblingTitle: "增加同级按钮",
+    buttonEditAddSiblingDesc: "在当前按钮旁边并列加入新按钮；命令和图标都从预置列表里选择。",
+    buttonEditAddCommand: "命令",
+    buttonEditAddName: "按钮名",
+    buttonEditAddIcon: "图标",
+    buttonEditAddSibling: "添加按钮",
+    buttonEditAddedSibling: "已添加同级按钮",
+    buttonEditNoCommand: "请先选择命令",
+    buttonEditCustomButton: "自定义按钮",
+    buttonEditCommandMissing: "找不到命令：{command}",
+    buttonEditCommandFailed: "命令执行失败：{command}",
     editContext: "编辑上下文",
     contextUpdated: "上下文已更新",
     cursorContext: "光标：{path}",
@@ -4338,6 +4674,10 @@ export default class CancipPlugin extends Plugin {
   private uiButtonRuleObserver: MutationObserver | null = null;
   private uiButtonRuleApplyTimer: number | null = null;
   private uiButtonRuleApplying = false;
+  private uiButtonRulesRevealHidden = false;
+  private buttonEditLongPressTimer: number | null = null;
+  private buttonEditLongPressTarget: HTMLElement | null = null;
+  private buttonEditBubbleEl: HTMLButtonElement | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -4414,6 +4754,8 @@ export default class CancipPlugin extends Plugin {
     }));
 
     this.registerEvent(this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view: MarkdownView) => {
+      const selected = editor.getSelection().trim() || getWindowSelectionText().trim();
+      if (!selected) return;
       menu.addItem((item) => {
         item
           .setTitle(this.t("sendToAI"))
@@ -4445,6 +4787,7 @@ export default class CancipPlugin extends Plugin {
       this.scheduleTtsViewActionRefresh();
       this.scheduleUiButtonRulesApply(80);
     }));
+    this.installButtonEditLongPress();
     const applyRulesAfterPointer = () => this.scheduleUiButtonRulesApply(80);
     activeDocument.addEventListener("click", applyRulesAfterPointer, true);
     activeDocument.addEventListener("pointerup", applyRulesAfterPointer, true);
@@ -7976,6 +8319,459 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.scheduleAutomations();
   }
 
+  async upsertUiButtonRule(rule: UiButtonRule): Promise<void> {
+    const normalized = normalizeUiButtonRules([rule])[0];
+    if (!normalized) return;
+    const withoutSameTarget = this.settings.uiButtonRules.filter((item) =>
+      item.id !== normalized.id &&
+      !(item.selector === normalized.selector && item.scope === normalized.scope) &&
+      !(normalized.kind === "custom" && item.kind === "custom" && item.scope === normalized.scope && item.anchorSelector === normalized.anchorSelector && item.commandId === normalized.commandId)
+    );
+    this.settings.uiButtonRules = [...withoutSameTarget, normalized].slice(-200);
+    await this.saveSettings();
+    this.scheduleUiButtonRulesApply(0);
+  }
+
+  async removeUiButtonRule(id: string): Promise<void> {
+    if (!id) return;
+    this.settings.uiButtonRules = this.settings.uiButtonRules.filter((rule) => rule.id !== id);
+    await this.saveSettings();
+    this.scheduleUiButtonRulesApply(0);
+  }
+
+  uiButtonIconOptions(): string[] {
+    return [...PRESET_UI_BUTTON_ICONS];
+  }
+
+  uiButtonCommandOptions(): UiButtonCommandOption[] {
+    const api = ((this.app as App & { commands?: ObsidianCommandApi }).commands ?? {});
+    const preferred = new Map<string, string>([
+      ["cancip:open-chat", "bot"],
+      ["cancip:new-chat", "plus"],
+      ["cancip:add-selection-to-chat", "paperclip"],
+      ["cancip:speak-active-note", "volume-2"],
+      ["cancip:speak-selection", "volume-2"],
+      ["cancip:pause-tts", "pause"],
+      ["cancip:resume-tts", "play"],
+      ["cancip:stop-tts", "square"],
+      ["cancip:rebuild-light-index", "refresh-cw"],
+      ["cancip:create-local-version-commit", "archive"],
+      ["cancip:open-automation-settings", "calendar-clock"],
+      ["command-palette:open", "command"],
+      ["app:open-settings", "settings"],
+      ["workspace:close", "x"],
+      ["workspace:split-vertical", "panel-right-open"],
+      ["workspace:split-horizontal", "panel-bottom-open"],
+      ["workspace:toggle-left-sidebar", "panel-left-open"],
+      ["workspace:toggle-right-sidebar", "panel-right-open"],
+      ["file-explorer:new-file", "file-plus"],
+      ["file-explorer:new-folder", "folder-plus"],
+      ["editor:toggle-bold", "bold"],
+      ["editor:toggle-italics", "italic"],
+      ["editor:toggle-highlight", "highlighter"],
+      ["editor:insert-link", "link"],
+      ["editor:insert-tag", "hash"],
+      ["daily-notes", "calendar-days"],
+      ["periodic-notes:open-daily-note", "calendar-days"]
+    ]);
+    const entries = Object.entries(api.commands ?? {})
+      .map(([id, item]) => ({
+        id,
+        name: typeof item.name === "string" && item.name.trim() ? item.name.trim() : id,
+        icon: typeof item.icon === "string" && item.icon.trim() ? item.icon.trim() : preferred.get(id) ?? guessUiButtonCommandIcon(id, typeof item.name === "string" ? item.name : "")
+      }))
+      .filter((item) => item.id && item.name);
+    return entries
+      .sort((a, b) => {
+        const pa = preferred.has(a.id) ? 0 : 1;
+        const pb = preferred.has(b.id) ? 0 : 1;
+        return pa - pb || a.name.localeCompare(b.name) || a.id.localeCompare(b.id);
+      })
+      .slice(0, 800);
+  }
+
+  async addSiblingUiButton(
+    descriptor: UiButtonEditDescriptor,
+    options: { commandId: string; commandName: string; title: string; icon: string }
+  ): Promise<void> {
+    const commandId = options.commandId.trim();
+    const id = `custom-${Date.now().toString(36)}-${stableRuleId(commandId).replace(/^rule-/, "").slice(0, 48)}`;
+    await this.upsertUiButtonRule({
+      id,
+      kind: "custom",
+      selector: `[data-cancip-ui-custom-button-id="${cssEscapeAttr(id)}"]`,
+      anchorSelector: descriptor.selector,
+      label: options.title || options.commandName || commandId,
+      title: options.title || options.commandName || commandId,
+      icon: options.icon || guessUiButtonCommandIcon(commandId, options.commandName),
+      commandId,
+      commandName: options.commandName,
+      insertPosition: "after",
+      hidden: false,
+      order: 0,
+      scope: descriptor.scope
+    });
+  }
+
+  isUiButtonHiddenRevealEnabled(): boolean {
+    return this.uiButtonRulesRevealHidden;
+  }
+
+  setUiButtonHiddenReveal(value: boolean): void {
+    this.uiButtonRulesRevealHidden = value;
+    this.clearUiRuleMarks();
+    this.applyUiButtonRules();
+    new Notice(this.t(value ? "buttonEditRevealHiddenOn" : "buttonEditRevealHiddenOff"));
+  }
+
+  private installButtonEditLongPress(): void {
+    const doc = activeDocument;
+    let pointerStart: { x: number; y: number } | null = null;
+    const start = (event: PointerEvent) => {
+      if (event.button !== 0 && event.pointerType === "mouse") return;
+      if (this.documentSelectionText()) return;
+      const target = this.editableButtonTarget(event.target);
+      if (!target) return;
+      this.clearButtonEditLongPress();
+      const x = event.clientX;
+      const y = event.clientY;
+      pointerStart = { x, y };
+      this.buttonEditLongPressTarget = target;
+      this.buttonEditLongPressTimer = window.setTimeout(() => {
+        this.buttonEditLongPressTimer = null;
+        if (this.buttonEditLongPressTarget === target) this.showButtonEditBubble(target, x, y);
+      }, 620);
+    };
+    const cancel = () => {
+      pointerStart = null;
+      this.clearButtonEditLongPress();
+    };
+    const move = (event: PointerEvent) => {
+      if (!pointerStart) return;
+      if (Math.abs(event.clientX - pointerStart.x) > 12 || Math.abs(event.clientY - pointerStart.y) > 12) cancel();
+    };
+    const context = (event: MouseEvent) => {
+      const selectionText = this.documentSelectionText();
+      if (selectionText) {
+        event.preventDefault();
+        const clientX = event.clientX;
+        const clientY = event.clientY;
+        window.setTimeout(() => {
+          if (!this.injectSelectionSendIntoOpenMenu(selectionText)) this.showSelectionSendMenu(selectionText, clientX, clientY);
+        }, 0);
+        return;
+      }
+      const target = this.editableButtonTarget(event.target);
+      if (!target) return;
+      event.preventDefault();
+      this.clearButtonEditLongPress();
+      this.hideButtonEditBubble();
+      const clientX = event.clientX;
+      const clientY = event.clientY;
+      this.showButtonEditBubble(target, clientX, clientY);
+      window.setTimeout(() => {
+        if (!this.injectButtonEditIntoOpenMenu(target)) this.showButtonEditMenu(target, clientX, clientY);
+      }, 0);
+    };
+    const outside = (event: PointerEvent) => {
+      if (!this.buttonEditBubbleEl) return;
+      const target = event.target;
+      const win = doc.defaultView;
+      if (win && target instanceof win.Node && this.buttonEditBubbleEl.contains(target)) return;
+      if (this.editableButtonTarget(target)) return;
+      this.hideButtonEditBubble();
+    };
+    doc.addEventListener("pointerdown", start, true);
+    doc.addEventListener("pointerup", cancel, true);
+    doc.addEventListener("pointercancel", cancel, true);
+    doc.addEventListener("pointermove", move, true);
+    doc.addEventListener("scroll", cancel, true);
+    doc.addEventListener("contextmenu", context, true);
+    doc.addEventListener("pointerdown", outside, true);
+    this.register(() => {
+      doc.removeEventListener("pointerdown", start, true);
+      doc.removeEventListener("pointerup", cancel, true);
+      doc.removeEventListener("pointercancel", cancel, true);
+      doc.removeEventListener("pointermove", move, true);
+      doc.removeEventListener("scroll", cancel, true);
+      doc.removeEventListener("contextmenu", context, true);
+      doc.removeEventListener("pointerdown", outside, true);
+      this.clearButtonEditLongPress();
+      this.hideButtonEditBubble();
+    });
+  }
+
+  private clearButtonEditLongPress(): void {
+    if (this.buttonEditLongPressTimer !== null) {
+      window.clearTimeout(this.buttonEditLongPressTimer);
+      this.buttonEditLongPressTimer = null;
+    }
+    this.buttonEditLongPressTarget = null;
+  }
+
+  private editableButtonTarget(rawTarget: EventTarget | null): HTMLElement | null {
+    const win = activeDocument.defaultView;
+    if (!win || !(rawTarget instanceof win.Element)) return null;
+    let target = rawTarget.closest<HTMLElement>(
+      [
+        "button",
+        "a[href]",
+        "summary",
+        "input[type='button']",
+        "input[type='submit']",
+        "input[type='reset']",
+        "input[type='checkbox']",
+        "input[type='radio']",
+        "[role='button']",
+        "[role='menuitem']",
+        "[role='tab']",
+        "[role='checkbox']",
+        "[role='switch']",
+        "[data-command]",
+        ".clickable-icon",
+        ".menu-item",
+        ".workspace-tab-header",
+        ".workspace-tab-header-inner",
+        ".workspace-tab-header-inner-icon",
+        ".workspace-tab-header-status-icon",
+        ".workspace-ribbon-action",
+        ".side-dock-ribbon-action",
+        ".titlebar-button",
+        ".status-bar-item",
+        ".nav-action-button",
+        ".nav-buttons-container > *",
+        ".view-action",
+        ".view-header-icon",
+        ".view-header-title-container",
+        ".view-header-breadcrumb",
+        ".tree-item-self",
+        ".nav-file-title",
+        ".nav-folder-title",
+        ".document-search-button",
+        ".pdf-toolbar .clickable-icon",
+        ".pdf-toolbar button",
+        ".setting-item-control button",
+        ".setting-item-control .clickable-icon",
+        ".setting-item-control select",
+        ".setting-item-control input[type='button']",
+        ".setting-item-control input[type='checkbox']",
+        ".setting-item-control input[type='range']",
+        ".setting-item-control input[type='color']",
+        ".dropdown",
+        "[data-action]",
+        "[data-tooltip-position]",
+        "[data-tooltip-delay]",
+        "[data-icon]",
+        "[tabindex]:not([tabindex='-1'])"
+      ].join(",")
+    );
+    if (!target) target = this.fallbackEditableButtonTarget(rawTarget);
+    if (!target) return null;
+    if (target.closest(".obcc-button-edit-bubble, .obcc-button-edit-modal, .suggestion-container")) return null;
+    if (!this.isEditableButtonUiTarget(target)) return null;
+    return target;
+  }
+
+  private isEditableButtonUiTarget(target: HTMLElement): boolean {
+    if (target.matches("button, a[href], summary, input[type='button'], input[type='submit'], input[type='reset'], input[type='checkbox'], input[type='radio'], input[type='range'], input[type='color'], select")) return true;
+    if (target.matches("[role='button'], [role='menuitem'], [role='tab'], [role='checkbox'], [role='switch'], [data-command], [data-action]")) return true;
+    if (target.matches(".clickable-icon, .menu-item, .workspace-tab-header, .workspace-tab-header-inner, .workspace-ribbon-action, .side-dock-ribbon-action, .titlebar-button, .status-bar-item, .nav-action-button, .view-action, .tree-item-self, .nav-file-title, .nav-folder-title, .document-search-button, .dropdown")) return true;
+    const uiRoot = target.closest(".workspace, .app-container, .modal-container, .menu, .suggestion-container, .status-bar, .workspace-ribbon, .view-actions, .view-header, .nav-header, .nav-buttons-container, .pdf-toolbar, .obcc-root, .obcc-review-leaf-shell");
+    if (!uiRoot) return false;
+    if (activeDocument.defaultView?.getComputedStyle(target).cursor === "pointer") return true;
+    return target.matches("[aria-label], [title], [data-tooltip-position], [data-tooltip-delay], [data-icon], [tabindex]:not([tabindex='-1'])");
+  }
+
+  private fallbackEditableButtonTarget(rawTarget: EventTarget | null): HTMLElement | null {
+    const win = activeDocument.defaultView;
+    if (!win || !(rawTarget instanceof win.Element)) return null;
+    let current: Element | null = rawTarget;
+    for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
+      if (!(current instanceof win.HTMLElement)) continue;
+      if (current.closest(".markdown-preview-view, .cm-editor, .cm-scroller, .pdfViewer .page, .obcc-button-edit-modal")) {
+        if (!current.closest(".view-actions, .view-header, .pdf-toolbar, .modal-button-container, .setting-item-control, .obcc-root, .obcc-review-leaf-shell")) continue;
+      }
+      const uiRoot = current.closest(".workspace, .app-container, .modal-container, .menu, .suggestion-container, .status-bar, .workspace-ribbon, .view-actions, .view-header, .nav-header, .nav-buttons-container, .pdf-toolbar, .obcc-root, .obcc-review-leaf-shell");
+      if (!uiRoot) continue;
+      const style = win.getComputedStyle(current);
+      if (style.cursor === "pointer" || current.onclick || current.tabIndex >= 0 || current.getAttribute("role") || current.getAttribute("aria-label") || current.getAttribute("title")) return current;
+    }
+    return null;
+  }
+
+  private documentSelectionText(): string {
+    const active = activeDocument.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) {
+      const start = active.selectionStart ?? 0;
+      const end = active.selectionEnd ?? 0;
+      return start !== end ? active.value.slice(start, end).trim() : "";
+    }
+    return getWindowSelectionText().trim();
+  }
+
+  private async addDocumentSelectionToCancip(selectionText: string): Promise<void> {
+    const text = selectionText.trim();
+    if (!text) {
+      new Notice(this.t("noSelection"));
+      return;
+    }
+    const view = await this.activateView();
+    const file = this.app.workspace.getActiveFile();
+    const path = file?.path;
+    const label = path ? this.t("selectionContext", { path }) : this.t("sendToAI");
+    const content = [
+      `Selection from: ${path ?? "current Obsidian window"}`,
+      "",
+      text
+    ].join("\n");
+    view?.addDraftContext(label, content, path, path ? "file" : "virtual");
+  }
+
+  private showButtonEditBubble(target: HTMLElement, x: number, y: number): void {
+    this.hideButtonEditBubble();
+    const doc = activeDocument;
+    const win = doc.defaultView;
+    if (!win) return;
+    const bubble = doc.body.createEl("button", {
+      cls: "obcc-button-edit-bubble",
+      attr: {
+        type: "button",
+        title: this.t("editButtonSettings"),
+        "aria-label": this.t("editButtonSettings")
+      }
+    });
+    setIcon(bubble, "settings");
+    const rect = target.getBoundingClientRect();
+    const anchorX = Number.isFinite(x) && x > 0 ? x : rect.left + rect.width / 2;
+    const anchorY = Number.isFinite(y) && y > 0 ? y : rect.top;
+    const left = Math.max(8, Math.min(win.innerWidth - 44, anchorX - 18));
+    const preferTop = rect.top > 54 ? rect.top - 44 : rect.bottom + 8;
+    const top = Math.max(8, Math.min(win.innerHeight - 44, anchorY ? Math.min(anchorY - 48, preferTop) : preferTop));
+    bubble.setCssStyles({ left: `${left}px`, top: `${top}px` });
+    bubble.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.hideButtonEditBubble();
+      this.openButtonEditModal(target);
+    });
+    this.buttonEditBubbleEl = bubble;
+  }
+
+  private hideButtonEditBubble(): void {
+    this.buttonEditBubbleEl?.remove();
+    this.buttonEditBubbleEl = null;
+  }
+
+  private showButtonEditMenu(target: HTMLElement, clientX: number, clientY: number): void {
+    this.hideButtonEditBubble();
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item
+        .setTitle(this.t("editButtonSettings"))
+        .setIcon("settings")
+        .onClick(() => this.openButtonEditModal(target));
+    });
+    menu.showAtPosition({ x: clientX, y: clientY });
+  }
+
+  private showSelectionSendMenu(selectionText: string, clientX: number, clientY: number): void {
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item
+        .setTitle(this.t("sendToAI"))
+        .setIcon("bot")
+        .onClick(() => {
+          void this.addDocumentSelectionToCancip(selectionText);
+        });
+    });
+    menu.showAtPosition({ x: clientX, y: clientY });
+  }
+
+  private injectButtonEditIntoOpenMenu(target: HTMLElement): boolean {
+    const doc = activeDocument;
+    const menus = Array.from(doc.querySelectorAll<HTMLElement>(".menu"))
+      .filter((menu) => menu.offsetParent !== null && !menu.querySelector(".obcc-button-edit-menu-item"));
+    const menuEl = menus[menus.length - 1];
+    if (!menuEl) return false;
+    if (this.openMenuHasTitle(menuEl, this.t("editButtonSettings"))) return true;
+    const row = doc.createElement("div");
+    row.addClass("menu-item", "obcc-button-edit-menu-item");
+    row.setAttr("role", "menuitem");
+    const icon = row.createDiv({ cls: "menu-item-icon" });
+    setIcon(icon, "settings");
+    row.createDiv({ cls: "menu-item-title", text: this.t("editButtonSettings") });
+    row.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      menuEl.remove();
+      this.openButtonEditModal(target);
+    });
+    menuEl.insertBefore(row, menuEl.firstChild);
+    return true;
+  }
+
+  private injectSelectionSendIntoOpenMenu(selectionText: string): boolean {
+    const doc = activeDocument;
+    const menus = Array.from(doc.querySelectorAll<HTMLElement>(".menu"))
+      .filter((menu) => menu.offsetParent !== null && !menu.querySelector(".obcc-send-selection-menu-item"));
+    const menuEl = menus[menus.length - 1];
+    if (!menuEl) return false;
+    if (this.openMenuHasTitle(menuEl, this.t("sendToAI"))) return true;
+    const row = doc.createElement("div");
+    row.addClass("menu-item", "obcc-send-selection-menu-item");
+    row.setAttr("role", "menuitem");
+    const icon = row.createDiv({ cls: "menu-item-icon" });
+    setIcon(icon, "bot");
+    row.createDiv({ cls: "menu-item-title", text: this.t("sendToAI") });
+    row.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      menuEl.remove();
+      void this.addDocumentSelectionToCancip(selectionText);
+    });
+    menuEl.insertBefore(row, menuEl.firstChild);
+    return true;
+  }
+
+  private openMenuHasTitle(menuEl: HTMLElement, title: string): boolean {
+    const normalized = title.trim();
+    return Array.from(menuEl.querySelectorAll<HTMLElement>(".menu-item-title"))
+      .some((item) => item.textContent?.trim() === normalized);
+  }
+
+  private openButtonEditModal(target: HTMLElement): void {
+    const descriptor = this.describeUiButtonEditTarget(target);
+    new CancipButtonEditModal(this.app, this, descriptor, async () => {
+      const view = await this.activateView();
+      view?.addElementContext(target);
+    }).open();
+  }
+
+  private describeUiButtonEditTarget(target: HTMLElement): UiButtonEditDescriptor {
+    const selector = stableSelectorForElement(target);
+    const scope = this.inferUiButtonRuleScope(target);
+    const rule = this.settings.uiButtonRules.find((item) => item.selector === selector && item.scope === scope)
+      ?? this.settings.uiButtonRules.find((item) => item.selector === selector)
+      ?? null;
+    return {
+      selector,
+      label: uiElementLabel(target) || selector,
+      scope,
+      rule
+    };
+  }
+
+  private inferUiButtonRuleScope(target: HTMLElement): UiButtonRule["scope"] {
+    const cancipLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE).find((leaf) => {
+      const container = (leaf.view as unknown as { containerEl?: HTMLElement })?.containerEl;
+      return Boolean(container?.contains(target));
+    });
+    if (cancipLeaf) return "cancip";
+    const activeContainer = (this.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl;
+    if (activeContainer?.contains(target)) return "active";
+    return "global";
+  }
+
   activeApiProfile(): ApiProfile {
     return getActiveApiProfile(this.settings);
   }
@@ -8116,43 +8912,66 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     try {
       this.clearUiRuleMarks();
       const rules = this.settings.uiButtonRules.filter((rule) =>
+        rule.kind === "custom" ||
         rule.hidden ||
         (Number.isFinite(rule.order) && rule.order !== 0) ||
         Boolean(rule.title?.trim()) ||
         Boolean(rule.icon?.trim())
       );
-      window.requestAnimationFrame(() => {
+      let applied = false;
+      let frameId: number | null = null;
+      let fallbackId: number | null = null;
+      const applyNow = () => {
+        if (applied) return;
+        applied = true;
+        if (frameId !== null) window.cancelAnimationFrame(frameId);
+        if (fallbackId !== null) window.clearTimeout(fallbackId);
         try {
-      for (const rule of rules) {
-        for (const el of this.uiRuleElements(rule)) {
-          if (rule.hidden) {
-            el.dataset.cancipUiHidden = "true";
+          for (const rule of rules) {
+            if (rule.kind === "custom") {
+              this.applyCustomUiButtonRule(rule);
+              continue;
+            }
+            for (const el of this.uiRuleElements(rule)) {
+              if (rule.hidden && !this.uiButtonRulesRevealHidden) {
+                if (el.dataset.cancipUiOriginalDisplay === undefined) el.dataset.cancipUiOriginalDisplay = el.style.getPropertyValue("display") ?? "";
+                if (el.dataset.cancipUiOriginalDisplayPriority === undefined) el.dataset.cancipUiOriginalDisplayPriority = el.style.getPropertyPriority("display") ?? "";
+                el.dataset.cancipUiHidden = "true";
+                el.style.setProperty("display", "none", "important");
+              }
+              if (Number.isFinite(rule.order) && rule.order !== 0) {
+                const parent = el.parentElement;
+                if (!parent) continue;
+                el.dataset.cancipUiOrder = String(rule.order);
+                el.setCssStyles({ order: String(rule.order) });
+                const display = activeDocument.defaultView?.getComputedStyle(parent).display ?? "";
+                if (!/^(inline-)?(flex|grid)$/.test(display)) {
+                  if (parent.dataset.cancipUiOriginalDisplay === undefined) parent.dataset.cancipUiOriginalDisplay = parent.style.getPropertyValue("display") ?? "";
+                  if (parent.dataset.cancipUiOriginalDisplayPriority === undefined) parent.dataset.cancipUiOriginalDisplayPriority = parent.style.getPropertyPriority("display") ?? "";
+                  parent.addClass("obcc-ui-rule-flex-parent");
+                  parent.style.setProperty("display", display.startsWith("inline") ? "inline-flex" : "flex", "important");
+                }
+              }
+              if (rule.title?.trim()) {
+                this.applyUiRuleTitle(el, rule.title.trim());
+              }
+              if (rule.icon?.trim()) {
+                this.applyUiRuleIcon(el, rule.icon.trim());
+              }
+            }
           }
-          if (Number.isFinite(rule.order) && rule.order !== 0) {
-            const parent = el.parentElement;
-            if (!parent) continue;
-            el.dataset.cancipUiOrder = String(rule.order);
-            el.setCssStyles({ order: String(rule.order) });
-            if (parent.style.display !== "flex" && parent.style.display !== "inline-flex") parent.addClass("obcc-ui-rule-flex-parent");
+          if (this.settings.hideUnpinnedTagsInRightSidebar) {
+            const pinned = new Set(this.settings.pinnedTags.map((tag) => normalizeTagName(tag)).filter(Boolean));
+            for (const item of this.rightSidebarTagElements()) {
+              if (!pinned.has(item.tag)) item.el.dataset.cancipTagHidden = item.tag;
+            }
           }
-          if (rule.title?.trim()) {
-            this.applyUiRuleTitle(el, rule.title.trim());
-          }
-          if (rule.icon?.trim()) {
-            this.applyUiRuleIcon(el, rule.icon.trim());
-          }
-        }
-      }
-      if (this.settings.hideUnpinnedTagsInRightSidebar) {
-        const pinned = new Set(this.settings.pinnedTags.map((tag) => normalizeTagName(tag)).filter(Boolean));
-        for (const item of this.rightSidebarTagElements()) {
-          if (!pinned.has(item.tag)) item.el.dataset.cancipTagHidden = item.tag;
-        }
-      }
         } finally {
           finish();
         }
-      });
+      };
+      frameId = window.requestAnimationFrame(applyNow);
+      fallbackId = window.setTimeout(applyNow, 80);
     } catch (error) {
       console.warn("Cancip UI button rules apply failed", error);
       finish();
@@ -8182,11 +9001,103 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     setIcon(iconTarget, icon);
   }
 
+  private applyCustomUiButtonRule(rule: UiButtonRule): void {
+    if (!rule.anchorSelector?.trim() || !rule.commandId?.trim()) return;
+    if (rule.hidden && !this.uiButtonRulesRevealHidden) return;
+    for (const anchor of this.uiRuleElementsBySelector(rule.anchorSelector, rule.scope)) {
+      const parent = anchor.parentElement;
+      if (!parent) continue;
+      const existing = parent.querySelector<HTMLElement>(`[data-cancip-ui-custom-button-id="${cssEscapeAttr(rule.id)}"]`);
+      if (existing) continue;
+      const button = this.createCustomUiButton(anchor, rule);
+      if (rule.insertPosition === "before") parent.insertBefore(button, anchor);
+      else anchor.insertAdjacentElement("afterend", button);
+    }
+  }
+
+  private createCustomUiButton(anchor: HTMLElement, rule: UiButtonRule): HTMLElement {
+    const doc = activeDocument;
+    const title = rule.title?.trim() || rule.label || rule.commandName || rule.commandId || this.t("buttonEditCustomButton");
+    const icon = rule.icon?.trim() || guessUiButtonCommandIcon(rule.commandId ?? "", rule.commandName ?? title);
+    const isMenuItem = anchor.hasClass("menu-item");
+    const button = doc.createElement(isMenuItem ? "div" : "button");
+    button.addClass("obcc-ui-custom-button");
+    if (isMenuItem) button.addClass("menu-item");
+    else button.setAttribute("type", "button");
+    if (!isMenuItem) {
+      for (const cls of Array.from(anchor.classList)) {
+        if (/^(is-|mod-|has-|is-active|is-selected)$/.test(cls)) continue;
+        button.addClass(cls);
+      }
+      if (!button.hasClass("clickable-icon") && (anchor.hasClass("clickable-icon") || anchor.closest(".view-actions, .workspace-ribbon, .nav-buttons-container, .pdf-toolbar"))) {
+        button.addClass("clickable-icon");
+      }
+    }
+    button.dataset.cancipUiCustomButton = "true";
+    button.dataset.cancipUiCustomButtonId = rule.id;
+    button.dataset.cancipUiCustomCommand = rule.commandId ?? "";
+    button.setAttribute("title", title);
+    button.setAttribute("aria-label", title);
+    button.setAttribute("role", "button");
+    button.setAttribute("tabindex", "0");
+    if (isMenuItem) {
+      const iconEl = button.createDiv({ cls: "menu-item-icon" });
+      setIcon(iconEl, icon);
+      button.createDiv({ cls: "menu-item-title", text: title });
+    } else {
+      setIcon(button, icon);
+      if (!button.hasClass("clickable-icon")) button.createSpan({ cls: "obcc-ui-custom-button-label", text: title });
+    }
+    const run = (event: Event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      void this.executeCustomUiButtonRule(rule);
+    };
+    button.addEventListener("click", run);
+    button.addEventListener("keydown", (event: KeyboardEvent) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      run(event);
+    });
+    return button;
+  }
+
+  private async executeCustomUiButtonRule(rule: UiButtonRule): Promise<void> {
+    const commandId = rule.commandId?.trim() ?? "";
+    if (!commandId) {
+      new Notice(this.t("buttonEditNoCommand"));
+      return;
+    }
+    const api = ((this.app as App & { commands?: ObsidianCommandApi }).commands ?? {});
+    const command = api.commands?.[commandId];
+    if (!command || !api.executeCommandById) {
+      new Notice(this.t("buttonEditCommandMissing", { command: commandId }));
+      return;
+    }
+    try {
+      const executed = api.executeCommandById(commandId);
+      if (executed === false) new Notice(this.t("buttonEditCommandFailed", { command: commandId }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.t("buttonEditCommandFailed", { command: `${commandId}: ${reason}` }));
+    }
+  }
+
   private clearUiRuleMarks(): void {
     const doc = activeDocument;
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-custom-button]"))) {
+      el.remove();
+    }
     for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-ui-title], [data-cancip-ui-icon], [data-cancip-tag-hidden]"))) {
       delete el.dataset.cancipUiHidden;
       delete el.dataset.cancipTagHidden;
+      if (el.dataset.cancipUiOriginalDisplay !== undefined || el.dataset.cancipUiOriginalDisplayPriority !== undefined) {
+        const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
+        const originalPriority = el.dataset.cancipUiOriginalDisplayPriority ?? "";
+        if (originalDisplay) el.style.setProperty("display", originalDisplay, originalPriority);
+        else el.style.removeProperty("display");
+        delete el.dataset.cancipUiOriginalDisplay;
+        delete el.dataset.cancipUiOriginalDisplayPriority;
+      }
       if (el.dataset.cancipUiOrder !== undefined) {
         delete el.dataset.cancipUiOrder;
         el.setCssStyles({ order: "" });
@@ -8215,19 +9126,29 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       delete el.dataset.cancipUiIcon;
     }
     for (const el of Array.from(doc.querySelectorAll<HTMLElement>(".obcc-ui-rule-flex-parent"))) {
+      const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
+      const originalPriority = el.dataset.cancipUiOriginalDisplayPriority ?? "";
+      if (originalDisplay) el.style.setProperty("display", originalDisplay, originalPriority);
+      else el.style.removeProperty("display");
+      delete el.dataset.cancipUiOriginalDisplay;
+      delete el.dataset.cancipUiOriginalDisplayPriority;
       el.removeClass("obcc-ui-rule-flex-parent");
     }
   }
 
   private uiRuleElements(rule: UiButtonRule): HTMLElement[] {
+    return this.narrowUiRuleElementsByLabel(rule, this.uiRuleElementsBySelector(rule.selector, rule.scope));
+  }
+
+  private uiRuleElementsBySelector(selector: string, scope: UiButtonRule["scope"]): HTMLElement[] {
     const doc = activeDocument;
-    const root = rule.scope === "active"
+    const root = scope === "active"
       ? ((this.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc)
-      : rule.scope === "cancip"
+      : scope === "cancip"
         ? (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc
         : doc;
     try {
-      return Array.from(root.querySelectorAll<HTMLElement>(rule.selector));
+      return Array.from(root.querySelectorAll<HTMLElement>(selector));
     } catch {
       return [];
     }
@@ -8748,6 +9669,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         this.automationIntervalTimer = null;
       });
     }
+  }
+
+  private narrowUiRuleElementsByLabel(rule: UiButtonRule, elements: HTMLElement[]): HTMLElement[] {
+    if (elements.length <= 1) return elements;
+    const wanted = normalizeUiButtonLabel(rule.title || rule.label || "");
+    if (!wanted || wanted === normalizeUiButtonLabel(rule.selector)) return elements;
+    const exact = elements.filter((el) => normalizeUiButtonLabel(uiElementLabel(el)) === wanted);
+    if (exact.length) return exact;
+    const contains = elements.filter((el) => {
+      const label = normalizeUiButtonLabel(uiElementLabel(el));
+      return label && (label.includes(wanted) || wanted.includes(label));
+    });
+    return contains.length ? contains : elements;
   }
 
   async maybeRunDueAutomations(): Promise<void> {
@@ -13348,18 +14282,10 @@ class CancipView extends ItemView {
     if (!win || !(target instanceof win.Element)) return;
     const element = target.closest("button,[role='button'],.clickable-icon,.menu-item,.workspace-tab-header") as HTMLElement | null;
     if (!element) return;
-    const menu = new Menu();
-    menu.addItem((item) => {
-      item
-        .setTitle(this.t("sendToAI"))
-        .setIcon("bot")
-        .onClick(() => this.addElementContext(element));
-    });
-    event.preventDefault();
-    menu.showAtMouseEvent(event);
+    if (!getWindowSelectionText().trim()) return;
   }
 
-  private addElementContext(element: HTMLElement): void {
+  addElementContext(element: HTMLElement): void {
     const label = uiElementLabel(element) || element.getAttribute("aria-label") || element.getAttribute("title") || element.tagName.toLowerCase();
     const selector = stableSelectorForElement(element);
     const content = [
@@ -22409,7 +23335,10 @@ class CancipView extends ItemView {
   private uiButtonRulesSummary(): string {
     const rules = this.plugin.settings.uiButtonRules;
     if (!rules.length) return this.t("none");
-    return rules.map((rule, index) => `${index + 1}. ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope} ${rule.label}${rule.title ? ` title=${rule.title}` : ""}${rule.icon ? ` icon=${rule.icon}` : ""}\n   ${rule.selector}`).join("\n");
+    return rules.map((rule, index) => {
+      const custom = rule.kind === "custom" ? ` custom command=${rule.commandId ?? ""} anchor=${rule.anchorSelector ?? ""}` : "";
+      return `${index + 1}. ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope}${custom} ${rule.label}${rule.title ? ` title=${rule.title}` : ""}${rule.icon ? ` icon=${rule.icon}` : ""}\n   ${rule.selector}`;
+    }).join("\n");
   }
 
   private async applyUiButtonRulesCommand(args: Record<string, unknown>): Promise<string> {
@@ -29360,7 +30289,13 @@ function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
       const order = Number.isFinite(Number(item.order)) ? Math.max(-999, Math.min(999, Math.round(Number(item.order)))) : 0;
       const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : undefined;
       const icon = typeof item.icon === "string" && item.icon.trim() ? item.icon.trim() : undefined;
-      return { id, selector, label, hidden: Boolean(item.hidden), order, title, icon, scope };
+      const commandId = typeof item.commandId === "string" && item.commandId.trim() ? item.commandId.trim() : undefined;
+      const anchorSelector = typeof item.anchorSelector === "string" && item.anchorSelector.trim() ? item.anchorSelector.trim() : undefined;
+      const kind = item.kind === "custom" || (commandId && anchorSelector) ? "custom" : undefined;
+      if (kind === "custom" && (!commandId || !anchorSelector)) return null;
+      const commandName = typeof item.commandName === "string" && item.commandName.trim() ? item.commandName.trim() : undefined;
+      const insertPosition = item.insertPosition === "before" ? "before" : item.insertPosition === "after" ? "after" : undefined;
+      return { id, selector, label, hidden: Boolean(item.hidden), order, title, icon, scope, kind, anchorSelector, commandId, commandName, insertPosition };
     })
     .filter((item): item is UiButtonRule => item !== null)
     .slice(0, 200);
@@ -30781,6 +31716,8 @@ function shouldInsertTtsSpace(left: string, right: string): boolean {
 
 function getWindowSelectionText(): string {
   try {
+    const activeSelection = activeDocument.getSelection?.()?.toString().trim() ?? "";
+    if (activeSelection) return activeSelection;
     return window.getSelection?.()?.toString().trim() ?? "";
   } catch {
     return "";
@@ -32196,14 +33133,104 @@ function uiElementLabel(el: HTMLElement): string {
   return (el.getAttribute("aria-label") || el.getAttribute("title") || el.innerText || el.textContent || el.className || el.tagName).toString().replace(/\s+/g, " ").trim();
 }
 
+function normalizeUiButtonLabel(value: string): string {
+  return value.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function guessUiButtonCommandIcon(id: string, name: string): string {
+  const haystack = `${id} ${name}`.toLowerCase();
+  if (/(cancip|ai|chat|assistant|bot|问答|聊天|助手)/i.test(haystack)) return "bot";
+  if (/(new|create|add|insert|新建|创建|添加|增加|插入)/i.test(haystack)) return "plus";
+  if (/(search|find|lookup|查找|搜索|检索)/i.test(haystack)) return "search";
+  if (/(history|recent|历史|最近)/i.test(haystack)) return "history";
+  if (/(todo|task|plan|待办|计划|任务)/i.test(haystack)) return "list-todo";
+  if (/(review|approve|audit|审核|批准)/i.test(haystack)) return "shield-check";
+  if (/(speak|tts|voice|read aloud|朗读|语音)/i.test(haystack)) return "volume-2";
+  if (/(pause|暂停)/i.test(haystack)) return "pause";
+  if (/(play|resume|continue|播放|继续|恢复)/i.test(haystack)) return "play";
+  if (/(stop|停止)/i.test(haystack)) return "square";
+  if (/(settings|preference|config|设置|配置)/i.test(haystack)) return "settings";
+  if (/(calendar|daily|date|日历|日记|日期)/i.test(haystack)) return "calendar-days";
+  if (/(folder|目录|文件夹)/i.test(haystack)) return "folder-open";
+  if (/(file|note|markdown|笔记|文件)/i.test(haystack)) return "file-text";
+  if (/(command|palette|命令)/i.test(haystack)) return "command";
+  if (/(terminal|shell|console|终端|控制台)/i.test(haystack)) return "terminal";
+  if (/(refresh|reload|rebuild|sync|刷新|重载|同步|重建)/i.test(haystack)) return "refresh-cw";
+  if (/(download|export|下载|导出)/i.test(haystack)) return "download";
+  if (/(upload|import|上传|导入)/i.test(haystack)) return "upload";
+  if (/(attach|attachment|paperclip|附件)/i.test(haystack)) return "paperclip";
+  if (/(draw|paint|canvas|sketch|涂鸦|绘图|画)/i.test(haystack)) return "palette";
+  if (/(highlight|mark|高亮|标记)/i.test(haystack)) return "highlighter";
+  if (/(pin|固定|置顶)/i.test(haystack)) return "pin";
+  if (/(star|favorite|收藏)/i.test(haystack)) return "star";
+  return "zap";
+}
+
 function stableSelectorForElement(el: HTMLElement): string {
+  const customButtonId = el.dataset.cancipUiCustomButtonId;
+  if (customButtonId) return uniqueSelectorForElement(el, `[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`);
+  const id = el.getAttribute("id");
+  if (id) return uniqueSelectorForElement(el, `${el.tagName.toLowerCase()}#${cssClassEscape(id)}`);
+  const command = el.getAttribute("data-command");
+  if (command) return uniqueSelectorForElement(el, `${el.tagName.toLowerCase()}[data-command="${cssEscapeAttr(command)}"]`);
+  const href = el.getAttribute("href");
+  if (href && el.tagName.toLowerCase() === "a") return uniqueSelectorForElement(el, `a[href="${cssEscapeAttr(href)}"]`);
   const aria = el.getAttribute("aria-label");
-  if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssEscapeAttr(aria)}"]`;
+  if (aria) return uniqueSelectorForElement(el, `${el.tagName.toLowerCase()}[aria-label="${cssEscapeAttr(aria)}"]`);
   const title = el.getAttribute("title");
-  if (title) return `${el.tagName.toLowerCase()}[title="${cssEscapeAttr(title)}"]`;
+  if (title) return uniqueSelectorForElement(el, `${el.tagName.toLowerCase()}[title="${cssEscapeAttr(title)}"]`);
   const cls = String(el.className || "").split(/\s+/).filter(Boolean).filter((item) => !/^is-|^mod-|^has-/.test(item)).slice(0, 3);
-  if (cls.length) return `${el.tagName.toLowerCase()}.${cls.map(cssClassEscape).join(".")}`;
-  return el.tagName.toLowerCase();
+  if (cls.length) return uniqueSelectorForElement(el, `${el.tagName.toLowerCase()}.${cls.map(cssClassEscape).join(".")}`);
+  return uniqueSelectorForElement(el, el.tagName.toLowerCase());
+}
+
+function uniqueSelectorForElement(el: HTMLElement, preferred: string): string {
+  if (selectorUniquelyMatches(el, preferred)) return preferred;
+  return cssPathSelectorForElement(el);
+}
+
+function selectorUniquelyMatches(el: HTMLElement, selector: string): boolean {
+  try {
+    const matches = Array.from(activeDocument.querySelectorAll<HTMLElement>(selector));
+    return matches.length === 1 && matches[0] === el;
+  } catch {
+    return false;
+  }
+}
+
+function cssPathSelectorForElement(el: HTMLElement): string {
+  const parts: string[] = [];
+  let current: HTMLElement | null = el;
+  for (let depth = 0; current && depth < 8; depth += 1) {
+    const segment = cssPathSegment(current);
+    parts.unshift(segment);
+    const selector = parts.join(" > ");
+    if (selectorUniquelyMatches(el, selector)) return selector;
+    current = current.parentElement;
+    if (current?.tagName.toLowerCase() === "body") break;
+  }
+  return parts.join(" > ");
+}
+
+function cssPathSegment(el: HTMLElement): string {
+  const tag = el.tagName.toLowerCase();
+  const id = el.getAttribute("id");
+  if (id) return `${tag}#${cssClassEscape(id)}`;
+  const command = el.getAttribute("data-command");
+  if (command) return `${tag}[data-command="${cssEscapeAttr(command)}"]`;
+  const customButtonId = el.dataset.cancipUiCustomButtonId;
+  if (customButtonId) return `${tag}[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`;
+  const cls = String(el.className || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((item) => !/^is-|^mod-|^has-/.test(item))
+    .slice(0, 2);
+  const classPart = cls.length ? `.${cls.map(cssClassEscape).join(".")}` : "";
+  const parent = el.parentElement;
+  if (!parent) return `${tag}${classPart}`;
+  const sameTag = Array.from(parent.children).filter((child) => child.tagName === el.tagName);
+  const index = Math.max(1, sameTag.indexOf(el) + 1);
+  return `${tag}${classPart}:nth-of-type(${index})`;
 }
 
 function cssEscapeAttr(value: string): string {
