@@ -228,7 +228,13 @@ Plan todo example:
 Currently supported command names:
 
 - `obsidian.listCommands`: list Obsidian internal command ids from `app.commands.commands`.
-- `obsidian.execute`: execute an Obsidian command by id, for example `{"id":"app:open-settings"}`.
+- `obsidian.resolveCommand`: resolve a fuzzy command name, translated label, or id into exact Obsidian command candidates.
+- `obsidian.execute`: execute an Obsidian command by exact id or high-confidence fuzzy name, for example `{"id":"app:open-settings"}` or `{"query":"open command palette"}`.
+- `cancip.pluginCapabilities`: inspect installed plugin capability routes by plugin name or feature words, including commands, runtime API surface, plugin files/settings, UI/API/config/web route hints, e.g. `{"query":"notedraw 涂鸦 高亮"}`.
+- `cancip.pluginRoute`: generic plugin auto-adapter discovery for current or newly installed plugins. It summarizes commands, public API methods, settings/files, UI routes, and exact `pluginAction` examples.
+- `cancip.pluginAction`: execute a plugin command or public API method after discovery, e.g. `{"pluginId":"plugin-id","commandQuery":"open panel"}` or `{"pluginId":"plugin-id","target":"api","method":"methodName","params":[]}`. Access mode controls approval/full-access execution.
+- `cancip.annotate.help`, `cancip.annotate.note`, `cancip.annotate.pdf`: programmatic note/PDF annotation routes for NoteDraw/Pdftion-style highlighting, drawing, text, covers, exports, and active selection operations.
+- `cancip.study.help`, `cancip.study.review`: spaced-repetition routes for review queue, active-note flashcards, all due cards, cram review, and note-review ratings.
 - `cancip.rebuildIndex`: refresh Cancip's lightweight vault index.
 - `cancip.reviewGate`: programmatically build native Cancip audit-panel data. Example args: `{"paths":["Folder/Note.md"],"maxFiles":20}` or `{"items":[{"path":"Note.md","old_text":"...","new_text":"..."}]}`.
 - `cancip.reviewGate.list`: list recent review data packages under `AI/Cancip/Review/`.

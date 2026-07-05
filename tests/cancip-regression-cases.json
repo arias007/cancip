@@ -17,9 +17,7 @@
         "intent": "informational",
         "maxModePromptChars": 1800,
         "maxContextChars": 1700,
-        "requiredActions": [
-          { "type": "read", "path": "AI/Cancip/Memory/PROFILE.md" }
-        ],
+        "maxActions": 0,
         "forbidCommands": [
           "cancip.tools.index",
           "cancip.skills.list",
@@ -42,10 +40,7 @@
         "intent": "informational",
         "maxModePromptChars": 1800,
         "maxContextChars": 1900,
-        "requiredActions": [
-          { "type": "read", "path": "AI/Cancip/Memory/PROFILE.md" },
-          { "type": "read", "path": "AI/Cancip/Memory/PREFERENCES.md" }
-        ],
+        "maxActions": 0,
         "forbidCommands": [
           "cancip.tools.index",
           "cancip.skills.list",
@@ -68,9 +63,7 @@
         "intent": "informational",
         "maxModePromptChars": 1800,
         "maxContextChars": 1900,
-        "requiredActions": [
-          { "type": "read", "path": "AI/Cancip/Memory/PREFERENCES.md" }
-        ],
+        "maxActions": 0,
         "forbidCommands": [
           "cancip.tools.index",
           "cancip.skills.list",
@@ -84,13 +77,13 @@
       "prompt": "有哪些 skill 可以读 pdf 和 excel",
       "expect": {
         "intent": "informational",
-        "maxModePromptChars": 1800,
-        "requiredActions": [
-          { "type": "command", "command": "cancip.skills.list" }
+        "maxModePromptChars": 2600,
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog",
+          "includeAutoSkills"
         ],
         "policyFalse": [
-          "includeToolCatalog",
-          "includeAutoSkills",
           "includePluginMemory"
         ]
       }
@@ -101,8 +94,36 @@
       "expect": {
         "intent": "informational",
         "maxModePromptChars": 2600,
-        "requiredActions": [
-          { "type": "command", "command": "cancip.installedPlugins" }
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog",
+          "includeAutoSkills"
+        ]
+      }
+    },
+    {
+      "id": "plugin.capabilities.notedraw",
+      "prompt": "NoteDraw 插件能不能做涂鸦高亮，先查能力和可用路线",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog",
+          "includePluginMemory"
+        ]
+      }
+    },
+    {
+      "id": "plugin.generic-route.new-plugin",
+      "prompt": "新装插件应该怎么自动接入 Cancip，先查插件 API 和命令路线",
+      "expect": {
+        "intent": "informational",
+        "maxModePromptChars": 2600,
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog",
+          "includePluginMemory"
         ]
       }
     },
@@ -112,8 +133,9 @@
       "expect": {
         "intent": "informational",
         "maxModePromptChars": 2600,
-        "requiredActions": [
-          { "type": "command", "command": "obsidian.currentView" }
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog"
         ]
       }
     },
@@ -123,8 +145,9 @@
       "expect": {
         "intent": "informational",
         "maxModePromptChars": 2600,
-        "requiredActions": [
-          { "type": "command", "command": "cancip.automation.templates" }
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog"
         ]
       }
     },
@@ -134,8 +157,9 @@
       "expect": {
         "intent": "informational",
         "maxModePromptChars": 2600,
-        "requiredActions": [
-          { "type": "command", "command": "cancip.sessionHistory" }
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog"
         ]
       }
     },
@@ -145,9 +169,26 @@
       "expect": {
         "intent": "informational",
         "maxModePromptChars": 2600,
-        "requiredActions": [
-          { "type": "command", "command": "cancip.attachment.help" },
-          { "type": "command", "command": "cancip.externalFiles.help" }
+        "maxActions": 0,
+        "policyTrue": [
+          "includeToolCatalog"
+        ]
+      }
+    },
+    {
+      "id": "tts.read-active.execute",
+      "prompt": "朗读当前文件（用ob朗读命令）",
+      "expect": {
+        "intent": "implementation",
+        "maxModePromptChars": 4200,
+        "maxActions": 0,
+        "policyTrue": [
+          "compactStateChange",
+          "includeToolCatalog"
+        ],
+        "policyFalse": [
+          "includeToolProtocol",
+          "includeDetailedRules"
         ]
       }
     },
@@ -250,6 +291,51 @@
       }
     },
     {
+      "id": "command.plugins.capabilities.notedraw",
+      "command": "cancip.pluginCapabilities",
+      "args": { "query": "notdraw 涂鸦 高亮", "includeDisabled": true, "includeApi": true, "includeFiles": true, "commandLimit": 20 },
+      "expect": {
+        "containsAny": ["NoteDraw", "notedraw", "toggle-draw-mode", "涂鸦"],
+        "maxMs": 5000
+      }
+    },
+    {
+      "id": "command.plugins.capabilities.pdftion",
+      "command": "cancip.pluginCapabilities",
+      "args": { "query": "pdftion pdf 批注 高亮", "includeDisabled": true, "includeApi": true, "includeFiles": false, "commandLimit": 20 },
+      "expect": {
+        "containsAny": ["Pdftion", "pdftion", "export-annotations", "PDF"],
+        "maxMs": 5000
+      }
+    },
+    {
+      "id": "command.plugins.route.notedraw",
+      "command": "cancip.pluginRoute",
+      "args": { "query": "notedraw 涂鸦 高亮", "includeApi": true, "commandLimit": 20 },
+      "expect": {
+        "containsAny": ["Generic plugin route", "pluginAction", "NoteDraw", "notedraw"],
+        "maxMs": 6000
+      }
+    },
+    {
+      "id": "command.annotate.help",
+      "command": "cancip.annotate.help",
+      "args": { "maxChars": 6000 },
+      "expect": {
+        "containsAny": ["cancip.annotate.note", "cancip.annotate.pdf", "Pdftion", "NoteDraw"],
+        "maxMs": 7000
+      }
+    },
+    {
+      "id": "command.study.help",
+      "command": "cancip.study.help",
+      "args": {},
+      "expect": {
+        "containsAny": ["Spaced Repetition", "cancip.study.review", "flashcards", "review"],
+        "maxMs": 3000
+      }
+    },
+    {
       "id": "command.obsidian.currentView",
       "command": "obsidian.currentView",
       "args": { "includeText": false, "visibleChars": 600 },
@@ -264,6 +350,96 @@
       "args": { "query": "file", "limit": 20 },
       "expect": {
         "containsAny": ["file", "open", "command", "命令"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.fuzzy",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "open command palette" },
+      "expect": {
+        "contains": ["Resolved: command-palette:open"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.daily-note",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "open today's daily note" },
+      "expect": {
+        "contains": ["Resolved: daily-notes"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.notedraw-intent",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "notedraw 涂鸦 高亮" },
+      "expect": {
+        "contains": ["Resolved: notedraw:toggle-draw-mode"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.spaced-repetition",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "spaced repetition review flashcards in note" },
+      "expect": {
+        "contains": ["Resolved: obsidian-spaced-repetition:srs-review-flashcards-in-note"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.mobile-pdf",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "移动端导出pdf" },
+      "expect": {
+        "contains": ["Resolved: mobile-pdf-exporter:export-current-note-preview-pdf"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.excalidraw-sidepanel",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "excalidraw 打开侧边面板" },
+      "expect": {
+        "contains": ["Resolved: obsidian-excalidraw-plugin:excalidraw-open-sidepanel"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.tasks-edit",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "tasks edit task" },
+      "expect": {
+        "contains": ["Resolved: obsidian-tasks-plugin:edit-task"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.resolveCommand.dataview-refresh",
+      "command": "obsidian.resolveCommand",
+      "args": { "query": "dataview refresh" },
+      "expect": {
+        "contains": ["Resolved: dataview:dataview-force-refresh-views"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.execute.exact",
+      "command": "obsidian.execute",
+      "args": { "id": "editor:save-file" },
+      "expect": {
+        "contains": ["executed: editor:save-file"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.execute.direct-id",
+      "command": "editor:save-file",
+      "args": {},
+      "expect": {
+        "contains": ["executed: editor:save-file"],
         "maxMs": 3000
       }
     },
