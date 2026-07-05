@@ -18,6 +18,10 @@ $DefaultCommandIds = @(
   'command.tools.index',
   'command.memory.read.profile',
   'command.obsidian.currentView',
+  'command.obsidian.js.help',
+  'command.obsidian.js.probe',
+  'command.obsidian.eval.expression',
+  'command.obsidian.eval.alias-js',
   'command.obsidian.resolveCommand.fuzzy',
   'command.obsidian.resolveCommand.daily-note',
   'command.obsidian.resolveCommand.notedraw-intent',
@@ -232,7 +236,7 @@ if (-not $Case -or 'programmatic.vault-state-sync-classifier'.Contains($Case)) {
     sessionFile:'.cancip/sessions/session-2026-07-05T00-00-00Z.json',
     automationState:'.cancip/automations.json',
     automationLog:'.cancip/automations/2026-07-05.md',
-    skill:'AI/Cancip/Skills/Codex/obsidian/SKILL.md',
+    skill:'AI/Cancip/Skills/Desktop/obsidian/SKILL.md',
     skillIndex:'.cancip/index/skills-index.json',
     memory:'AI/Cancip/Memory/CANCIP_INDEX.md',
     review:'AI/Cancip/Review/smoke/manifest.json',
@@ -443,6 +447,37 @@ if (-not $Case -or 'programmatic.obsidian-execute-unresolved-fails'.Contains($Ca
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
   } catch {
     Add-CaseResult 'programmaticCases' @{ id = 'programmatic.obsidian-execute-unresolved-fails'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.js-action-alias'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const oldMode=p.settings.accessMode;
+  p.settings.accessMode='full-access';
+  try{
+    const fence=String.fromCharCode(96,96,96);
+    const answer=fence+'cancip-action\n'+JSON.stringify({action:'js.eval',expression:'({ok:true, pluginCount:Object.keys(plugins).length})'})+'\n'+fence;
+    const result=await v.handleActionBlocks(answer, undefined);
+    const run=result?.runs?.[0]||null;
+    const summary=String(run?.result||run?.summary||'');
+    return JSON.stringify({id:'programmatic.js-action-alias',elapsedMs:Date.now()-t,executed:!!result?.executed,runs:result?.runs?.length||0,summary});
+  } finally {
+    p.settings.accessMode=oldMode;
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 60
+    if (-not $item.executed -or [int]$item.runs -lt 1) { throw 'js.eval action alias block was not executed' }
+    if (-not ([string]$item.summary).Contains('pluginCount')) { throw "js.eval action result missing pluginCount: $($item.summary)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.js-action-alias'; pass = $false; error = $_.Exception.Message }
   }
 }
 

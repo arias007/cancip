@@ -354,6 +354,42 @@
       }
     },
     {
+      "id": "command.obsidian.js.help",
+      "command": "obsidian.js.help",
+      "args": {},
+      "expect": {
+        "contains": ["Obsidian JS bridge", "helpers.plugin", "obsidian.eval"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.js.probe",
+      "command": "obsidian.js.probe",
+      "args": { "maxPlugins": 8 },
+      "expect": {
+        "contains": ["Obsidian JS bridge probe", "loadedPlugins", "methods"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.eval.expression",
+      "command": "obsidian.eval",
+      "args": { "expression": "({activeFile: app.workspace.getActiveFile()?.path || '', pluginCount: Object.keys(plugins).length, commandCount: Object.keys(app.commands.commands).length})", "maxChars": 1200 },
+      "expect": {
+        "contains": ["Obsidian JS bridge", "pluginCount", "commandCount"],
+        "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.obsidian.eval.alias-js",
+      "command": "js.eval",
+      "args": { "code": "return helpers.snapshot();", "maxChars": 1200 },
+      "expect": {
+        "contains": ["Obsidian JS bridge", "pluginCount", "commandCount"],
+        "maxMs": 3000
+      }
+    },
+    {
       "id": "command.obsidian.resolveCommand.fuzzy",
       "command": "obsidian.resolveCommand",
       "args": { "query": "open command palette" },

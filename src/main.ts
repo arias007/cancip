@@ -1158,7 +1158,7 @@ type Settings = {
 const CANCIP_AI_DIR = "AI/Cancip";
 const DEFAULT_MEMORY_FOLDER = `${CANCIP_AI_DIR}/Memory`;
 const DEFAULT_CODEX_MEMORY_IMPORT_PATH = "C:/Users/35007/.codex/memories";
-const DEFAULT_CODEX_SKILLS_IMPORT_ROOT = `${CANCIP_AI_DIR}/Skills/Codex`;
+const DEFAULT_CODEX_SKILLS_IMPORT_ROOT = `${CANCIP_AI_DIR}/Skills/Desktop`;
 const LEGACY_DEFAULT_MEMORY_FOLDER = "AI/Memory";
 const INTERRUPTED_DEFAULT_MEMORY_FOLDER = "Cancip/Memory";
 const DEFAULT_SUPPORT_CODE_ONE_PATH = "extras/code-1.jpg";
@@ -1524,17 +1524,17 @@ const EN = {
   tokenUsageEstimated: " estimated",
   processRecord: "Process record",
   finalConclusionFallback: "{summary}",
-  finalAnswerFormatPrompt: "For implementation/change/tool tasks, do not write a \"Final answer\" heading and do not write elapsed time, token counts, or character counts; Cancip appends those programmatically. The visible closeout should be human-readable and concrete, like Codex: start with a short summary tied to the user's original request, then use concise numbered items for what was done, then include actions performed, changed/read files, verification/results, blockers/reminders when relevant, and memory/rule updates if any. If more tool work is still needed and no real blocker exists, continue with exactly one cancip-action instead of summarizing as done. Generate the final answer and the next-step buttons together in the same reply: append exactly one hidden HTML comment like <!-- cancip-choices {\"choices\":[\"specific action 1\",\"specific action 2\"]} -->. Do not show these choices as visible numbered or bulleted text. Keep tool details folded in process records; do not expose raw action JSON.",
+  finalAnswerFormatPrompt: "For implementation/change/tool tasks, do not write a \"Final answer\" heading and do not write elapsed time, token counts, or character counts; Cancip appends those programmatically. The visible closeout should be human-readable and concrete: start with a short summary tied to the user's original request, then use concise numbered items for what was done, then include actions performed, changed/read files, verification/results, blockers/reminders when relevant, and memory/rule updates if any. If more tool work is still needed and no real blocker exists, continue with exactly one cancip-action instead of summarizing as done. Generate the final answer and the next-step buttons together in the same reply: append exactly one hidden HTML comment like <!-- cancip-choices {\"choices\":[\"specific action 1\",\"specific action 2\"]} -->. Do not show these choices as visible numbered or bulleted text. Keep tool details folded in process records; do not expose raw action JSON.",
   emptyApiReply: "The API returned an empty response.",
   emptyApiReplyWithSuppressedTools: "The API returned tool/action instructions but no visible assistant reply. For simple chat, Cancip does not execute hidden actions.",
   modelContinuationFailed: "Model follow-up failed: {reason}",
   resumeTask: "Continue",
   resumableStopped: "Stopped. Tap Continue to resume from the current session state.",
   resumableFailed: "Failed. Tap Continue to resume from the latest tool/session state.",
-  toolActionRequiredPrompt: "The user asked for a concrete implementation/change task, but your previous answer did not emit any cancip-action and no tool ran.\n\nUser task:\n{task}\n\nUse the general Codex loop: identify the smallest relevant target, inspect only if needed, take the smallest available tool action that advances the user's actual goal, then verify from tool results. Do not default to a broad search, a generic status report, capability refusal, or prose confirmation such as \"needs approval\". If the task is analysis only, give a concrete answer from evidence; if the task asks for a state change, output an executable cancip-action. Access mode is handled by the UI: confirmation mode shows Approve/Reject cards, and full access auto-approves implemented tools. For Cancip self-fixes, missing desktop source build/npm/restart is not a blocker to making an installed-plugin hot patch when that is the available implementation surface. Output exactly one cancip-action block if action is needed; otherwise give one short concrete blocker or evidence-based answer with hidden cancip-choices.",
+  toolActionRequiredPrompt: "The user asked for a concrete implementation/change task, but your previous answer did not emit any cancip-action and no tool ran.\n\nUser task:\n{task}\n\nUse the general agent loop: identify the smallest relevant target, inspect only if needed, take the smallest available tool action that advances the user's actual goal, then verify from tool results. Do not default to a broad search, a generic status report, capability refusal, or prose confirmation such as \"needs approval\". If the task is analysis only, give a concrete answer from evidence; if the task asks for a state change, output an executable cancip-action. Access mode is handled by the UI: confirmation mode shows Approve/Reject cards, and full access auto-approves implemented tools. For Cancip self-fixes, missing desktop source build/npm/restart is not a blocker to making an installed-plugin hot patch when that is the available implementation surface. Output exactly one cancip-action block if action is needed; otherwise give one short concrete blocker or evidence-based answer with hidden cancip-choices.",
   toolActionHardRequiredPrompt: "Your previous answer still did not produce an executable cancip-action. The user needs useful progress.\n\nUser task:\n{task}\n\nUse the smallest available tool action that genuinely advances this task, then verify it if possible. For a state-change task, currentView/read/search/list/status are only locating context; they cannot be the final step. If the previous result names activeFile, read that file if content is still missing, otherwise patch/write/move/delete/config the relevant target. If the correct next step is analysis rather than a state change, answer from evidence instead of producing a fake action. If no current Cancip capability can advance the task, state the exact blocker and missing capability. Do not ask for generic confirmation, do not say \"needs execution/approval\" in prose, and do not give a generic limitation or status summary.",
-  toolActionLowCommitmentPrompt: "The user asked for a concrete implementation/change task, but the previous tool iterations only read/searched/listed and did not materially advance it.\n\nUser task:\n{task}\n\nContinue like Codex with a general loop: use the last tool result as state, decide whether the user asked for analysis or a state change, then either answer the real question from evidence or output one executable cancip-action that advances the task. For state-change tasks, currentView/read/search/list/status are only context gathering. If activeFile is present, use it as the target: read it when text is missing, then patch/write and verify. Avoid repeating broad reads/searches. If action is impossible, state the exact blocker and missing capability. Do not ask whether to proceed, and do not answer with \"not finished\", \"continue\", or a summary of searches.",
-  selfPatchNeedsReload: "This changed Cancip's installed plugin files. The current running plugin will not reliably show the effect until Cancip/Obsidian is reloaded. This is still a real mobile hot patch; desktop Codex is only needed later to sync source/build/release.",
+  toolActionLowCommitmentPrompt: "The user asked for a concrete implementation/change task, but the previous tool iterations only read/searched/listed and did not materially advance it.\n\nUser task:\n{task}\n\nContinue with a general agent loop: use the last tool result as state, decide whether the user asked for analysis or a state change, then either answer the real question from evidence or output one executable cancip-action that advances the task. For state-change tasks, currentView/read/search/list/status are only context gathering. If activeFile is present, use it as the target: read it when text is missing, then patch/write and verify. Avoid repeating broad reads/searches. If action is impossible, state the exact blocker and missing capability. Do not ask whether to proceed, and do not answer with \"not finished\", \"continue\", or a summary of searches.",
+  selfPatchNeedsReload: "This changed Cancip's installed plugin files. The current running plugin will not reliably show the effect until Cancip/Obsidian is reloaded. This is still a real mobile hot patch; desktop tools are only needed later to sync source/build/release.",
   copyMessage: "Copy",
   speakMessage: "Read aloud",
   speakSession: "Read session",
@@ -1694,7 +1694,7 @@ const EN = {
   pursueGoalPrompt: "Pursue goal: ",
   previewVaultSearch: "Preview Vault Search",
   addCoreMemory: "Add core memory",
-  importCodexMemory: "Import Codex pack",
+  importCodexMemory: "Import capability pack",
   localVersionCommit: "Local commit",
   dailyVersionStatus: "Daily versions",
   planPanelTitle: "Plan",
@@ -1784,11 +1784,11 @@ const EN = {
   skillsIndexed: "{count} Skill(s) indexed",
   skillsIndexWritten: "{count} Skill(s) indexed -> {path}",
   coreMemory: "Core memory",
-  codexMemory: "Codex memory",
+  codexMemory: "Imported memory",
   taskExperience: "Task experience",
-  codexMemoryImported: "Imported Codex pack: {count} memory file(s), {skills} Skill file(s) -> {path}",
-  codexMemoryImportFailed: "Codex memory import failed: {reason}",
-  codexMemoryImportSkipped: "Codex memory import skipped: local source not available",
+  codexMemoryImported: "Imported capability pack: {count} memory file(s), {skills} Skill file(s) -> {path}",
+  codexMemoryImportFailed: "Capability-pack import failed: {reason}",
+  codexMemoryImportSkipped: "Capability-pack import skipped: local source not available",
   currentFile: "Current file",
   vaultSearch: "Vault Search",
   noActiveFile: "No active file",
@@ -1860,11 +1860,11 @@ const EN = {
   settingsMaxCoreMemoryFiles: "Core memory files per prompt",
   settingsIncludeCurrentFile: "Include current file",
   settingsIncludeCoreMemory: "Include core memory",
-  settingsCodexMemoryImportPath: "Codex memory source path",
-  settingsCodexMemoryAutoImport: "Auto-import Codex pack on desktop",
-  settingsCodexMemoryAutoSearch: "Auto-search imported Codex memory",
-  settingsCodexMemoryMaxFiles: "Codex memory files per prompt",
-  settingsCodexMemoryMaxChars: "Codex memory characters per prompt",
+  settingsCodexMemoryImportPath: "Desktop memory source path",
+  settingsCodexMemoryAutoImport: "Auto-import capability pack on desktop",
+  settingsCodexMemoryAutoSearch: "Auto-search imported memory",
+  settingsCodexMemoryMaxFiles: "Imported memory files per prompt",
+  settingsCodexMemoryMaxChars: "Imported memory characters per prompt",
   settingsUseVaultSearch: "Use Vault Search by default",
   settingsShowAttachmentButton: "Show attachment button",
   settingsCompactHeader: "Compact header",
@@ -1890,7 +1890,7 @@ const EN = {
   settingsGithubToken: "GitHub token",
   settingsGithubTokenDesc: "Stored in .cancip/config.json on this vault. Exports only record whether it is configured.",
   settingsAutoContinueAfterTools: "Auto-continue after tools",
-  settingsAutoContinueAfterToolsDesc: "After tool runs finish, call the model again with tool results, like Codex/Claude Code. Max iterations prevents loops.",
+  settingsAutoContinueAfterToolsDesc: "After tool runs finish, call the model again with tool results. Max iterations prevents loops.",
   settingsMaxToolIterations: "Max tool iterations",
   settingsExportMarkdownContextSnapshots: "Markdown export includes context snapshots",
   settingsExportMarkdownContextSnapshotsDesc: "JSON exports always keep the real full data for debugging; this only changes the readable Markdown export.",
@@ -2012,7 +2012,7 @@ const EN = {
   accessPromptFull: "Access: full. Implemented tools may read/write the Vault, dot folders, Obsidian config, .cancip, installed Cancip files, and authorized external bridges. Do not claim unavailable before trying the indexed route. Execute small auditable actions and verify from tool results; plugin hot patches are valid when source build is unavailable.",
   configWriteFailed: "Could not write .cancip/config.json: {reason}",
   configReadFailed: "Could not read .cancip/config.json: {reason}",
-  toolProtocol: "Tool protocol: Choose tools by user intent, not by rigid greeting/simple-chat rules. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15,\"sessionMode\":\"new\"},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to Cancip trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into Cancip config by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute; sessionMode can be current, new, or session with sessionId, and condition stores an optional trigger note. File actions use Vault-relative paths only, including dot folders, Obsidian config, Cancip installed files, and .cancip session JSON. Command actions use a named command bus: cancip.tools.index, obsidian.listCommands, obsidian.execute, obsidian.currentView, obsidian.dom.snapshot, obsidian.dom.click, obsidian.dom.input, obsidian.ui.buttons, obsidian.ui.buttonRules, obsidian.ui.applyButtonRules, obsidian.tags, obsidian.tags.pin, obsidian.tags.unpin, obsidian.tags.deleteUnpinned, obsidian.tabs, obsidian.tabs.pin, obsidian.tabs.unpin, obsidian.tabs.closeUnpinned, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.sessionHistory, cancip.subagents.start/list/status/stop/open, cancip.installedPlugins, cancip.pluginCapabilities, cancip.skills.list, cancip.skills.read, cancip.skills.refresh, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCodexMemory, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.update, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, web.search, web.fetch, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. Use cancip.tools.index when the route is unclear; it maps user intent to the right action/help/list command. Use cancip.pluginCapabilities with pluginId/name/query for plugin feature requests; it returns installed plugin matches, Obsidian commands, runtime API surface, plugin files/settings, and command/UI/API/config/web routes. Use cancip.sessionHistory with all:true to list sessions, sessionId to read any saved session, path for .cancip/sessions/*.json, and mode:'full', includeContext:true when exact prior prompts/context are needed. Use cancip.subagents.start/list/status/stop/open to split long work into child sessions; children are visible under their parent in session history. Use obsidian.ui.buttons to inspect active note/PDF/more buttons; use obsidian.ui.applyButtonRules with selector rules to hide/show/order/rename/re-icon buttons and menu items. Use obsidian.tags to inspect right-sidebar tags, obsidian.tags.pin/unpin for fixed tags, and obsidian.tags.deleteUnpinned with dryRun:false only when the user asks to remove non-pinned tags from notes. Use obsidian.tabs to inspect workspace tabs/leaves, obsidian.tabs.pin/unpin to pin pages, and obsidian.tabs.closeUnpinned to close non-pinned pages without deleting files. Use cancip.skills.list/read/refresh to inspect available Skills when the task asks about capabilities or when a matching Skill is not already injected. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Access mode controls execution: approval mode queues write-like actions in the visible Run/Reject box and notifies the user; full access runs implemented tools automatically. Use cancip.reviewGate only when the user explicitly wants review or the task is risky vault organization; it creates native Cancip review-panel data, not a prompt-only or external HTML workflow. Plan panel only adds planning/todo behavior and never changes access permission. Raw JavaScript eval is blocked.",
+  toolProtocol: "Tool protocol: Choose tools by user intent, not by rigid greeting/simple-chat rules. For read/list/explain/analyze questions, even if they mention plugins, settings, config, folders, GitHub, or commands, use only read-only actions such as read, search, list, status, or help, then answer directly from the tool result; do not create reports or run write-like actions unless the user explicitly asks to create, modify, move, delete, configure, install, execute, or fix something. If an action is genuinely needed, output exactly one fenced block named cancip-action containing JSON like {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply patch\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"Daily review\",\"prompt\":\"Review open todos\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15,\"sessionMode\":\"new\"},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"anchor\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"part 1\",\"part 2\"]},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Folder/New.md\"},{\"type\":\"move\",\"path\":\"Folder/Old.md\",\"newPath\":\"Archive\"},{\"type\":\"delete\",\"path\":\"Folder/Old.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"old\",\"replace\":\"new\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"old\\\\s+pattern\",\"replace\":\"new\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}. Supported action types: read, write, append, patch, config, todo, automation, mkdir, rename, move, copy, delete, command. Read supports query, occurrence, startLine, endLine, aroundLine, and maxChars for focused line-numbered snippets from large/minified files; prefer query or line ranges over whole-file reads, and reading a folder returns a direct child listing. Write and append support content or chunks:[\"part1\",\"part2\"]; for large files prefer chunks because Cancip writes/appends sequentially and verifies the result by reading it back. Move is the normal file/folder move action; rename is kept as an alias. If newPath is a folder path, Cancip keeps the original file/folder name under that folder. Delete moves to trash by default; if platform trash is unavailable, Cancip moves the target to Cancip trash; only use permanent:true when the user explicitly asks for permanent deletion. Patch supports exact find/replace or regex:true with optional flags; if patch text is not found, do not retry the same find text, read the current file with a focused query or line range and use a smaller anchored patch. Config safely deep-merges JSON into Cancip config by default, supports optional path, set, unset, replace, writes formatted JSON, and verifies by reading JSON back; use it for large config files instead of fragile string patches. Todo operations are set, add, update, remove, list, clear and update the visible Plan panel. Automation operations are add, update, remove, list, run; schedules are manual, hourly, daily and daily supports hour+minute; sessionMode can be current, new, or session with sessionId, and condition stores an optional trigger note. File actions use Vault-relative paths only, including dot folders, Obsidian config, Cancip installed files, and .cancip session JSON. Command actions use a named command bus: cancip.tools.index, obsidian.listCommands, obsidian.execute, obsidian.js.help, obsidian.js.probe, obsidian.eval/js.eval/javascript.eval/browser.eval, obsidian.currentView, obsidian.dom.snapshot, obsidian.dom.click, obsidian.dom.input, obsidian.ui.buttons, obsidian.ui.buttonRules, obsidian.ui.applyButtonRules, obsidian.tags, obsidian.tags.pin, obsidian.tags.unpin, obsidian.tags.deleteUnpinned, obsidian.tabs, obsidian.tabs.pin, obsidian.tabs.unpin, obsidian.tabs.closeUnpinned, cancip.reviewGate, cancip.reviewGate.list, cancip.reviewGate.testMarkdown, cancip.sessionEvents, cancip.sessionHistory, cancip.subagents.start/list/status/stop/open, cancip.installedPlugins, cancip.pluginCapabilities, cancip.skills.list, cancip.skills.read, cancip.skills.refresh, cancip.attachment.help, cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop, cancip.externalFiles.help, cancip.automation.templates, cancip.automation.addTemplate, cancip.searchVault, cancip.rebuildIndex, cancip.previewVaultSearch, cancip.localVersionCommit, cancip.importCapabilityPack, cancip.newsBrief, cancip.vaultDailyReport, cancip.automation.list, cancip.automation.add, cancip.automation.update, cancip.automation.addNewsBrief, cancip.automation.addVaultDailyReport, cancip.automation.run, cancip.automation.remove, web.search, web.fetch, github.help, github.status, github.repo, github.issues, github.pulls, github.releases, github.workflowRuns, github.branches, github.file, github.createIssue, github.installObsidianPlugin. Use cancip.tools.index when the route is unclear; it maps user intent to the right action/help/list command. Use obsidian.js.help/probe for JS bridge capability; use obsidian.eval only for explicit Obsidian app/workspace/vault/plugin API glue, with args.code/script/js/body or args.expression. It exposes app, workspace, vault, metadataCache, activeDocument, window, args, plugins, activeFile, activeLeaf, activeView, and helpers.plugin/api/runCommand/openPath/notice/query/click/input/sleep/snapshot. Use cancip.pluginCapabilities with pluginId/name/query for plugin feature requests; it returns installed plugin matches, Obsidian commands, runtime API surface, plugin files/settings, and command/UI/API/config/web routes. Use cancip.sessionHistory with all:true to list sessions, sessionId to read any saved session, path for .cancip/sessions/*.json, and mode:'full', includeContext:true when exact prior prompts/context are needed. Use cancip.subagents.start/list/status/stop/open to split long work into child sessions; children are visible under their parent in session history. Use obsidian.ui.buttons to inspect active note/PDF/more buttons; use obsidian.ui.applyButtonRules with selector rules to hide/show/order/rename/re-icon buttons and menu items. Use obsidian.tags to inspect right-sidebar tags, obsidian.tags.pin/unpin for fixed tags, and obsidian.tags.deleteUnpinned with dryRun:false only when the user asks to remove non-pinned tags from notes. Use obsidian.tabs to inspect workspace tabs/leaves, obsidian.tabs.pin/unpin to pin pages, and obsidian.tabs.closeUnpinned to close non-pinned pages without deleting files. Use cancip.skills.list/read/refresh to inspect available Skills when the task asks about capabilities or when a matching Skill is not already injected. For settings/UI/plugin/self-fix requests, first inspect the relevant source/config with read/search actions, then patch/write/config and verify. If desktop source is unavailable, use the installed plugin files as the mobile hot-patch implementation surface; do not stop merely because npm build/restart/source sync is unavailable. Installed Cancip plugin file edits require reload/restart before visible effect. Use cancip.searchVault only when long-term memory and supplied context are insufficient; then read only the necessary matched files. Keep action batches small and wait for results. If a tool fails, use the error as authoritative context and explain or correct the next step. Access mode controls execution: approval mode queues write-like actions in the visible Run/Reject box and notifies the user; full access runs implemented tools automatically. Use cancip.reviewGate only when the user explicitly wants review or the task is risky vault organization; it creates native Cancip review-panel data, not a prompt-only or external HTML workflow. Plan panel only adds planning/todo behavior and never changes access permission. JS is limited to the Obsidian WebView/API bridge and is not an OS shell.",
   actionsNeedApproval: "Action block queued for approval. Nothing has run yet.\n\n{summary}",
   actionsExecuted: "Tool results:\n\n{summary}",
   toolRunsQueued: "{count} tool run(s) queued. Review and tap Approve when ready.",
@@ -2145,14 +2145,14 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     tokenUsageEstimated: " 估算",
     processRecord: "过程记录",
     finalConclusionFallback: "{summary}",
-    finalAnswerFormatPrompt: "实现、改动、工具类任务的最终可见回答不要写“最终结论”标题，也不要写耗时、token 数或字数；这些由 Cancip 程序在结束时自动追加。像 Codex 一样给普通人直接看：先用一句短总结对应用户原始问题说这轮干了什么，再按序号精简展开；然后按需写清「动作」「改动/读取的文件」「验证/结果」「提醒/阻塞」「记忆/规则更新」。如果还能继续用工具推进且没有真实阻塞，就不要总结成完成，而是继续输出一个 cancip-action。最终回答和推荐按钮必须同一轮生成：末尾追加且只追加一个隐藏 HTML 注释 <!-- cancip-choices {\"choices\":[\"具体动作1\",\"具体动作2\"]} -->；正文里不要显示推荐序号或推荐列表。工具细节留在折叠过程里，不要暴露原始 action JSON。",
+    finalAnswerFormatPrompt: "实现、改动、工具类任务的最终可见回答不要写“最终结论”标题，也不要写耗时、token 数或字数；这些由 Cancip 程序在结束时自动追加。按普通人能直接看懂的结构回答：先用一句短总结对应用户原始问题说这轮干了什么，再按序号精简展开；然后按需写清「动作」「改动/读取的文件」「验证/结果」「提醒/阻塞」「记忆/规则更新」。如果还能继续用工具推进且没有真实阻塞，就不要总结成完成，而是继续输出一个 cancip-action。最终回答和推荐按钮必须同一轮生成：末尾追加且只追加一个隐藏 HTML 注释 <!-- cancip-choices {\"choices\":[\"具体动作1\",\"具体动作2\"]} -->；正文里不要显示推荐序号或推荐列表。工具细节留在折叠过程里，不要暴露原始 action JSON。",
     emptyApiReply: "API 返回了空回复。",
     emptyApiReplyWithSuppressedTools: "API 只返回了工具/动作指令，没有给普通可见回复。简单聊天不会执行隐藏动作。",
     modelContinuationFailed: "模型续答失败：{reason}",
-    toolActionRequiredPrompt: "用户提出了明确的实现/改动/执行任务，但上一条回答没有输出 cancip-action，也没有任何工具执行。\n\n用户任务：\n{task}\n\n按通用 Codex 循环做：确认最小相关目标，只在必要时做精准检查，使用当前可用工具推进用户真实目标，然后用工具结果验证。不要默认泛搜、套状态报告、说不能，或用“需要确认/需要执行”这类普通文字停住。如果任务只是分析，就基于证据给具体结论；如果任务要求改变状态，就输出可执行 cancip-action。权限由 UI 处理：确认模式显示批准/拒绝卡，全权模式自动批准已实现工具。Cancip 自改自身时，缺少桌面源码构建/npm/重启能力不算阻止已安装插件热补丁的理由。需要动作时只输出一个 cancip-action 块；如果确实不能动作，只给具体阻塞原因和缺少的明确能力，并附隐藏 cancip-choices。",
+    toolActionRequiredPrompt: "用户提出了明确的实现/改动/执行任务，但上一条回答没有输出 cancip-action，也没有任何工具执行。\n\n用户任务：\n{task}\n\n按通用 agent 循环做：确认最小相关目标，只在必要时做精准检查，使用当前可用工具推进用户真实目标，然后用工具结果验证。不要默认泛搜、套状态报告、说不能，或用“需要确认/需要执行”这类普通文字停住。如果任务只是分析，就基于证据给具体结论；如果任务要求改变状态，就输出可执行 cancip-action。权限由 UI 处理：确认模式显示批准/拒绝卡，全权模式自动批准已实现工具。Cancip 自改自身时，缺少桌面源码构建/npm/重启能力不算阻止已安装插件热补丁的理由。需要动作时只输出一个 cancip-action 块；如果确实不能动作，只给具体阻塞原因和缺少的明确能力，并附隐藏 cancip-choices。",
     toolActionHardRequiredPrompt: "你上一条仍然没有给出可执行 cancip-action。用户要的是有效推进。\n\n用户任务：\n{task}\n\n使用当前最小可用工具动作推进这个任务，并尽量验证。对状态改变任务，currentView/read/search/list/status 只是定位上下文，不能作为最终步骤；如果上一步结果里有 activeFile，内容不足就读这个文件，内容足够就 patch/write/move/delete/config 相关目标。如果正确下一步是分析而不是改变状态，就基于证据回答，不要为了动作而假动作。如果当前 Cancip 能力确实无法推进，只说具体阻塞和缺少的能力。不要泛泛询问是否继续，不要用普通文字说“需要执行/等待确认”，也不要给泛泛限制或状态摘要。",
-    toolActionLowCommitmentPrompt: "用户要求的是明确实现/改动，但前几轮工具只做了读取、搜索或列表，没有实质推进。\n\n用户任务：\n{task}\n\n请像 Codex 一样按通用循环继续：把上一步工具结果当作当前状态，先判断用户要的是分析还是改变状态；能回答就基于证据回答真实问题，需要动作就输出一个能推进任务的 cancip-action。对状态改变任务，currentView/read/search/list/status 只是收集上下文；如果 activeFile 存在，就把它当目标，没内容先读，有内容就 patch/write 并验证。不要重复泛搜。如果确实不能动作，只说具体阻塞和缺少的能力。不要问是否继续，不要回答“未完成”“继续让我总结”或搜索结果摘要。",
-    selfPatchNeedsReload: "这次改动写到了 Cancip 已安装插件文件。当前正在运行的插件通常不会立刻显示效果，需要重载/重启 Obsidian 才能可靠生效。这仍然是手机端真实热补丁；桌面 Codex 只用于后续同步源码、构建或发布。",
+    toolActionLowCommitmentPrompt: "用户要求的是明确实现/改动，但前几轮工具只做了读取、搜索或列表，没有实质推进。\n\n用户任务：\n{task}\n\n请按通用 agent 循环继续：把上一步工具结果当作当前状态，先判断用户要的是分析还是改变状态；能回答就基于证据回答真实问题，需要动作就输出一个能推进任务的 cancip-action。对状态改变任务，currentView/read/search/list/status 只是收集上下文；如果 activeFile 存在，就把它当目标，没内容先读，有内容就 patch/write 并验证。不要重复泛搜。如果确实不能动作，只说具体阻塞和缺少的能力。不要问是否继续，不要回答“未完成”“继续让我总结”或搜索结果摘要。",
+    selfPatchNeedsReload: "这次改动写到了 Cancip 已安装插件文件。当前正在运行的插件通常不会立刻显示效果，需要重载/重启 Obsidian 才能可靠生效。这仍然是手机端真实热补丁；桌面工具只用于后续同步源码、构建或发布。",
     copyMessage: "复制",
     speakMessage: "朗读",
     speakSession: "朗读会话",
@@ -2315,7 +2315,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     pursueGoalPrompt: "追踪目标：",
     previewVaultSearch: "预览 Vault Search",
     addCoreMemory: "加入核心记忆",
-    importCodexMemory: "导入 Codex 能力包",
+    importCodexMemory: "导入能力包",
     localVersionCommit: "本地提交",
     dailyVersionStatus: "每日版本",
     planPanelTitle: "计划",
@@ -2405,11 +2405,11 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     skillsIndexed: "已索引 {count} 个 Skill",
     skillsIndexWritten: "已索引 {count} 个 Skill -> {path}",
     coreMemory: "核心记忆",
-    codexMemory: "Codex 记忆",
+    codexMemory: "导入记忆",
     taskExperience: "任务经验",
-    codexMemoryImported: "已导入 Codex 能力包：{count} 个记忆文件，{skills} 个 Skill 文件 -> {path}",
-    codexMemoryImportFailed: "Codex 记忆导入失败：{reason}",
-    codexMemoryImportSkipped: "已跳过 Codex 记忆导入：本地来源不可用",
+    codexMemoryImported: "已导入能力包：{count} 个记忆文件，{skills} 个 Skill 文件 -> {path}",
+    codexMemoryImportFailed: "能力包导入失败：{reason}",
+    codexMemoryImportSkipped: "已跳过能力包导入：本地来源不可用",
     currentFile: "当前文件",
     vaultSearch: "Vault Search",
     noActiveFile: "没有当前文件",
@@ -2481,9 +2481,9 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsMaxCoreMemoryFiles: "每次提示词核心记忆文件数",
     settingsIncludeCurrentFile: "包含当前文件",
     settingsIncludeCoreMemory: "包含核心记忆",
-    settingsCodexMemoryImportPath: "Codex 记忆来源路径",
-    settingsCodexMemoryAutoImport: "桌面端自动导入 Codex 能力包",
-    settingsCodexMemoryAutoSearch: "自动检索已导入 Codex 记忆",
+    settingsCodexMemoryImportPath: "桌面记忆来源路径",
+    settingsCodexMemoryAutoImport: "桌面端自动导入能力包",
+    settingsCodexMemoryAutoSearch: "自动检索已导入记忆",
     settingsCodexMemoryMaxFiles: "每次提示词最多记忆文件",
     settingsCodexMemoryMaxChars: "每次提示词最多记忆字数",
     settingsUseVaultSearch: "默认使用 Vault Search",
@@ -2511,7 +2511,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsGithubToken: "GitHub token",
     settingsGithubTokenDesc: "保存在本库 .cancip/config.json。导出只记录是否已配置，不导出明文 token。",
     settingsAutoContinueAfterTools: "工具完成后自动继续",
-    settingsAutoContinueAfterToolsDesc: "工具执行完成后，把工具结果回喂给模型继续推理，接近 Codex/Claude Code。最大迭代数用于防止循环。",
+    settingsAutoContinueAfterToolsDesc: "工具执行完成后，把工具结果回喂给模型继续推理。最大迭代数用于防止循环。",
     settingsMaxToolIterations: "最大工具迭代次数",
     settingsExportMarkdownContextSnapshots: "Markdown 导出包含上下文快照",
     settingsExportMarkdownContextSnapshotsDesc: "JSON 导出永远保留真实完整数据用于排障；这里只影响可读 Markdown。",
@@ -2633,7 +2633,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     accessPromptFull: "权限：全权。已实现工具可读写 Vault、点开头目录、Obsidian 配置、.cancip、Cancip 已安装文件和授权库外桥接。不要没查索引路线就说不能；小步执行、读回验证。源码构建不可用时，可先做已安装插件热补丁。",
     configWriteFailed: "无法写入 .cancip/config.json：{reason}",
     configReadFailed: "无法读取 .cancip/config.json：{reason}",
-    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15,\"sessionMode\":\"new\"},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 Cancip 回收目录；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 Cancip 配置文件，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute；sessionMode 可用 current、new、session，session 需要 sessionId，condition 保存额外触发条件说明。文件动作只能使用 Vault 相对路径，包括点开头文件夹、Obsidian 配置、Cancip 已安装文件和 .cancip 会话 JSON。命令动作走命令总线：cancip.tools.index、obsidian.listCommands、obsidian.execute、obsidian.currentView、obsidian.dom.snapshot、obsidian.dom.click、obsidian.dom.input、obsidian.ui.buttons、obsidian.ui.buttonRules、obsidian.ui.applyButtonRules、obsidian.tags、obsidian.tags.pin、obsidian.tags.unpin、obsidian.tags.deleteUnpinned、obsidian.tabs、obsidian.tabs.pin、obsidian.tabs.unpin、obsidian.tabs.closeUnpinned、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.sessionHistory、cancip.subagents.start/list/status/stop/open、cancip.installedPlugins、cancip.skills.list、cancip.skills.read、cancip.skills.refresh、cancip.attachment.help、cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop、cancip.externalFiles.help、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCodexMemory、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.update、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、web.search、web.fetch、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。不确定路线时先用 cancip.tools.index，它会把用户意图映射到应该查的 action/help/list 命令。用 cancip.subagents.start/list/status/stop/open 可把长任务拆成子会话；子会话会在父会话历史下默认折叠显示。用 obsidian.ui.buttons 检查当前笔记/PDF/官方更多菜单按钮和菜单项；用 obsidian.ui.applyButtonRules 按 selector 规则显示、隐藏、排序、改名、换图标。可用 obsidian.tabs 查看工作区标签页，obsidian.tabs.pin/unpin 固定/取消固定页，obsidian.tabs.closeUnpinned 关闭非固定页但不删除文件。需要读取历史/任意会话时，用 cancip.sessionHistory：all:true 列出会话，sessionId 读取任意保存会话，path 读取 .cancip/sessions/*.json，mode:'full' + includeContext:true 可带原始上下文。需要查看能力或本轮没有注入匹配 Skill 时，用 cancip.skills.list/read/refresh 程序化检查可用 Skill。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。访问模式控制执行：确认模式把写入类动作放进可见 Run/Reject 确认框并通知用户等待；全权模式自动执行已实现工具。只有用户明确要求审核或任务属于高风险 Vault 整理时，才用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan panel 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
+    toolProtocol: "工具协议：普通问候、测试、身份问题、泛泛聊天不要输出 cancip-action。读取、清单、解释、分析类问题，即使提到插件、设置、配置、文件夹、GitHub 或命令，也只用 read/search/list/status/help 等只读动作，然后根据工具结果直接回答；除非用户明确要求新建、修改、移动、删除、配置、安装、执行或修复，否则不要创建报告或执行写入类动作。确实需要动作时，只输出一个名为 cancip-action 的 fenced block，JSON 形如 {\"actions\":[{\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用补丁\"}]},{\"type\":\"automation\",\"op\":\"add\",\"title\":\"每日复盘\",\"prompt\":\"复盘未完成待办\",\"schedule\":\"daily\",\"hour\":9,\"minute\":15,\"sessionMode\":\"new\"},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"query\":\"锚点\",\"maxChars\":8000},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"startLine\":120,\"endLine\":180},{\"type\":\"read\",\"path\":\"Folder/File.md\",\"aroundLine\":240,\"maxChars\":4000},{\"type\":\"write\",\"path\":\"Folder/Note.md\",\"content\":\"...\"},{\"type\":\"write\",\"path\":\"Folder/Large.md\",\"chunks\":[\"第 1 段\",\"第 2 段\"]},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"Folder/新.md\"},{\"type\":\"move\",\"path\":\"Folder/旧.md\",\"newPath\":\"归档\"},{\"type\":\"delete\",\"path\":\"Folder/旧.md\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"find\":\"旧内容\",\"replace\":\"新内容\"},{\"type\":\"patch\",\"path\":\"Folder/Note.md\",\"regex\":true,\"find\":\"旧内容\\\\s+模式\",\"replace\":\"新内容\",\"flags\":\"m\"},{\"type\":\"config\",\"set\":{\"maxToolIterations\":6},\"unset\":[\"oldSetting\"]},{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"limit\":8}}]}。支持动作：read、write、append、patch、config、todo、automation、mkdir、rename、move、copy、delete、command。read 支持 query、occurrence、startLine、endLine、aroundLine、maxChars，用来精确读取带行号的大文件/压缩构建文件片段；优先用 query 或行号范围，不要轻易整文件读取；读取文件夹会返回直接子项列表。write/append 支持 content 或 chunks:[\"part1\",\"part2\"]；写大文件优先用 chunks，Cancip 会顺序写入/追加并读回校验。move 是正常移动文件/文件夹动作，rename 保留为别名；如果 newPath 是文件夹路径，工具层会保留原文件/文件夹名放进该文件夹。delete 默认进入回收站；平台回收站不可用时移入 Cancip 回收目录；只有用户明确要求永久删除时才使用 permanent:true。patch 支持精确 find/replace，也支持 regex:true 和可选 flags；如果 patch 提示 find text was not found，绝对不要重复同一个 find，必须先用 query 或行号范围读取当前文件片段，再换更小锚点或正则补丁。config 默认安全深度合并写入 Cancip 配置文件，可选 path、set、unset、replace，会格式化 JSON 并读回校验；改大型配置文件优先用 config，不要靠脆弱字符串 patch。todo 支持 set、add、update、remove、list、clear，并会更新可见 Plan 面板。automation 支持 add、update、remove、list、run；schedule 可用 manual、hourly、daily；daily 支持 hour+minute；sessionMode 可用 current、new、session，session 需要 sessionId，condition 保存额外触发条件说明。文件动作只能使用 Vault 相对路径，包括点开头文件夹、Obsidian 配置、Cancip 已安装文件和 .cancip 会话 JSON。命令动作走命令总线：cancip.tools.index、obsidian.listCommands、obsidian.execute、obsidian.currentView、obsidian.dom.snapshot、obsidian.dom.click、obsidian.dom.input、obsidian.ui.buttons、obsidian.ui.buttonRules、obsidian.ui.applyButtonRules、obsidian.tags、obsidian.tags.pin、obsidian.tags.unpin、obsidian.tags.deleteUnpinned、obsidian.tabs、obsidian.tabs.pin、obsidian.tabs.unpin、obsidian.tabs.closeUnpinned、cancip.reviewGate、cancip.reviewGate.list、cancip.reviewGate.testMarkdown、cancip.sessionEvents、cancip.sessionHistory、cancip.subagents.start/list/status/stop/open、cancip.installedPlugins、cancip.skills.list、cancip.skills.read、cancip.skills.refresh、cancip.attachment.help、cancip.tts.help/probe/voices/status/installLocal/speak/readActive/pause/resume/seek/stop、cancip.externalFiles.help、cancip.automation.templates、cancip.automation.addTemplate、cancip.searchVault、cancip.rebuildIndex、cancip.previewVaultSearch、cancip.localVersionCommit、cancip.importCapabilityPack、cancip.newsBrief、cancip.vaultDailyReport、cancip.automation.list、cancip.automation.add、cancip.automation.update、cancip.automation.addNewsBrief、cancip.automation.addVaultDailyReport、cancip.automation.run、cancip.automation.remove、web.search、web.fetch、github.help、github.status、github.repo、github.issues、github.pulls、github.releases、github.workflowRuns、github.branches、github.file、github.createIssue、github.installObsidianPlugin。不确定路线时先用 cancip.tools.index，它会把用户意图映射到应该查的 action/help/list 命令。用 cancip.subagents.start/list/status/stop/open 可把长任务拆成子会话；子会话会在父会话历史下默认折叠显示。用 obsidian.ui.buttons 检查当前笔记/PDF/官方更多菜单按钮和菜单项；用 obsidian.ui.applyButtonRules 按 selector 规则显示、隐藏、排序、改名、换图标。可用 obsidian.tabs 查看工作区标签页，obsidian.tabs.pin/unpin 固定/取消固定页，obsidian.tabs.closeUnpinned 关闭非固定页但不删除文件。需要读取历史/任意会话时，用 cancip.sessionHistory：all:true 列出会话，sessionId 读取任意保存会话，path 读取 .cancip/sessions/*.json，mode:'full' + includeContext:true 可带原始上下文。需要查看能力或本轮没有注入匹配 Skill 时，用 cancip.skills.list/read/refresh 程序化检查可用 Skill。设置/界面/插件/自身修复类任务，先用 read/search 检查相关源码或配置，再 patch/write/config 并验证；若桌面源码不可用，就把已安装插件文件作为手机热补丁实现面，不能仅因 npm build/重启/源码同步不可用就停止。写已安装 Cancip 插件文件后必须说明需要重载/重启才有可见效果。只有长期记忆和已提供上下文不够时才用 cancip.searchVault 搜库，然后只读取必要命中文件。动作批次要小，等待工具结果后继续。工具失败就是权威上下文，必须解释失败或改用更小的下一步。访问模式控制执行：确认模式把写入类动作放进可见 Run/Reject 确认框并通知用户等待；全权模式自动执行已实现工具。只有用户明确要求审核或任务属于高风险 Vault 整理时，才用 cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；它不是提示词，也不是外部 HTML 流程。Plan panel 只增加计划/待办层，不改变访问权限。原始 JavaScript eval 阻止。",
     actionsNeedApproval: "动作块已进入确认队列，尚未执行。\n\n{summary}",
     actionsExecuted: "工具执行结果：\n\n{summary}",
     toolRunsQueued: "{count} 个工具调用已排队。确认后点批准执行。",
@@ -4538,7 +4538,7 @@ export default class CancipPlugin extends Plugin {
           new Notice(this.t("codexMemoryImported", { count: result.memoryCount, skills: result.skillCount, path: result.folder }));
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
-          console.warn("Cancip Codex memory import failed", error);
+          console.warn("Cancip capability-pack import failed", error);
           new Notice(this.t("codexMemoryImportFailed", { reason }));
         }
       }
@@ -8584,7 +8584,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         try {
           const content = await fs.readFile(sourcePath, "utf8");
           const imported = [
-            `<!-- Imported from Codex skill: ${sourcePath.replace(/\\/g, "/")} -->`,
+            `<!-- Imported from desktop skill source: ${sourcePath.replace(/\\/g, "/")} -->`,
             "<!-- Cancip reads this as on-demand Skill instructions. Desktop-only commands should be treated as routes, not guaranteed mobile runtime. -->",
             "",
             normalizeImportedMarkdown(content)
@@ -8598,7 +8598,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       const pluginIndex = await buildCodexPluginCapabilityIndex(fs, pluginSkillFiles);
       if (pluginIndex) {
-        const pluginPath = `${targetSkillFolder}/Codex Plugins.md`;
+        const pluginPath = `${targetSkillFolder}/Plugin Capabilities.md`;
         await writeTextInChunks(adapter, pluginPath, pluginIndex);
         importedSkills.push(pluginPath);
       }
@@ -8623,7 +8623,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       `Imported: ${new Date().toISOString()}`,
       `Source: ${memorySource || "Vault synced copies"}`,
       "",
-      "This folder is visible to Cancip and can be synced to mobile. It stores curated memory copied from Codex. Large files should be searched/read on demand, not sent wholesale in every prompt.",
+      "This folder is visible to Cancip and can be synced to mobile. It stores curated desktop memory copied for on-demand use. Large files should be searched/read on demand, not sent wholesale in every prompt.",
       "",
       "## Imported memory",
       ...importedMemory.map((path) => `- [[${path.replace(/\.md$/i, "")}]]`),
@@ -8656,19 +8656,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const marker = "<!-- cancip-codex-capability-pack -->";
     const block = [
       marker,
-      "## Codex capability pack",
+      "## Desktop capability pack",
       "",
-      "Codex 常用记忆、插件索引和精选 Skill 已导入到 Vault 可同步目录，手机端按需读取，不把大文件每次塞进 system prompt。",
+      "桌面端常用记忆、插件索引和精选 Skill 已导入到 Vault 可同步目录，手机端按需读取，不把大文件每次塞进 system prompt。",
       "",
       `- 记忆目录：[[${targetFolder}/README]]`,
       `- Skill 目录：[[${targetSkillFolder}/README]]`,
       `- 机器 Skill 索引：${CANCIP_SKILLS_INDEX_PATH}`,
-      "- 常用命令：`cancip.importCodexMemory`、`cancip.skills.refresh`、`cancip.skills.list`、`cancip.skills.read`、`cancip.tools.index`",
+      "- 常用命令：`cancip.importCapabilityPack`、`cancip.skills.refresh`、`cancip.skills.list`、`cancip.skills.read`、`cancip.tools.index`",
       "",
       "### Routing",
       "- 先用核心短提示判断任务类型；需要记忆时读 `CANCIP_INDEX.md` 和对应记忆文件。",
       "- 需要 Obsidian/GitHub/附件/PDF/Excel/TTS/审核/自动化/桌面桥接时，先查 Skill 列表或对应 Skill，不要直接说不能。",
-      "- Codex 插件缓存里的 runtime/plugin 只作为能力路线索引；手机端是否能本地执行取决于 Cancip 命令总线、Obsidian 插件、附件解析器或桌面桥接。",
+      "- 桌面插件缓存里的 runtime/plugin 只作为能力路线索引；手机端是否能本地执行取决于 Cancip 命令总线、Obsidian 插件、附件解析器或桌面桥接。",
       "",
       "### Imported overview",
       `- memory files: ${memoryFiles.length}`,
@@ -8696,7 +8696,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         await adapter.write(newPath, content);
       }
     } catch (error) {
-      console.warn("Cancip Codex memory folder migration skipped", error);
+      console.warn("Cancip capability-pack folder migration skipped", error);
     }
   }
 
@@ -16407,7 +16407,7 @@ class CancipView extends ItemView {
         "- 读取/列出/解释/状态：用 read、精准搜索、obsidian.currentView、cancip.sessionHistory 或只读命令；根据结果回答。",
         "- 编辑/新建/修复/配置/大文件：先读最小相关片段，再用 patch/write/append/config；大内容用 chunks；最后读回验证。",
         "- 移动/重命名/复制/删除：用文件动作；delete 默认进系统回收站或 Cancip 回收目录，只有用户明确永久删除才用 permanent:true。",
-        "- Obsidian UI/按钮/标签页/标签/命令：先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.ui.buttons、obsidian.tabs、obsidian.tags 检查；命令名不确定先 resolveCommand，明确后按需 execute/click/input/apply rules；需要 app/workspace/vault/plugin API 时用 obsidian.eval，经访问模式批准后执行。",
+        "- Obsidian UI/按钮/标签页/标签/命令/JS：先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.ui.buttons、obsidian.tabs、obsidian.tags 检查；命令名不确定先 resolveCommand，明确后按需 execute/click/input/apply rules；需要 app/workspace/vault/plugin API 时先查 obsidian.js.help/probe，再用 obsidian.eval/js.eval，经访问模式批准后执行。",
         "- 插件/未知能力/新插件/Skills/MCP：插件功能词或插件名先用 cancip.pluginCapabilities 或 cancip.pluginRoute 查命令、运行时 API、按钮/UI、data.json 和插件文件入口；明确命令或公开 API 后用 cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch 执行；笔记/PDF 高亮涂鸦优先 cancip.annotate.help/note/pdf，间隔重复优先 cancip.study.help/review；API 用法不明再 web.search/fetch。Skills/MCP 用 cancip.skills.list/read/refresh 和 .cancip/mcp.json/.cancip/plugins 索引。",
         "- 附件/PDF/Office/图片/库外文件：先查 cancip.attachment.help 和 cancip.externalFiles.help，再走解析器、附件、分享表、Skill、原生桥或桌面桥路线。",
         "- 外部知识/互联网：需要当前资料、插件文档、未知 API/命令用法时，用 web.search 找入口，用 web.fetch 抓取具体页面；再回到本地工具执行。",
@@ -16425,7 +16425,7 @@ class CancipView extends ItemView {
       "- Read/list/explain/status: use read, focused search, obsidian.currentView, cancip.sessionHistory, or read-only command targets; answer from results.",
       "- Edit/create/fix/config/large files: inspect the smallest relevant snippet, then patch/write/append/config with chunks when large, then verify by reading state back.",
       "- Move/rename/copy/delete: use file actions; delete uses trash/Cancip trash unless permanent:true is explicitly requested.",
-      "- Obsidian UI/buttons/tabs/tags/commands: use obsidian.currentView, obsidian.dom.snapshot, obsidian.listCommands/resolveCommand, obsidian.ui.buttons, obsidian.tabs, obsidian.tags; resolve fuzzy command names before execute/click/input/apply rules. Use obsidian.eval for app/workspace/vault/plugin API access through access-mode approval.",
+      "- Obsidian UI/buttons/tabs/tags/commands/JS: use obsidian.currentView, obsidian.dom.snapshot, obsidian.listCommands/resolveCommand, obsidian.ui.buttons, obsidian.tabs, obsidian.tags; resolve fuzzy command names before execute/click/input/apply rules. Use obsidian.js.help/probe first, then obsidian.eval/js.eval for app/workspace/vault/plugin API access through access-mode approval.",
       "- Plugins/unknown capabilities/new plugins/Skills/MCP: for plugin feature words or plugin names, call cancip.pluginCapabilities or cancip.pluginRoute to inspect commands, runtime API, buttons/UI, data.json, and plugin file entry points; after a command/API is clear use cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch; use cancip.annotate.help/note/pdf for note/PDF highlight/doodle and cancip.study.help/review for spaced repetition; use web.search/fetch only when API usage is unclear. Use cancip.skills.list/read/refresh and .cancip/mcp.json/.cancip/plugins indexes for Skills/MCP.",
       "- Attachments/PDF/Office/images/external files: use cancip.attachment.help and cancip.externalFiles.help, then the available parser, attachment, share-sheet, Skill, native, or desktop bridge route.",
       "- External knowledge/web: when current docs, plugin docs, unknown APIs, or command usage are needed, use web.search to find entry points and web.fetch to read concrete pages; then return to local tools.",
@@ -16444,16 +16444,16 @@ class CancipView extends ItemView {
         "动作格式：只输出一个 ```cancip-action JSON 块。",
         "动作：read/search/write/append/patch/config/todo/automation/mkdir/rename/move/copy/delete/command；目标按当前问题生成。",
         "精确：read 用 query/行号/aroundLine/maxChars；大写入 chunks；patch 失败先读片段再换锚点。",
-        "路线例：Vault 用 read/write/patch；OB 命令 listCommands/resolveCommand -> execute；插件先 pluginCapabilities/pluginRoute，新插件执行用 pluginAction；批注/复习用 cancip.annotate.* / cancip.study.*；完整例子查 cancip.tools.help。",
-        "入口：cancip.tools.index/help、obsidian.*、cancip.pluginCapabilities/pluginRoute/pluginAction、cancip.annotate.*、cancip.study.*、skills、sessionHistory、subagents、reviewGate、attachment/tts/automation、github.*、web。"
+        "路线例：Vault 用 read/write/patch；OB 命令 listCommands/resolveCommand -> execute；插件先 pluginCapabilities/pluginRoute，新插件执行用 pluginAction；OB JS 先 obsidian.js.help/probe 再 obsidian.eval；批注/复习用 cancip.annotate.* / cancip.study.*；完整例子查 cancip.tools.help。",
+        "入口：cancip.tools.index/help、obsidian.*、obsidian.js.help/probe、obsidian.eval/js.eval、cancip.pluginCapabilities/pluginRoute/pluginAction、cancip.annotate.*、cancip.study.*、skills、sessionHistory、subagents、reviewGate、attachment/tts/automation、github.*、web。"
       ].join("\n");
     }
     return [
       "Tool format: output exactly one ```cancip-action JSON block.",
       "Actions: read/search/write/append/patch/config/todo/automation/mkdir/rename/move/copy/delete/command; generate real targets.",
       "Focus: read uses query/lines/aroundLine/maxChars; large writes use chunks; after patch miss, read snippet and change anchor.",
-      "Routes: Vault read/write/patch; OB listCommands/resolveCommand -> execute; plugins start with pluginCapabilities/pluginRoute and execute through pluginAction; annotation/study use cancip.annotate.* / cancip.study.*; full examples in cancip.tools.help.",
-      "Hubs: cancip.tools.index/help, obsidian.*, pluginCapabilities/pluginRoute/pluginAction, cancip.annotate.*, cancip.study.*, skills, sessionHistory, subagents, reviewGate, attachment/tts/automation, github.*, web."
+      "Routes: Vault read/write/patch; OB listCommands/resolveCommand -> execute; plugin discovery/action through pluginCapabilities/pluginRoute/pluginAction; OB JS uses obsidian.js.help/probe then obsidian.eval/js.eval; annotation/study use cancip.annotate.* / cancip.study.*; full examples in cancip.tools.help.",
+      "Hubs: cancip.tools.index/help, obsidian.*, obsidian.js.help/probe, obsidian.eval/js.eval, pluginCapabilities/pluginRoute/pluginAction, cancip.annotate.*, cancip.study.*, skills, sessionHistory, subagents, reviewGate, attachment/tts/automation, github.*, web."
     ].join("\n");
   }
 
@@ -16465,7 +16465,7 @@ class CancipView extends ItemView {
       "",
       this.t("toolProtocol"),
       "",
-      "Compatibility notes: Skills are Vault Markdown capabilities discovered by cancip.skills.*. Plugin compatibility starts from cancip.pluginCapabilities, then .cancip/mcp.json, .cancip/plugins, installed Obsidian plugins, web.search/web.fetch docs, and bridge commands; mobile Obsidian should expose command/UI/API/config bridges instead of claiming unavailable before checking these indexes."
+      "Compatibility notes: Skills are Vault Markdown capabilities discovered by cancip.skills.*. Plugin compatibility starts from cancip.pluginCapabilities, then .cancip/mcp.json, .cancip/plugins, installed Obsidian plugins, web.search/web.fetch docs, and bridge commands; mobile Obsidian should expose command/UI/API/config/JS bridges instead of claiming unavailable before checking these indexes."
     ].join("\n");
   }
 
@@ -16929,7 +16929,7 @@ class CancipView extends ItemView {
       action("action:add-current-file", this.t("addCurrentFile"), this.t("mentionAction"), ["current", "file", "note", "active", "当前", "当前文件", "当前笔记", "上下文"], 88),
       action("action:preview-vault-search", this.t("previewVaultSearch"), this.t("mentionAction"), ["preview", "vault", "search", "rag", "预览", "搜索", "检索", "命中"], 84),
       action("action:add-core-memory", this.t("addCoreMemory"), this.t("mentionAction"), ["memory", "core", "remember", "记忆", "核心记忆", "长期记忆"], 82),
-      action("action:import-codex-memory", this.t("importCodexMemory"), this.t("mentionAction"), ["codex", "memory", "skill", "plugin", "import", "core", "记忆", "导入", "技能", "插件", "能力包"], 83),
+      action("action:import-capability-pack", this.t("importCodexMemory"), this.t("mentionAction"), ["memory", "skill", "plugin", "import", "core", "记忆", "导入", "技能", "插件", "能力包"], 83),
       action("action:automation", this.t("automationTask"), this.t("mentionAction"), ["automation", "schedule", "task", "cron", "自动化", "定时", "任务"], 82),
       action("action:rebuild-index", this.t("commandRebuildIndex"), this.t("mentionAction"), ["index", "rebuild", "refresh", "索引", "重建", "刷新"], 76),
       action("action:command-bus", this.t("commandBus"), this.t("mentionAction"), ["command", "cmd", "cli", "terminal", "execute", "命令", "终端", "执行", "接口"], 86),
@@ -16968,7 +16968,10 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.dom.snapshot", "obsidian.dom.snapshot", ["dom", "snapshot", "buttons", "screen", "ui", "当前界面", "按钮", "截图", "页面元素", "界面"], 84),
       commandTarget("command:obsidian.dom.click", "obsidian.dom.click", ["dom", "click", "tap", "button", "ui", "点击", "按钮", "模拟点击", "点按"], 80),
       commandTarget("command:obsidian.dom.input", "obsidian.dom.input", ["dom", "input", "type", "textarea", "ui", "输入", "模拟输入", "文本框"], 80),
-      commandTarget("command:obsidian.eval", "obsidian.eval", ["eval", "javascript", "js", "app", "workspace", "vault", "plugin", "api", "ob api", "脚本", "js", "命令", "插件api", "工作区", "库对象"], 84),
+      commandTarget("command:obsidian.js.help", "obsidian.js.help", ["eval", "javascript", "js", "help", "method", "app", "workspace", "vault", "plugin", "api", "ob api", "脚本", "js命令", "方法", "插件api", "工作区", "库对象"], 88),
+      commandTarget("command:obsidian.js.probe", "obsidian.js.probe", ["eval", "javascript", "js", "probe", "status", "app", "workspace", "vault", "plugin", "api", "脚本", "js命令", "探测", "状态", "工作区", "库对象"], 86),
+      commandTarget("command:obsidian.eval", "obsidian.eval", ["eval", "javascript", "js", "app", "workspace", "vault", "plugin", "api", "ob api", "script", "脚本", "js", "js命令", "命令", "插件api", "工作区", "库对象"], 84),
+      commandTarget("command:js.eval", "js.eval", ["eval", "javascript", "js", "app", "workspace", "vault", "plugin", "api", "script", "脚本", "js命令", "插件api", "工作区", "库对象"], 83),
       commandTarget("command:obsidian.ui.buttons", "obsidian.ui.buttons", ["button", "buttons", "toolbar", "more", "pdf", "note", "ui", "按钮", "顶部按钮", "更多按钮", "排序", "隐藏"], 85),
       commandTarget("command:obsidian.ui.applyButtonRules", "obsidian.ui.applyButtonRules", ["button", "buttons", "toolbar", "hide", "show", "order", "ui", "按钮", "隐藏", "显示", "排序"], 83),
       commandTarget("command:obsidian.tags", "obsidian.tags", ["tag", "tags", "right", "sidebar", "fixed", "pin", "标签", "右侧栏", "固定", "删除"], 84),
@@ -17020,10 +17023,10 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.rebuildIndex", "cancip.rebuildIndex", ["index", "rebuild", "search", "rag", "索引", "重建", "检索"], 78),
       commandTarget("command:cancip.previewVaultSearch", "cancip.previewVaultSearch", ["search", "preview", "vault", "rag", "搜索", "预览", "检索"], 76),
       commandTarget("command:cancip.localVersionCommit", "cancip.localVersionCommit", ["commit", "version", "snapshot", "local", "git", "提交", "版本", "快照"], 76),
-      commandTarget("command:cancip.importCodexMemory", "cancip.importCodexMemory", ["codex", "memory", "skill", "plugin", "pack", "import", "记忆", "导入", "技能", "插件", "能力包"], 78),
+      commandTarget("command:cancip.importCapabilityPack", "cancip.importCapabilityPack", ["memory", "skill", "plugin", "pack", "import", "记忆", "导入", "技能", "插件", "能力包"], 78),
       commandTarget("command:cancip.newsBrief", "cancip.newsBrief", ["news", "brief", "morning", "evening", "world", "国内外", "大事", "动向", "早报", "晚报", "新闻", "简报"], 80),
       commandTarget("command:cancip.vaultDailyReport", "cancip.vaultDailyReport", ["vault", "daily", "maintenance", "merge", "report", "日报", "每日", "维护", "合并", "整理", "候选"], 82),
-      commandTarget("command:cancip.automation.templates", "cancip.automation.templates", ["automation", "template", "preset", "codex", "自动化", "模板", "预设"], 79),
+      commandTarget("command:cancip.automation.templates", "cancip.automation.templates", ["automation", "template", "preset", "自动化", "模板", "预设"], 79),
       commandTarget("command:cancip.automation.addTemplate", "cancip.automation.addTemplate", ["automation", "template", "preset", "add", "自动化", "模板", "添加"], 77),
       commandTarget("command:cancip.automation.addNewsBrief", "cancip.automation.addNewsBrief", ["automation", "news", "brief", "morning", "evening", "自动化", "早晚", "国内外", "大事", "动向", "早报", "晚报"], 80),
       commandTarget("command:cancip.automation.addVaultDailyReport", "cancip.automation.addVaultDailyReport", ["automation", "vault", "daily", "maintenance", "report", "自动化", "vault", "每日", "维护", "合并", "日报"], 80),
@@ -17154,7 +17157,7 @@ class CancipView extends ItemView {
           "action:add-current-file": "用户提及功能：把当前活动笔记作为上下文。",
           "action:preview-vault-search": "用户提及功能：预览 Vault Search 命中结果。",
           "action:add-core-memory": "用户提及功能：加入核心记忆文件夹上下文。",
-          "action:import-codex-memory": "用户提及功能：导入 Codex 能力包。可用 command cancip.importCodexMemory 把本机 Codex curated memory、精选 Skill 和插件能力索引复制到 AI/Cancip/Memory 与 AI/Cancip/Skills/Codex，并刷新 Skill 索引，便于手机同步后按需调用。",
+          "action:import-capability-pack": "用户提及功能：导入桌面能力包。可用 command cancip.importCapabilityPack 把本机已整理记忆、精选 Skill 和插件能力索引复制到 AI/Cancip/Memory 与 AI/Cancip/Skills/Desktop，并刷新 Skill 索引，便于手机同步后按需调用。",
       "action:automation": "用户提及功能：自动化任务。可用 automation action 新增/更新/列出/删除/运行任务，也可用 cancip.automation.templates 和 cancip.automation.addTemplate 添加内置本地任务；任务保存在 .cancip/automations.json，日志写入 .cancip/automations。",
           "action:rebuild-index": "用户提及功能：重建轻量索引。",
           "action:command-bus": "用户提及功能：命令总线。Cancip 支持 cancip-action 的 command 类型，用结构化命令连接 OB 内部命令、Cancip 内置命令和 GitHub CLI 等价 REST 接口。",
@@ -17176,7 +17179,7 @@ class CancipView extends ItemView {
           "action:add-current-file": "Mentioned function: include the current active note as context.",
           "action:preview-vault-search": "Mentioned function: preview Vault Search hits.",
           "action:add-core-memory": "Mentioned function: include core memory folder context.",
-          "action:import-codex-memory": "Mentioned function: import the Codex capability pack. Use command cancip.importCodexMemory to copy local Codex curated memory, selected Skills, and plugin capability indexes into AI/Cancip/Memory and AI/Cancip/Skills/Codex, then refresh the Skill index for mobile sync and on-demand use.",
+          "action:import-capability-pack": "Mentioned function: import the desktop capability pack. Use command cancip.importCapabilityPack to copy local curated memory, selected Skills, and plugin capability indexes into AI/Cancip/Memory and AI/Cancip/Skills/Desktop, then refresh the Skill index for mobile sync and on-demand use.",
           "action:automation": "Mentioned function: automations. Use automation actions or cancip.automation.templates/addTemplate for built-in local tasks. State lives in .cancip/automations.json and logs go to .cancip/automations.",
           "action:rebuild-index": "Mentioned function: rebuild the lightweight index.",
           "action:command-bus": "Mentioned function: command bus. Cancip supports cancip-action command actions for structured Obsidian commands, Cancip commands, and GitHub CLI-equivalent REST interfaces.",
@@ -17201,7 +17204,10 @@ class CancipView extends ItemView {
       "obsidian.dom.snapshot": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.snapshot\",\"args\":{\"scope\":\"active\",\"limit\":40}}]}",
       "obsidian.dom.click": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.click\",\"args\":{\"scope\":\"active\",\"selector\":\"button[aria-label='Run']\",\"index\":0}}]}",
       "obsidian.dom.input": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.input\",\"args\":{\"scope\":\"active\",\"selector\":\"textarea\",\"index\":0,\"text\":\"输入内容\"}}]}",
+      "obsidian.js.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.js.help\"}]}",
+      "obsidian.js.probe": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.js.probe\"}]}",
       "obsidian.eval": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.eval\",\"args\":{\"code\":\"return app.workspace.getActiveFile()?.path || ''\"}}]}",
+      "js.eval": "{\"actions\":[{\"type\":\"command\",\"command\":\"js.eval\",\"args\":{\"expression\":\"app.workspace.getActiveFile()?.path || ''\"}}]}",
       "obsidian.ui.buttons": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.buttons\",\"args\":{\"scope\":\"active\",\"limit\":80}}]}",
       "obsidian.ui.applyButtonRules": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.applyButtonRules\",\"args\":{\"rules\":[{\"selector\":\"button[aria-label='More options']\",\"label\":\"More options\",\"hidden\":false,\"order\":1,\"title\":\"更多\",\"icon\":\"more-horizontal\",\"scope\":\"active\"}]}}]}",
       "obsidian.tags": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags\",\"args\":{\"limit\":80}}]}",
@@ -17253,7 +17259,7 @@ class CancipView extends ItemView {
       "cancip.rebuildIndex": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.rebuildIndex\"}]}",
       "cancip.previewVaultSearch": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.previewVaultSearch\"}]}",
       "cancip.localVersionCommit": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.localVersionCommit\"}]}",
-      "cancip.importCodexMemory": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.importCodexMemory\"}]}",
+      "cancip.importCapabilityPack": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.importCapabilityPack\"}]}",
       "cancip.newsBrief": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.newsBrief\",\"args\":{\"period\":\"morning\"}}]}",
       "cancip.vaultDailyReport": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.vaultDailyReport\",\"args\":{\"hours\":24,\"limit\":80}}]}",
       "cancip.automation.templates": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.automation.templates\"}]}",
@@ -18966,8 +18972,7 @@ class CancipView extends ItemView {
     const command = action.command.trim();
     return isObsidianExecuteCommandAlias(command)
       || looksLikeDirectObsidianCommand(command)
-      || command === "obsidian.eval"
-      || command === "obsidian.js"
+      || isObsidianEvalCommandAlias(command)
       || command === "obsidian.dom.click"
       || command === "obsidian.dom.input"
       || command === "obsidian.ui.applyButtonRules"
@@ -18984,6 +18989,7 @@ class CancipView extends ItemView {
       || command === "cancip.rebuildIndex"
       || command === "cancip.localVersionCommit"
       || command === "cancip.importCodexMemory"
+      || command === "cancip.importCapabilityPack"
       || command === "cancip.tts.installLocal"
       || command === "cancip.automation.add"
       || command === "cancip.automation.update"
@@ -19008,6 +19014,7 @@ class CancipView extends ItemView {
       || command === "obsidian.dom.click"
       || command === "obsidian.dom.input"
       || command === "obsidian.execute"
+      || isObsidianEvalCommandAlias(command)
       || command === "cancip.pluginAction"
       || command === "cancip.annotate.note"
       || command === "cancip.annotate.pdf"
@@ -20249,10 +20256,21 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: await this.executeObsidianCommand(id) });
     }
 
-    if (normalized === "obsidian.eval" || normalized === "obsidian.js") {
-      const code = typeof args.code === "string" ? args.code : "";
-      if (!code.trim()) throw new Error(`${normalized} requires args.code`);
-      return this.t("commandExecuted", { command: normalized, result: await this.obsidianEvalCommand(code, args) });
+    if (isObsidianJsHelpCommandAlias(normalized)) {
+      return this.t("commandExecuted", { command: normalized, result: this.obsidianJsHelp() });
+    }
+
+    if (isObsidianJsProbeCommandAlias(normalized)) {
+      return this.t("commandExecuted", { command: normalized, result: this.obsidianJsProbe(args) });
+    }
+
+    if (isObsidianEvalCommandAlias(normalized)) {
+      if (!this.plugin.settings.executeObsidianCommands) {
+        throw new Error(this.t("commandBlocked", { reason: this.t("settingsExecuteObsidianCommands") }));
+      }
+      const code = this.obsidianEvalCodeFromArgs(args);
+      if (!code.trim()) throw new Error(`${normalized} requires args.code, args.script, args.js, or args.expression`);
+      return this.t("commandExecuted", { command: normalized, result: await this.obsidianEvalCommand(code, args, normalized) });
     }
 
     if (normalized === "cancip.rebuildIndex") {
@@ -20452,7 +20470,7 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: this.plugin.describeLocalVersionResult(result) });
     }
 
-    if (normalized === "cancip.importCodexMemory") {
+    if (normalized === "cancip.importCodexMemory" || normalized === "cancip.importCapabilityPack") {
       const result = await this.plugin.importCodexCoreMemory(true);
       await this.refreshSkillIndex(false);
       return this.t("commandExecuted", { command: normalized, result: this.formatCodexCapabilityImportResult(result) });
@@ -20608,21 +20626,127 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: "obsidian.execute", result: await this.executeResolvedObsidianCommand(directObsidian) });
     }
 
-    if (normalized === "javascript.eval" || normalized === "js.eval" || normalized === "browser.eval") {
-      throw new Error(this.t("commandBlocked", { reason: "Use obsidian.eval for explicit Obsidian app/workspace/vault JS through the access-mode command bus." }));
-    }
-
     throw new Error(this.t("commandUnknown", { command: normalized }));
   }
 
-  private async obsidianEvalCommand(code: string, args: Record<string, unknown>): Promise<string> {
+  private obsidianEvalCodeFromArgs(args: Record<string, unknown>): string {
+    const expression = typeof args.expression === "string" ? args.expression.trim() : "";
+    if (expression) return `return (${expression});`;
+    for (const key of ["code", "script", "js", "body"]) {
+      const value = args[key];
+      if (typeof value === "string" && value.trim()) return value;
+    }
+    return "";
+  }
+
+  private obsidianJsHelp(): string {
+    return [
+      "Obsidian JS bridge:",
+      "- Entry points: obsidian.js.help, obsidian.js.probe, obsidian.eval. Compatibility aliases: obsidian.js, js.eval, javascript.eval, browser.eval.",
+      "- Scope: this is Obsidian app/workspace/vault/plugin JavaScript in the current WebView, not an external browser or OS shell.",
+      "- Access boundary: help/probe are read-only. eval is effect-capable and follows Cancip access mode: confirmation mode queues Approve/Reject; full-access executes.",
+      "- Available variables: app, workspace, vault, metadataCache, activeDocument, window, args, helpers, plugins, activeFile, activeLeaf, activeView.",
+      "- helpers: helpers.plugin(id), helpers.api(id), helpers.runCommand(id), helpers.openPath(path), helpers.notice(text), helpers.query(selector), helpers.click(selector), helpers.input(selector,text), helpers.sleep(ms).",
+      "- Read examples:",
+      "  {\"command\":\"obsidian.eval\",\"args\":{\"expression\":\"app.workspace.getActiveFile()?.path || ''\"}}",
+      "  {\"command\":\"obsidian.eval\",\"args\":{\"code\":\"return Object.keys(app.plugins.plugins).slice(0,20);\"}}",
+      "- Execute examples:",
+      "  {\"command\":\"obsidian.eval\",\"args\":{\"code\":\"await helpers.runCommand('command-palette:open'); return helpers.snapshot();\"}}",
+      "  {\"command\":\"obsidian.eval\",\"args\":{\"code\":\"const api=helpers.api('plugin-id'); return api ? Object.keys(api) : null;\"}}",
+      "- Prefer dedicated tools first when they exist: obsidian.listCommands/resolveCommand/execute, obsidian.dom.*, obsidian.ui.*, cancip.pluginRoute/pluginAction. Use JS for gaps and plugin-specific API glue."
+    ].join("\n");
+  }
+
+  private obsidianJsProbe(args: Record<string, unknown>): string {
+    const maxPlugins = clampInt(args.maxPlugins, 20, 1, 80);
+    const plugins = (this.app as App & { plugins?: { plugins?: Record<string, unknown>; manifests?: Record<string, { name?: string; version?: string }> } }).plugins;
+    const pluginIds = Object.keys(plugins?.plugins ?? {}).sort();
+    const activeFile = this.app.workspace.getActiveFile();
+    const activeLeaf = this.app.workspace.activeLeaf;
+    const view = activeLeaf?.view as { getViewType?: () => string; getDisplayText?: () => string } | undefined;
+    const commandCount = Object.keys(this.obsidianCommandApi().commands ?? {}).length;
+    return [
+      "Obsidian JS bridge probe:",
+      `activeFile: ${activeFile?.path ?? ""}`,
+      `activeView: ${view?.getViewType?.() ?? ""}`,
+      `activeTitle: ${view?.getDisplayText?.() ?? ""}`,
+      `commands: ${commandCount}`,
+      `loadedPlugins: ${pluginIds.length}`,
+      `pluginSample: ${pluginIds.slice(0, maxPlugins).join(", ") || "(none)"}`,
+      `platform: ${Platform.isMobile ? "mobile" : "desktop"}; ${Platform.isAndroidApp ? "android" : Platform.isIosApp ? "ios" : "web/desktop"}`,
+      "methods: helpers.plugin/api/runCommand/openPath/notice/query/click/input/sleep/snapshot",
+      "next: use obsidian.eval/js.eval with args.code or args.expression when a command/plugin API gap remains."
+    ].join("\n");
+  }
+
+  private async obsidianEvalCommand(code: string, args: Record<string, unknown>, commandName = "obsidian.eval"): Promise<string> {
     const timeoutMs = clampInt(args.timeoutMs, 2500, 200, 15000);
     const startedAt = Date.now();
     const timeout = new Promise<never>((_, reject) => {
-      window.setTimeout(() => reject(new Error(`obsidian.eval timed out after ${timeoutMs}ms`)), timeoutMs);
+      window.setTimeout(() => reject(new Error(`${commandName} timed out after ${timeoutMs}ms`)), timeoutMs);
+    });
+    const pluginRuntime = (this.app as App & { plugins?: { plugins?: Record<string, unknown>; manifests?: Record<string, unknown> } }).plugins;
+    const plugins = pluginRuntime?.plugins ?? {};
+    const activeFile = this.app.workspace.getActiveFile();
+    const activeLeaf = this.app.workspace.activeLeaf;
+    const activeView = activeLeaf?.view ?? null;
+    const helpers: Record<string, unknown> = {};
+    Object.assign(helpers, {
+      plugins,
+      manifests: pluginRuntime?.manifests ?? {},
+      activeFile,
+      activeLeaf,
+      activeView,
+      plugin: (id: string) => plugins[String(id)] ?? null,
+      api: (id: string) => {
+        const runtime = plugins[String(id)];
+        return isRecord(runtime) && isRecord(runtime.api) ? runtime.api : null;
+      },
+      runCommand: async (id: string) => {
+        const commandId = String(id).trim();
+        if (!commandId) throw new Error("helpers.runCommand requires a command id");
+        const api = this.obsidianCommandApi();
+        if (typeof api.executeCommandById !== "function") throw new Error("Obsidian command API is unavailable");
+        return await Promise.resolve(api.executeCommandById(commandId));
+      },
+      openPath: async (path: string) => {
+        const target = this.app.vault.getAbstractFileByPath(normalizePath(String(path)));
+        if (!(target instanceof TFile)) throw new Error(`helpers.openPath target is not a file: ${path}`);
+        await this.app.workspace.getLeaf(false).openFile(target);
+        return target.path;
+      },
+      notice: (text: string, timeoutValue?: number) => {
+        new Notice(String(text), Number.isFinite(timeoutValue) ? Number(timeoutValue) : 4000);
+        return String(text);
+      },
+      query: (selector: string) => activeDocument.querySelector(String(selector)),
+      queryAll: (selector: string) => Array.from(activeDocument.querySelectorAll(String(selector))),
+      click: (selector: string, index = 0) => {
+        const element = Array.from(activeDocument.querySelectorAll(String(selector)))[Math.max(0, Number(index) || 0)] as HTMLElement | undefined;
+        if (!element) throw new Error(`helpers.click target not found: ${selector}`);
+        element.click();
+        return true;
+      },
+      input: (selector: string, text: string, index = 0) => {
+        const element = Array.from(activeDocument.querySelectorAll(String(selector)))[Math.max(0, Number(index) || 0)] as HTMLInputElement | HTMLTextAreaElement | undefined;
+        if (!element) throw new Error(`helpers.input target not found: ${selector}`);
+        element.value = String(text);
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+        element.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      },
+      sleep: (ms: number) => new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0))),
+      snapshot: () => ({
+        activeFile: this.app.workspace.getActiveFile()?.path ?? "",
+        activeView: (this.app.workspace.activeLeaf?.view as { getViewType?: () => string } | undefined)?.getViewType?.() ?? "",
+        activeTitle: (this.app.workspace.activeLeaf?.view as { getDisplayText?: () => string } | undefined)?.getDisplayText?.() ?? "",
+        pluginCount: Object.keys(plugins).length,
+        commandCount: Object.keys(this.obsidianCommandApi().commands ?? {}).length
+      })
     });
     const runner = async () => {
-      const fn = new Function(
+      const AsyncFunction = Object.getPrototypeOf(async function () { return null; }).constructor as FunctionConstructor;
+      const fn = new AsyncFunction(
         "app",
         "workspace",
         "vault",
@@ -20630,6 +20754,11 @@ class CancipView extends ItemView {
         "activeDocument",
         "window",
         "args",
+        "helpers",
+        "plugins",
+        "activeFile",
+        "activeLeaf",
+        "activeView",
         `"use strict";\n${code}`
       ) as (
         app: App,
@@ -20638,7 +20767,12 @@ class CancipView extends ItemView {
         metadataCache: App["metadataCache"],
         activeDocument: Document,
         window: Window | null,
-        args: Record<string, unknown>
+        args: Record<string, unknown>,
+        helpers: Record<string, unknown>,
+        plugins: Record<string, unknown>,
+        activeFile: TFile | null,
+        activeLeaf: WorkspaceLeaf | null,
+        activeView: unknown
       ) => unknown;
       return await Promise.resolve(fn(
         this.app,
@@ -20647,11 +20781,17 @@ class CancipView extends ItemView {
         this.app.metadataCache,
         activeDocument,
         activeDocument.defaultView,
-        args
+        args,
+        helpers,
+        plugins,
+        activeFile,
+        activeLeaf,
+        activeView
       ));
     };
     const value = await Promise.race([runner(), timeout]);
     return trimContext([
+      `scope: Obsidian JS bridge (${commandName})`,
       `elapsed: ${formatElapsed(Date.now() - startedAt)}`,
       `result:\n${safeJsonishDisplay(value)}`
     ].join("\n"), clampInt(args.maxChars, 6000, 500, 20000));
@@ -24574,15 +24714,15 @@ async function buildCodexPluginCapabilityIndex(fs: DesktopFsLike, pluginSkillFil
   }
   return [
     "---",
-    "name: codex-plugin-capabilities",
-    "description: Index of Codex plugin runtime capabilities imported for Cancip routing. Use it when a task mentions PDF, Word, Excel, PowerPoint, LaTeX, templates, browser/computer use, or external runtime plugins.",
+    "name: desktop-plugin-capabilities",
+    "description: Index of desktop plugin runtime capabilities imported for Cancip routing. Use it when a task mentions PDF, Word, Excel, PowerPoint, LaTeX, templates, browser/computer use, or external runtime plugins.",
     "---",
     "",
-    "# Codex Plugin Capabilities",
+    "# Desktop Plugin Capabilities",
     "",
     "This is a routing index. It does not guarantee every desktop plugin runtime is executable on Android. Use Cancip native commands first; use desktop bridge or file parser skills when mobile runtime is unavailable.",
     "",
-    "## Installed Codex plugin manifests",
+    "## Installed desktop plugin manifests",
     ...(pluginLines.length ? pluginLines : ["- none"]),
     "",
     "## Imported plugin Skill instructions",
@@ -24630,9 +24770,9 @@ function normalizeSkillNameForImport(name: string): string {
 
 function buildCodexSkillPackReadme(skillFiles: string[], skipped: string[]): string {
   return [
-    "# Codex Skill Pack for Cancip",
+    "# Desktop Skill Pack for Cancip",
     "",
-    "This folder contains selected Codex/Codex-plugin Skill instructions copied into the Vault so Cancip can discover them on desktop and mobile.",
+    "This folder contains selected desktop/local-agent Skill instructions copied into the Vault so Cancip can discover them on desktop and mobile.",
     "",
     "Use these on demand through `cancip.skills.list`, `cancip.skills.read`, `cancip.skills.refresh`, and `cancip.tools.index`. Do not inject the full pack into every prompt.",
     "",
@@ -24640,7 +24780,7 @@ function buildCodexSkillPackReadme(skillFiles: string[], skipped: string[]): str
     ...(skillFiles.length ? skillFiles.map((path) => `- [[${path.replace(/\.md$/i, "")}]]`) : ["- none"]),
     "",
     "## Mobile caveat",
-    "Some imported Codex skills describe desktop tools, CLIs, browser automation, or runtime plugins. On Android, treat those as route instructions and use Cancip native commands, Obsidian commands, attachment parsers, GitHub API, or a desktop bridge when required.",
+    "Some imported skills describe desktop tools, CLIs, browser automation, or runtime plugins. On Android, treat those as route instructions and use Cancip native commands, Obsidian commands, attachment parsers, GitHub API, or a desktop bridge when required.",
     "",
     "## Skipped sources",
     ...(skipped.length ? skipped.slice(0, 60).map((item) => `- ${item}`) : ["- none"])
@@ -24738,10 +24878,10 @@ function cancipAutomationTemplates(): AutomationTemplate[] {
       hour: 8
     },
     {
-      id: "auto-import-codex-memory",
-      title: "Import Codex capability pack",
-      description: "Refresh visible AI/Cancip/Memory and AI/Cancip/Skills/Codex from local Codex memory, skills, and plugin indexes when desktop files are available.",
-      command: "cancip.importCodexMemory",
+      id: "auto-import-capability-pack",
+      title: "Import desktop capability pack",
+      description: "Refresh visible AI/Cancip/Memory and AI/Cancip/Skills/Desktop from local memory, skills, and plugin indexes when desktop files are available.",
+      command: "cancip.importCapabilityPack",
       args: {},
       schedule: "daily",
       enabled: true,
@@ -25154,7 +25294,7 @@ function tokenize(input: string): string[] {
 function extractHistoryKeyTerms(input: string): string[] {
   const text = redactSensitiveText(input);
   const pathTerms = text.match(/(?:^|[\s"'`])(?:\.?[A-Za-z0-9_\-\u4e00-\u9fff]+\/)+[A-Za-z0-9_\-\u4e00-\u9fff.]+/g) ?? [];
-  const codeTerms = text.match(/(?:session-\d{4}-\d{2}-\d{2}T[\d-]+Z|\.cancip|Obsidian config|Cancip|ntfy|nfty|Obsidian|GitHub|API|RAG|Vault|Plan|Full access|Ask for approval|Responses|compatible|Claude Code|Codex)/gi) ?? [];
+  const codeTerms = text.match(/(?:session-\d{4}-\d{2}-\d{2}T[\d-]+Z|\.cancip|Obsidian config|Cancip|ntfy|nfty|Obsidian|GitHub|API|RAG|Vault|Plan|Full access|Ask for approval|Responses|compatible|Claude Code)/gi) ?? [];
   const naturalTerms = tokenize(text)
     .filter((token) => token.length >= 2 && token.length <= 36)
     .filter((token) => !/^\d+$/.test(token));
@@ -26059,6 +26199,38 @@ function isObsidianExecuteCommandAlias(command: string): boolean {
     || command === "obsidian.commands.executeCommandById";
 }
 
+function isObsidianEvalCommandAlias(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return normalized === "obsidian.eval"
+    || normalized === "obsidian.js"
+    || normalized === "obsidian.js.eval"
+    || normalized === "obsidian.runjs"
+    || normalized === "js.eval"
+    || normalized === "js.run"
+    || normalized === "javascript.eval"
+    || normalized === "javascript.run"
+    || normalized === "browser.eval"
+    || normalized === "browser.js";
+}
+
+function isObsidianJsHelpCommandAlias(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return normalized === "obsidian.js.help"
+    || normalized === "obsidian.eval.help"
+    || normalized === "js.help"
+    || normalized === "javascript.help"
+    || normalized === "browser.js.help";
+}
+
+function isObsidianJsProbeCommandAlias(command: string): boolean {
+  const normalized = command.trim().toLowerCase();
+  return normalized === "obsidian.js.probe"
+    || normalized === "obsidian.eval.probe"
+    || normalized === "js.probe"
+    || normalized === "javascript.probe"
+    || normalized === "browser.js.probe";
+}
+
 function looksLikeDirectObsidianCommand(command: string): boolean {
   const trimmed = command.trim();
   if (!trimmed || trimmed.includes("\n")) return false;
@@ -26611,7 +26783,7 @@ function promptAsksPluginList(prompt: string): boolean {
 }
 
 function capabilityPromptMentionsSkillSurface(text: string): boolean {
-  return /(\bskill\b|\bskills\b|mcp|agent capability|技能|能力包|能力索引|工具能力|通用能力|mcp|claude code|codex|openclaw|hermes)/i.test(text);
+  return /(\bskill\b|\bskills\b|mcp|agent capability|技能|能力包|能力索引|工具能力|通用能力|mcp|claude code|openclaw|hermes)/i.test(text);
 }
 
 function capabilityPromptMentionsSessionHistory(text: string): boolean {
@@ -27656,7 +27828,7 @@ const PRIME_TTS_FINAL_TO_ZHUYIN: Record<string, string[]> = {
 
 const PRIME_TTS_WORD_PHONES: Record<string, string[]> = {
   a: ["AH"], ai: ["EY", "AY"], api: ["EY", "P", "IY", "AY"], and: ["AE", "N", "D"], are: ["AA", "R"], as: ["AE", "Z"], at: ["AE", "T"],
-  be: ["B", "IY"], cancip: ["K", "AE", "N", "S", "IH", "P"], chat: ["CH", "AE", "T"], code: ["K", "OW", "D"], codex: ["K", "OW", "D", "EH", "K", "S"],
+  be: ["B", "IY"], cancip: ["K", "AE", "N", "S", "IH", "P"], chat: ["CH", "AE", "T"], code: ["K", "OW", "D"],
   file: ["F", "AY", "L"], for: ["F", "AO", "R"], from: ["F", "R", "AH", "M"], hello: ["HH", "AH", "L", "OW"], hi: ["HH", "AY"],
   is: ["IH", "Z"], key: ["K", "IY"], markdown: ["M", "AA", "R", "K", "D", "AW", "N"], model: ["M", "AA", "D", "AH", "L"],
   note: ["N", "OW", "T"], obsidian: ["AH", "B", "S", "IH", "D", "IY", "AH", "N"], of: ["AH", "V"], ok: ["OW", "K", "EY"], open: ["OW", "P", "AH", "N"],
@@ -28098,7 +28270,7 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
     )
     .replace(
       /cancip\.tools\.index, obsidian\.listCommands, obsidian\.execute, obsidian\.currentView,/,
-      "cancip.tools.index, obsidian.listCommands, obsidian.execute, obsidian.eval, obsidian.currentView,"
+      "cancip.tools.index, obsidian.listCommands, obsidian.execute, obsidian.js.help, obsidian.js.probe, obsidian.eval/js.eval/javascript.eval/browser.eval, obsidian.currentView,"
     )
     .replace(
       /cancip\.pluginCapabilities, cancip\.skills\.list,/,
@@ -28118,7 +28290,7 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
     )
     .replace(
       /cancip\.tools\.index、obsidian\.listCommands、obsidian\.execute、obsidian\.currentView、/,
-      "cancip.tools.index、obsidian.listCommands、obsidian.execute、obsidian.eval、obsidian.currentView、"
+      "cancip.tools.index、obsidian.listCommands、obsidian.execute、obsidian.js.help、obsidian.js.probe、obsidian.eval/js.eval/javascript.eval/browser.eval、obsidian.currentView、"
     )
     .replace(
       /cancip\.pluginCapabilities、cancip\.skills\.list、/,
@@ -28138,11 +28310,11 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
     )
     .replace(
       /Raw JavaScript eval is blocked\./,
-      "Use obsidian.eval for explicit Obsidian app/workspace/vault/plugin JavaScript through the access-mode command bus."
+      "Use obsidian.js.help/probe first; use obsidian.eval/js.eval for explicit Obsidian app/workspace/vault/plugin JavaScript through the access-mode command bus. JS is limited to the Obsidian WebView/API bridge and is not an OS shell."
     )
     .replace(
       /原始 JavaScript eval 阻止。/,
-      "需要 Obsidian app/workspace/vault/plugin JavaScript 时，用 obsidian.eval 走访问模式控制的命令总线。"
+      "需要 Obsidian app/workspace/vault/plugin JavaScript 时，先用 obsidian.js.help/probe，再用 obsidian.eval/js.eval 走访问模式控制的命令总线。JS 限定在 Obsidian WebView/API bridge，不是系统 shell。"
     );
 }
 
@@ -28152,6 +28324,7 @@ function isReadOnlyAction(action: CancipAction): boolean {
   if (action.type === "automation") return action.op === "list";
   if (action.type !== "command") return false;
   const command = action.command.trim();
+  if (isObsidianJsHelpCommandAlias(command) || isObsidianJsProbeCommandAlias(command)) return true;
   return new Set([
     "obsidian.listCommands",
     "obsidian.currentView",
@@ -31385,6 +31558,15 @@ function commandArgsFromLooseObsidianAction(input: Record<string, unknown>): Rec
   return args;
 }
 
+function commandArgsFromLooseJsAction(input: Record<string, unknown>): Record<string, unknown> {
+  const args: Record<string, unknown> = isRecord(input.args) ? { ...input.args } : {};
+  for (const key of ["code", "script", "js", "body", "expression", "timeoutMs", "maxChars"]) {
+    if (Object.prototype.hasOwnProperty.call(args, key)) continue;
+    if (Object.prototype.hasOwnProperty.call(input, key)) args[key] = input[key];
+  }
+  return args;
+}
+
 function parseCancipAction(input: unknown): CancipAction | null {
   if (!isRecord(input)) {
     return null;
@@ -31402,6 +31584,22 @@ function parseCancipAction(input: unknown): CancipAction | null {
       type: "command",
       command: "obsidian.execute",
       args
+    };
+  }
+
+  if (isObsidianEvalCommandAlias(actionType)) {
+    return {
+      type: "command",
+      command: "obsidian.eval",
+      args: commandArgsFromLooseJsAction(input)
+    };
+  }
+
+  if (isObsidianJsHelpCommandAlias(actionType) || isObsidianJsProbeCommandAlias(actionType)) {
+    return {
+      type: "command",
+      command: actionType,
+      args: isRecord(input.args) ? input.args : undefined
     };
   }
 
