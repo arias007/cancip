@@ -1223,6 +1223,8 @@ type Settings = {
   ttsChunkChars: number;
   ttsCustomUrl: string;
   ttsShowViewActions: boolean;
+  ttsOverlayCollapsed: boolean;
+  ttsOverlayPosition: { left: number; top: number } | null;
   systemPrompt: string;
 };
 
@@ -1231,16 +1233,17 @@ type UiButtonEditDescriptor = {
   label: string;
   scope: UiButtonRule["scope"];
   rule: UiButtonRule | null;
+  target?: HTMLElement;
 };
 
 class CancipButtonEditModal extends Modal {
   private nameInput: HTMLInputElement | null = null;
   private iconInput: HTMLInputElement | null = null;
-  private orderInput: HTMLInputElement | null = null;
   private addCommandSelect: HTMLSelectElement | null = null;
-  private addIconSelect: HTMLSelectElement | null = null;
   private addNameInput: HTMLInputElement | null = null;
   private addCommandOptions: UiButtonCommandOption[] = [];
+  private addIconButtons: HTMLButtonElement[] = [];
+  private selectedAddIcon = "zap";
   private hidden = false;
   private buttonScope: UiButtonRule["scope"];
 
@@ -1284,13 +1287,16 @@ class CancipButtonEditModal extends Modal {
       });
 
     new Setting(this.contentEl)
-      .setName(this.plugin.t("buttonEditOrder"))
-      .addText((text) => {
-        this.orderInput = text.inputEl;
-        text.inputEl.type = "number";
-        text.inputEl.min = "-999";
-        text.inputEl.max = "999";
-        text.setValue(String(this.descriptor.rule?.order ?? 0));
+      .setName(this.plugin.t("buttonEditSort"))
+      .setDesc(this.plugin.t("buttonEditSortDesc"))
+      .addButton((button) => {
+        button
+          .setIcon("grip-vertical")
+          .setTooltip(this.plugin.t("buttonEditSort"))
+          .onClick(() => {
+            this.close();
+            this.plugin.startUiButtonSortMode(this.descriptor);
+          });
       });
 
     new Setting(this.contentEl)
@@ -1359,7 +1365,7 @@ class CancipButtonEditModal extends Modal {
   private async saveRule(): Promise<void> {
     const title = this.nameInput?.value.trim() || "";
     const icon = this.iconInput?.value.trim() || "";
-    const order = clampInt(Number(this.orderInput?.value ?? 0), 0, -999, 999);
+    const order = this.descriptor.rule?.order ?? 0;
     const selector = this.descriptor.selector;
     const id = this.descriptor.rule?.id ?? stableRuleId(`${this.buttonScope}:${selector}`);
     await this.plugin.upsertUiButtonRule({
@@ -1382,6 +1388,7 @@ class CancipButtonEditModal extends Modal {
     section.createDiv({ cls: "obcc-button-edit-section-desc", text: this.plugin.t("buttonEditAddSiblingDesc") });
 
     this.addCommandOptions = this.plugin.uiButtonCommandOptions();
+    this.selectedAddIcon = this.addCommandOptions[0]?.icon ?? "zap";
     new Setting(section)
       .setName(this.plugin.t("buttonEditAddCommand"))
       .addDropdown((dropdown) => {
@@ -1395,7 +1402,7 @@ class CancipButtonEditModal extends Modal {
           const option = this.addCommandOptions.find((item) => item.id === value);
           if (!option) return;
           if (this.addNameInput && !this.addNameInput.value.trim()) this.addNameInput.value = option.name;
-          if (this.addIconSelect) this.addIconSelect.value = option.icon;
+          this.setSelectedAddIcon(option.icon);
         });
       });
 
@@ -1407,16 +1414,18 @@ class CancipButtonEditModal extends Modal {
         text.setPlaceholder(first?.name ?? this.plugin.t("buttonEditAddName"));
       });
 
-    new Setting(section)
-      .setName(this.plugin.t("buttonEditAddIcon"))
-      .addDropdown((dropdown) => {
-        this.addIconSelect = dropdown.selectEl;
-        for (const icon of this.plugin.uiButtonIconOptions()) {
-          dropdown.addOption(icon, icon);
-        }
-        const first = this.addCommandOptions[0];
-        dropdown.setValue(first?.icon ?? "zap");
+    section.createDiv({ cls: "obcc-button-edit-section-title", text: this.plugin.t("buttonEditAddIcon") });
+    const iconGrid = section.createDiv({ cls: "obcc-button-icon-grid" });
+    for (const icon of this.plugin.uiButtonIconOptions()) {
+      const button = iconGrid.createEl("button", {
+        cls: "obcc-button-icon-choice",
+        attr: { type: "button", title: icon, "aria-label": icon }
       });
+      setIcon(button, icon);
+      button.addEventListener("click", () => this.setSelectedAddIcon(icon));
+      this.addIconButtons.push(button);
+    }
+    this.refreshAddIconButtons();
 
     const addActions = section.createDiv({ cls: "obcc-button-edit-actions" });
     const add = addActions.createEl("button", { text: this.plugin.t("buttonEditAddSibling"), attr: { type: "button" } });
@@ -1434,7 +1443,7 @@ class CancipButtonEditModal extends Modal {
       return;
     }
     const title = this.addNameInput?.value.trim() || option.name;
-    const icon = this.addIconSelect?.value.trim() || option.icon || "zap";
+    const icon = this.selectedAddIcon || option.icon || "zap";
     await this.plugin.addSiblingUiButton(this.descriptor, {
       commandId,
       commandName: option.name,
@@ -1443,6 +1452,17 @@ class CancipButtonEditModal extends Modal {
     });
     new Notice(this.plugin.t("buttonEditAddedSibling"));
     this.close();
+  }
+
+  private setSelectedAddIcon(icon: string): void {
+    this.selectedAddIcon = icon || "zap";
+    this.refreshAddIconButtons();
+  }
+
+  private refreshAddIconButtons(): void {
+    for (const button of this.addIconButtons) {
+      button.toggleClass("is-selected", button.getAttribute("aria-label") === this.selectedAddIcon);
+    }
   }
 }
 
@@ -1631,6 +1651,8 @@ const DEFAULT_SETTINGS: Settings = {
   ttsChunkChars: 900,
   ttsCustomUrl: "",
   ttsShowViewActions: true,
+  ttsOverlayCollapsed: true,
+  ttsOverlayPosition: null,
   systemPrompt: DEFAULT_SYSTEM_PROMPT
 };
 
@@ -1956,6 +1978,8 @@ const EN = {
   buttonEditName: "Name",
   buttonEditIcon: "Icon",
   buttonEditOrder: "Order",
+  buttonEditSort: "Sort",
+  buttonEditSortDesc: "Close this panel and show drag handles on sibling buttons.",
   buttonEditHidden: "Hide",
   buttonEditScope: "Scope",
   buttonEditScopeActive: "Current view",
@@ -1982,6 +2006,12 @@ const EN = {
   buttonEditCustomButton: "Custom button",
   buttonEditCommandMissing: "Command not found: {command}",
   buttonEditCommandFailed: "Command failed: {command}",
+  buttonEditSortTargetMissing: "Button target not found",
+  buttonEditNoSiblings: "No sibling buttons to sort",
+  buttonEditSortHandle: "Drag to sort",
+  buttonEditSortDone: "Done sorting",
+  buttonEditSortModeStarted: "Sort mode started",
+  buttonEditSortModeDone: "Button order saved",
   editContext: "Edit context",
   contextUpdated: "Context updated",
   cursorContext: "Cursor at {path}",
@@ -2608,6 +2638,8 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     buttonEditName: "名称",
     buttonEditIcon: "图标",
     buttonEditOrder: "排序",
+    buttonEditSort: "排序",
+    buttonEditSortDesc: "关闭面板并回到按钮位置，在同级按钮上显示拖拽排序图标。",
     buttonEditHidden: "隐藏",
     buttonEditScope: "范围",
     buttonEditScopeActive: "当前视图",
@@ -2634,6 +2666,12 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     buttonEditCustomButton: "自定义按钮",
     buttonEditCommandMissing: "找不到命令：{command}",
     buttonEditCommandFailed: "命令执行失败：{command}",
+    buttonEditSortTargetMissing: "找不到按钮位置",
+    buttonEditNoSiblings: "没有可排序的同级按钮",
+    buttonEditSortHandle: "拖动排序",
+    buttonEditSortDone: "完成排序",
+    buttonEditSortModeStarted: "已进入排序模式",
+    buttonEditSortModeDone: "按钮顺序已保存",
     editContext: "编辑上下文",
     contextUpdated: "上下文已更新",
     cursorContext: "光标：{path}",
@@ -4678,6 +4716,7 @@ export default class CancipPlugin extends Plugin {
   private buttonEditLongPressTimer: number | null = null;
   private buttonEditLongPressTarget: HTMLElement | null = null;
   private buttonEditBubbleEl: HTMLButtonElement | null = null;
+  private uiButtonSortCleanup: (() => void) | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -5541,12 +5580,7 @@ export default class CancipPlugin extends Plugin {
       window.visualViewport?.removeEventListener("scroll", keepInView);
     });
 
-    try {
-      const savedCollapsed = window.localStorage.getItem("cancip.ttsOverlayCollapsed");
-      if (savedCollapsed === "false") this.ttsOverlayCollapsed = false;
-    } catch {
-      // Storage can be disabled in constrained mobile WebViews.
-    }
+    this.ttsOverlayCollapsed = this.settings.ttsOverlayCollapsed;
     root.toggleClass("is-collapsed", this.ttsOverlayCollapsed);
     bubble.setAttr("aria-expanded", this.ttsOverlayCollapsed ? "false" : "true");
 
@@ -5585,11 +5619,8 @@ export default class CancipPlugin extends Plugin {
       this.ttsOverlay.bubble.setAttr("aria-expanded", collapsed ? "false" : "true");
       this.placeTtsOverlay(this.ttsOverlay.root, this.ttsOverlay.root.getBoundingClientRect().left, this.ttsOverlay.root.getBoundingClientRect().top);
     }
-    try {
-      window.localStorage.setItem("cancip.ttsOverlayCollapsed", collapsed ? "true" : "false");
-    } catch {
-      // Storage can be disabled in constrained mobile WebViews.
-    }
+    this.settings.ttsOverlayCollapsed = collapsed;
+    void this.saveSettings();
   }
 
   private createTtsOverlayButton(parent: HTMLElement, icon: string, label: string): HTMLButtonElement {
@@ -5720,15 +5751,10 @@ export default class CancipPlugin extends Plugin {
   }
 
   private restoreTtsOverlayPosition(root: HTMLElement): void {
-    try {
-      const raw = window.localStorage.getItem("cancip.ttsOverlayPosition");
-      const parsed = raw ? JSON.parse(raw) as { left?: unknown; top?: unknown } : null;
-      const left = typeof parsed?.left === "number" ? parsed.left : window.innerWidth - 380;
-      const top = typeof parsed?.top === "number" ? parsed.top : window.innerHeight - 230;
-      this.placeTtsOverlay(root, left, top);
-    } catch {
-      this.placeTtsOverlay(root, window.innerWidth - 380, window.innerHeight - 230);
-    }
+    const parsed = this.settings.ttsOverlayPosition;
+    const left = typeof parsed?.left === "number" ? parsed.left : window.innerWidth - 380;
+    const top = typeof parsed?.top === "number" ? parsed.top : window.innerHeight - 230;
+    this.placeTtsOverlay(root, left, top);
   }
 
   private placeTtsOverlay(root: HTMLElement, left: number, top: number): void {
@@ -5752,11 +5778,8 @@ export default class CancipPlugin extends Plugin {
 
   private persistTtsOverlayPosition(root: HTMLElement): void {
     const rect = root.getBoundingClientRect();
-    try {
-      window.localStorage.setItem("cancip.ttsOverlayPosition", JSON.stringify({ left: Math.round(rect.left), top: Math.round(rect.top) }));
-    } catch {
-      // Storage can be disabled in constrained mobile WebViews.
-    }
+    this.settings.ttsOverlayPosition = { left: Math.round(rect.left), top: Math.round(rect.top) };
+    void this.saveSettings();
   }
 
   private scheduleTtsViewActionRefresh(): void {
@@ -8411,6 +8434,276 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       order: 0,
       scope: descriptor.scope
     });
+    this.applyUiButtonRules();
+    this.scheduleUiButtonRulesApply(120);
+  }
+
+  startUiButtonSortMode(descriptor: UiButtonEditDescriptor): void {
+    this.stopUiButtonSortMode();
+    this.hideButtonEditBubble();
+    const liveTarget = descriptor.target?.isConnected ? descriptor.target : null;
+    const anchor = liveTarget ?? this.uiRuleElementsBySelector(descriptor.selector, descriptor.scope)[0];
+    const parent = anchor?.parentElement;
+    if (!anchor || !parent) {
+      new Notice(this.t("buttonEditSortTargetMissing"));
+      return;
+    }
+    const sortableTargets = () => {
+      const siblings = this.sortableUiButtonSiblings(anchor);
+      if (!siblings.includes(anchor) && anchor.parentElement === parent) return [anchor, ...siblings];
+      return siblings;
+    };
+    const targets = sortableTargets();
+    if (targets.length < 2) {
+      new Notice(this.t("buttonEditNoSiblings"));
+      return;
+    }
+    anchor.scrollIntoView({ block: "center", inline: "center", behavior: "smooth" });
+    const doc = activeDocument;
+    const win = doc.defaultView;
+    if (!win) return;
+
+    const overlay = doc.body.createDiv({ cls: "obcc-ui-sort-overlay" });
+    const handles = new Map<HTMLElement, HTMLButtonElement>();
+    let dragging: HTMLElement | null = null;
+    let draggedHandle: HTMLButtonElement | null = null;
+    let dragPointerId: number | null = null;
+    let pendingDrag: {
+      target: HTMLElement;
+      handle: HTMLButtonElement;
+      pointerId: number;
+      startX: number;
+      startY: number;
+      timer: number;
+    } | null = null;
+
+    const sortedTargets = () => sortableTargets();
+    const axisForParent = () => {
+      const rects = sortedTargets().map((target) => target.getBoundingClientRect());
+      if (rects.length < 2) return "x" as const;
+      const spreadX = Math.max(...rects.map((rect) => rect.right)) - Math.min(...rects.map((rect) => rect.left));
+      const spreadY = Math.max(...rects.map((rect) => rect.bottom)) - Math.min(...rects.map((rect) => rect.top));
+      return spreadX >= spreadY ? "x" as const : "y" as const;
+    };
+    const updateHandles = () => {
+      for (const [target, handle] of handles) {
+        if (!target.isConnected) {
+          handle.remove();
+          handles.delete(target);
+          continue;
+        }
+        const rect = target.getBoundingClientRect();
+        handle.setCssStyles({
+          left: `${Math.max(4, rect.left - 10)}px`,
+          top: `${Math.max(4, rect.top - 10)}px`
+        });
+      }
+    };
+    const saveOrder = async () => {
+      await this.saveUiButtonSiblingOrder(descriptor.scope, sortedTargets());
+      updateHandles();
+    };
+    const moveDragging = (event: PointerEvent) => {
+      if (!dragging) return;
+      event.preventDefault();
+      const siblings = sortedTargets().filter((target) => target !== dragging);
+      const axis = axisForParent();
+      const pointer = axis === "x" ? event.clientX : event.clientY;
+      const before = siblings.find((target) => {
+        const rect = target.getBoundingClientRect();
+        const center = axis === "x" ? rect.left + rect.width / 2 : rect.top + rect.height / 2;
+        return pointer < center;
+      });
+      if (before) parent.insertBefore(dragging, before);
+      else parent.appendChild(dragging);
+      updateHandles();
+    };
+    const cancelPendingDrag = (event?: PointerEvent) => {
+      if (!pendingDrag) return;
+      win.clearTimeout(pendingDrag.timer);
+      try {
+        pendingDrag.handle.releasePointerCapture(pendingDrag.pointerId);
+      } catch {
+        // Pointer capture may already be gone on mobile WebView.
+      }
+      pendingDrag.handle.removeClass("is-pending");
+      pendingDrag = null;
+      if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
+    const beginPendingDrag = () => {
+      const pending = pendingDrag;
+      if (!pending || dragging) return;
+      pendingDrag = null;
+      dragging = pending.target;
+      draggedHandle = pending.handle;
+      dragPointerId = pending.pointerId;
+      pending.target.addClass("obcc-ui-sort-dragging");
+      pending.handle.removeClass("is-pending");
+      pending.handle.addClass("is-dragging");
+      try {
+        pending.handle.setPointerCapture(pending.pointerId);
+      } catch {
+        // Some mobile WebViews reject capture if the pointer was already released.
+      }
+    };
+    const endDrag = (event?: PointerEvent) => {
+      if (draggedHandle && dragPointerId !== null) {
+        try {
+          draggedHandle.releasePointerCapture(dragPointerId);
+        } catch {
+          // Pointer capture may already be gone on mobile WebView.
+        }
+      }
+      dragging?.removeClass("obcc-ui-sort-dragging");
+      draggedHandle?.removeClass("is-dragging");
+      dragging = null;
+      draggedHandle = null;
+      dragPointerId = null;
+      if (event) event.preventDefault();
+      void saveOrder();
+    };
+    const moveSortHandle = (event: PointerEvent) => {
+      if (dragging) {
+        moveDragging(event);
+        return;
+      }
+      if (!pendingDrag || pendingDrag.pointerId !== event.pointerId) return;
+      const dx = Math.abs(event.clientX - pendingDrag.startX);
+      const dy = Math.abs(event.clientY - pendingDrag.startY);
+      if (dx > 10 || dy > 10) {
+        cancelPendingDrag(event);
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const releaseSortHandle = (event: PointerEvent) => {
+      if (dragging && dragPointerId === event.pointerId) {
+        endDrag(event);
+        return;
+      }
+      cancelPendingDrag(event);
+    };
+
+    for (const target of targets) {
+      target.addClass("obcc-ui-sort-target");
+      const handle = overlay.createEl("button", {
+        cls: "obcc-ui-sort-handle",
+        attr: { type: "button", title: this.t("buttonEditSortHandle"), "aria-label": this.t("buttonEditSortHandle") }
+      });
+      setIcon(handle, "grip-vertical");
+      handle.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.button !== 0 && event.pointerType === "mouse") return;
+        cancelPendingDrag();
+        pendingDrag = {
+          target,
+          handle,
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          timer: win.setTimeout(beginPendingDrag, 480)
+        };
+        handle.addClass("is-pending");
+        try {
+          handle.setPointerCapture(event.pointerId);
+        } catch {
+          // Pointer capture is best-effort in mobile WebView.
+        }
+      });
+      handle.addEventListener("pointermove", moveSortHandle);
+      handle.addEventListener("pointerup", releaseSortHandle);
+      handle.addEventListener("pointercancel", releaseSortHandle);
+      handles.set(target, handle);
+    }
+
+    const done = overlay.createEl("button", {
+      cls: "obcc-ui-sort-done",
+      attr: { type: "button", title: this.t("buttonEditSortDone"), "aria-label": this.t("buttonEditSortDone") }
+    });
+    setIcon(done, "check");
+    done.addEventListener("click", () => {
+      void saveOrder().then(() => this.stopUiButtonSortMode());
+    });
+
+    const updateDone = () => {
+      const rect = anchor.getBoundingClientRect();
+      done.setCssStyles({
+        left: `${Math.max(8, Math.min(win.innerWidth - 44, rect.right + 8))}px`,
+        top: `${Math.max(8, Math.min(win.innerHeight - 44, rect.top))}px`
+      });
+    };
+    const updateAll = () => {
+      updateHandles();
+      updateDone();
+    };
+    const scrollOrResize = () => updateAll();
+    win.addEventListener("scroll", scrollOrResize, true);
+    win.addEventListener("resize", scrollOrResize);
+    updateAll();
+    new Notice(this.t("buttonEditSortModeStarted"));
+
+    this.uiButtonSortCleanup = () => {
+      cancelPendingDrag();
+      win.removeEventListener("scroll", scrollOrResize, true);
+      win.removeEventListener("resize", scrollOrResize);
+      for (const target of handles.keys()) target.removeClass("obcc-ui-sort-target", "obcc-ui-sort-dragging");
+      overlay.remove();
+      if (this.uiButtonSortCleanup) this.uiButtonSortCleanup = null;
+    };
+  }
+
+  stopUiButtonSortMode(): void {
+    const cleanup = this.uiButtonSortCleanup;
+    this.uiButtonSortCleanup = null;
+    cleanup?.();
+  }
+
+  private sortableUiButtonSiblings(anchor: HTMLElement): HTMLElement[] {
+    const parent = anchor.parentElement;
+    if (!parent) return [];
+    return Array.from(parent.children).filter((child): child is HTMLElement => {
+      if (!(child instanceof HTMLElement)) return false;
+      if (child.closest(".obcc-ui-sort-overlay, .obcc-button-edit-modal, .obcc-button-edit-bubble")) return false;
+      if (child.dataset.cancipUiHidden === "true") return false;
+      return this.isEditableButtonUiTarget(child) || Boolean(this.editableButtonTarget(child));
+    });
+  }
+
+  private async saveUiButtonSiblingOrder(scope: UiButtonRule["scope"], targets: HTMLElement[]): Promise<void> {
+    if (targets.length < 2) return;
+    const next = [...this.settings.uiButtonRules];
+    for (const [index, target] of targets.entries()) {
+      const selector = looseSelectorForUiButtonRule(target);
+      const existingIndex = next.findIndex((rule) => rule.selector === selector && rule.scope === scope);
+      const existing = existingIndex >= 0 ? next[existingIndex] : undefined;
+      const rule: UiButtonRule = {
+        ...(existing ?? {}),
+        id: existing?.id ?? stableRuleId(`${scope}:${selector}`),
+        selector,
+        label: existing?.label || uiElementLabel(target) || selector,
+        hidden: existing?.hidden ?? false,
+        order: (index + 1) * 10,
+        title: existing?.title,
+        icon: existing?.icon,
+        scope,
+        kind: existing?.kind,
+        anchorSelector: existing?.anchorSelector,
+        commandId: existing?.commandId,
+        commandName: existing?.commandName,
+        insertPosition: existing?.insertPosition
+      };
+      if (existingIndex >= 0) next[existingIndex] = rule;
+      else next.push(rule);
+    }
+    this.settings.uiButtonRules = normalizeUiButtonRules(next).slice(-200);
+    await this.saveSettings();
+    this.scheduleUiButtonRulesApply(0);
+    new Notice(this.t("buttonEditSortModeDone"));
   }
 
   isUiButtonHiddenRevealEnabled(): boolean {
@@ -8587,7 +8880,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (!win || !(rawTarget instanceof win.Element)) return null;
     let current: Element | null = rawTarget;
     for (let depth = 0; current && depth < 6; depth += 1, current = current.parentElement) {
-      if (!(current instanceof win.HTMLElement)) continue;
+      if (!current.instanceOf(win.HTMLElement)) continue;
       if (current.closest(".markdown-preview-view, .cm-editor, .cm-scroller, .pdfViewer .page, .obcc-button-edit-modal")) {
         if (!current.closest(".view-actions, .view-header, .pdf-toolbar, .modal-button-container, .setting-item-control, .obcc-root, .obcc-review-leaf-shell")) continue;
       }
@@ -8757,7 +9050,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       selector,
       label: uiElementLabel(target) || selector,
       scope,
-      rule
+      rule,
+      target
     };
   }
 
@@ -8934,10 +9228,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             }
             for (const el of this.uiRuleElements(rule)) {
               if (rule.hidden && !this.uiButtonRulesRevealHidden) {
-                if (el.dataset.cancipUiOriginalDisplay === undefined) el.dataset.cancipUiOriginalDisplay = el.style.getPropertyValue("display") ?? "";
-                if (el.dataset.cancipUiOriginalDisplayPriority === undefined) el.dataset.cancipUiOriginalDisplayPriority = el.style.getPropertyPriority("display") ?? "";
                 el.dataset.cancipUiHidden = "true";
-                el.style.setProperty("display", "none", "important");
+                el.addClass("obcc-ui-rule-hidden");
               }
               if (Number.isFinite(rule.order) && rule.order !== 0) {
                 const parent = el.parentElement;
@@ -8946,10 +9238,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
                 el.setCssStyles({ order: String(rule.order) });
                 const display = activeDocument.defaultView?.getComputedStyle(parent).display ?? "";
                 if (!/^(inline-)?(flex|grid)$/.test(display)) {
-                  if (parent.dataset.cancipUiOriginalDisplay === undefined) parent.dataset.cancipUiOriginalDisplay = parent.style.getPropertyValue("display") ?? "";
-                  if (parent.dataset.cancipUiOriginalDisplayPriority === undefined) parent.dataset.cancipUiOriginalDisplayPriority = parent.style.getPropertyPriority("display") ?? "";
-                  parent.addClass("obcc-ui-rule-flex-parent");
-                  parent.style.setProperty("display", display.startsWith("inline") ? "inline-flex" : "flex", "important");
+                  parent.addClass(display.startsWith("inline") ? "obcc-ui-rule-inline-flex-parent" : "obcc-ui-rule-flex-parent");
                 }
               }
               if (rule.title?.trim()) {
@@ -9006,13 +9295,24 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (rule.hidden && !this.uiButtonRulesRevealHidden) return;
     for (const anchor of this.uiRuleElementsBySelector(rule.anchorSelector, rule.scope)) {
       const parent = anchor.parentElement;
-      if (!parent) continue;
+      if (!parent || !this.isSafeCustomUiButtonAnchor(anchor, parent)) continue;
       const existing = parent.querySelector<HTMLElement>(`[data-cancip-ui-custom-button-id="${cssEscapeAttr(rule.id)}"]`);
       if (existing) continue;
-      const button = this.createCustomUiButton(anchor, rule);
-      if (rule.insertPosition === "before") parent.insertBefore(button, anchor);
-      else anchor.insertAdjacentElement("afterend", button);
+      try {
+        const button = this.createCustomUiButton(anchor, rule);
+        if (rule.insertPosition === "before") parent.insertBefore(button, anchor);
+        else anchor.insertAdjacentElement("afterend", button);
+      } catch (error) {
+        console.warn("Cancip custom UI button insert failed", { ruleId: rule.id, selector: rule.anchorSelector, error });
+      }
     }
+  }
+
+  private isSafeCustomUiButtonAnchor(anchor: HTMLElement, parent: HTMLElement): boolean {
+    const doc = anchor.ownerDocument ?? activeDocument;
+    if (anchor === doc.documentElement || anchor === doc.head || anchor === doc.body) return false;
+    if (parent === doc.documentElement) return false;
+    return true;
   }
 
   private createCustomUiButton(anchor: HTMLElement, rule: UiButtonRule): HTMLElement {
@@ -9026,7 +9326,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     else button.setAttribute("type", "button");
     if (!isMenuItem) {
       for (const cls of Array.from(anchor.classList)) {
-        if (/^(is-|mod-|has-|is-active|is-selected)$/.test(cls)) continue;
+        if (!isSafeUiButtonVisualClass(cls)) continue;
         button.addClass(cls);
       }
       if (!button.hasClass("clickable-icon") && (anchor.hasClass("clickable-icon") || anchor.closest(".view-actions, .workspace-ribbon, .nav-buttons-container, .pdf-toolbar"))) {
@@ -9046,7 +9346,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       button.createDiv({ cls: "menu-item-title", text: title });
     } else {
       setIcon(button, icon);
-      if (!button.hasClass("clickable-icon")) button.createSpan({ cls: "obcc-ui-custom-button-label", text: title });
+      button.addClass("clickable-icon");
     }
     const run = (event: Event) => {
       event.preventDefault();
@@ -9087,17 +9387,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-custom-button]"))) {
       el.remove();
     }
-    for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-ui-title], [data-cancip-ui-icon], [data-cancip-tag-hidden]"))) {
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-ui-title], [data-cancip-ui-icon], [data-cancip-tag-hidden], .obcc-ui-rule-hidden, .obcc-ui-rule-inline-flex-parent"))) {
       delete el.dataset.cancipUiHidden;
       delete el.dataset.cancipTagHidden;
       if (el.dataset.cancipUiOriginalDisplay !== undefined || el.dataset.cancipUiOriginalDisplayPriority !== undefined) {
         const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
-        const originalPriority = el.dataset.cancipUiOriginalDisplayPriority ?? "";
-        if (originalDisplay) el.style.setProperty("display", originalDisplay, originalPriority);
-        else el.style.removeProperty("display");
+        el.setCssStyles({ display: originalDisplay });
         delete el.dataset.cancipUiOriginalDisplay;
         delete el.dataset.cancipUiOriginalDisplayPriority;
       }
+      el.removeClass("obcc-ui-rule-hidden", "obcc-ui-rule-inline-flex-parent");
       if (el.dataset.cancipUiOrder !== undefined) {
         delete el.dataset.cancipUiOrder;
         el.setCssStyles({ order: "" });
@@ -9125,14 +9424,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       delete el.dataset.cancipUiIcon;
     }
-    for (const el of Array.from(doc.querySelectorAll<HTMLElement>(".obcc-ui-rule-flex-parent"))) {
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>(".obcc-ui-rule-flex-parent, .obcc-ui-rule-inline-flex-parent"))) {
       const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
-      const originalPriority = el.dataset.cancipUiOriginalDisplayPriority ?? "";
-      if (originalDisplay) el.style.setProperty("display", originalDisplay, originalPriority);
-      else el.style.removeProperty("display");
+      el.setCssStyles({ display: originalDisplay });
       delete el.dataset.cancipUiOriginalDisplay;
       delete el.dataset.cancipUiOriginalDisplayPriority;
-      el.removeClass("obcc-ui-rule-flex-parent");
+      el.removeClass("obcc-ui-rule-flex-parent", "obcc-ui-rule-inline-flex-parent");
     }
   }
 
@@ -10933,6 +11230,7 @@ class CancipReviewLeafView extends ItemView {
     const hasContentChange = reviewItemHasContentChange(item);
     const hasStructureChange = reviewItemHasStructureChange(item);
     main.toggleClass("is-structure-only", hasStructureChange && !hasContentChange);
+    main.toggleClass("has-structure-content", hasStructureChange && hasContentChange);
     if (hasStructureChange) {
       const structureSection = main.createEl("details", { cls: "obcc-review-section obcc-review-structure-list", attr: { open: "true" } });
       structureSection.createEl("summary", { text: this.t("reviewGateStructureChanges") });
@@ -19423,7 +19721,9 @@ class CancipView extends ItemView {
 
   private pluginManifestReadActionForPrompt(rawPrompt: string): CancipAction | null {
     if (!promptAsksInstalledPluginManifestOrVersion(rawPrompt)) return null;
-    const explicitPath = rawPrompt.match(/(?:^|[\s'"`])(\.obsidian\/plugins\/[^'"`\s]+?\/manifest\.json)/i)?.[1]
+    const configDir = escapeRegExp(this.plugin.obsidianConfigDir());
+    const explicitConfigPath = rawPrompt.match(new RegExp(`(?:^|[\\s'"\\\`])(${configDir}/plugins/[^'"\\\`\\s]+?/manifest\\.json)`, "i"))?.[1];
+    const explicitPath = explicitConfigPath
       ?? rawPrompt.match(/(?:^|[\s'"`])([^'"`\s]+?\/manifest\.json)/i)?.[1];
     if (explicitPath) return { type: "read", path: normalizePath(explicitPath), maxChars: 3000 };
 
@@ -19932,10 +20232,11 @@ class CancipView extends ItemView {
   }
 
   private pluginManifestFallbackFromToolRuns(runs: ToolRun[], originalPrompt: string, error = ""): string {
+    const configManifestPattern = new RegExp(`(^|/)${escapeRegExp(this.plugin.obsidianConfigDir())}/plugins/[^/]+/manifest\\.json$`, "i");
     const manifestRun = [...runs].reverse().find((run) =>
       run.status === "executed"
       && run.action.type === "read"
-      && /(^|\/)\.obsidian\/plugins\/[^/]+\/manifest\.json$/i.test(normalizePath(run.action.path))
+      && configManifestPattern.test(normalizePath(run.action.path))
       && typeof run.result === "string"
       && run.result.trim()
     );
@@ -22307,7 +22608,7 @@ class CancipView extends ItemView {
     const plugins = (this.app as App & { plugins?: { plugins?: Record<string, unknown>; manifests?: Record<string, { name?: string; version?: string }> } }).plugins;
     const pluginIds = Object.keys(plugins?.plugins ?? {}).sort();
     const activeFile = this.app.workspace.getActiveFile();
-    const activeLeaf = this.app.workspace.activeLeaf;
+    const activeLeaf = this.plugin.activeWorkspaceLeaf();
     const view = activeLeaf?.view as { getViewType?: () => string; getDisplayText?: () => string } | undefined;
     const commandCount = Object.keys(this.obsidianCommandApi().commands ?? {}).length;
     return [
@@ -22333,7 +22634,7 @@ class CancipView extends ItemView {
     const pluginRuntime = (this.app as App & { plugins?: { plugins?: Record<string, unknown>; manifests?: Record<string, unknown> } }).plugins;
     const plugins = pluginRuntime?.plugins ?? {};
     const activeFile = this.app.workspace.getActiveFile();
-    const activeLeaf = this.app.workspace.activeLeaf;
+    const activeLeaf = this.plugin.activeWorkspaceLeaf();
     const activeView = activeLeaf?.view ?? null;
     const helpers: Record<string, unknown> = {};
     Object.assign(helpers, {
@@ -22383,8 +22684,8 @@ class CancipView extends ItemView {
       sleep: (ms: number) => new Promise((resolve) => window.setTimeout(resolve, Math.max(0, Number(ms) || 0))),
       snapshot: () => ({
         activeFile: this.app.workspace.getActiveFile()?.path ?? "",
-        activeView: (this.app.workspace.activeLeaf?.view as { getViewType?: () => string } | undefined)?.getViewType?.() ?? "",
-        activeTitle: (this.app.workspace.activeLeaf?.view as { getDisplayText?: () => string } | undefined)?.getDisplayText?.() ?? "",
+        activeView: (activeView as { getViewType?: () => string } | undefined)?.getViewType?.() ?? "",
+        activeTitle: (activeView as { getDisplayText?: () => string } | undefined)?.getDisplayText?.() ?? "",
         pluginCount: Object.keys(plugins).length,
         commandCount: Object.keys(this.obsidianCommandApi().commands ?? {}).length
       })
@@ -22772,12 +23073,13 @@ class CancipView extends ItemView {
   private pluginCapabilityRouteHints(query: string, plugins: PluginCapabilityInfo[], commands: ObsidianCommandMatch[], chinese: boolean): string[] {
     const primaryCommand = commands[0];
     const primaryPlugin = plugins[0];
+    const settingsPathHint = `${this.plugin.obsidianConfigDir()}/plugins/<id>/data.json`;
     if (chinese) {
       return [
         primaryCommand ? `1. 有明确命令时可直接执行：{"type":"command","command":"obsidian.execute","args":{"id":"${primaryCommand.id}"}}，或用 cancip.pluginAction commandId 执行。` : "1. 先用 obsidian.listCommands/resolveCommand 或 cancip.pluginRoute 查自然语言命令名；有 ID 后 obsidian.execute/pluginAction。",
         "2. 需要点按钮、选择工具、改颜色/画笔/高亮时，先用 obsidian.ui.buttons 或 obsidian.dom.snapshot 看当前界面，再 dom.click/dom.input 操作；按钮长期规则用 obsidian.ui.applyButtonRules。",
         primaryPlugin ? `3. 需要插件对象能力时，优先 cancip.pluginRoute/cancip.pluginAction 调用 app.plugins.plugins["${primaryPlugin.id}"].api 或公开方法，确认/全权模式决定是否执行。` : "3. 需要插件对象能力时，优先 cancip.pluginRoute/cancip.pluginAction 检查并调用 app.plugins.plugins[pluginId].api 或公开方法。",
-        "4. 需要改插件设置时先读 .obsidian/plugins/<id>/data.json 或插件配置，再 patch/config；改普通笔记内容仍进入审核。",
+        `4. 需要改插件设置时先读 ${settingsPathHint} 或插件配置，再 patch/config；改普通笔记内容仍进入审核。`,
         `5. 本地能力不足或 API 用法不明时，用 web.search/web.fetch 查 ${query || "插件"} 文档，再回到命令/UI/API/配置路线执行。`
       ];
     }
@@ -22785,7 +23087,7 @@ class CancipView extends ItemView {
       primaryCommand ? `1. Execute clear commands directly: {"type":"command","command":"obsidian.execute","args":{"id":"${primaryCommand.id}"}} or with cancip.pluginAction commandId.` : "1. Resolve natural command names with obsidian.listCommands/resolveCommand or cancip.pluginRoute, then obsidian.execute/pluginAction.",
       "2. For buttons/tool choices/colors/highlights, inspect obsidian.ui.buttons or obsidian.dom.snapshot, then dom.click/dom.input.",
       primaryPlugin ? `3. For plugin object capabilities, prefer cancip.pluginRoute/cancip.pluginAction against app.plugins.plugins["${primaryPlugin.id}"].api or public methods; access mode handles execution approval.` : "3. For plugin object capabilities, prefer cancip.pluginRoute/cancip.pluginAction against app.plugins.plugins[pluginId].api or public methods.",
-      "4. For settings, read .obsidian/plugins/<id>/data.json or plugin config, then patch/config; ordinary note edits still enter Review.",
+      `4. For settings, read ${settingsPathHint} or plugin config, then patch/config; ordinary note edits still enter Review.`,
       `5. If local capability/API usage is unclear, web.search/web.fetch ${query || "plugin"} docs, then return to command/UI/API/config routes.`
     ];
   }
@@ -22811,7 +23113,7 @@ class CancipView extends ItemView {
       "- To execute an Obsidian command: cancip.pluginAction {pluginId, commandId:'plugin:id'} or {pluginId, commandQuery:'natural language'}",
       "- To call a public API method: cancip.pluginAction {pluginId, target:'api', method:'methodName', params:[...]}. Use target:'runtime' only for plugin public methods outside api.",
       "- For UI-only plugins: inspect buttons with obsidian.ui.buttons/dom.snapshot, then dom.click/dom.input or persistent obsidian.ui.applyButtonRules.",
-      "- For settings: read/patch .obsidian/plugins/<id>/data.json or use config action where appropriate.",
+      `- For settings: read/patch ${this.plugin.obsidianConfigDir()}/plugins/<id>/data.json or use config action where appropriate.`,
       "",
       capability
     ];
@@ -23856,9 +24158,10 @@ class CancipView extends ItemView {
   }
 
   private obsidianVisibleCommandSnapshot(): ObsidianCommandSnapshot {
-    const leaf = this.app.workspace.activeLeaf ?? this.plugin.activeWorkspaceLeaf();
+    const leaf = this.plugin.activeWorkspaceLeaf();
     const view = leaf?.view as unknown as { getViewType?: () => string; getDisplayText?: () => string };
-    const modalText = Array.from(document.querySelectorAll<HTMLElement>(".modal, .modal-container, .suggestion-container"))
+    const doc = activeDocument;
+    const modalText = Array.from(doc.querySelectorAll<HTMLElement>(".modal, .modal-container, .suggestion-container"))
       .map((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim())
       .filter(Boolean)
       .slice(0, 3)
@@ -23870,17 +24173,17 @@ class CancipView extends ItemView {
         const viewType = workspaceView?.getViewType?.() ?? "";
         const text = workspaceView?.getDisplayText?.() ?? "";
         if (!viewType && !text) return;
-        leaves.push(`${workspaceLeaf === this.app.workspace.activeLeaf ? "*" : ""}${viewType}:${text}`);
+        leaves.push(`${workspaceLeaf === leaf ? "*" : ""}${viewType}:${text}`);
       });
     } catch {
       // Snapshotting must stay best-effort because command execution is the source of truth.
     }
-    const sideDockText = Array.from(document.querySelectorAll<HTMLElement>(".mod-left-split, .mod-right-split"))
+    const sideDockText = Array.from(doc.querySelectorAll<HTMLElement>(".mod-left-split, .mod-right-split"))
       .map((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim())
       .filter(Boolean)
       .slice(0, 2)
       .join(" | ");
-    const statusText = Array.from(document.querySelectorAll<HTMLElement>(".status-bar, .workspace-ribbon, .view-actions"))
+    const statusText = Array.from(doc.querySelectorAll<HTMLElement>(".status-bar, .workspace-ribbon, .view-actions"))
       .map((el) => (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim())
       .filter(Boolean)
       .slice(0, 3)
@@ -28460,7 +28763,7 @@ function looksLikeObsidianCommandActionQuery(text: string): boolean {
 }
 
 function capabilityPromptMentionsPluginSurface(text: string): boolean {
-  return /(plugin|plugins|installed|enabled|community-plugins|\.obsidian\/plugins|manifest\.json|templater|dataview|tasks|quickadd|runjs|notedraw|notdraw|pdftion|spaced repetition|flashcard|srs|excalidraw|draw|doodle|sketch|highlight|插件|已装|安装了|启用|社区插件|插件清单|插件目录|插件列表|插件配置|涂鸦|高亮|画笔|手写|标注|批注|间隔重复|复习|卡片|闪卡)/i.test(text);
+  return /(plugin|plugins|installed|enabled|community-plugins|config\s*dir|manifest\.json|templater|dataview|tasks|quickadd|runjs|notedraw|notdraw|pdftion|spaced repetition|flashcard|srs|excalidraw|draw|doodle|sketch|highlight|插件|已装|安装了|启用|社区插件|插件清单|插件目录|插件列表|插件配置|配置目录|涂鸦|高亮|画笔|手写|标注|批注|间隔重复|复习|卡片|闪卡)/i.test(text);
 }
 
 function promptAsksInstalledPluginManifestOrVersion(prompt: string): boolean {
@@ -28546,9 +28849,10 @@ function discoveryVaultPathCandidates(userPrompt: string, modelAnswer = ""): str
 function extractVaultPathCandidates(input: string): string[] {
   const candidates = new Set<string>();
   const normalized = input.replace(/\\/g, "/");
+  const configDirPattern = escapeRegExp(OBSIDIAN_CONFIG_FALLBACK);
   const patterns = [
     /(^|[\s"'`([{，。；,;：:])((?:\.?[A-Za-z0-9_\-\u4e00-\u9fff]+\/)+[A-Za-z0-9_\-\u4e00-\u9fff @()[\].]+)(?=$|[\s"'`)\]}，。；,;])/g,
-    /(^|[\s"'`([{，。；,;：:])((?:\.obsidian|\.cancip)(?:\/[^\s"'`)\]}，。；,;]+)*)/gi
+    new RegExp(`(^|[\\s"'\\\`([{，。；,;：:])((?:${configDirPattern}|\\.cancip)(?:/[^\\s"'\\\`)\\]}，。；,;]+)*)`, "gi")
   ];
   for (const pattern of patterns) {
     let match: RegExpExecArray | null;
@@ -28567,7 +28871,7 @@ function extractVaultPathCandidates(input: string): string[] {
 
 function isLikelyConcreteVaultPath(path: string): boolean {
   const normalized = normalizePath(path);
-  if (normalized.startsWith(".obsidian") || normalized.startsWith(".cancip")) return true;
+  if (normalized.startsWith(OBSIDIAN_CONFIG_FALLBACK) || normalized.startsWith(".cancip")) return true;
   const last = normalized.split("/").filter(Boolean).pop() ?? "";
   if (/\.[A-Za-z0-9]{1,8}$/.test(last)) return true;
   return normalized.split("/").length >= 3;
@@ -30367,6 +30671,14 @@ function migrateTokenSavingDefaults(settings: Settings): Settings {
   return next;
 }
 
+function isTtsOverlayPosition(value: unknown): value is { left: number; top: number } {
+  return isRecord(value)
+    && typeof value.left === "number"
+    && typeof value.top === "number"
+    && Number.isFinite(value.left)
+    && Number.isFinite(value.top);
+}
+
 function normalizeSettings(input: Partial<Settings>): Settings {
   const merged = { ...DEFAULT_SETTINGS, ...input };
   const temperature = Number(merged.temperature);
@@ -30488,6 +30800,8 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     ttsChunkChars: Number.isFinite(ttsChunkChars) ? Math.max(120, Math.min(2400, ttsChunkChars)) : DEFAULT_SETTINGS.ttsChunkChars,
     ttsCustomUrl: typeof merged.ttsCustomUrl === "string" ? merged.ttsCustomUrl : DEFAULT_SETTINGS.ttsCustomUrl,
     ttsShowViewActions: typeof merged.ttsShowViewActions === "boolean" ? merged.ttsShowViewActions : DEFAULT_SETTINGS.ttsShowViewActions,
+    ttsOverlayCollapsed: typeof merged.ttsOverlayCollapsed === "boolean" ? merged.ttsOverlayCollapsed : DEFAULT_SETTINGS.ttsOverlayCollapsed,
+    ttsOverlayPosition: isTtsOverlayPosition(merged.ttsOverlayPosition) ? merged.ttsOverlayPosition : DEFAULT_SETTINGS.ttsOverlayPosition,
     systemPrompt: typeof merged.systemPrompt === "string" ? merged.systemPrompt : DEFAULT_SETTINGS.systemPrompt
   };
 }
@@ -31375,9 +31689,9 @@ function extractVisibleRenderedText(root: HTMLElement): string {
       if (text) chunks.push(text);
       return;
     }
-    if (!view || !(node instanceof view.HTMLElement)) return;
+    if (!view || !node.instanceOf(view.HTMLElement)) return;
     if (ignored.has(node.tagName)) return;
-    const style = window.getComputedStyle(node);
+    const style = view.getComputedStyle(node);
     if (style.display === "none" || style.visibility === "hidden") return;
     if (node.matches("li.task-list-item, .task-list-item")) {
       chunks.push(`${isRenderedTaskChecked(node) ? "已完成" : "待办"} `);
@@ -33137,6 +33451,18 @@ function normalizeUiButtonLabel(value: string): string {
   return value.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
+function isSafeUiButtonVisualClass(value: string): boolean {
+  return [
+    "clickable-icon",
+    "view-action",
+    "nav-action-button",
+    "workspace-ribbon-action",
+    "side-dock-ribbon-action",
+    "document-search-button",
+    "pdf-toolbar-button"
+  ].includes(value);
+}
+
 function guessUiButtonCommandIcon(id: string, name: string): string {
   const haystack = `${id} ${name}`.toLowerCase();
   if (/(cancip|ai|chat|assistant|bot|问答|聊天|助手)/i.test(haystack)) return "bot";
@@ -33182,6 +33508,28 @@ function stableSelectorForElement(el: HTMLElement): string {
   const cls = String(el.className || "").split(/\s+/).filter(Boolean).filter((item) => !/^is-|^mod-|^has-/.test(item)).slice(0, 3);
   if (cls.length) return uniqueSelectorForElement(el, `${el.tagName.toLowerCase()}.${cls.map(cssClassEscape).join(".")}`);
   return uniqueSelectorForElement(el, el.tagName.toLowerCase());
+}
+
+function looseSelectorForUiButtonRule(el: HTMLElement): string {
+  const customButtonId = el.dataset.cancipUiCustomButtonId;
+  if (customButtonId) return `[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`;
+  const id = el.getAttribute("id");
+  if (id) return `${el.tagName.toLowerCase()}#${cssClassEscape(id)}`;
+  const command = el.getAttribute("data-command");
+  if (command) return `${el.tagName.toLowerCase()}[data-command="${cssEscapeAttr(command)}"]`;
+  const href = el.getAttribute("href");
+  if (href && el.tagName.toLowerCase() === "a") return `a[href="${cssEscapeAttr(href)}"]`;
+  const aria = el.getAttribute("aria-label");
+  if (aria) return `${el.tagName.toLowerCase()}[aria-label="${cssEscapeAttr(aria)}"]`;
+  const title = el.getAttribute("title");
+  if (title) return `${el.tagName.toLowerCase()}[title="${cssEscapeAttr(title)}"]`;
+  const cls = String(el.className || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((item) => !/^is-|^mod-|^has-|^obcc-ui-sort/.test(item))
+    .slice(0, 3);
+  if (cls.length) return `${el.tagName.toLowerCase()}.${cls.map(cssClassEscape).join(".")}`;
+  return stableSelectorForElement(el);
 }
 
 function uniqueSelectorForElement(el: HTMLElement, preferred: string): string {
@@ -35143,23 +35491,8 @@ function describeResponseShape(json: unknown): string {
 }
 
 function copyTextWithHiddenTextarea(text: string): boolean {
-  const box = document.createElement("textarea");
-  box.value = text;
-  box.setAttribute("readonly", "true");
-  box.style.position = "fixed";
-  box.style.left = "-9999px";
-  box.style.top = "0";
-  box.style.opacity = "0";
-  document.body.appendChild(box);
-  try {
-    box.focus();
-    box.select();
-    return document.execCommand("copy");
-  } catch {
-    return false;
-  } finally {
-    box.remove();
-  }
+  void text;
+  return false;
 }
 
 function extractChoicesText(choices: unknown): string {
@@ -35233,7 +35566,7 @@ function safeJsonishDisplay(value: unknown): string {
   const seen = new WeakSet<object>();
   try {
     const json = JSON.stringify(value, (_key, item: unknown) => {
-      if (typeof item === "function") return `[Function ${(item as Function).name || "anonymous"}]`;
+      if (typeof item === "function") return `[Function ${item.name || "anonymous"}]`;
       if (typeof item === "object" && item !== null) {
         if (seen.has(item)) return "[Circular]";
         seen.add(item);
