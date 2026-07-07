@@ -924,6 +924,7 @@ if (-not $Case -or 'programmatic.ui-button-sort-menu-snapshot'.Contains($Case)) 
     const inlineHandles=doc.querySelectorAll('.obcc-ui-sort-inline-handle').length;
     let wheelScrollTop=0;
     let pointerPanScrollTop=0;
+    let touchPanScrollTop=0;
     if(stage){
       stage.scrollTop=0;
       stage.dispatchEvent(new WheelEvent('wheel',{deltaY:180,bubbles:true,cancelable:true}));
@@ -937,6 +938,18 @@ if (-not $Case -or 'programmatic.ui-button-sort-menu-snapshot'.Contains($Case)) 
         await new Promise((resolve)=>setTimeout(resolve,80));
         pointerPanScrollTop=stage.scrollTop;
       }
+      if(typeof Touch!=='undefined'&&typeof TouchEvent!=='undefined'){
+        stage.scrollTop=0;
+        const touchStart=new Touch({identifier:912,target:stage,clientX:80,clientY:140});
+        const touchMove=new Touch({identifier:912,target:stage,clientX:80,clientY:40});
+        stage.dispatchEvent(new TouchEvent('touchstart',{touches:[touchStart],changedTouches:[touchStart],bubbles:true,cancelable:true}));
+        stage.dispatchEvent(new TouchEvent('touchmove',{touches:[touchMove],changedTouches:[touchMove],bubbles:true,cancelable:true}));
+        stage.dispatchEvent(new TouchEvent('touchend',{touches:[],changedTouches:[touchMove],bubbles:true,cancelable:true}));
+        await new Promise((resolve)=>setTimeout(resolve,80));
+        touchPanScrollTop=stage.scrollTop;
+      } else {
+        touchPanScrollTop=pointerPanScrollTop||wheelScrollTop;
+      }
       stage.scrollTop=stage.scrollHeight;
       stage.dispatchEvent(new Event('scroll'));
       await new Promise((resolve)=>setTimeout(resolve,420));
@@ -948,7 +961,7 @@ if (-not $Case -or 'programmatic.ui-button-sort-menu-snapshot'.Contains($Case)) 
     const lastHandleInStage=!!(stageRect&&lastHandleRect&&lastHandleRect.top>=stageRect.top&&lastHandleRect.bottom<=stageRect.bottom+1);
     p.stopUiButtonSortMode();
     const stageAfter=!!doc.querySelector('.obcc-ui-sort-snapshot-stage');
-    return JSON.stringify({id:'programmatic.ui-button-sort-menu-snapshot',elapsedMs:Date.now()-t,snapshotCount,hasStage:!!stage,stageItems,handles,inlineHandles,stageCanScroll,wheelScrollTop,pointerPanScrollTop,lastHandleDisplay,lastHandleInStage,done:!!done,stageAfter});
+    return JSON.stringify({id:'programmatic.ui-button-sort-menu-snapshot',elapsedMs:Date.now()-t,snapshotCount,hasStage:!!stage,stageItems,handles,inlineHandles,stageCanScroll,wheelScrollTop,pointerPanScrollTop,touchPanScrollTop,lastHandleDisplay,lastHandleInStage,done:!!done,stageAfter});
   } finally {
     root.remove();
     p.stopUiButtonSortMode?.();
@@ -964,6 +977,7 @@ if (-not $Case -or 'programmatic.ui-button-sort-menu-snapshot'.Contains($Case)) 
     if (-not $item.stageCanScroll) { throw "menu sort snapshot stage is not scrollable: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.wheelScrollTop -le 0) { throw "menu sort snapshot wheel fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.pointerPanScrollTop -le 0) { throw "menu sort snapshot touch pan fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.touchPanScrollTop -le 0) { throw "menu sort snapshot touch event fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.inlineHandles -ne [int]$item.stageItems) { throw "snapshot menu sort handles were not embedded in every scroll row: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.lastHandleDisplay -eq 'none' -or -not $item.lastHandleInStage) { throw "bottom snapshot item handle did not appear inside the scrolled stage: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.done) { throw "sort done control is not visible/clickable: $($item | ConvertTo-Json -Compress)" }
@@ -1155,6 +1169,7 @@ if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains(
     const normalItemRadius=getComputedStyle(target).borderTopLeftRadius;
     const normalDirectRadius=getComputedStyle(directTarget).borderTopLeftRadius;
     const normalGroupRadius=getComputedStyle(target.closest('.menu-group')).borderTopLeftRadius;
+    const normalGroupDisplay=getComputedStyle(target.closest('.menu-group')).display;
     const descriptor=p.describeUiButtonEditTarget(target);
     const beforeStatus=p.uiButtonEditTargetStatus(descriptor);
     root.remove();
@@ -1170,6 +1185,7 @@ if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains(
     const stageCanScroll=stage?stage.scrollHeight>stage.clientHeight:false;
     let wheelScrollTop=0;
     let pointerPanScrollTop=0;
+    let touchPanScrollTop=0;
     const stagePointerEvents=stageStyle?.pointerEvents||'';
     const stageZIndex=stageStyle?.zIndex||'';
     const overlayZIndex=overlayStyle?.zIndex||'';
@@ -1186,6 +1202,18 @@ if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains(
         stage.dispatchEvent(new PointerEvent('pointerup',{pointerId:813,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
         await new Promise((resolve)=>setTimeout(resolve,80));
         pointerPanScrollTop=stage.scrollTop;
+      }
+      if(typeof Touch!=='undefined'&&typeof TouchEvent!=='undefined'){
+        stage.scrollTop=0;
+        const touchStart=new Touch({identifier:913,target:stage,clientX:80,clientY:140});
+        const touchMove=new Touch({identifier:913,target:stage,clientX:80,clientY:40});
+        stage.dispatchEvent(new TouchEvent('touchstart',{touches:[touchStart],changedTouches:[touchStart],bubbles:true,cancelable:true}));
+        stage.dispatchEvent(new TouchEvent('touchmove',{touches:[touchMove],changedTouches:[touchMove],bubbles:true,cancelable:true}));
+        stage.dispatchEvent(new TouchEvent('touchend',{touches:[],changedTouches:[touchMove],bubbles:true,cancelable:true}));
+        await new Promise((resolve)=>setTimeout(resolve,80));
+        touchPanScrollTop=stage.scrollTop;
+      } else {
+        touchPanScrollTop=pointerPanScrollTop||wheelScrollTop;
       }
       stage.scrollTop=stage.scrollHeight;
       stage.dispatchEvent(new Event('scroll'));
@@ -1205,6 +1233,7 @@ if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains(
       normalItemRadius,
       normalDirectRadius,
       normalGroupRadius,
+      normalGroupDisplay,
       snapshotCount:descriptor.sortSnapshot?.items?.length||0,
       beforeVerified:beforeStatus.verified,
       afterVerified:afterStatus.verified,
@@ -1219,6 +1248,7 @@ if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains(
       doneDisplay,
       wheelScrollTop,
       pointerPanScrollTop,
+      touchPanScrollTop,
       lastHandleDisplay,
       lastHandleInStage
     });
@@ -1234,9 +1264,11 @@ if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains(
     if ([string]$item.selector -match 'nth-of-type') { throw "mobile menu selector still uses brittle nth-of-type: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.selector -notmatch 'menu-group' -or [string]$item.selector -notmatch 'menu-item') { throw "mobile menu selector did not use label-guarded menu selector: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.normalItemRadius -ne '0px' -or [string]$item.normalDirectRadius -ne '0px' -or [string]$item.normalGroupRadius -ne '0px') { throw "mobile note-more menu/group still has rounded corners in normal state: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.normalGroupDisplay -ne 'contents') { throw "mobile note-more menu group is still visually chunked: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.beforeVerified -or -not $item.afterVerified -or [int]$item.afterSelectorCount -ne 0 -or [int]$item.afterLabelCount -lt 1) { throw "mobile transient menu text verification failed after menu closed: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.snapshotCount -lt 40 -or [int]$item.stageItems -lt 40 -or -not $item.stageCanScroll) { throw "mobile menu sort snapshot did not stay complete/scrollable: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.wheelScrollTop -le 0 -or [int]$item.pointerPanScrollTop -le 0) { throw "mobile menu sort snapshot manual scroll fallback failed: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.touchPanScrollTop -le 0) { throw "mobile menu sort snapshot touch event fallback failed: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.inlineHandles -ne [int]$item.stageItems) { throw "mobile menu sort handles were not embedded in every scroll row: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.stagePointerEvents -ne 'auto') { throw "mobile menu sort stage cannot receive touch events: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.overlayZIndex -le [int]$item.stageZIndex -or [string]$item.doneDisplay -eq 'none') { throw "mobile menu sort controls are covered by snapshot stage: $($item | ConvertTo-Json -Compress)" }

@@ -9069,7 +9069,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       overflowX: "hidden",
       overflowY: "auto",
       pointerEvents: "auto",
-      touchAction: "pan-y"
+      touchAction: "none"
     });
     stage.style.setProperty("-webkit-overflow-scrolling", "touch");
     let anchor: HTMLElement | null = null;
@@ -9088,6 +9088,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       if (item.selector === snapshot.anchorSelector) anchor = row;
     }
     let scrollPan: { pointerId: number; y: number; scrollTop: number; moved: boolean } | null = null;
+    let touchScrollPan: { identifier: number; y: number; scrollTop: number; moved: boolean } | null = null;
     const beginStagePan = (event: PointerEvent) => {
       if (event.button !== 0 && event.pointerType === "mouse") return;
       const win = doc.defaultView;
@@ -9129,11 +9130,45 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       event.preventDefault();
       event.stopPropagation();
     };
+    const beginStageTouchPan = (event: TouchEvent) => {
+      if (scrollPan || touchScrollPan || event.touches.length !== 1) return;
+      const win = doc.defaultView;
+      const rawTarget = event.target;
+      if (win && rawTarget instanceof win.Element && rawTarget.closest(".obcc-ui-sort-handle")) return;
+      const touch = event.touches[0];
+      touchScrollPan = { identifier: touch.identifier, y: touch.clientY, scrollTop: stage.scrollTop, moved: false };
+    };
+    const moveStageTouchPan = (event: TouchEvent) => {
+      if (!touchScrollPan) return;
+      const touch = Array.from(event.touches).find((item) => item.identifier === touchScrollPan?.identifier);
+      if (!touch) return;
+      const delta = touchScrollPan.y - touch.clientY;
+      if (Math.abs(delta) < 2) return;
+      touchScrollPan.moved = true;
+      stage.scrollTop = touchScrollPan.scrollTop + delta;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    const endStageTouchPan = (event: TouchEvent) => {
+      if (!touchScrollPan) return;
+      const stillActive = Array.from(event.touches).some((item) => item.identifier === touchScrollPan?.identifier);
+      if (stillActive) return;
+      const moved = touchScrollPan.moved;
+      touchScrollPan = null;
+      if (moved) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    };
     stage.addEventListener("pointerdown", beginStagePan);
     stage.addEventListener("pointermove", moveStagePan);
     stage.addEventListener("pointerup", endStagePan);
     stage.addEventListener("pointercancel", endStagePan);
     stage.addEventListener("wheel", wheelStage, { passive: false });
+    stage.addEventListener("touchstart", beginStageTouchPan, { passive: false });
+    stage.addEventListener("touchmove", moveStageTouchPan, { passive: false });
+    stage.addEventListener("touchend", endStageTouchPan, { passive: false });
+    stage.addEventListener("touchcancel", endStageTouchPan, { passive: false });
     return {
       anchor: anchor ?? stage.querySelector<HTMLElement>(".obcc-ui-sort-snapshot-item") ?? stage,
       stage,
@@ -9693,13 +9728,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private createUiButtonSortSnapshot(target: HTMLElement, selector: string, scope: UiButtonRule["scope"]): UiButtonSortSnapshot | undefined {
-    const menuRoot = target.closest<HTMLElement>(".menu");
-    const mobileMenuGroup = target.closest<HTMLElement>(".menu-group");
-    const mobileMenuRoot = mobileMenuGroup?.parentElement ?? null;
+    const menuRoot = this.menuLikeSortRootForTarget(target);
     const popoverRoot = target.closest<HTMLElement>(".obcc-history-popover.is-more, .obcc-history-popover.is-skills, .obcc-history-popover.is-automation");
-    const root = menuRoot ?? mobileMenuRoot ?? popoverRoot?.querySelector<HTMLElement>(".obcc-management-body") ?? popoverRoot;
+    const root = menuRoot ?? popoverRoot?.querySelector<HTMLElement>(".obcc-management-body") ?? popoverRoot;
     if (!root) return undefined;
-    const source: UiButtonSortSnapshot["source"] = menuRoot || mobileMenuRoot ? "menu" : "popover";
+    const source: UiButtonSortSnapshot["source"] = menuRoot ? "menu" : "popover";
     const items = this.flatSortableUiButtonTargets(root, { includeOffscreen: true }).map((item): UiButtonSortSnapshotItem => {
       const itemSelector = looseSelectorForUiButtonRule(item);
       const label = uiElementLabel(item) || itemSelector;
@@ -9725,6 +9758,22 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (uniqueItems.length < 2) return undefined;
     if (!uniqueItems.some((item) => item.selector === selector)) return undefined;
     return { source, scope, anchorSelector: selector, items: uniqueItems };
+  }
+
+  private menuLikeSortRootForTarget(target: HTMLElement): HTMLElement | null {
+    const menuRoot = target.closest<HTMLElement>(".menu");
+    if (menuRoot) return menuRoot;
+    const menuGroup = target.closest<HTMLElement>(".menu-group");
+    const groupParent = menuGroup?.parentElement;
+    if (groupParent && groupParent.querySelectorAll(".menu-item, [role='menuitem']").length >= 2) return groupParent;
+    const looseRoot = target.closest<HTMLElement>(".mobile-menu, .menu-scroll, .modal-content, .modal.mod-mobile-menu, .modal");
+    if (looseRoot && looseRoot.querySelectorAll(".menu-item, [role='menuitem']").length >= 2) return looseRoot;
+    let current = target.parentElement;
+    for (let depth = 0; current && depth < 5; depth += 1, current = current.parentElement) {
+      const count = current.querySelectorAll(".menu-item, [role='menuitem']").length;
+      if (count >= 2 && count <= 200) return current;
+    }
+    return null;
   }
 
   private flatSortableUiButtonTargets(root: HTMLElement, options: { includeOffscreen?: boolean } = {}): HTMLElement[] {

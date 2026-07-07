@@ -950,6 +950,38 @@
   border-radius: 0;
 }
 
+body .menu,
+body .menu-group,
+body .menu-section {
+  gap: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+body .menu > .menu-section,
+body .menu > .menu-group,
+body .menu > .menu-section-container,
+body .menu-group > .menu-section,
+body .menu-group > .menu-group,
+body .modal.mod-mobile-menu .menu-section,
+body .modal.mod-mobile-menu .menu-group {
+  display: contents;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+body .menu .menu-separator,
+body .menu-group .menu-separator,
+body .modal.mod-mobile-menu .menu-separator,
+body .menu .menu-item-separator,
+body .menu-group .menu-item-separator {
+  display: none;
+}
+
 body .menu-item,
 body .menu-item.tappable,
 body [role="menuitem"],
@@ -3414,6 +3446,11 @@ body .obcc-view-tts-action {
   border-radius: 0;
   box-shadow: none;
   touch-action: pan-y;
+}
+
+.obcc-ui-sort-snapshot-stage,
+.obcc-ui-sort-snapshot-stage .menu-item {
+  touch-action: none;
 }
 
 .obcc-ui-sort-snapshot-stage .obcc-ui-sort-inline-handle {
