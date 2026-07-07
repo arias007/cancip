@@ -1120,6 +1120,88 @@ if (-not $Case -or 'programmatic.ui-button-menu-complete-sort-label-guard'.Conta
   }
 }
 
+if (-not $Case -or 'programmatic.ui-button-mobile-menu-label-snapshot'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.className='mobile-menu-smoke';
+  root.style.position='fixed';
+  root.style.left='10px';
+  root.style.top='10px';
+  root.style.width='280px';
+  root.style.maxHeight='140px';
+  root.style.overflowY='auto';
+  root.style.zIndex='1000';
+  const extra=Array.from({length:42},(_,i)=>`<div class="menu-item tappable"><div class="menu-item-title">Mobile extra ${i}</div></div>`).join('');
+  root.innerHTML=[
+    '<div class="menu-group"><div class="menu-item tappable" id="cancip-mobile-menu-a"><div class="menu-item-title">在标签页中显示反向链接</div></div><div class="menu-item tappable"><div class="menu-item-title">另一个移动菜单项</div></div></div>',
+    `<div class="menu-group">${extra}</div>`
+  ].join('');
+  doc.body.appendChild(root);
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
+  try{
+    const target=root.querySelector('#cancip-mobile-menu-a');
+    const descriptor=p.describeUiButtonEditTarget(target);
+    const beforeStatus=p.uiButtonEditTargetStatus(descriptor);
+    root.remove();
+    const afterStatus=p.uiButtonEditTargetStatus(descriptor);
+    p.startUiButtonSortMode(descriptor);
+    const stage=doc.querySelector('.obcc-ui-sort-snapshot-stage');
+    const stageStyle=stage?getComputedStyle(stage):null;
+    const stageItems=stage?stage.querySelectorAll('.obcc-ui-sort-snapshot-item').length:0;
+    const stageCanScroll=stage?stage.scrollHeight>stage.clientHeight:false;
+    const stagePointerEvents=stageStyle?.pointerEvents||'';
+    const stageZIndex=stageStyle?.zIndex||'';
+    if(stage){
+      stage.scrollTop=stage.scrollHeight;
+      stage.dispatchEvent(new Event('scroll'));
+      await new Promise((resolve)=>setTimeout(resolve,360));
+    }
+    const handlesAfterScroll=Array.from(doc.querySelectorAll('.obcc-ui-sort-handle'));
+    const lastHandleDisplay=handlesAfterScroll.length?getComputedStyle(handlesAfterScroll[handlesAfterScroll.length-1]).display:'';
+    p.stopUiButtonSortMode();
+    return JSON.stringify({
+      id:'programmatic.ui-button-mobile-menu-label-snapshot',
+      elapsedMs:Date.now()-t,
+      selector:descriptor.selector,
+      snapshotCount:descriptor.sortSnapshot?.items?.length||0,
+      beforeVerified:beforeStatus.verified,
+      afterVerified:afterStatus.verified,
+      afterSelectorCount:afterStatus.selectorCount,
+      afterLabelCount:afterStatus.labelCount,
+      stageItems,
+      stageCanScroll,
+      stagePointerEvents,
+      stageZIndex,
+      lastHandleDisplay
+    });
+  } finally {
+    root.remove();
+    p.stopUiButtonSortMode?.();
+    p.settings.uiButtonRules=oldRules;
+    await p.saveSettings();
+    p.scheduleUiButtonRulesApply?.(0);
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([string]$item.selector -match 'nth-of-type') { throw "mobile menu selector still uses brittle nth-of-type: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.selector -notmatch 'menu-group' -or [string]$item.selector -notmatch 'menu-item') { throw "mobile menu selector did not use label-guarded menu selector: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.beforeVerified -or -not $item.afterVerified -or [int]$item.afterSelectorCount -ne 0 -or [int]$item.afterLabelCount -lt 1) { throw "mobile transient menu text verification failed after menu closed: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.snapshotCount -lt 40 -or [int]$item.stageItems -lt 40 -or -not $item.stageCanScroll) { throw "mobile menu sort snapshot did not stay complete/scrollable: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.stagePointerEvents -ne 'auto') { throw "mobile menu sort stage cannot receive touch events: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.lastHandleDisplay -eq 'none') { throw "mobile menu bottom handle did not appear after scroll: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-mobile-menu-label-snapshot'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.ui-button-context-actionable'.Contains($Case)) {
   try {
     $code = @'

@@ -9596,21 +9596,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const labelCount = wanted && wanted !== normalizeUiButtonLabel(descriptor.selector)
       ? elements.filter((el) => uiButtonElementMatchesRuleLabel({ selector: descriptor.selector, label: expectedLabel }, el)).length
       : elements.length;
+    const snapshotLabelCount = wanted && descriptor.sortSnapshot
+      ? descriptor.sortSnapshot.items.filter((item) => normalizeUiButtonLabel(item.label) === wanted).length
+      : 0;
     return {
       expectedLabel,
       selectorCount: elements.length,
-      labelCount,
-      seenLabels,
-      verified: elements.length > 0 && labelCount > 0
+      labelCount: labelCount || snapshotLabelCount,
+      seenLabels: seenLabels.length ? seenLabels : snapshotLabelCount ? [expectedLabel] : [],
+      verified: (elements.length > 0 && labelCount > 0) || snapshotLabelCount > 0
     };
   }
 
   private createUiButtonSortSnapshot(target: HTMLElement, selector: string, scope: UiButtonRule["scope"]): UiButtonSortSnapshot | undefined {
     const menuRoot = target.closest<HTMLElement>(".menu");
+    const mobileMenuGroup = target.closest<HTMLElement>(".menu-group");
+    const mobileMenuRoot = mobileMenuGroup?.parentElement ?? null;
     const popoverRoot = target.closest<HTMLElement>(".obcc-history-popover.is-more, .obcc-history-popover.is-skills, .obcc-history-popover.is-automation");
-    const root = menuRoot ?? popoverRoot?.querySelector<HTMLElement>(".obcc-management-body") ?? popoverRoot;
+    const root = menuRoot ?? mobileMenuRoot ?? popoverRoot?.querySelector<HTMLElement>(".obcc-management-body") ?? popoverRoot;
     if (!root) return undefined;
-    const source: UiButtonSortSnapshot["source"] = menuRoot ? "menu" : "popover";
+    const source: UiButtonSortSnapshot["source"] = menuRoot || mobileMenuRoot ? "menu" : "popover";
     const items = this.flatSortableUiButtonTargets(root, { includeOffscreen: true }).map((item): UiButtonSortSnapshotItem => {
       const itemSelector = looseSelectorForUiButtonRule(item);
       const label = uiElementLabel(item) || itemSelector;
@@ -34934,7 +34939,7 @@ function stableSelectorForElement(el: HTMLElement): string {
   const customButtonId = el.dataset.cancipUiCustomButtonId;
   if (customButtonId) return uniqueSelectorForElement(el, `[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`);
   const menuItem = el.closest<HTMLElement>(".menu-item, [role='menuitem']");
-  if (menuItem?.closest(".menu")) {
+  if (menuItem?.closest(".menu, .menu-group")) {
     return stableMenuItemSelector(menuItem);
   }
   const command = el.getAttribute("data-command");
@@ -34960,21 +34965,21 @@ function looseSelectorForUiButtonRule(el: HTMLElement): string {
   const customButtonId = el.dataset.cancipUiCustomButtonId;
   if (customButtonId) return `[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`;
   const menuItem = el.closest<HTMLElement>(".menu-item, [role='menuitem']");
-  if (menuItem?.closest(".menu")) return stableMenuItemSelector(menuItem);
+  if (menuItem?.closest(".menu, .menu-group")) return stableMenuItemSelector(menuItem);
   return stableSelectorForElement(el);
 }
 
 function stableMenuItemSelector(menuItem: HTMLElement): string {
   const ownCommand = menuItem.getAttribute("data-command") || "";
-  if (ownCommand) return `.menu .menu-item[data-command="${cssEscapeAttr(ownCommand)}"]`;
+  if (ownCommand) return `.menu .menu-item[data-command="${cssEscapeAttr(ownCommand)}"], .menu-group .menu-item[data-command="${cssEscapeAttr(ownCommand)}"]`;
   const commandChild = menuItem.querySelector<HTMLElement>("[data-command]");
   const childCommand = commandChild?.getAttribute("data-command") || "";
-  if (commandChild && childCommand) return uniqueSelectorForElement(commandChild, `.menu [data-command="${cssEscapeAttr(childCommand)}"]`);
+  if (commandChild && childCommand) return `.menu [data-command="${cssEscapeAttr(childCommand)}"], .menu-group [data-command="${cssEscapeAttr(childCommand)}"]`;
   const aria = menuItem.getAttribute("aria-label");
-  if (aria) return uniqueSelectorForElement(menuItem, `.menu .menu-item[aria-label="${cssEscapeAttr(aria)}"]`);
+  if (aria) return `.menu .menu-item[aria-label="${cssEscapeAttr(aria)}"], .menu-group .menu-item[aria-label="${cssEscapeAttr(aria)}"]`;
   const title = menuItem.getAttribute("title");
-  if (title) return uniqueSelectorForElement(menuItem, `.menu .menu-item[title="${cssEscapeAttr(title)}"]`);
-  return cssPathSelectorForElement(menuItem);
+  if (title) return `.menu .menu-item[title="${cssEscapeAttr(title)}"], .menu-group .menu-item[title="${cssEscapeAttr(title)}"]`;
+  return ".menu .menu-item, .menu-group .menu-item, [role='menuitem']";
 }
 
 function uniqueSelectorForElement(el: HTMLElement, preferred: string): string {
@@ -35073,6 +35078,7 @@ function uiButtonSelectorRequiresLabelGuard(selector: string): boolean {
   const normalized = selector.trim();
   return isBroadUiButtonSelector(normalized)
     || /\.menu(?:\s|\.|>|$)/.test(normalized)
+    || /\.menu-group\b/.test(normalized)
     || /\.menu-item\b/.test(normalized)
     || /\[role=['"]?menuitem['"]?\]/i.test(normalized)
     || /\[data-command=/.test(normalized)
@@ -35082,6 +35088,8 @@ function uiButtonSelectorRequiresLabelGuard(selector: string): boolean {
 function isBroadUiButtonSelector(selector: string): boolean {
   const normalized = selector.trim();
   return normalized === ".menu .menu-item"
+    || normalized === ".menu .menu-item, .menu-group .menu-item, [role='menuitem']"
+    || normalized === ".menu-group .menu-item"
     || normalized === ".menu [role='menuitem']"
     || normalized === ".menu-item"
     || normalized === "[role='menuitem']"
