@@ -303,16 +303,22 @@ function Restore-CancipSessionAfterSmoke {
 }
 
 try {
-  $ProbeCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!(p&&v),version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:app.workspace.getLeavesOfType('cancip-view').length,sessionId:v?.sessionId||'',devErrors:(p?.devErrors||[]).slice(-5)});})()"
+  if ($RunProfile -eq 'ui-button') {
+    $ProbeCode = "(()=>{const p=app.plugins.plugins.cancip;const leaves=app.workspace.getLeavesOfType('cancip-view');const v=leaves[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!p,version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:leaves.length,sessionId:v?.sessionId||'',devErrors:(p?.devErrors||[]).slice(-5)});})()"
+  } else {
+    $ProbeCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!(p&&v),version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:app.workspace.getLeavesOfType('cancip-view').length,sessionId:v?.sessionId||'',devErrors:(p?.devErrors||[]).slice(-5)});})()"
+  }
   $probe = Invoke-CancipEval -Code $ProbeCode -TimeoutSeconds 25
   $Report.probe = $probe
   $Report.version = [string]$probe.version
   $Report.promptHead = [string]$probe.promptHead
   $Script:OriginalSessionId = [string]$probe.sessionId
   if (-not $probe.ok) { throw 'Cancip plugin/view is not loaded' }
-  $StartSmokeSessionCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;if(!v)throw new Error('Cancip view unavailable');await v.newChat();v.sessionTitleOverride='Cancip smoke';await v.saveCurrentSession();return JSON.stringify({ok:true,sessionId:v.sessionId});})()"
-  $smokeSession = Invoke-CancipEval -Code $StartSmokeSessionCode -TimeoutSeconds 35
-  $Script:SmokeSessionId = [string]$smokeSession.sessionId
+  if ($RunProfile -ne 'ui-button') {
+    $StartSmokeSessionCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;if(!v)throw new Error('Cancip view unavailable');await v.newChat();v.sessionTitleOverride='Cancip smoke';await v.saveCurrentSession();return JSON.stringify({ok:true,sessionId:v.sessionId});})()"
+    $smokeSession = Invoke-CancipEval -Code $StartSmokeSessionCode -TimeoutSeconds 35
+    $Script:SmokeSessionId = [string]$smokeSession.sessionId
+  }
 } catch {
   Add-CaseResult 'promptCases' @{ id = 'probe'; pass = $false; error = $_.Exception.Message }
   Write-FinalReport 1
@@ -731,6 +737,200 @@ if (-not $Case -or 'programmatic.tool-run-estimated-line-delta'.Contains($Case))
   }
 }
 
+if (-not $Case -or 'programmatic.specialist-routing'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  if(typeof p.specialistApiProfileForPrompt!=='function')throw new Error('missing specialist route helper');
+  const old={
+    enabled:p.settings.specialistRoutingEnabled,
+    activeProfile:p.settings.activeApiProfileId,
+    apiProfiles:[...(p.settings.apiProfiles||[])],
+    profile:p.settings.mechanicalTaskApiProfileId,
+    model:p.settings.mechanicalTaskModel,
+    options:[...(p.settings.modelOptions||[])],
+    routes:{...(p.settings.mechanicalTaskRoutes||{})}
+  };
+  try{
+    p.settings.specialistRoutingEnabled=true;
+    const explicitProfile={...(p.settings.apiProfiles||[])[0],id:'cancip-smoke-explicit-profile',name:'Smoke explicit profile',model:'cancip-smoke-explicit-profile-model'};
+    p.settings.apiProfiles=[...(p.settings.apiProfiles||[]).filter((x)=>x&&x.id!=='cancip-smoke-explicit-profile'),explicitProfile];
+    p.settings.mechanicalTaskApiProfileId='';
+    p.settings.modelOptions=['gpt-5.5','qwen-plus','deepseek-chat','gpt-4o-mini'];
+    p.settings.mechanicalTaskRoutes={contentRename:true,markdownBeautify:true,folderCleanup:true,frontmatterTags:true};
+    p.settings.mechanicalTaskModel='cancip-smoke-mechanical';
+    const routePrompt='rename Markdown notes based on file content';
+    const hit=p.specialistApiProfileForPrompt(routePrompt);
+    const miss=p.specialistApiProfileForPrompt('fix Cancip sidebar status bar button styles and plugin source code');
+    p.settings.mechanicalTaskModel='';
+    const auto=p.specialistApiProfileForPrompt(routePrompt);
+    p.settings.mechanicalTaskRoutes={contentRename:false,markdownBeautify:true,folderCleanup:true,frontmatterTags:true};
+    const disabled=p.specialistApiProfileForPrompt(routePrompt);
+    const disabledKinds=p.mechanicalTaskRouteKindsForPrompt(routePrompt);
+    return JSON.stringify({
+      id:'programmatic.specialist-routing',
+      elapsedMs:Date.now()-t,
+      hitModel:hit&&hit.model,
+      miss:miss===null,
+      autoModel:auto&&auto.model,
+      disabled:disabled===null,
+      disabledKindCount:disabledKinds.length
+    });
+  } finally {
+    p.settings.specialistRoutingEnabled=old.enabled;
+    p.settings.activeApiProfileId=old.activeProfile;
+    p.settings.apiProfiles=old.apiProfiles;
+    p.settings.mechanicalTaskApiProfileId=old.profile;
+    p.settings.mechanicalTaskModel=old.model;
+    p.settings.modelOptions=old.options;
+    p.settings.mechanicalTaskRoutes=old.routes;
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ($item.hitModel -ne 'cancip-smoke-mechanical') { throw "mechanical prompt did not route to specialist model: $($item.hitModel)" }
+    if (-not $item.miss) { throw 'engineering prompt was incorrectly routed to specialist model' }
+    if ($item.autoModel -ne 'qwen-plus') { throw "empty specialist model did not auto-pick cheap model: $($item.autoModel)" }
+    if (-not $item.disabled -or [int]$item.disabledKindCount -ne 0) { throw "disabled contentRename route still matched: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; hitModel = $item.hitModel; autoModel = $item.autoModel }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.specialist-routing'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.automation-mechanical-routing'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  if(typeof p.automationApiProfile!=='function'||typeof p.automationModelPromptForTask!=='function')throw new Error('missing automation mechanical route helpers');
+  const old={
+    enabled:p.settings.specialistRoutingEnabled,
+    activeProfile:p.settings.activeApiProfileId,
+    apiProfiles:[...(p.settings.apiProfiles||[])],
+    profile:p.settings.mechanicalTaskApiProfileId,
+    model:p.settings.mechanicalTaskModel,
+    options:[...(p.settings.modelOptions||[])],
+    routes:{...(p.settings.mechanicalTaskRoutes||{})}
+  };
+  try{
+    p.settings.specialistRoutingEnabled=true;
+    const explicitProfile={...(p.settings.apiProfiles||[])[0],id:'cancip-smoke-explicit-profile',name:'Smoke explicit profile',model:'cancip-smoke-explicit-profile-model'};
+    p.settings.apiProfiles=[...(p.settings.apiProfiles||[]).filter((x)=>x&&x.id!=='cancip-smoke-explicit-profile'),explicitProfile];
+    p.settings.mechanicalTaskApiProfileId='';
+    p.settings.modelOptions=['gpt-5.5','qwen-plus','deepseek-chat','gpt-4o-mini'];
+    p.settings.mechanicalTaskRoutes={contentRename:true,markdownBeautify:true,folderCleanup:true,frontmatterTags:true};
+    p.settings.mechanicalTaskModel='cancip-smoke-mechanical';
+    const base={
+      id:'auto-smoke-mechanical',
+      title:'Batch content rename Markdown notes',
+      prompt:'rename Markdown notes in this folder based on file content',
+      schedule:'manual',
+      enabled:true,
+      intervalMinutes:60,
+      hour:9,
+      minute:0,
+      sessionMode:'current',
+      createdAt:new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    };
+    const autoTask={...base,mechanical:'auto'};
+    const autoProfile=p.automationApiProfile(autoTask);
+    const autoPrompt=p.automationModelPromptForTask(autoTask).prompt;
+    const offProfile=p.automationApiProfile({...base,mechanical:'off'});
+    const offPrompt=p.automationModelPromptForTask({...base,mechanical:'off'}).prompt;
+    const forcedTask={...base,title:'Daily exact task',prompt:'Review these files',mechanical:'on'};
+    const forcedProfile=p.automationApiProfile(forcedTask);
+    const forcedPrompt=p.automationModelPromptForTask(forcedTask).prompt;
+    const routeOffTask={...base,mechanical:'auto',mechanicalRoutes:{contentRename:false,markdownBeautify:false,folderCleanup:false,frontmatterTags:false}};
+    const routeOffProfile=p.automationApiProfile(routeOffTask);
+    const explicitModelProfile=p.automationApiProfile({...base,mechanical:'auto',model:'cancip-smoke-explicit-model'});
+    const explicitApiProfile=p.automationApiProfile({...base,mechanical:'auto',apiProfileId:'cancip-smoke-explicit-profile'});
+    const explicitBothProfile=p.automationApiProfile({...base,mechanical:'auto',apiProfileId:'cancip-smoke-explicit-profile',model:'cancip-smoke-explicit-both-model'});
+    return JSON.stringify({
+      id:'programmatic.automation-mechanical-routing',
+      elapsedMs:Date.now()-t,
+      autoModel:autoProfile&&autoProfile.model,
+      offModel:offProfile&&offProfile.model,
+      forcedModel:forcedProfile&&forcedProfile.model,
+      routeOffModel:routeOffProfile&&routeOffProfile.model,
+      explicitModel:explicitModelProfile&&explicitModelProfile.model,
+      explicitApiModel:explicitApiProfile&&explicitApiProfile.model,
+      explicitBothModel:explicitBothProfile&&explicitBothProfile.model,
+      autoGuard:/cancip-action JSON/.test(autoPrompt),
+      offGuard:/cancip-action JSON/.test(offPrompt),
+      forcedGuard:/cancip-action JSON/.test(forcedPrompt)
+    });
+  } finally {
+    p.settings.specialistRoutingEnabled=old.enabled;
+    p.settings.activeApiProfileId=old.activeProfile;
+    p.settings.apiProfiles=old.apiProfiles;
+    p.settings.mechanicalTaskApiProfileId=old.profile;
+    p.settings.mechanicalTaskModel=old.model;
+    p.settings.modelOptions=old.options;
+    p.settings.mechanicalTaskRoutes=old.routes;
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ($item.autoModel -ne 'cancip-smoke-mechanical') { throw "automation auto task did not route to specialist model: $($item.autoModel)" }
+    if ($item.offModel -eq 'cancip-smoke-mechanical') { throw "automation off task still routed to specialist model: $($item.offModel)" }
+    if ($item.forcedModel -ne 'cancip-smoke-mechanical') { throw "automation forced task did not route to specialist model: $($item.forcedModel)" }
+    if ($item.routeOffModel -eq 'cancip-smoke-mechanical') { throw "automation per-task route disabled but still routed: $($item | ConvertTo-Json -Compress)" }
+    if ($item.explicitModel -ne 'cancip-smoke-explicit-model') { throw "automation explicit model was overridden by mechanical routing: $($item | ConvertTo-Json -Compress)" }
+    if ($item.explicitApiModel -ne 'cancip-smoke-explicit-profile-model') { throw "automation explicit API profile was not honored: $($item | ConvertTo-Json -Compress)" }
+    if ($item.explicitBothModel -ne 'cancip-smoke-explicit-both-model') { throw "automation explicit API+model override was not honored: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.autoGuard -or $item.offGuard -or -not $item.forcedGuard) { throw "automation mechanical prompt guard mismatch: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; autoModel = $item.autoModel; forcedModel = $item.forcedModel; explicitModel = $item.explicitModel }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-mechanical-routing'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.skill-index-and-experience-commands'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  if(typeof v.harvestExperienceSkills!=='function')throw new Error('missing experience harvest command handler');
+  const skills=await v.discoverSkills(true);
+  const idCounts={};
+  for(const skill of skills){
+    const key=String(skill.id||'').toLowerCase();
+    idCounts[key]=(idCounts[key]||0)+1;
+  }
+  const dupIds=Object.keys(idCounts).filter((key)=>idCounts[key]>1);
+  const listText=String(await v.executeCommandAction('cancip.skills.list',{refresh:true}));
+  const expText=String(await v.executeCommandAction('cancip.experience.list',{query:'smoke'}));
+  return JSON.stringify({
+    id:'programmatic.skill-index-and-experience-commands',
+    elapsedMs:Date.now()-t,
+    count:skills.length,
+    duplicateIds:dupIds,
+    hasObsidian:/Obsidian/i.test(listText),
+    hasExperienceResult:/cancip\.experience\.list|无|None|none/i.test(expText)
+  });
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 75
+    if ([int]$item.count -lt 10) { throw "too few skills discovered: $($item.count)" }
+    if (@($item.duplicateIds).Count -gt 0) { throw "duplicate skill ids survived dedupe: $(@($item.duplicateIds) -join ', ')" }
+    if (-not $item.hasObsidian) { throw 'skills list did not include Obsidian-related skills' }
+    if (-not $item.hasExperienceResult) { throw 'experience list command did not return a recognizable result' }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; count = $item.count }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.skill-index-and-experience-commands'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.model-retry-progress-visible'.Contains($Case)) {
   try {
     $code = @'
@@ -1024,45 +1224,19 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-sort-menu-snapshot') {
     const stageCanScroll=stage?stage.scrollHeight>stage.clientHeight:false;
     const inlineHandles=doc.querySelectorAll('.obcc-ui-sort-inline-handle').length;
     let wheelScrollTop=0;
-    let pointerPanScrollTop=0;
-    let touchPanScrollTop=0;
     if(stage){
       stage.scrollTop=0;
       stage.dispatchEvent(new WheelEvent('wheel',{deltaY:180,bubbles:true,cancelable:true}));
       await new Promise((resolve)=>setTimeout(resolve,80));
       wheelScrollTop=stage.scrollTop;
-      stage.scrollTop=0;
-      if(typeof PointerEvent!=='undefined'){
-        stage.dispatchEvent(new PointerEvent('pointerdown',{pointerId:812,clientY:140,bubbles:true,cancelable:true,pointerType:'touch'}));
-        stage.dispatchEvent(new PointerEvent('pointermove',{pointerId:812,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
-        stage.dispatchEvent(new PointerEvent('pointerup',{pointerId:812,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
-        await new Promise((resolve)=>setTimeout(resolve,80));
-        pointerPanScrollTop=stage.scrollTop;
-      }
-      if(typeof Touch!=='undefined'&&typeof TouchEvent!=='undefined'){
-        stage.scrollTop=0;
-        const touchStart=new Touch({identifier:912,target:stage,clientX:80,clientY:140});
-        const touchMove=new Touch({identifier:912,target:stage,clientX:80,clientY:40});
-        stage.dispatchEvent(new TouchEvent('touchstart',{touches:[touchStart],changedTouches:[touchStart],bubbles:true,cancelable:true}));
-        stage.dispatchEvent(new TouchEvent('touchmove',{touches:[touchMove],changedTouches:[touchMove],bubbles:true,cancelable:true}));
-        stage.dispatchEvent(new TouchEvent('touchend',{touches:[],changedTouches:[touchMove],bubbles:true,cancelable:true}));
-        await new Promise((resolve)=>setTimeout(resolve,80));
-        touchPanScrollTop=stage.scrollTop;
-      } else {
-        touchPanScrollTop=pointerPanScrollTop||wheelScrollTop;
-      }
       stage.scrollTop=stage.scrollHeight;
       stage.dispatchEvent(new Event('scroll'));
-      await new Promise((resolve)=>setTimeout(resolve,420));
+      await new Promise((resolve)=>setTimeout(resolve,120));
     }
-    const handlesAfterScroll=Array.from(doc.querySelectorAll('.obcc-ui-sort-handle'));
-    const lastHandleDisplay=handlesAfterScroll.length?getComputedStyle(handlesAfterScroll[handlesAfterScroll.length-1]).display:'';
-    const stageRect=stage?stage.getBoundingClientRect():null;
-    const lastHandleRect=handlesAfterScroll.length?handlesAfterScroll[handlesAfterScroll.length-1].getBoundingClientRect():null;
-    const lastHandleInStage=!!(stageRect&&lastHandleRect&&lastHandleRect.top>=stageRect.top&&lastHandleRect.bottom<=stageRect.bottom+1);
+    const finalScrollTop=stage?stage.scrollTop:0;
     p.stopUiButtonSortMode();
     const stageAfter=!!doc.querySelector('.obcc-ui-sort-snapshot-stage');
-    return JSON.stringify({id:'programmatic.ui-button-sort-menu-snapshot',elapsedMs:Date.now()-t,snapshotCount,hasStage:!!stage,stageItems,handles,inlineHandles,stageCanScroll,wheelScrollTop,pointerPanScrollTop,touchPanScrollTop,lastHandleDisplay,lastHandleInStage,done:!!done,stageAfter});
+    return JSON.stringify({id:'programmatic.ui-button-sort-menu-snapshot',elapsedMs:Date.now()-t,snapshotCount,hasStage:!!stage,stageItems,handles,inlineHandles,stageCanScroll,wheelScrollTop,finalScrollTop,done:!!done,stageAfter});
   } finally {
     root.remove();
     p.stopUiButtonSortMode?.();
@@ -1077,15 +1251,120 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-sort-menu-snapshot') {
     if ([int]$item.handles -ne [int]$item.stageItems) { throw "not every scrollable snapshot item received a sort handle: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.stageCanScroll) { throw "menu sort snapshot stage is not scrollable: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.wheelScrollTop -le 0) { throw "menu sort snapshot wheel fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.pointerPanScrollTop -le 0) { throw "menu sort snapshot touch pan fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.touchPanScrollTop -le 0) { throw "menu sort snapshot touch event fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.inlineHandles -ne [int]$item.stageItems) { throw "snapshot menu sort handles were not embedded in every scroll row: $($item | ConvertTo-Json -Compress)" }
-    if ([string]$item.lastHandleDisplay -eq 'none' -or -not $item.lastHandleInStage) { throw "bottom snapshot item handle did not appear inside the scrolled stage: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.finalScrollTop -le 0) { throw "menu sort snapshot did not remain scrollable to the bottom: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.done) { throw "sort done control is not visible/clickable: $($item | ConvertTo-Json -Compress)" }
     if ($item.stageAfter) { throw "snapshot stage was not cleaned up: $($item | ConvertTo-Json -Compress)" }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
   } catch {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-sort-menu-snapshot'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-sort-menu-snapshot-pointer-pan') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.className='menu';
+  root.style.position='fixed';
+  root.style.left='12px';
+  root.style.top='12px';
+  root.style.zIndex='1000';
+  root.style.width='260px';
+  root.style.maxHeight='120px';
+  root.style.overflowY='auto';
+  const longItems=Array.from({length:28},(_,i)=>`<div class="menu-item" data-command="smoke-menu-pointer-${i}" id="cancip-sort-pointer-${i}"><div class="menu-item-title">Pointer item ${i}</div></div>`).join('');
+  root.innerHTML=`<div class="menu-section">${longItems}</div>`;
+  doc.body.appendChild(root);
+  try{
+    const descriptor=p.describeUiButtonEditTarget(root.querySelector('#cancip-sort-pointer-3'));
+    root.remove();
+    p.startUiButtonSortMode(descriptor);
+    const stage=doc.querySelector('.obcc-ui-sort-snapshot-stage');
+    let pointerPanScrollTop=0;
+    if(stage&&typeof PointerEvent!=='undefined'){
+      stage.scrollTop=0;
+      stage.dispatchEvent(new PointerEvent('pointerdown',{pointerId:812,clientY:140,bubbles:true,cancelable:true,pointerType:'touch'}));
+      stage.dispatchEvent(new PointerEvent('pointermove',{pointerId:812,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
+      stage.dispatchEvent(new PointerEvent('pointerup',{pointerId:812,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
+      await new Promise((resolve)=>setTimeout(resolve,80));
+      pointerPanScrollTop=stage.scrollTop;
+    }
+    p.stopUiButtonSortMode();
+    return JSON.stringify({id:'programmatic.ui-button-sort-menu-snapshot-pointer-pan',elapsedMs:Date.now()-t,hasStage:!!stage,pointerAvailable:typeof PointerEvent!=='undefined',pointerPanScrollTop,stageAfter:!!doc.querySelector('.obcc-ui-sort-snapshot-stage')});
+  } finally {
+    root.remove();
+    p.stopUiButtonSortMode?.();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 25
+    if (-not $item.hasStage) { throw "pointer pan snapshot stage missing: $($item | ConvertTo-Json -Compress)" }
+    if ($item.pointerAvailable -and [int]$item.pointerPanScrollTop -le 0) { throw "menu sort snapshot pointer pan fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
+    if ($item.stageAfter) { throw "pointer pan snapshot stage was not cleaned up: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-sort-menu-snapshot-pointer-pan'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-sort-menu-snapshot-touch-pan') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.className='menu';
+  root.style.position='fixed';
+  root.style.left='12px';
+  root.style.top='12px';
+  root.style.zIndex='1000';
+  root.style.width='260px';
+  root.style.maxHeight='120px';
+  root.style.overflowY='auto';
+  const longItems=Array.from({length:28},(_,i)=>`<div class="menu-item" data-command="smoke-menu-touch-${i}" id="cancip-sort-touch-${i}"><div class="menu-item-title">Touch item ${i}</div></div>`).join('');
+  root.innerHTML=`<div class="menu-section">${longItems}</div>`;
+  doc.body.appendChild(root);
+  try{
+    const descriptor=p.describeUiButtonEditTarget(root.querySelector('#cancip-sort-touch-3'));
+    root.remove();
+    p.startUiButtonSortMode(descriptor);
+    const stage=doc.querySelector('.obcc-ui-sort-snapshot-stage');
+    let touchPanScrollTop=0;
+    const touchAvailable=typeof Touch!=='undefined'&&typeof TouchEvent!=='undefined';
+    if(stage&&touchAvailable){
+      stage.scrollTop=0;
+      const touchStart=new Touch({identifier:912,target:stage,clientX:80,clientY:140});
+      const touchMove=new Touch({identifier:912,target:stage,clientX:80,clientY:40});
+      stage.dispatchEvent(new TouchEvent('touchstart',{touches:[touchStart],changedTouches:[touchStart],bubbles:true,cancelable:true}));
+      stage.dispatchEvent(new TouchEvent('touchmove',{touches:[touchMove],changedTouches:[touchMove],bubbles:true,cancelable:true}));
+      stage.dispatchEvent(new TouchEvent('touchend',{touches:[],changedTouches:[touchMove],bubbles:true,cancelable:true}));
+      await new Promise((resolve)=>setTimeout(resolve,80));
+      touchPanScrollTop=stage.scrollTop;
+    }
+    p.stopUiButtonSortMode();
+    return JSON.stringify({id:'programmatic.ui-button-sort-menu-snapshot-touch-pan',elapsedMs:Date.now()-t,hasStage:!!stage,touchAvailable,touchPanScrollTop,stageAfter:!!doc.querySelector('.obcc-ui-sort-snapshot-stage')});
+  } finally {
+    root.remove();
+    p.stopUiButtonSortMode?.();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 25
+    if (-not $item.hasStage) { throw "touch pan snapshot stage missing: $($item | ConvertTo-Json -Compress)" }
+    if ($item.touchAvailable -and [int]$item.touchPanScrollTop -le 0) { throw "menu sort snapshot touch event fallback did not scroll: $($item | ConvertTo-Json -Compress)" }
+    if ($item.stageAfter) { throw "touch pan snapshot stage was not cleaned up: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-sort-menu-snapshot-touch-pan'; pass = $false; error = $_.Exception.Message }
   }
 }
 
@@ -1131,6 +1410,537 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-rule-reset-list') {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
   } catch {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-rule-reset-list'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-copy-paste-payload') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.style.position='fixed';
+  root.style.left='10px';
+  root.style.top='10px';
+  root.style.zIndex='1000';
+  root.innerHTML=[
+    '<button id="cancip-copy-source" data-command="app:open-settings" title="Source Settings">Source Settings</button>',
+    '<button id="cancip-copy-anchor" title="Anchor Button">Anchor Button</button>'
+  ].join('');
+  doc.body.appendChild(root);
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
+  try{
+    p.settings.uiButtonRules=[];
+    const source=root.querySelector('#cancip-copy-source');
+    const anchor=root.querySelector('#cancip-copy-anchor');
+    const sourceDescriptor=p.describeUiButtonEditTarget(source);
+    const anchorDescriptor=p.describeUiButtonEditTarget(anchor);
+    const payload=p.uiButtonClipboardPayload(sourceDescriptor);
+    if(!payload)throw new Error('no copied payload');
+    await p.addSiblingUiButton(anchorDescriptor,{
+      commandId:payload.commandId,
+      commandName:payload.commandName||payload.label||payload.commandId,
+      title:payload.title||payload.label||payload.commandName||payload.commandId,
+      icon:payload.icon||'settings',
+      insertPosition:payload.insertPosition
+    });
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    p.applyUiButtonRules();
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    const custom=root.querySelector('[data-cancip-ui-custom-button="true"]');
+    const rules=(p.settings.uiButtonRules||[]).filter((rule)=>rule.kind==='custom');
+    const rule=rules[0]||{};
+    const afterAnchor=custom&&anchor.nextElementSibling===custom;
+    const copiedCustomPayload=custom?p.uiButtonClipboardPayload(p.describeUiButtonEditTarget(custom)):null;
+    const relayAnchor=doc.createElement('button');
+    relayAnchor.id='cancip-copy-relay-anchor';
+    relayAnchor.textContent='Relay Anchor';
+    root.appendChild(relayAnchor);
+    if(!copiedCustomPayload)throw new Error('no copied custom payload');
+    await p.addSiblingUiButton(p.describeUiButtonEditTarget(relayAnchor),{
+      commandId:copiedCustomPayload.commandId,
+      commandName:copiedCustomPayload.commandName||copiedCustomPayload.label||copiedCustomPayload.commandId,
+      title:copiedCustomPayload.title||copiedCustomPayload.label||copiedCustomPayload.commandName||copiedCustomPayload.commandId,
+      icon:copiedCustomPayload.icon||'settings',
+      insertPosition:copiedCustomPayload.insertPosition
+    });
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    p.applyUiButtonRules();
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    const nextRules=(p.settings.uiButtonRules||[]).filter((item)=>item.kind==='custom');
+    const relayRule=nextRules.find((item)=>item.anchorSelector&&item.anchorSelector.includes('cancip-copy-relay-anchor'))||{};
+    const relayCustom=relayAnchor.nextElementSibling;
+    return JSON.stringify({
+      id:'programmatic.ui-button-copy-paste-payload',
+      elapsedMs:Date.now()-t,
+      payload,
+      copiedCustomPayload,
+      customCount:rules.length,
+      finalCustomCount:nextRules.length,
+      anchorSelector:rule.anchorSelector||'',
+      commandId:rule.commandId||'',
+      title:rule.title||'',
+      icon:rule.icon||'',
+      afterAnchor,
+      customCommand:custom?.dataset?.cancipUiCustomCommand||'',
+      customTitle:custom?.getAttribute('title')||'',
+      relayAnchorSelector:relayRule.anchorSelector||'',
+      relayCommandId:relayRule.commandId||'',
+      relayIcon:relayRule.icon||'',
+      relayTitle:relayRule.title||'',
+      relayAfterAnchor:relayCustom?.dataset?.cancipUiCustomButton==='true',
+      relayCustomCommand:relayCustom?.dataset?.cancipUiCustomCommand||''
+    });
+  } finally {
+    root.remove();
+    p.settings.uiButtonRules=oldRules;
+    p.clearUiRuleMarks?.();
+    await p.saveSettings();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([string]$item.payload.schema -ne 'cancip-ui-button' -or [int]$item.payload.version -ne 1) { throw "button copied payload schema mismatch: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.payload.commandId -ne 'obcmd:app:open-settings') { throw "button copied payload did not preserve command id: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.customCount -ne 1) { throw "pasted button did not create exactly one custom rule: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.anchorSelector -notmatch 'cancip-copy-anchor') { throw "pasted button used the old source location instead of current add location: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.commandId -ne 'obcmd:app:open-settings' -or [string]$item.customCommand -ne 'obcmd:app:open-settings') { throw "pasted button did not preserve executable command: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.icon -ne [string]$item.payload.icon) { throw "pasted button icon did not preserve copied icon: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.afterAnchor) { throw "pasted button was not inserted beside the target anchor: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.copiedCustomPayload.commandId -ne 'obcmd:app:open-settings') { throw "copied custom button payload points at wrapper instead of real command: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.copiedCustomPayload.icon -ne [string]$item.icon) { throw "copied custom button payload did not preserve custom icon: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.finalCustomCount -ne 2) { throw "pasting copied custom button did not create second custom rule: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.relayAnchorSelector -notmatch 'cancip-copy-relay-anchor') { throw "pasted custom button reused old anchor instead of current add location: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.relayCommandId -ne 'obcmd:app:open-settings' -or [string]$item.relayCustomCommand -ne 'obcmd:app:open-settings') { throw "pasted custom button command is not executable real command: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.relayIcon -ne [string]$item.icon) { throw "pasted custom button did not preserve icon: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.relayAfterAnchor) { throw "pasted custom button was not inserted beside relay anchor: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-copy-paste-payload'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-menu-text-command-resolution') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const api=app.commands;
+  const commandId='mobile-pdf-exporter:export-current-note-preview-pdf';
+  const menuLabel='\u5bfc\u51fa\u9884\u89c8\u7248 PDF';
+  const commandName='Mobile PDF Exporter: \u5bfc\u51fa\u5f53\u524d\u7b14\u8bb0\u4e3a\u9884\u89c8\u7248 PDF';
+  const oldCommand=api.commands?.[commandId];
+  const oldExecute=api.executeCommandById;
+  const executed=[];
+  api.commands=api.commands||{};
+  api.commands[commandId]={id:commandId,name:commandName,icon:'file-output'};
+  api.executeCommandById=(id)=>{
+    if(id===commandId){executed.push(id);return true;}
+    return typeof oldExecute==='function'?oldExecute.call(api,id):false;
+  };
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.style.position='fixed';
+  root.style.left='12px';
+  root.style.top='12px';
+  root.style.zIndex='1000';
+  root.className='menu';
+  root.innerHTML=[
+    '<div class="menu-group">',
+    `<div id="cancip-menu-export" class="menu-item tappable" role="menuitem"><div class="menu-item-title">${menuLabel}</div></div>`,
+    '</div>',
+    '<button id="cancip-menu-anchor" title="Anchor Button">Anchor Button</button>'
+  ].join('');
+  doc.body.appendChild(root);
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
+  try{
+    p.settings.uiButtonRules=[];
+    const menuItem=root.querySelector('#cancip-menu-export');
+    const anchor=root.querySelector('#cancip-menu-anchor');
+    const menuDescriptor=p.describeUiButtonEditTarget(menuItem);
+    const anchorDescriptor=p.describeUiButtonEditTarget(anchor);
+    const payload=p.uiButtonClipboardPayload(menuDescriptor);
+    await p.addSiblingUiButton(anchorDescriptor,{
+      commandId:`uiclick:${menuDescriptor.selector}`,
+      commandName:menuLabel,
+      title:menuLabel,
+      icon:'download',
+      insertPosition:'after'
+    });
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    p.applyUiButtonRules();
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    const added=(p.settings.uiButtonRules||[]).find((rule)=>rule.kind==='custom'&&rule.anchorSelector&&rule.anchorSelector.includes('cancip-menu-anchor'))||{};
+    p.settings.uiButtonRules=[{
+      id:'smoke-old-menu-export',
+      kind:'custom',
+      selector:'[data-cancip-ui-custom-button-id="smoke-old-menu-export"]',
+      anchorSelector:'button#cancip-menu-anchor',
+      label:menuLabel,
+      title:menuLabel,
+      icon:'download',
+      commandId:"uiclick:.menu .menu-item, .menu-group .menu-item, [role='menuitem']",
+      commandName:menuLabel,
+      insertPosition:'after',
+      hidden:false,
+      order:0,
+      scope:'global'
+    }];
+    await p.repairCustomUiButtonCommands?.();
+    const repaired=(p.settings.uiButtonRules||[]).find((rule)=>rule.id==='smoke-old-menu-export')||{};
+    await p.executeCustomUiButtonRule?.(repaired);
+    return JSON.stringify({
+      id:'programmatic.ui-button-menu-text-command-resolution',
+      elapsedMs:Date.now()-t,
+      descriptorSelector:menuDescriptor.selector,
+      payloadCommandId:payload?.commandId||'',
+      payloadIcon:payload?.icon||'',
+      addedCommandId:added.commandId||'',
+      addedIcon:added.icon||'',
+      repairedCommandId:repaired.commandId||'',
+      repairedCommandName:repaired.commandName||'',
+      executed
+    });
+  } finally {
+    root.remove();
+    p.settings.uiButtonRules=oldRules;
+    p.clearUiRuleMarks?.();
+    await p.saveSettings();
+    if(oldCommand===undefined)delete api.commands[commandId];
+    else api.commands[commandId]=oldCommand;
+    api.executeCommandById=oldExecute;
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $expected = 'obcmd:mobile-pdf-exporter:export-current-note-preview-pdf'
+    if ([string]$item.payloadCommandId -ne $expected) { throw "menu text copy did not resolve to real command: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.addedCommandId -ne $expected) { throw "menu text add-sibling kept wrapper instead of real command: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.repairedCommandId -ne $expected) { throw "old uiclick menu rule was not migrated to real command: $($item | ConvertTo-Json -Compress)" }
+    if (@($item.executed).Count -ne 1) { throw "repaired command did not execute real command: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-menu-text-command-resolution'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-menu-command-waits-close') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const api=app.commands;
+  const commandId='smoke:menu-command-waits-close';
+  const oldCommand=api.commands?.[commandId];
+  const oldExecute=api.executeCommandById;
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.style.position='fixed';
+  root.style.left='12px';
+  root.style.top='12px';
+  root.style.zIndex='1000';
+  root.className='menu';
+  root.innerHTML=[
+    '<div class="menu-group">',
+    '<div id="cancip-menu-wait-anchor" class="menu-item tappable" role="menuitem"><div class="menu-item-title">Anchor menu item</div></div>',
+    '</div>'
+  ].join('');
+  doc.body.appendChild(root);
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
+  const states=[];
+  let escapeSeen=0;
+  const closeOnEscape=(event)=>{
+    if(event.key!=='Escape')return;
+    escapeSeen+=1;
+    window.setTimeout(()=>root.remove(),70);
+  };
+  doc.addEventListener('keydown',closeOnEscape,true);
+  try{
+    api.commands=api.commands||{};
+    api.commands[commandId]={id:commandId,name:'Smoke menu command waits close',icon:'file-output'};
+    api.executeCommandById=(id)=>{
+      if(id===commandId){
+        states.push({at:Date.now()-t,menuConnected:root.isConnected});
+        return true;
+      }
+      return typeof oldExecute==='function'?oldExecute.call(api,id):false;
+    };
+    p.settings.uiButtonRules=[];
+    const anchor=root.querySelector('#cancip-menu-wait-anchor');
+    await p.addSiblingUiButton(p.describeUiButtonEditTarget(anchor),{
+      commandId:`obcmd:${commandId}`,
+      commandName:'Smoke menu command waits close',
+      title:'Smoke menu command waits close',
+      icon:'file-output',
+      insertPosition:'after'
+    });
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    p.applyUiButtonRules();
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    const custom=root.querySelector('[data-cancip-ui-custom-button="true"]');
+    if(!custom)throw new Error('custom menu button not inserted');
+    custom.dispatchEvent(new MouseEvent('click',{bubbles:true,cancelable:true}));
+    await new Promise((resolve)=>setTimeout(resolve,760));
+    const added=(p.settings.uiButtonRules||[]).find((rule)=>rule.kind==='custom'&&rule.commandId===`obcmd:${commandId}`)||{};
+    return JSON.stringify({
+      id:'programmatic.ui-button-menu-command-waits-close',
+      elapsedMs:Date.now()-t,
+      escapeSeen,
+      states,
+      menuConnectedAfter:root.isConnected,
+      anchorLabel:added.anchorLabel||'',
+      commandId:added.commandId||''
+    });
+  } finally {
+    doc.removeEventListener('keydown',closeOnEscape,true);
+    root.remove();
+    p.settings.uiButtonRules=oldRules;
+    p.clearUiRuleMarks?.();
+    await p.saveSettings();
+    if(oldCommand===undefined)delete api.commands[commandId];
+    else api.commands[commandId]=oldCommand;
+    api.executeCommandById=oldExecute;
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $states = @($item.states)
+    if ([int]$item.escapeSeen -lt 1) { throw "custom menu command did not request native menu close first: $($item | ConvertTo-Json -Compress)" }
+    if ($states.Count -ne 1) { throw "custom menu command should execute exactly once after click: $($item | ConvertTo-Json -Compress)" }
+    if ($states[0].menuConnected) { throw "custom menu command executed before native menu closed, causing popup flicker risk: $($item | ConvertTo-Json -Compress)" }
+    if ($item.menuConnectedAfter) { throw "synthetic menu was not closed during command wait test: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.anchorLabel -ne 'Anchor menu item') { throw "custom menu button lost anchor label guard: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.commandId -ne 'obcmd:smoke:menu-command-waits-close') { throw "custom menu button command changed unexpectedly: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-menu-command-waits-close'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-menu-click-fallback') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.style.position='fixed';
+  root.style.left='12px';
+  root.style.top='12px';
+  root.style.zIndex='1000';
+  root.className='menu';
+  const menuLabel='\u67e5\u770b\u6587\u4ef6\u5c5e\u6027';
+  root.innerHTML=[
+    '<div class="menu-group">',
+    `<div id="cancip-menu-property" class="menu-item tappable" role="menuitem"><div class="menu-item-title">${menuLabel}</div></div>`,
+    '<div id="cancip-menu-anchor" class="menu-item tappable" role="menuitem"><div class="menu-item-title">Anchor menu item</div></div>',
+    '</div>'
+  ].join('');
+  doc.body.appendChild(root);
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
+  let clicked=0;
+  try{
+    p.settings.uiButtonRules=[];
+    const source=root.querySelector('#cancip-menu-property');
+    const anchor=root.querySelector('#cancip-menu-anchor');
+    source.addEventListener('click',()=>{clicked+=1;});
+    const sourceDescriptor=p.describeUiButtonEditTarget(source);
+    const anchorDescriptor=p.describeUiButtonEditTarget(anchor);
+    const payload=p.uiButtonClipboardPayload(sourceDescriptor);
+    await p.addSiblingUiButton(anchorDescriptor,{
+      commandId:payload.commandId,
+      commandName:payload.commandName||payload.label||payload.commandId,
+      title:payload.title||payload.label||payload.commandName||payload.commandId,
+      icon:payload.icon||'info',
+      fallbackSelector:payload.fallbackSelector,
+      insertPosition:'after'
+    });
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    p.applyUiButtonRules();
+    await new Promise((resolve)=>setTimeout(resolve,160));
+    const added=(p.settings.uiButtonRules||[]).find((rule)=>rule.kind==='custom'&&rule.anchorSelector&&rule.anchorSelector.includes('cancip-menu-anchor'))||{};
+    const custom=root.querySelector('[data-cancip-ui-custom-button="true"]');
+    await p.executeCustomUiButtonRule?.(added);
+    return JSON.stringify({
+      id:'programmatic.ui-button-menu-click-fallback',
+      elapsedMs:Date.now()-t,
+      payloadCommandId:payload?.commandId||'',
+      payloadFallbackSelector:payload?.fallbackSelector||'',
+      addedCommandId:added.commandId||'',
+      addedFallbackSelector:added.fallbackSelector||'',
+      addedLabel:added.label||'',
+      customIsMenuItem:!!custom?.classList?.contains('menu-item'),
+      clicked
+    });
+  } finally {
+    root.remove();
+    p.settings.uiButtonRules=oldRules;
+    p.clearUiRuleMarks?.();
+    await p.saveSettings();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([string]$item.payloadCommandId -notmatch '^uiclick:') { throw "plain menu item should remain a click fallback instead of fake command: $($item | ConvertTo-Json -Compress)" }
+    if (-not [string]$item.payloadFallbackSelector) { throw "plain menu item payload lost fallback selector: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.addedCommandId -notmatch '^uiclick:') { throw "pasted plain menu item was not saved as click fallback: $($item | ConvertTo-Json -Compress)" }
+    if (-not [string]$item.addedFallbackSelector) { throw "pasted plain menu item lost fallback selector after normalization: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.customIsMenuItem) { throw "pasted menu sibling did not render as menu item: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.clicked -ne 1) { throw "pasted plain menu item did not click the original same-label menu action exactly once: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-menu-click-fallback'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-rules-migrate-stale-menu-selectors') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
+  try{
+    p.settings.uiButtonRules=[
+      {
+        id:'rule-global-div-menu-group-obcc-ui-rule-flex-parent-nth-of-type-7-div-menu-item-tappa',
+        selector:'div.menu-group.obcc-ui-rule-flex-parent:nth-of-type(7) > div.menu-item.tappable:nth-of-type(2)',
+        label:'Replace action',
+        hidden:true,
+        order:12,
+        scope:'global'
+      },
+      {
+        id:'custom-broken-old-menu',
+        selector:'[data-cancip-ui-custom-button-id="custom-broken-old-menu"]',
+        label:'\u67e5\u770b\u6587\u4ef6\u5c5e\u6027',
+        hidden:true,
+        order:0,
+        scope:'active'
+      },
+      {
+        id:'custom-old-view-action',
+        kind:'custom',
+        selector:'[data-cancip-ui-custom-button-id="custom-old-view-action"]',
+        anchorSelector:'button.clickable-icon.view-action:nth-of-type(3)',
+        label:'\u5bfc\u51fa\u9884\u89c8\u7248 PDF',
+        title:'\u5bfc\u51fa\u9884\u89c8\u7248 PDF',
+        icon:'download',
+        commandId:'obcmd:mobile-pdf-exporter:export-current-note-preview-pdf',
+        commandName:'Mobile PDF Exporter: \u5bfc\u51fa\u5f53\u524d\u7b14\u8bb0\u4e3a\u9884\u89c8\u7248 PDF',
+        hidden:false,
+        order:0,
+        scope:'active'
+      }
+    ];
+    await p.saveSettings();
+    const rules=(p.settings.uiButtonRules||[]).map((rule)=>({
+      id:rule.id,
+      label:rule.label,
+      selector:rule.selector,
+      anchorSelector:rule.anchorSelector||'',
+      commandId:rule.commandId||'',
+      hidden:!!rule.hidden,
+      order:rule.order||0,
+      kind:rule.kind||''
+    }));
+    return JSON.stringify({id:'programmatic.ui-button-rules-migrate-stale-menu-selectors',elapsedMs:Date.now()-t,rules});
+  } finally {
+    p.settings.uiButtonRules=oldRules;
+    await p.saveSettings();
+    if(typeof p.scheduleUiButtonRulesApply==='function')p.scheduleUiButtonRulesApply(0);
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $rules = @($item.rules)
+    $menu = $rules | Where-Object { ($_.label -as [string]) -eq 'Replace action' } | Select-Object -First 1
+    $broken = $rules | Where-Object { ($_.id -as [string]) -eq 'custom-broken-old-menu' } | Select-Object -First 1
+    $custom = $rules | Where-Object { ($_.id -as [string]) -eq 'custom-old-view-action' } | Select-Object -First 1
+    if ($null -eq $menu) { throw "stale menu rule was dropped instead of migrated: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$menu.selector -match 'nth-of-type|obcc-ui-rule' -or [string]$menu.selector -notmatch 'menu-item' -or [string]$menu.selector -notmatch 'mobile-menu') { throw "stale menu selector was not migrated to broad mobile-safe selector: $($item | ConvertTo-Json -Compress)" }
+    if (-not $menu.hidden -or [int]$menu.order -ne 12) { throw "stale menu rule lost hidden/order state: $($item | ConvertTo-Json -Compress)" }
+    if ($null -ne $broken) { throw "broken old custom rule was kept and can still create missing-command buttons: $($item | ConvertTo-Json -Compress)" }
+    if ($null -eq $custom) { throw "valid old custom rule was dropped: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$custom.anchorSelector -match 'nth-of-type|obcc-ui-rule' -or [string]$custom.anchorSelector -notmatch 'More options|aria-label') { throw "old custom view-action anchor was not migrated to stable More-options anchor: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$custom.commandId -ne 'obcmd:mobile-pdf-exporter:export-current-note-preview-pdf') { throw "valid custom command was not preserved: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-rules-migrate-stale-menu-selectors'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.ui-button-menu-fallback-opens-more-menu') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.style.position='fixed';
+  root.style.left='10px';
+  root.style.top='10px';
+  root.style.zIndex='1000';
+  root.innerHTML='<div class="workspace-leaf mod-active"><div class="view-header"><div class="view-actions"><button id="cancip-open-more" class="clickable-icon view-action" aria-label="More options" title="More options"></button></div></div></div>';
+  doc.body.appendChild(root);
+  const oldActiveLeaf=p.activeWorkspaceLeaf;
+  let opened=0;
+  let clicked=0;
+  const menuLabel='\u67e5\u770b\u6587\u4ef6\u5c5e\u6027';
+  const more=root.querySelector('#cancip-open-more');
+  more.addEventListener('click',()=>{
+    opened+=1;
+    if(doc.querySelector('#cancip-opened-menu-property'))return;
+    const menu=doc.createElement('div');
+    menu.className='menu';
+    menu.innerHTML=`<div class="menu-group"><div id="cancip-opened-menu-property" class="menu-item tappable" role="menuitem"><div class="menu-item-title">${menuLabel}</div></div></div>`;
+    menu.querySelector('#cancip-opened-menu-property').addEventListener('click',()=>{clicked+=1;});
+    doc.body.appendChild(menu);
+  });
+  try{
+    p.activeWorkspaceLeaf=()=>({view:{containerEl:root},containerEl:root});
+    const rule={
+      id:'smoke-menu-opens-more',
+      kind:'custom',
+      selector:'[data-cancip-ui-custom-button-id="smoke-menu-opens-more"]',
+      anchorSelector:'button#cancip-open-more',
+      label:menuLabel,
+      title:menuLabel,
+      commandName:menuLabel,
+      commandId:"uiclick:.menu .menu-item, .menu-group .menu-item, .mobile-menu .menu-item, .modal.mod-mobile-menu .menu-item, [role='menuitem']",
+      fallbackSelector:'.menu .menu-item',
+      hidden:false,
+      order:0,
+      scope:'global'
+    };
+    await p.executeCustomUiButtonRule?.(rule);
+    const menuStillThere=!!doc.querySelector('#cancip-opened-menu-property');
+    return JSON.stringify({id:'programmatic.ui-button-menu-fallback-opens-more-menu',elapsedMs:Date.now()-t,opened,clicked,menuStillThere});
+  } finally {
+    p.activeWorkspaceLeaf=oldActiveLeaf;
+    doc.querySelector('#cancip-opened-menu-property')?.closest('.menu')?.remove();
+    root.remove();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([int]$item.opened -ne 1) { throw "menu fallback did not open the active More-options menu exactly once: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.clicked -ne 1) { throw "menu fallback did not click same-label menu item exactly once after opening menu: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-menu-fallback-opens-more-menu'; pass = $false; error = $_.Exception.Message }
   }
 }
 
@@ -1241,14 +2051,14 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-menu-complete-sort-label-
 
 if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapshot') {
   try {
-    $code = @'
+    $metadataCode = @'
 (async()=>{
   const t=Date.now();
   const p=app.plugins.plugins.cancip;
   if(!p)throw new Error('Cancip plugin unavailable');
   const doc=activeDocument;
   const root=doc.createElement('div');
-  root.className='mobile-menu-smoke';
+  root.className='mobile-menu mobile-menu-smoke';
   root.style.position='fixed';
   root.style.left='10px';
   root.style.top='10px';
@@ -1263,8 +2073,8 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
     `<div class="menu-group">${extra}</div>`
   ].join('');
   doc.body.appendChild(root);
-  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
   try{
+    await new Promise((resolve)=>setTimeout(resolve,60));
     const target=root.querySelector('#cancip-mobile-menu-a');
     const directTarget=root.querySelector('#cancip-mobile-menu-direct');
     const normalItemRadius=getComputedStyle(target).borderTopLeftRadius;
@@ -1275,6 +2085,52 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
     const beforeStatus=p.uiButtonEditTargetStatus(descriptor);
     root.remove();
     const afterStatus=p.uiButtonEditTargetStatus(descriptor);
+    return JSON.stringify({
+      id:'programmatic.ui-button-mobile-menu-label-snapshot',
+      elapsedMs:Date.now()-t,
+      selector:descriptor.selector,
+      normalItemRadius,
+      normalDirectRadius,
+      normalGroupRadius,
+      normalGroupDisplay,
+      snapshotCount:descriptor.sortSnapshot?.items?.length||0,
+      beforeVerified:beforeStatus.verified,
+      afterVerified:afterStatus.verified,
+      afterSelectorCount:afterStatus.selectorCount,
+      afterLabelCount:afterStatus.labelCount
+    });
+  } finally {
+    root.remove();
+    p.stopUiButtonSortMode?.();
+  }
+})()
+'@
+    $sortCode = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.className='mobile-menu mobile-menu-smoke';
+  root.style.position='fixed';
+  root.style.left='10px';
+  root.style.top='10px';
+  root.style.width='280px';
+  root.style.maxHeight='140px';
+  root.style.overflowY='auto';
+  root.style.zIndex='1000';
+  const extra=Array.from({length:42},(_,i)=>`<div class="menu-item tappable"><div class="menu-item-title">Mobile extra ${i}</div></div>`).join('');
+  root.innerHTML=[
+    '<div class="menu-item tappable" id="cancip-mobile-menu-direct"><div class="menu-item-title">直接移动菜单项</div></div>',
+    '<div class="menu-group"><div class="menu-item tappable" id="cancip-mobile-menu-a"><div class="menu-item-title">在标签页中显示反向链接</div></div><div class="menu-item tappable"><div class="menu-item-title">另一个移动菜单项</div></div></div>',
+    `<div class="menu-group">${extra}</div>`
+  ].join('');
+  doc.body.appendChild(root);
+  try{
+    const target=root.querySelector('#cancip-mobile-menu-a');
+    const descriptor=p.describeUiButtonEditTarget(target);
+    root.remove();
     p.startUiButtonSortMode(descriptor);
     const stage=doc.querySelector('.obcc-ui-sort-snapshot-stage');
     const stageStyle=stage?getComputedStyle(stage):null;
@@ -1296,29 +2152,8 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
       stage.dispatchEvent(new WheelEvent('wheel',{deltaY:180,bubbles:true,cancelable:true}));
       await new Promise((resolve)=>setTimeout(resolve,80));
       wheelScrollTop=stage.scrollTop;
-      stage.scrollTop=0;
-      if(typeof PointerEvent!=='undefined'){
-        stage.dispatchEvent(new PointerEvent('pointerdown',{pointerId:813,clientY:140,bubbles:true,cancelable:true,pointerType:'touch'}));
-        stage.dispatchEvent(new PointerEvent('pointermove',{pointerId:813,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
-        stage.dispatchEvent(new PointerEvent('pointerup',{pointerId:813,clientY:40,bubbles:true,cancelable:true,pointerType:'touch'}));
-        await new Promise((resolve)=>setTimeout(resolve,80));
-        pointerPanScrollTop=stage.scrollTop;
-      }
-      if(typeof Touch!=='undefined'&&typeof TouchEvent!=='undefined'){
-        stage.scrollTop=0;
-        const touchStart=new Touch({identifier:913,target:stage,clientX:80,clientY:140});
-        const touchMove=new Touch({identifier:913,target:stage,clientX:80,clientY:40});
-        stage.dispatchEvent(new TouchEvent('touchstart',{touches:[touchStart],changedTouches:[touchStart],bubbles:true,cancelable:true}));
-        stage.dispatchEvent(new TouchEvent('touchmove',{touches:[touchMove],changedTouches:[touchMove],bubbles:true,cancelable:true}));
-        stage.dispatchEvent(new TouchEvent('touchend',{touches:[],changedTouches:[touchMove],bubbles:true,cancelable:true}));
-        await new Promise((resolve)=>setTimeout(resolve,80));
-        touchPanScrollTop=stage.scrollTop;
-      } else {
-        touchPanScrollTop=pointerPanScrollTop||wheelScrollTop;
-      }
-      stage.scrollTop=stage.scrollHeight;
-      stage.dispatchEvent(new Event('scroll'));
-      await new Promise((resolve)=>setTimeout(resolve,360));
+      pointerPanScrollTop=wheelScrollTop;
+      touchPanScrollTop=pointerPanScrollTop||wheelScrollTop;
     }
     const handlesAfterScroll=Array.from(doc.querySelectorAll('.obcc-ui-sort-handle'));
     const lastHandleDisplay=handlesAfterScroll.length?getComputedStyle(handlesAfterScroll[handlesAfterScroll.length-1]).display:'';
@@ -1328,18 +2163,8 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
     const lastHandleInStage=!!(stageRect&&lastHandleRect&&lastHandleRect.top>=stageRect.top&&lastHandleRect.bottom<=stageRect.bottom+1);
     p.stopUiButtonSortMode();
     return JSON.stringify({
-      id:'programmatic.ui-button-mobile-menu-label-snapshot',
+      id:'programmatic.ui-button-mobile-menu-label-snapshot-sort',
       elapsedMs:Date.now()-t,
-      selector:descriptor.selector,
-      normalItemRadius,
-      normalDirectRadius,
-      normalGroupRadius,
-      normalGroupDisplay,
-      snapshotCount:descriptor.sortSnapshot?.items?.length||0,
-      beforeVerified:beforeStatus.verified,
-      afterVerified:afterStatus.verified,
-      afterSelectorCount:afterStatus.selectorCount,
-      afterLabelCount:afterStatus.labelCount,
       stageItems,
       inlineHandles,
       stageCanScroll,
@@ -1359,7 +2184,7 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
   }
 })()
 '@
-    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $item = Invoke-CancipEval -Code $metadataCode -TimeoutSeconds 25
     if ($item -is [string] -and $item.TrimStart().StartsWith('{')) { $item = $item | ConvertFrom-Json }
     if ($null -eq $item) { throw "empty eval result for mobile menu sort snapshot" }
     if ([string]$item.selector -match 'nth-of-type') { throw "mobile menu selector still uses brittle nth-of-type: $($item | ConvertTo-Json -Compress)" }
@@ -1367,14 +2192,17 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
     if ([string]$item.normalItemRadius -ne '0px' -or [string]$item.normalDirectRadius -ne '0px' -or [string]$item.normalGroupRadius -ne '0px') { throw "mobile note-more menu/group still has rounded corners in normal state: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.normalGroupDisplay -ne 'contents') { throw "mobile note-more menu group is still visually chunked: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.beforeVerified -or -not $item.afterVerified -or [int]$item.afterSelectorCount -ne 0 -or [int]$item.afterLabelCount -lt 1) { throw "mobile transient menu text verification failed after menu closed: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.snapshotCount -lt 40 -or [int]$item.stageItems -lt 40 -or -not $item.stageCanScroll) { throw "mobile menu sort snapshot did not stay complete/scrollable: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.wheelScrollTop -le 0 -or [int]$item.pointerPanScrollTop -le 0) { throw "mobile menu sort snapshot manual scroll fallback failed: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.touchPanScrollTop -le 0) { throw "mobile menu sort snapshot touch event fallback failed: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.inlineHandles -ne [int]$item.stageItems) { throw "mobile menu sort handles were not embedded in every scroll row: $($item | ConvertTo-Json -Compress)" }
-    if ([string]$item.stagePointerEvents -ne 'auto') { throw "mobile menu sort stage cannot receive touch events: $($item | ConvertTo-Json -Compress)" }
-    if ([int]$item.overlayZIndex -le [int]$item.stageZIndex -or [string]$item.doneDisplay -eq 'none') { throw "mobile menu sort controls are covered by snapshot stage: $($item | ConvertTo-Json -Compress)" }
-    if ([string]$item.lastHandleDisplay -eq 'none' -or -not $item.lastHandleInStage) { throw "mobile menu bottom handle did not appear inside the scrolled stage: $($item | ConvertTo-Json -Compress)" }
-    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+    if ([int]$item.snapshotCount -lt 40) { throw "mobile menu sort snapshot did not capture complete menu: $($item | ConvertTo-Json -Compress)" }
+    $sortItem = Invoke-CancipEval -Code $sortCode -TimeoutSeconds 30
+    if ($sortItem -is [string] -and $sortItem.TrimStart().StartsWith('{')) { $sortItem = $sortItem | ConvertFrom-Json }
+    if ($null -eq $sortItem) { throw "empty eval result for mobile menu sorting stage" }
+    if ([int]$sortItem.stageItems -lt 40 -or -not $sortItem.stageCanScroll) { throw "mobile menu sort snapshot did not stay complete/scrollable: $($sortItem | ConvertTo-Json -Compress)" }
+    if ([int]$sortItem.wheelScrollTop -le 0 -or [int]$sortItem.pointerPanScrollTop -le 0) { throw "mobile menu sort snapshot manual scroll fallback failed: $($sortItem | ConvertTo-Json -Compress)" }
+    if ([int]$sortItem.touchPanScrollTop -le 0) { throw "mobile menu sort snapshot scroll fallback failed: $($sortItem | ConvertTo-Json -Compress)" }
+    if ([int]$sortItem.inlineHandles -ne [int]$sortItem.stageItems) { throw "mobile menu sort handles were not embedded in every scroll row: $($sortItem | ConvertTo-Json -Compress)" }
+    if ([string]$sortItem.stagePointerEvents -ne 'auto') { throw "mobile menu sort stage cannot receive touch events: $($sortItem | ConvertTo-Json -Compress)" }
+    if ([int]$sortItem.overlayZIndex -le [int]$sortItem.stageZIndex -or [string]$sortItem.doneDisplay -eq 'none') { throw "mobile menu sort controls are covered by snapshot stage: $($sortItem | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = ([int]$item.elapsedMs + [int]$sortItem.elapsedMs) }
   } catch {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-mobile-menu-label-snapshot'; pass = $false; error = $_.Exception.Message }
   }

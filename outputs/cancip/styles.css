@@ -22,11 +22,14 @@
   position: relative;
   display: inline-flex;
   align-items: center;
+  align-self: center;
   justify-content: center;
   gap: 2px;
   min-width: 0;
   height: 18px;
   padding: 0 2px;
+  line-height: 1;
+  vertical-align: middle;
   cursor: pointer;
   user-select: none;
 }
@@ -46,6 +49,7 @@
 }
 
 .obcc-statusbar-icon svg {
+  display: block;
   width: 14px;
   height: 14px;
 }
@@ -64,20 +68,35 @@
 
 .obcc-statusbar-badge {
   position: absolute;
-  right: -5px;
-  bottom: -1px;
+  right: -7px;
+  bottom: -4px;
   display: none;
-  width: 7px;
-  height: 7px;
-  min-width: 7px;
-  padding: 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 3px;
   border: 1px solid var(--background-primary);
   border-radius: 999px;
   background: #dc2626;
+  color: #fff;
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 12px;
+  box-shadow: 0 0 0 1px var(--background-primary);
+  pointer-events: none;
+}
+
+.obcc-statusbar-badge.is-large {
+  min-width: 16px;
 }
 
 .obcc-statusbar.has-chat-attention .obcc-statusbar-dot {
   display: block;
+}
+
+.obcc-statusbar.has-review-attention .obcc-statusbar-badge {
+  display: inline-flex;
 }
 
 .obcc-root {
@@ -931,6 +950,34 @@
   display: inline-flex;
 }
 
+.mod-right-split .workspace-tabs .workspace-tab-header-container {
+  position: relative;
+  padding-right: 86px;
+}
+
+.obcc-right-tab-toolbar {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 1px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
+}
+
+.obcc-right-tab-button {
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+
 .menu.obcc-ui-rule-flex-parent,
 .menu .obcc-ui-rule-flex-parent,
 .menu-group.obcc-ui-rule-flex-parent,
@@ -993,13 +1040,24 @@ body .menu-group > .menu-section,
 body .menu-group > .menu-group,
 body .modal.mod-mobile-menu .menu-section,
 body .modal.mod-mobile-menu .menu-group {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
   margin: 0;
   padding: 0;
   border: 0;
   border-radius: 0;
   background: transparent;
   box-shadow: none;
+}
+
+body .menu > .menu-group,
+body .menu-group > .menu-group,
+body .menu-scroll .menu-group,
+body .mobile-menu .menu-group,
+body .modal.mod-mobile-menu .menu-group,
+body [class*="mobile-menu"] > .menu-group {
+  display: contents;
 }
 
 body .menu .menu-separator,
@@ -1083,6 +1141,29 @@ body.is-phone .menu-item > * {
 .menu-group.obcc-ui-rule-flex-parent > .obcc-ui-rule-menu-section-contents,
 .menu-group.obcc-ui-rule-menu-complete-sort-parent > .obcc-ui-rule-menu-section-contents {
   display: contents;
+}
+
+.menu.obcc-ui-rule-flex-parent > .menu-group,
+.menu.obcc-ui-rule-menu-complete-sort-parent > .menu-group,
+.menu-group.obcc-ui-rule-flex-parent > .menu-group,
+.menu-group.obcc-ui-rule-menu-complete-sort-parent > .menu-group {
+  display: contents;
+}
+
+.menu.obcc-ui-rule-flex-parent > .menu-section,
+.menu.obcc-ui-rule-menu-complete-sort-parent > .menu-section,
+.menu.obcc-ui-rule-flex-parent > .obcc-ui-rule-menu-section-contents,
+.menu.obcc-ui-rule-menu-complete-sort-parent > .obcc-ui-rule-menu-section-contents,
+.menu-group.obcc-ui-rule-flex-parent > .menu-section,
+.menu-group.obcc-ui-rule-menu-complete-sort-parent > .menu-section,
+.menu-group.obcc-ui-rule-flex-parent > .obcc-ui-rule-menu-section-contents,
+.menu-group.obcc-ui-rule-menu-complete-sort-parent > .obcc-ui-rule-menu-section-contents,
+.menu.obcc-ui-rule-flex-parent > .menu-group,
+.menu.obcc-ui-rule-menu-complete-sort-parent > .menu-group,
+.menu-group.obcc-ui-rule-flex-parent > .menu-group,
+.menu-group.obcc-ui-rule-menu-complete-sort-parent > .menu-group {
+  flex-direction: column;
+  gap: 0;
   margin: 0;
   padding: 0;
   border-radius: 0;

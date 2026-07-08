@@ -64,11 +64,25 @@ The default smoke test is read-only and does not call the model API. It checks p
 npm run smoke
 ```
 
-Run the broader read-only command set:
+Run the normal development gate before committing:
+
+```bash
+npm run verify
+```
+
+Run the broader read-only command set. This still excludes the heavy UI button customization/sorting cases so the full command/memory gate does not inherit mobile-menu timeout noise:
 
 ```bash
 npm run smoke:full
 ```
+
+Run the heavier UI button customization/sorting checks separately. These tests exercise native menu snapshots and mobile-style sortable overlays, so they are intentionally outside both the default core smoke path and the broader command/memory smoke path. The UI profile fails fast on transport timeouts because one stale Obsidian eval can cascade into several false failures:
+
+```bash
+npm run smoke:ui
+```
+
+Every smoke run writes a timestamped report plus `reports/cancip-smoke-latest.json`. The latest report contains failed case ids, group counts, and next-action recommendations so another agent or Cancip itself can resume from the smallest failing surface.
 
 Optional write/config tests create temporary files under `.cancip/test-lab` and then clean them up. Run them only when Vault write tests are intentionally allowed:
 
@@ -76,11 +90,18 @@ Optional write/config tests create temporary files under `.cancip/test-lab` and 
 npm run smoke:write
 ```
 
+If Obsidian CLI connectivity is stale after a crashed UI smoke, restart Obsidian and rerun the focused case. The smoke script now fails fast and writes a report instead of hanging when both eval transports fail:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Case memory -FailFast
+```
+
 Useful direct PowerShell filters:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Case memory
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Full -Case command
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/run-cancip-smoke.ps1 -Full -Case ui-button
 ```
 
 ## Install
