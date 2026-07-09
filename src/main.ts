@@ -69,6 +69,26 @@ type ApiMode = "auto" | "compatible" | "responses";
 type TtsProvider = "auto" | "builtin-prime-tts" | "android-system" | "web-speech" | "custom-url";
 type TtsQualityMode = "quality-first";
 type TtsPlaybackMode = "idle" | "starting" | "playing" | "paused" | "stopped" | "failed";
+type ConfigBackupSource = "before-cancip-write" | "manual-baseline";
+type ConfigBackupRecord = {
+  path: string;
+  createdAt: string;
+  hash: string;
+  source: ConfigBackupSource;
+};
+type ConfigBackupEntry = {
+  lastCancipWriteHash?: string;
+  lastCancipWriteAt?: string;
+  lastManualBaselineHash?: string;
+  lastManualBaselineAt?: string;
+  latestBackupPath?: string;
+  latestManualBaselinePath?: string;
+  backups: ConfigBackupRecord[];
+};
+type ConfigBackupIndex = {
+  schemaVersion: number;
+  entries: Record<string, ConfigBackupEntry>;
+};
 const CANCIP_REVIEW_VIEW_TYPE = "cancip-review-view";
 const PRIME_TTS_PACKAGES_RELATIVE = "plugins/cancip/tts";
 const BUILTIN_PRIME_TTS_PACKAGE_FOLDER = "prime-tts";
@@ -587,6 +607,19 @@ type TtsPartPlan = {
 type TtsFileSnapshot = {
   text: string;
   sourceText: string;
+};
+
+type CurrentPageTranslationCapture = {
+  text: string;
+  label: string;
+  path: string;
+  source: "selection" | "file" | "pdf" | "unsupported" | "none";
+};
+
+type PageTranslationTarget = {
+  id: number;
+  text: string;
+  apply: (translated: string) => void;
 };
 
 type PrimeTtsPlayable =
@@ -1155,6 +1188,7 @@ const PRESET_UI_BUTTON_ICONS = [
   "x",
   "settings",
   "sliders-horizontal",
+  "languages",
   "volume-2",
   "play",
   "pause",
@@ -1863,6 +1897,10 @@ const DEFAULT_SETTINGS: Settings = {
 const CANCIP_CONFIG_DIR = ".cancip";
 const CANCIP_CONFIG_PATH = `${CANCIP_CONFIG_DIR}/config.json`;
 const CANCIP_CONFIG_SCHEMA_VERSION = 1;
+const CANCIP_CONFIG_BACKUP_DIR = `${CANCIP_CONFIG_DIR}/config-backups`;
+const CANCIP_CONFIG_BACKUP_INDEX_PATH = `${CANCIP_CONFIG_BACKUP_DIR}/index.json`;
+const CANCIP_CONFIG_BACKUP_SCHEMA_VERSION = 1;
+const CANCIP_CONFIG_BACKUP_MAX_RECORDS_PER_PATH = 60;
 const CANCIP_MACHINE_INDEX_DIR = `${CANCIP_CONFIG_DIR}/index`;
 const CANCIP_SKILLS_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/skills-index.json`;
 const CANCIP_SKILLS_INDEX_SCHEMA_VERSION = 1;
@@ -2111,6 +2149,11 @@ const EN = {
   informationalActionBlocked: "Blocked because this is a read/list/explain question. Ask explicitly to create, modify, move, delete, configure, or run a write action.",
   chooseOption: "Choose",
   commandAddSelection: "Add selection to chat",
+  commandTranslateCurrentPage: "Translate current page",
+  translateCurrentPageQueued: "Current page translation request sent",
+  translateCurrentPageNoText: "No readable text on the current page",
+  translateCurrentPageApplying: "Translating visible page text...",
+  translateCurrentPageApplied: "Translated current page text: {count} items",
   commandSpeakActiveNote: "Read active note aloud",
   commandSpeakSelection: "Read selection aloud",
   commandStopTts: "Stop read aloud",
@@ -2817,6 +2860,11 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     informationalActionBlocked: "已阻止：这是读取、清单、解释或分析类问题。只有用户明确要求新建、修改、移动、删除、配置或执行写入动作时，才会自动执行写入类工具。",
     chooseOption: "选择",
     commandAddSelection: "把选中文本加入聊天",
+    commandTranslateCurrentPage: "翻译当前页面",
+    translateCurrentPageQueued: "已发送当前页面翻译请求",
+    translateCurrentPageNoText: "当前页面没有可翻译文本",
+    translateCurrentPageApplying: "正在翻译当前页面可见文字…",
+    translateCurrentPageApplied: "已翻译当前页面文字：{count} 项",
     commandSpeakActiveNote: "朗读当前笔记",
     commandSpeakSelection: "朗读选中文本",
     commandStopTts: "停止朗读",
@@ -5084,6 +5132,15 @@ export default class CancipPlugin extends Plugin {
         if (!chatView?.addEditorContext(editor, view)) {
           new Notice(this.t("noCursorContext"));
         }
+      }
+    });
+
+    this.addCommand({
+      id: "translate-current-page",
+      name: this.t("commandTranslateCurrentPage"),
+      callback: async () => {
+        const chatView = await this.activateView();
+        await chatView?.translateCurrentPage();
       }
     });
 
@@ -8214,6 +8271,30 @@ export default class CancipPlugin extends Plugin {
     return { text: trimContext(text, maxChars), sourceText: text };
   }
 
+  async captureActivePageTextForTranslation(maxChars = 24000): Promise<CurrentPageTranslationCapture> {
+    const selected = getWindowSelectionText().trim();
+    const file = this.app.workspace.getActiveFile();
+    if (selected) {
+      return {
+        text: trimContext(selected, maxChars),
+        label: this.t("speakSelection"),
+        path: file?.path ?? "",
+        source: "selection"
+      };
+    }
+    if (!file) return { text: "", label: "", path: "", source: "none" };
+    if (!isContextTextFile(file) && !isPdfFile(file)) {
+      return { text: "", label: file.basename, path: file.path, source: "unsupported" };
+    }
+    const snapshot = await this.captureFileTtsStartSnapshot(file, maxChars);
+    return {
+      text: trimContext(snapshot.text, maxChars),
+      label: file.basename,
+      path: file.path,
+      source: isPdfFile(file) ? "pdf" : "file"
+    };
+  }
+
   private activeTtsViewportBaseCursor(file: TFile): number {
     const container = this.activeFileContainer(file);
     if (!container) return 0;
@@ -8411,7 +8492,10 @@ export default class CancipPlugin extends Plugin {
       if (!(await adapter.exists(CANCIP_CONFIG_DIR))) {
         await adapter.mkdir(CANCIP_CONFIG_DIR);
       }
-      await adapter.write(CANCIP_CONFIG_PATH, `${JSON.stringify(settingsToCancipConfig(this.settings), null, 2)}\n`);
+      const content = `${JSON.stringify(settingsToCancipConfig(this.settings), null, 2)}\n`;
+      await backupConfigBeforeCancipWrite(adapter, CANCIP_CONFIG_PATH, content);
+      await adapter.write(CANCIP_CONFIG_PATH, content);
+      await recordCancipConfigWrite(adapter, CANCIP_CONFIG_PATH, content);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       console.warn("Cancip config write failed", error);
@@ -10169,7 +10253,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         "aria-label": this.t("editButtonSettings")
       }
     });
-    setIcon(bubble, "settings");
+    setIcon(bubble, "bot");
     this.preloadButtonEditDescriptor(descriptor);
     const rect = target.getBoundingClientRect();
     const anchorX = Number.isFinite(x) && x > 0 ? x : rect.left + rect.width / 2;
@@ -16623,6 +16707,95 @@ class CancipView extends ItemView {
     void this.sendPromptNow(prompt);
   }
 
+  async translateCurrentPage(): Promise<void> {
+    if (this.activeRequest) {
+      const capture = await this.plugin.captureActivePageTextForTranslation(24000);
+      const text = capture.text.trim();
+      if (!text) {
+        new Notice(this.t("translateCurrentPageNoText"));
+        return;
+      }
+      const prompt = buildTranslateCurrentPagePrompt(capture, this.translationTargetLanguageLabel());
+      this.enqueuePrompt(prompt, { priority: true });
+      this.setStatus(this.t("translateCurrentPageQueued"));
+      this.syncRequestControls();
+      new Notice(this.t("translateCurrentPageQueued"));
+      return;
+    }
+
+    const applied = await this.translateVisibleCurrentPageText();
+    if (applied > 0) return;
+
+    const capture = await this.plugin.captureActivePageTextForTranslation(24000);
+    const text = capture.text.trim();
+    if (!text) {
+      new Notice(this.t("translateCurrentPageNoText"));
+      return;
+    }
+    const prompt = buildTranslateCurrentPagePrompt(capture, this.translationTargetLanguageLabel());
+    this.setStatus(this.t("translateCurrentPageQueued"));
+    await this.sendPromptNow(prompt);
+  }
+
+  private async translateVisibleCurrentPageText(): Promise<number> {
+    const targets = collectCurrentPageTranslationTargets(this.app, 90);
+    if (!targets.length) return 0;
+    const profile = this.plugin.activeApiProfile();
+    if (!profile.apiUrl || !profile.apiKey || !profile.model) return 0;
+    const request = new AbortController();
+    const previousRequestProfile = this.activeRequestApiProfile;
+    this.activeRequest = request;
+    this.activeRequestApiProfile = profile;
+    this.syncRequestControls();
+    void this.updateCurrentSessionStatus("running", false);
+    const progress = this.addProgressStep(this.t("translateCurrentPageApplying"));
+    try {
+      this.setStatus(this.t("translateCurrentPageApplying"));
+      const prompt = buildVisiblePageTranslationPrompt(targets, this.translationTargetLanguageLabel());
+      const answer = await this.callModelWithRetries(
+        prompt,
+        { system: visiblePageTranslationSystemPrompt(), contextText: "" },
+        prompt,
+        "page translation timed out",
+        MODEL_CALL_TIMEOUT_MS,
+        this.modelRetryProgressUpdater(progress, this.t("translateCurrentPageApplying"))
+      );
+      if (request.signal.aborted || !this.hasRequest(request)) return 0;
+      const translations = parseVisiblePageTranslations(answer);
+      let count = 0;
+      for (const target of targets) {
+        const translated = translations.get(target.id)?.trim();
+        if (!translated || translated === target.text) continue;
+        target.apply(translated);
+        count += 1;
+      }
+      if (count > 0) {
+        const status = this.t("translateCurrentPageApplied", { count });
+        this.updateProgressStep(progress, status, "", this.t("toolRunExecuted"));
+        this.setStatus(status);
+        new Notice(status);
+        await this.finishCurrentSessionStatus("completed", true, request);
+        return count;
+      }
+      this.updateProgressStep(progress, this.t("translateCurrentPageNoText"), trimContext(answer, 800), this.t("toolRunFailed"));
+      await this.finishCurrentSessionStatus("failed", true, request);
+      return 0;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.updateProgressStep(progress, this.t("translateCurrentPageApplying"), reason, this.t("toolRunFailed"));
+      await this.finishCurrentSessionStatus("failed", true, request);
+      return 0;
+    } finally {
+      this.activeRequestApiProfile = previousRequestProfile;
+      if (this.hasRequest(request)) this.clearRequest(request);
+      this.syncRequestControls();
+    }
+  }
+
+  private translationTargetLanguageLabel(): string {
+    return translationLanguageLabel(this.plugin.language());
+  }
+
   private async drainQueuedPrompts(): Promise<void> {
     if (this.activeRequest || !this.queuedPrompts.length) return;
     if (this.editingQueuedPromptId) return;
@@ -20525,6 +20698,7 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.listCommands", "obsidian.listCommands", ["command", "commands", "obsidian", "list", "cmd", "cli", "命令", "命令库", "列表"], 84),
       commandTarget("command:obsidian.resolveCommand", "obsidian.resolveCommand", ["command", "commands", "obsidian", "resolve", "find", "match", "cmd", "cli", "命令", "命令库", "解析", "匹配", "查找"], 86),
       commandTarget("command:obsidian.currentView", "obsidian.currentView", ["current", "view", "active", "page", "selection", "当前", "页面", "活动页", "当前页面", "选区"], 86),
+      commandTarget("command:cancip.translateCurrentPage", "cancip.translateCurrentPage", ["translate", "translation", "language", "current page", "active page", "selection", "翻译", "译文", "语言", "当前页面", "当前页", "选区"], 86),
       commandTarget("command:obsidian.dom.snapshot", "obsidian.dom.snapshot", ["dom", "snapshot", "buttons", "screen", "ui", "当前界面", "按钮", "截图", "页面元素", "界面"], 84),
       commandTarget("command:obsidian.dom.click", "obsidian.dom.click", ["dom", "click", "tap", "button", "ui", "点击", "按钮", "模拟点击", "点按"], 80),
       commandTarget("command:obsidian.dom.input", "obsidian.dom.input", ["dom", "input", "type", "textarea", "ui", "输入", "模拟输入", "文本框"], 80),
@@ -23060,6 +23234,7 @@ class CancipView extends ItemView {
     if (action.type !== "command") return false;
     const command = action.command.trim();
     return command === "cancip.tts.readActive"
+      || command === "cancip.translateCurrentPage"
       || command === "cancip.tts.speak"
       || command === "cancip.tts.pause"
       || command === "cancip.tts.resume"
@@ -23824,7 +23999,9 @@ class CancipView extends ItemView {
       const updated = action.regex
         ? this.applyRegexPatch(currentPath, current, action)
         : this.applyExactPatch(currentPath, current, action);
+      await backupConfigBeforeCancipWrite(adapter, currentPath, updated);
       await adapter.write(currentPath, updated);
+      await recordCancipConfigWrite(adapter, currentPath, updated);
       return this.withSelfPatchNotice(currentPath, this.t("actionPatch", { path: currentPath }));
     }
 
@@ -23875,6 +24052,7 @@ class CancipView extends ItemView {
     await ensureParentFolder(adapter, path);
 
     if (action.type === "write") {
+      await backupConfigBeforeCancipWrite(adapter, path, content);
       await adapter.write(path, chunks[0] ?? "");
       for (const chunk of chunks.slice(1)) {
         await adapter.append(path, chunk);
@@ -23883,11 +24061,13 @@ class CancipView extends ItemView {
       if (verified.length !== content.length || await sha256Text(verified) !== await sha256Text(content)) {
         throw new Error(`write verification failed: ${path}`);
       }
+      await recordCancipConfigWrite(adapter, path, content);
       return this.withSelfPatchNotice(path, this.t("actionWriteDetailed", { path, chars: content.length, chunks: chunks.length }));
     }
 
     const existed = await adapter.exists(path);
     const before = existed ? await adapter.read(path) : "";
+    await backupConfigBeforeCancipWrite(adapter, path, `${before}${content}`);
     if (!existed) {
       await adapter.write(path, "");
     }
@@ -23898,6 +24078,7 @@ class CancipView extends ItemView {
     if (after.length !== before.length + content.length || !after.endsWith(content)) {
       throw new Error(`append verification failed: ${path}`);
     }
+    await recordCancipConfigWrite(adapter, path, after);
     return this.withSelfPatchNotice(path, this.t("actionAppendDetailed", { path, chars: content.length, chunks: chunks.length }));
   }
 
@@ -23905,6 +24086,7 @@ class CancipView extends ItemView {
     if (!await adapter.exists(path)) {
       throw new Error(`delete target not found: ${path}`);
     }
+    await backupConfigBeforeCancipWrite(adapter, path, "");
 
     let mode = permanent ? "remove" : "trash";
     if (permanent) {
@@ -24080,7 +24262,9 @@ class CancipView extends ItemView {
       writePayload = settingsToCancipConfig(nextSettings);
     }
     await ensureParentFolder(adapter, path);
-    await writeTextInChunks(adapter, path, `${JSON.stringify(writePayload, null, 2)}\n`);
+    const content = `${JSON.stringify(writePayload, null, 2)}\n`;
+    await backupConfigBeforeCancipWrite(adapter, path, content);
+    await writeTextInChunks(adapter, path, content);
     try {
       const verified = JSON.parse(await adapter.read(path)) as unknown;
       if (JSON.stringify(verified) !== JSON.stringify(writePayload)) throw new Error("readback mismatch");
@@ -24088,6 +24272,7 @@ class CancipView extends ItemView {
       const reason = error instanceof Error ? error.message : String(error);
       throw new Error(`config write verification failed in ${path}: ${reason}`);
     }
+    await recordCancipConfigWrite(adapter, path, content);
     if (nextSettings) {
       this.plugin.settings = nextSettings;
       await this.plugin.saveData(this.plugin.settings);
@@ -24356,6 +24541,11 @@ class CancipView extends ItemView {
 
     if (normalized === "obsidian.currentView") {
       return this.t("commandExecuted", { command: normalized, result: await this.currentObsidianViewSummary(args) });
+    }
+
+    if (normalized === "cancip.translateCurrentPage") {
+      await this.translateCurrentPage();
+      return this.t("commandExecuted", { command: normalized, result: this.t("translateCurrentPageQueued") });
     }
 
     if (normalized === "obsidian.dom.snapshot") {
@@ -29728,6 +29918,144 @@ function buildVaultDailyReportPrompt(hours: number): string {
     "不要把候选动作写成已经完成；不要建议自动删除/移动/合并。确实需要处理时，写成“建议确认后执行”。",
     "输出结构固定为：一句总判断；今日改动；待整理/可合并候选；任务/日记线索；审核/版本/自动化状态；明天优先处理；需要确认的高风险动作。"
   ].join("\n");
+}
+
+function buildTranslateCurrentPagePrompt(input: CurrentPageTranslationCapture, targetLanguage: string): string {
+  const source = [input.label, input.path].filter(Boolean).join(" · ") || input.source;
+  return [
+    `Translate the current page content below into ${targetLanguage}.`,
+    "Requirements: preserve Markdown structure, heading levels, lists, tables, links, code blocks, shortcuts, paths, product names, and key terms; do not modify the source file; reply only with the translated text in chat. If the source is already in the target language, polish it into clearer natural wording.",
+    `Source: ${source}`,
+    "",
+    "````markdown",
+    input.text,
+    "````"
+  ].join("\n");
+}
+
+function translationLanguageLabel(language: Language): string {
+  const labels: Record<Language, string> = {
+    zh: "Simplified Chinese",
+    "zh-TW": "Traditional Chinese",
+    en: "English",
+    ug: "Uyghur",
+    tr: "Turkish",
+    ru: "Russian",
+    ja: "Japanese",
+    ko: "Korean",
+    es: "Spanish",
+    fr: "French",
+    de: "German",
+    ar: "Arabic"
+  };
+  return labels[language] ?? language;
+}
+
+function visiblePageTranslationSystemPrompt(): string {
+  return [
+    "You are Cancip's UI translation engine.",
+    "Return JSON only. No markdown, no commentary.",
+    "Translate concise visible UI labels into the requested target language.",
+    "Keep product names, file paths, keyboard shortcuts, command IDs, numbers, and placeholders intact when appropriate.",
+    "Output exactly: {\"translations\":[{\"id\":1,\"text\":\"...\"}]}."
+  ].join("\n");
+}
+
+function buildVisiblePageTranslationPrompt(targets: PageTranslationTarget[], targetLanguage: string): string {
+  const items = targets.map((target) => ({ id: target.id, text: target.text }));
+  return [
+    `Target language: ${targetLanguage}`,
+    "Translate these currently visible Obsidian/Cancip page labels. Keep each id unchanged.",
+    JSON.stringify({ items })
+  ].join("\n");
+}
+
+function parseVisiblePageTranslations(answer: string): Map<number, string> {
+  const parsed = parseFirstJsonObject(answer);
+  const root = isRecord(parsed) ? parsed : null;
+  const rawItems = Array.isArray(root?.translations) ? root.translations : Array.isArray(parsed) ? parsed : [];
+  const result = new Map<number, string>();
+  for (const item of rawItems) {
+    if (!isRecord(item)) continue;
+    const id = typeof item.id === "number" ? item.id : Number(item.id);
+    const text = typeof item.text === "string" ? item.text : typeof item.translation === "string" ? item.translation : "";
+    if (Number.isFinite(id) && text.trim()) result.set(id, text.trim());
+  }
+  return result;
+}
+
+function collectCurrentPageTranslationTargets(app: App, limit: number): PageTranslationTarget[] {
+  const root = currentPageTranslationRoot(app);
+  if (!root) return [];
+  const targets: PageTranslationTarget[] = [];
+  const addTarget = (text: string, apply: (translated: string) => void) => {
+    const normalized = normalizeTranslatableUiText(text);
+    if (!normalized || targets.length >= limit) return;
+    targets.push({ id: targets.length + 1, text: normalized, apply });
+  };
+  const walker = activeDocument.createTreeWalker(root, 4, {
+    acceptNode(node) {
+      const parent = node.parentElement;
+      if (!parent || !isTranslatableUiTextElement(parent)) return 2;
+      const normalized = normalizeTranslatableUiText(node.textContent ?? "");
+      return normalized ? 1 : 2;
+    }
+  });
+  for (let node = walker.nextNode(); node && targets.length < limit; node = walker.nextNode()) {
+    const textNode = node as Text;
+    addTarget(textNode.textContent ?? "", (translated) => {
+      textNode.textContent = preserveUiTextOuterSpacing(textNode.textContent ?? "", translated);
+    });
+  }
+  const attrElements = Array.from(root.querySelectorAll<HTMLElement>("button, [aria-label], [title], input, textarea"));
+  for (const el of attrElements) {
+    if (targets.length >= limit) break;
+    if (!isTranslatableUiTextElement(el)) continue;
+    for (const attr of ["aria-label", "title", "placeholder"] as const) {
+      const value = el.getAttribute(attr) ?? "";
+      addTarget(value, (translated) => el.setAttribute(attr, translated));
+      if (targets.length >= limit) break;
+    }
+  }
+  return targets;
+}
+
+function currentPageTranslationRoot(app: App): HTMLElement | null {
+  const modalRoots = Array.from(activeDocument.querySelectorAll<HTMLElement>(".modal.mod-settings, .modal:not(.obcc-button-edit-modal), .modal"))
+    .filter((el) => isVisibleElement(el) && !el.closest(".obcc-button-edit-bubble, .obcc-selection-send-bubble, .obcc-ui-sort-overlay"));
+  if (modalRoots.length) return modalRoots[modalRoots.length - 1];
+  const workspace = app.workspace as typeof app.workspace & { activeLeaf?: WorkspaceLeaf | null };
+  return workspace.activeLeaf?.view?.containerEl ?? activeDocument.body;
+}
+
+function normalizeTranslatableUiText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  if (normalized.length > 120) return "";
+  if (/^[\d\s()[\]{}:：.,，。/\\|+\-=*_#]+$/.test(normalized)) return "";
+  if (/^(OK|✓|×|…|\.{1,3})$/i.test(normalized)) return "";
+  return normalized;
+}
+
+function preserveUiTextOuterSpacing(original: string, translated: string): string {
+  const start = original.match(/^\s*/)?.[0] ?? "";
+  const end = original.match(/\s*$/)?.[0] ?? "";
+  return `${start}${translated}${end}`;
+}
+
+function isTranslatableUiTextElement(el: HTMLElement): boolean {
+  if (!isVisibleElement(el)) return false;
+  if (el.closest("script, style, svg, canvas, textarea, select, option, .cm-editor, .markdown-source-view, .obcc-button-edit-bubble, .obcc-selection-send-bubble, .obcc-ui-sort-overlay, .obcc-ui-sort-snapshot-stage")) return false;
+  if (el.closest(".obcc-chat-messages, .obcc-message, .obcc-process-details")) return false;
+  return true;
+}
+
+function isVisibleElement(el: HTMLElement): boolean {
+  const view = activeDocument.defaultView ?? window;
+  const style = view.getComputedStyle(el);
+  if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") return false;
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
 }
 
 function formatVaultDailyReportItems(items: VaultDailyReportItem[], limit: number): string {
@@ -36749,6 +37077,7 @@ function preferredUiButtonCommandIcons(): Map<string, string> {
     ["cancip:open-chat", "bot"],
     ["cancip:new-chat", "plus"],
     ["cancip:add-selection-to-chat", "paperclip"],
+    ["cancip:translate-current-page", "languages"],
     ["cancip:speak-active-note", "volume-2"],
     ["cancip:speak-selection", "volume-2"],
     ["cancip:pause-tts", "pause"],
@@ -36867,6 +37196,7 @@ function guessUiButtonCommandIcon(id: string, name: string): string {
   if (/(history|recent|历史|最近)/i.test(haystack)) return "history";
   if (/(todo|task|plan|待办|计划|任务)/i.test(haystack)) return "list-todo";
   if (/(review|approve|audit|审核|批准)/i.test(haystack)) return "shield-check";
+  if (/(translate|translation|language|翻译|译文|语言)/i.test(haystack)) return "languages";
   if (/(speak|tts|voice|read aloud|朗读|语音)/i.test(haystack)) return "volume-2";
   if (/(pause|暂停)/i.test(haystack)) return "pause";
   if (/(play|resume|continue|播放|继续|恢复)/i.test(haystack)) return "play";
@@ -38123,6 +38453,151 @@ async function ensureFolder(adapter: DataAdapter, folderPath: string): Promise<v
     if (stat?.type === "file") throw new Error(`Path is a file: ${current}`);
     if (!stat) await adapter.mkdir(current);
   }
+}
+
+async function backupConfigBeforeCancipWrite(adapter: DataAdapter, path: string, nextText: string): Promise<void> {
+  const normalized = normalizeActionPath(path);
+  if (!isConfigBackupCandidatePath(normalized)) return;
+  const stat = await adapter.stat(normalized);
+  if (!stat || stat.type !== "file") return;
+  const oldText = await adapter.read(normalized);
+  const oldHash = await sha256Text(oldText);
+  const nextHash = await sha256Text(nextText);
+
+  const index = await readConfigBackupIndex(adapter);
+  const entry = configBackupEntry(index, normalized);
+  const backupFolder = `${CANCIP_CONFIG_BACKUP_DIR}/${await safeConfigBackupPathKey(normalized)}`;
+  const now = new Date().toISOString();
+  const stamp = now.replace(/[:.]/g, "-");
+  if (oldHash === nextHash) {
+    if (!entry.lastManualBaselineHash) {
+      const manualPath = `${backupFolder}/manual-baseline.json`;
+      const manualStampedPath = `${backupFolder}/${stamp}-manual-baseline.json`;
+      await ensureFolder(adapter, backupFolder);
+      await writeTextInChunks(adapter, manualPath, oldText);
+      await writeTextInChunks(adapter, manualStampedPath, oldText);
+      entry.lastManualBaselineHash = oldHash;
+      entry.lastManualBaselineAt = now;
+      entry.latestManualBaselinePath = manualPath;
+      entry.backups.push({ path: manualStampedPath, createdAt: now, hash: oldHash, source: "manual-baseline" });
+      entry.backups = entry.backups.slice(-CANCIP_CONFIG_BACKUP_MAX_RECORDS_PER_PATH);
+      await writeConfigBackupIndex(adapter, index);
+    }
+    return;
+  }
+
+  const latestPath = `${backupFolder}/latest-before-cancip.json`;
+  const stampedPath = `${backupFolder}/${stamp}-before-cancip.json`;
+
+  await ensureFolder(adapter, backupFolder);
+  await writeTextInChunks(adapter, latestPath, oldText);
+  await writeTextInChunks(adapter, stampedPath, oldText);
+  entry.latestBackupPath = latestPath;
+  entry.backups.push({ path: stampedPath, createdAt: now, hash: oldHash, source: "before-cancip-write" });
+
+  if (oldHash !== entry.lastCancipWriteHash && oldHash !== entry.lastManualBaselineHash) {
+    const manualPath = `${backupFolder}/manual-baseline.json`;
+    const manualStampedPath = `${backupFolder}/${stamp}-manual-baseline.json`;
+    await writeTextInChunks(adapter, manualPath, oldText);
+    await writeTextInChunks(adapter, manualStampedPath, oldText);
+    entry.lastManualBaselineHash = oldHash;
+    entry.lastManualBaselineAt = now;
+    entry.latestManualBaselinePath = manualPath;
+    entry.backups.push({ path: manualStampedPath, createdAt: now, hash: oldHash, source: "manual-baseline" });
+  }
+
+  entry.backups = entry.backups.slice(-CANCIP_CONFIG_BACKUP_MAX_RECORDS_PER_PATH);
+  await writeConfigBackupIndex(adapter, index);
+}
+
+async function recordCancipConfigWrite(adapter: DataAdapter, path: string, content: string): Promise<void> {
+  const normalized = normalizeActionPath(path);
+  if (!isConfigBackupCandidatePath(normalized)) return;
+  const index = await readConfigBackupIndex(adapter);
+  const entry = configBackupEntry(index, normalized);
+  entry.lastCancipWriteHash = await sha256Text(content);
+  entry.lastCancipWriteAt = new Date().toISOString();
+  await writeConfigBackupIndex(adapter, index);
+}
+
+function isConfigBackupCandidatePath(path: string): boolean {
+  const normalized = normalizePath(path);
+  const lower = normalized.toLowerCase();
+  if (!lower || lower.startsWith(`${CANCIP_CONFIG_BACKUP_DIR}/`)) return false;
+  if (lower === CANCIP_CONFIG_PATH) return true;
+  if (!lower.endsWith(".json")) return false;
+  if (lower.startsWith(`${SESSION_HISTORY_DIR}/`) || lower.startsWith(`${LOCAL_VERSION_DIR}/`)) return false;
+  if (lower === SESSION_HISTORY_INDEX_PATH || lower === SESSION_EVENTS_PATH || lower === LOCAL_VERSION_INDEX_PATH) return false;
+  if (lower.includes("/plugins/") && lower.endsWith("/data.json")) return true;
+  if (lower.endsWith("config.json") || lower.includes(".config.")) return true;
+  return /(^|[/._-])(settings?|preferences?|options?|automations?)([/._-]|$)/i.test(lower);
+}
+
+async function safeConfigBackupPathKey(path: string): Promise<string> {
+  const normalized = normalizePath(path);
+  const slug = normalized.replace(/[^A-Za-z0-9._-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 96) || "config";
+  const hash = (await sha256Text(normalized)).slice(0, 12);
+  return `${slug}-${hash}`;
+}
+
+async function readConfigBackupIndex(adapter: DataAdapter): Promise<ConfigBackupIndex> {
+  try {
+    if (!(await adapter.exists(CANCIP_CONFIG_BACKUP_INDEX_PATH))) {
+      return { schemaVersion: CANCIP_CONFIG_BACKUP_SCHEMA_VERSION, entries: {} };
+    }
+    const raw = JSON.parse(await adapter.read(CANCIP_CONFIG_BACKUP_INDEX_PATH)) as unknown;
+    return normalizeConfigBackupIndex(raw);
+  } catch {
+    return { schemaVersion: CANCIP_CONFIG_BACKUP_SCHEMA_VERSION, entries: {} };
+  }
+}
+
+async function writeConfigBackupIndex(adapter: DataAdapter, index: ConfigBackupIndex): Promise<void> {
+  await ensureFolder(adapter, CANCIP_CONFIG_BACKUP_DIR);
+  await writeTextInChunks(adapter, CANCIP_CONFIG_BACKUP_INDEX_PATH, `${JSON.stringify(normalizeConfigBackupIndex(index), null, 2)}\n`);
+}
+
+function configBackupEntry(index: ConfigBackupIndex, path: string): ConfigBackupEntry {
+  const normalized = normalizePath(path);
+  const existing = index.entries[normalized];
+  if (existing) {
+    existing.backups = Array.isArray(existing.backups) ? existing.backups : [];
+    return existing;
+  }
+  const entry: ConfigBackupEntry = { backups: [] };
+  index.entries[normalized] = entry;
+  return entry;
+}
+
+function normalizeConfigBackupIndex(raw: unknown): ConfigBackupIndex {
+  const entries: Record<string, ConfigBackupEntry> = {};
+  if (isRecord(raw) && isRecord(raw.entries)) {
+    for (const [path, value] of Object.entries(raw.entries)) {
+      if (!path || !isRecord(value)) continue;
+      const backups = Array.isArray(value.backups)
+        ? value.backups
+            .filter(isRecord)
+            .map((item) => ({
+              path: typeof item.path === "string" ? item.path : "",
+              createdAt: typeof item.createdAt === "string" ? item.createdAt : "",
+              hash: typeof item.hash === "string" ? item.hash : "",
+              source: item.source === "manual-baseline" ? "manual-baseline" as const : "before-cancip-write" as const
+            }))
+            .filter((item) => item.path && item.createdAt && item.hash)
+            .slice(-CANCIP_CONFIG_BACKUP_MAX_RECORDS_PER_PATH)
+        : [];
+      entries[normalizePath(path)] = {
+        lastCancipWriteHash: typeof value.lastCancipWriteHash === "string" ? value.lastCancipWriteHash : undefined,
+        lastCancipWriteAt: typeof value.lastCancipWriteAt === "string" ? value.lastCancipWriteAt : undefined,
+        lastManualBaselineHash: typeof value.lastManualBaselineHash === "string" ? value.lastManualBaselineHash : undefined,
+        lastManualBaselineAt: typeof value.lastManualBaselineAt === "string" ? value.lastManualBaselineAt : undefined,
+        latestBackupPath: typeof value.latestBackupPath === "string" ? value.latestBackupPath : undefined,
+        latestManualBaselinePath: typeof value.latestManualBaselinePath === "string" ? value.latestManualBaselinePath : undefined,
+        backups
+      };
+    }
+  }
+  return { schemaVersion: CANCIP_CONFIG_BACKUP_SCHEMA_VERSION, entries };
 }
 
 async function readTextIfExists(adapter: DataAdapter, path: string, fallback = ""): Promise<string> {
