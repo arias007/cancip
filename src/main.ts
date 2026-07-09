@@ -23,9 +23,7 @@ import {
   TFolder,
   WorkspaceLeaf
 } from "obsidian";
-import { customPinyin, OutputFormat, pinyin, segment } from "pinyin-pro";
 import { DEFAULT_SYSTEM_PROMPT, LEGACY_SYSTEM_PROMPT, PLUGIN_NAME, VIEW_TYPE } from "./constants";
-import { PRIME_TTS_WORKER_SOURCE } from "./generated/primeTtsWorkerSource";
 import {
   buildObReviewGatePackage,
   formatReviewGateResult,
@@ -90,6 +88,7 @@ type ConfigBackupIndex = {
   entries: Record<string, ConfigBackupEntry>;
 };
 const CANCIP_REVIEW_VIEW_TYPE = "cancip-review-view";
+const LEGACY_CANCIP_CHAT_VIEW_TYPE = "cancip-chat";
 const PRIME_TTS_PACKAGES_RELATIVE = "plugins/cancip/tts";
 const BUILTIN_PRIME_TTS_PACKAGE_FOLDER = "prime-tts";
 const BUILTIN_PRIME_TTS_PACKAGE_TAG = "prime-tts";
@@ -126,7 +125,6 @@ const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
 const BUILTIN_PRIME_TTS_PREFETCH_AHEAD = 4;
 const BUILTIN_PRIME_TTS_CACHE_KEEP_BEHIND = 1;
 const BUILTIN_PRIME_TTS_CACHE_KEEP_AHEAD = 12;
-const BUILTIN_PRIME_TTS_MAIN_PREFETCH_AHEAD = 1;
 const BUILTIN_PRIME_TTS_DECODE_AHEAD = 1;
 const BUILTIN_PRIME_TTS_WARMUP_TEXT = "好。";
 const BUILTIN_PRIME_TTS_WARMUP_SYNTH_DELAY_MS = 80;
@@ -141,9 +139,6 @@ const PRIME_TTS_DISPLAY_TARGET_CHARS = 18;
 const PRIME_TTS_DISPLAY_MAX_CHARS = 34;
 const PRIME_TTS_LATIN_WORD_MAX_CHARS = 18;
 const PRIME_TTS_PROGRESSIVE_FALLBACK_CHARS = [2, 5, 10] as const;
-const PRIME_TTS_FADE_IN_MS = 4;
-const PRIME_TTS_FADE_OUT_MS = 8;
-const PRIME_TTS_TAIL_SILENCE_MS = 2;
 const PRIME_TTS_PLAYBACK_DRAIN_MS = 0;
 const PRIME_TTS_WEB_AUDIO_FALLBACK_GRACE_MS = 650;
 const TTS_CAPTURE_MAX_CHARS = 300000;
@@ -290,6 +285,94 @@ class CancipTextPromptModal extends Modal {
 function promptTextModal(app: App, title: string, initialValue: string): Promise<string | null> {
   return new Promise((resolve) => {
     new CancipTextPromptModal(app, title, initialValue, resolve).open();
+  });
+}
+
+type ModelEditModalResult = {
+  model: string;
+  profileId: string;
+};
+
+type ModelEditModalInput = {
+  title: string;
+  modelLabel: string;
+  profileLabel: string;
+  saveLabel: string;
+  cancelLabel: string;
+  profiles: ApiProfile[];
+  initialModel: string;
+  initialProfileId: string;
+};
+
+class CancipModelEditModal extends Modal {
+  private modelInput: TextComponent | null = null;
+  private profileSelect: HTMLSelectElement | null = null;
+  private settled = false;
+
+  constructor(
+    app: App,
+    private readonly input: ModelEditModalInput,
+    private readonly onSubmitValue: (value: ModelEditModalResult | null) => void
+  ) {
+    super(app);
+  }
+
+  onOpen(): void {
+    this.containerEl.addClass("obcc-model-edit-modal-container");
+    this.modalEl.addClass("obcc-model-edit-modal");
+    this.setTitle(this.input.title);
+    new Setting(this.contentEl)
+      .setName(this.input.profileLabel)
+      .addDropdown((dropdown) => {
+        this.profileSelect = dropdown.selectEl;
+        for (const profile of this.input.profiles) {
+          dropdown.addOption(profile.id, `${profile.name || profile.id} · ${profile.model}`);
+        }
+        dropdown.setValue(this.input.initialProfileId || this.input.profiles[0]?.id || "");
+      });
+    new Setting(this.contentEl)
+      .setName(this.input.modelLabel)
+      .addText((text) => {
+        this.modelInput = text;
+        text.setValue(this.input.initialModel);
+        text.inputEl.addEventListener("keydown", (event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            this.submit();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            this.close();
+          }
+        });
+      });
+    const actions = this.contentEl.createDiv({ cls: "obcc-model-edit-actions" });
+    const cancel = actions.createEl("button", { text: this.input.cancelLabel, attr: { type: "button" } });
+    cancel.addEventListener("click", () => this.close());
+    const save = actions.createEl("button", { text: this.input.saveLabel, attr: { type: "button" } });
+    save.addClass("mod-cta");
+    save.addEventListener("click", () => this.submit());
+    window.setTimeout(() => this.modelInput?.inputEl.focus(), 20);
+  }
+
+  onClose(): void {
+    if (!this.settled) this.onSubmitValue(null);
+    this.contentEl.empty();
+  }
+
+  private submit(): void {
+    const model = this.modelInput?.getValue().trim() ?? "";
+    const profileId = this.profileSelect?.value || this.input.initialProfileId || this.input.profiles[0]?.id || "";
+    if (!model || !profileId) return;
+    this.settled = true;
+    this.onSubmitValue({ model, profileId });
+    this.close();
+  }
+}
+
+function promptModelEditModal(app: App, input: ModelEditModalInput): Promise<ModelEditModalResult | null> {
+  return new Promise((resolve) => {
+    new CancipModelEditModal(app, input, resolve).open();
   });
 }
 
@@ -516,23 +599,6 @@ type NativeTtsBridge = {
   resume?: () => Promise<void>;
 };
 
-type OrtTensorLike = {
-  dims: readonly number[];
-  data: Float32Array | BigInt64Array | boolean[] | number[] | bigint[];
-};
-
-type OrtInferenceSessionLike = {
-  run: (feeds: Record<string, OrtTensorLike>) => Promise<Record<string, OrtTensorLike | undefined>>;
-};
-
-type OrtModuleLike = {
-  env: { wasm?: { numThreads?: number; proxy?: boolean; wasmPaths?: string | { mjs?: string; wasm?: string }; wasmBinary?: ArrayBufferLike | Uint8Array } };
-  InferenceSession: {
-    create: (model: ArrayBuffer | Uint8Array, options?: Record<string, unknown>) => Promise<OrtInferenceSessionLike>;
-  };
-  Tensor: new (type: string, data: Float32Array | BigInt64Array | boolean[] | number[] | bigint[], dims: readonly number[]) => OrtTensorLike;
-};
-
 type PrimeTtsMeta = {
   sample_rate: number;
   abs_frame_bins: number;
@@ -560,28 +626,13 @@ type PrimeTtsWorkerClient = {
   pending: Map<number, { resolve: (value: ArrayBuffer) => void; reject: (reason?: unknown) => void }>;
 };
 
-type PrimeTtsMainRuntime = {
-  kind: "main";
-  ort: OrtModuleLike;
-  encoder: OrtInferenceSessionLike;
-  decoder: OrtInferenceSessionLike;
-  vocoder: OrtInferenceSessionLike;
-  meta: PrimeTtsMeta;
-};
-
 type PrimeTtsWorkerRuntime = {
   kind: "worker";
   client: PrimeTtsWorkerClient;
   meta: PrimeTtsMeta;
 };
 
-type PrimeTtsRuntime = PrimeTtsMainRuntime | PrimeTtsWorkerRuntime;
-
-type PrimeTtsIds = {
-  phoneIds: number[];
-  toneIds: number[];
-  langIds: number[];
-};
+type PrimeTtsRuntime = PrimeTtsWorkerRuntime;
 
 type TtsStatus = {
   mode: TtsPlaybackMode;
@@ -918,6 +969,7 @@ type SessionHistoryEntry = {
   pinned?: boolean;
   archived?: boolean;
   manualTitle?: boolean;
+  manualOrder?: number;
   parentSessionId?: string;
   parentSessionTitle?: string;
   subagentIds?: string[];
@@ -928,7 +980,7 @@ type SessionHistoryEntry = {
   eventOnly?: boolean;
 };
 
-type SessionHistoryEntryPatch = Partial<Pick<SessionHistoryEntry, "title" | "unread" | "completedNotice" | "pinned" | "archived" | "manualTitle" | "updatedAt" | "status" | "parentSessionId" | "parentSessionTitle" | "subagentIds" | "subagentRole" | "subagentGoal" | "subagentProgress">>;
+type SessionHistoryEntryPatch = Partial<Pick<SessionHistoryEntry, "title" | "unread" | "completedNotice" | "pinned" | "archived" | "manualTitle" | "manualOrder" | "updatedAt" | "status" | "parentSessionId" | "parentSessionTitle" | "subagentIds" | "subagentRole" | "subagentGoal" | "subagentProgress">>;
 
 type StaleSessionRepair = {
   entry: SessionHistoryEntry;
@@ -1406,6 +1458,14 @@ class CancipButtonEditModal extends Modal {
     this.modalEl.addClass("obcc-button-edit-modal");
     this.setTitle(this.plugin.t("buttonEditTitle"));
     const topActions = this.contentEl.createDiv({ cls: "obcc-button-edit-sticky-actions" });
+    const translateTop = topActions.createEl("button", {
+      attr: { type: "button", title: this.plugin.t("commandTranslateCurrentPage"), "aria-label": this.plugin.t("commandTranslateCurrentPage") }
+    });
+    setIcon(translateTop.createSpan({ cls: "obcc-command-icon" }), "languages");
+    translateTop.createSpan({ text: this.plugin.t("commandTranslateCurrentPage") });
+    translateTop.addEventListener("click", () => {
+      void this.plugin.getOrCreateChatView({ reveal: false, focus: false }).then((view) => view?.translateCurrentPage());
+    });
     const saveTop = topActions.createEl("button", { text: this.plugin.t("buttonEditSave"), attr: { type: "button" } });
     saveTop.addClass("mod-cta");
     saveTop.addEventListener("click", () => {
@@ -1947,6 +2007,7 @@ const TOOL_FEEDBACK_MARKER_PREFIX = "<!-- cancip-tool-feedback:";
 const RUN_STATS_MARKER_NAME = "cancip-run-stats";
 const PROCESS_DETAIL_MAX_CHARS = 120000;
 const TOOL_RESULT_DETAIL_MAX_CHARS = 120000;
+const MODEL_EXCHANGE_FRAGMENT_MAX_CHARS = 60000;
 const REVIEW_GATE_DIR = `${CANCIP_AI_DIR}/Review`;
 const REVIEW_GATE_HIDDEN_DIR = `${CANCIP_CONFIG_DIR}/review-gates`;
 const REVIEW_GATE_MAX_FILES = 80;
@@ -2140,6 +2201,7 @@ const EN = {
   resendMessage: "Resend",
   resendQueued: "Resent message queued",
   scrollToBottom: "Scroll to bottom",
+  scrollToPreviousUser: "Previous user prompt",
   queueMessage: "Queue message",
   copyDone: "Copied",
   copyFailed: "Copy failed: {reason}",
@@ -2848,6 +2910,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     resendMessage: "重发",
     resendQueued: "已重发/已加入队列",
     scrollToBottom: "到底部",
+    scrollToPreviousUser: "上一个用户提示词",
     queueMessage: "加入队列",
     resumeTask: "继续",
     resumableStopped: "已停止。点继续会从当前会话状态接着跑。",
@@ -4990,6 +5053,7 @@ class MarkdownScratchComponent extends Component {}
 
 export default class CancipPlugin extends Plugin {
   settings: Settings = DEFAULT_SETTINGS;
+  devErrors: string[] = [];
   private dailyVersionRunning = false;
   private automationRunningIds = new Set<string>();
   private statusBarEl: HTMLElement | null = null;
@@ -5071,19 +5135,30 @@ export default class CancipPlugin extends Plugin {
   private buttonEditBubbleEl: HTMLButtonElement | null = null;
   private selectionSendBubbleEl: HTMLButtonElement | null = null;
   private uiButtonSortCleanup: (() => void) | null = null;
+  private startupUiEnhancementsInstalled = false;
 
   async onload(): Promise<void> {
-    await this.loadSettings();
-    await this.ensureVisibleDataFolders();
-    await recordCancipSessionEvent(this.app.vault.adapter, {
+    try {
+      await this.loadSettings();
+    } catch (error) {
+      console.warn("Cancip settings load failed; using defaults", error);
+      this.settings = normalizeSettings(DEFAULT_SETTINGS);
+      const reason = error instanceof Error ? error.message : String(error);
+      this.devErrors.push(`settings load failed: ${reason}`);
+    }
+
+    this.registerView(VIEW_TYPE, (leaf) => new CancipView(leaf, this));
+    this.registerView(LEGACY_CANCIP_CHAT_VIEW_TYPE, (leaf) => new CancipView(leaf, this, LEGACY_CANCIP_CHAT_VIEW_TYPE));
+    this.registerView(CANCIP_REVIEW_VIEW_TYPE, (leaf) => new CancipReviewLeafView(leaf, this));
+    void this.ensureVisibleDataFolders();
+    void recordCancipSessionEvent(this.app.vault.adapter, {
       kind: "plugin.load",
       detail: "Cancip plugin loaded",
       pluginVersion: this.manifest.version,
       model: this.activeApiProfile().model
+    }).catch((error) => {
+      console.warn("Cancip plugin load event record failed", error);
     });
-
-    this.registerView(VIEW_TYPE, (leaf) => new CancipView(leaf, this));
-    this.registerView(CANCIP_REVIEW_VIEW_TYPE, (leaf) => new CancipReviewLeafView(leaf, this));
     this.registerEvent(this.app.vault.on("create", (file) => this.handleCancipVaultFileChanged(file.path)));
     this.registerEvent(this.app.vault.on("modify", (file) => this.handleCancipVaultFileChanged(file.path)));
     this.registerEvent(this.app.vault.on("delete", (file) => this.handleCancipVaultFileChanged(file.path)));
@@ -5183,7 +5258,7 @@ export default class CancipPlugin extends Plugin {
           });
       });
     }));
-    this.app.workspace.onLayoutReady(() => this.scheduleTtsViewActionRefresh());
+    this.app.workspace.onLayoutReady(() => this.installStartupUiEnhancements());
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
       this.scheduleTtsViewActionRefresh();
       this.scheduleRightSidebarTabToolbarRefresh(80);
@@ -5194,18 +5269,6 @@ export default class CancipPlugin extends Plugin {
       this.scheduleUiButtonRulesApply(80);
       this.scheduleRightSidebarTabToolbarRefresh(80);
     }));
-    this.installButtonEditLongPress();
-    const applyRulesAfterPointer = () => this.scheduleUiButtonRulesApply(80);
-    activeDocument.addEventListener("click", applyRulesAfterPointer, true);
-    activeDocument.addEventListener("pointerup", applyRulesAfterPointer, true);
-    this.register(() => {
-      activeDocument.removeEventListener("click", applyRulesAfterPointer, true);
-      activeDocument.removeEventListener("pointerup", applyRulesAfterPointer, true);
-    });
-    this.installUiButtonRuleObserver();
-    this.scheduleUiButtonRulesApply(0);
-    this.installRightSidebarTabToolbar();
-
     this.registerEvent(this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view: MarkdownView) => {
       menu.addItem((item) => {
         item
@@ -5349,18 +5412,57 @@ export default class CancipPlugin extends Plugin {
 
     this.settingTab = new CancipSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    await this.pruneLocalVersionIndex();
-    await this.reconcileStaleRunningSessions();
-    await this.migrateCodexMemoryFolder();
-    await this.ensureMemoryIndexFiles();
-    await this.ensureDefaultDailyAutomations();
+    void this.runStartupMaintenance();
+  }
+
+  private installStartupUiEnhancements(): void {
+    if (this.startupUiEnhancementsInstalled) return;
+    this.startupUiEnhancementsInstalled = true;
+    try {
+      void this.migrateLegacyChatLeaves();
+      this.scheduleTtsViewActionRefresh();
+      this.removeStaleUiButtonSortDom();
+      this.installButtonEditLongPress();
+      const doc = activeDocument;
+      const applyRulesAfterPointer = () => this.scheduleUiButtonRulesApply(80);
+      doc.addEventListener("click", applyRulesAfterPointer, true);
+      doc.addEventListener("pointerup", applyRulesAfterPointer, true);
+      this.register(() => {
+        doc.removeEventListener("click", applyRulesAfterPointer, true);
+        doc.removeEventListener("pointerup", applyRulesAfterPointer, true);
+      });
+      this.installUiButtonRuleObserver();
+      this.scheduleUiButtonRulesApply(120);
+      this.installRightSidebarTabToolbar();
+    } catch (error) {
+      console.warn("Cancip startup UI enhancement install failed", error);
+      const reason = error instanceof Error ? error.message : String(error);
+      this.devErrors.push(`startup UI enhancement failed: ${reason}`);
+    }
+  }
+
+  private async runStartupMaintenance(): Promise<void> {
+    const run = async (label: string, task: () => Promise<void> | void): Promise<void> => {
+      try {
+        await task();
+      } catch (error) {
+        console.warn(`Cancip startup maintenance failed: ${label}`, error);
+        const reason = error instanceof Error ? error.message : String(error);
+        this.devErrors.push(`${label} failed: ${reason}`);
+      }
+    };
+    await run("pruneLocalVersionIndex", () => this.pruneLocalVersionIndex());
+    await run("reconcileStaleRunningSessions", () => this.reconcileStaleRunningSessions());
+    await run("migrateCodexMemoryFolder", () => this.migrateCodexMemoryFolder());
+    await run("ensureMemoryIndexFiles", () => this.ensureMemoryIndexFiles());
+    await run("ensureDefaultDailyAutomations", () => this.ensureDefaultDailyAutomations());
     this.scheduleCodexMemoryAutoImport();
     this.scheduleDailyLocalVersioning();
     this.scheduleAutomations();
     this.scheduleCancipStatePolling();
     this.scheduleBuiltinPrimeTtsWarmup();
-    await this.repairCustomUiButtonCommands();
-    this.applyUiButtonRules();
+    await run("repairCustomUiButtonCommands", () => this.repairCustomUiButtonCommands());
+    this.scheduleUiButtonRulesApply(120);
   }
 
   onunload(): void {
@@ -5415,7 +5517,6 @@ export default class CancipPlugin extends Plugin {
   }
 
   private ttsPartsForText(text: string, provider?: TtsProvider): TtsPartPlan {
-    const chineseNumbers = isChineseLanguage(this.language());
     const usePrimeFastPlan = provider === "builtin-prime-tts" || !provider;
     const configuredTarget = Number(this.settings.ttsChunkChars) || DEFAULT_SETTINGS.ttsChunkChars;
     const targetLength = usePrimeFastPlan
@@ -5424,14 +5525,13 @@ export default class CancipPlugin extends Plugin {
     return makeTtsPartPlan(
       text,
       provider,
-      targetLength,
-      chineseNumbers ? (part) => normalizeChineseNumbersForPrimeTts(part, true) : undefined
+      targetLength
     );
   }
 
   private ttsSpokenText(text: string): string {
     const normalized = normalizeTtsInputText(text);
-    return isChineseLanguage(this.language()) ? normalizeChineseNumbersForPrimeTts(normalized, true) : normalized;
+    return normalized;
   }
 
   obsidianConfigDir(): string {
@@ -6966,11 +7066,11 @@ export default class CancipPlugin extends Plugin {
   private prefetchPrimeTtsWindow(runtime: PrimeTtsRuntime, chunks: string[], startIndex: number, runId: number): void {
     const safeStart = Math.max(0, Math.min(chunks.length - 1, startIndex));
     const from = safeStart;
-    const ahead = runtime.kind === "main" ? BUILTIN_PRIME_TTS_MAIN_PREFETCH_AHEAD : BUILTIN_PRIME_TTS_PREFETCH_AHEAD;
+    const ahead = BUILTIN_PRIME_TTS_PREFETCH_AHEAD;
     const to = Math.min(chunks.length, safeStart + ahead + 1);
     for (let index = from; index < to; index += 1) {
       this.prefetchPrimeTtsAudioUrl(runtime, chunks, index, runId);
-      if (runtime.kind === "worker" && index >= safeStart && index <= safeStart + BUILTIN_PRIME_TTS_DECODE_AHEAD) {
+      if (index >= safeStart && index <= safeStart + BUILTIN_PRIME_TTS_DECODE_AHEAD) {
         this.prefetchPrimeTtsDecodedAudio(chunks, index, runId);
       }
     }
@@ -7071,9 +7171,7 @@ export default class CancipPlugin extends Plugin {
   }
 
   private async getPrimeTtsPlayableWithStallFallback(runtime: PrimeTtsRuntime, chunks: string[], index: number, runId: number): Promise<PrimeTtsPlayable | "skip" | null> {
-    const playablePromise = runtime.kind === "main"
-      ? this.getPrimeTtsCachedAudio(runtime, chunks, index, runId).then((buffer): PrimeTtsPlayable => ({ kind: "wav", buffer }))
-      : this.getPrimeTtsDecodedPlayable(chunks, index, runId);
+    const playablePromise = this.getPrimeTtsDecodedPlayable(chunks, index, runId);
     const result = await Promise.race<PrimeTtsPlayable | "stall">([
       playablePromise,
       sleep(PRIME_TTS_STALL_MS).then(() => "stall" as const)
@@ -7191,29 +7289,7 @@ export default class CancipPlugin extends Plugin {
     } else {
       this.builtinPrimeTtsRuntimeLastError = "Worker is not available";
     }
-    return await this.createBuiltinPrimeTtsMainRuntime();
-  }
-
-  private async createBuiltinPrimeTtsMainRuntime(): Promise<PrimeTtsMainRuntime> {
-    const pkg = await this.resolveBuiltinPrimeTtsPackage();
-    const paths = primeTtsAssetPaths(this.primeTtsBasePath(pkg));
-    const ort = await import("onnxruntime-web/wasm") as unknown as OrtModuleLike;
-    const [encoderBuffer, decoderBuffer, vocoderBuffer, metaText, wasmBuffer] = await Promise.all([
-      this.app.vault.adapter.readBinary(paths.encoder),
-      this.app.vault.adapter.readBinary(paths.decoder),
-      this.app.vault.adapter.readBinary(paths.vocoder),
-      this.app.vault.adapter.read(paths.meta),
-      this.app.vault.adapter.readBinary(paths.ortWasm)
-    ]);
-    this.configureBuiltinPrimeOrt(ort, wasmBuffer.slice(0));
-    const meta = parsePrimeTtsMeta(metaText);
-    const options = { executionProviders: ["wasm"] };
-    const [encoder, decoder, vocoder] = await Promise.all([
-      ort.InferenceSession.create(encoderBuffer.slice(0), options),
-      ort.InferenceSession.create(decoderBuffer.slice(0), options),
-      ort.InferenceSession.create(vocoderBuffer.slice(0), options)
-    ]);
-    return { kind: "main", ort, encoder, decoder, vocoder, meta };
+    throw new Error(`PrimeTTS worker runtime is unavailable: ${this.builtinPrimeTtsRuntimeLastError || "unknown worker failure"}`);
   }
 
   private async createBuiltinPrimeTtsWorkerRuntime(): Promise<PrimeTtsWorkerRuntime> {
@@ -7227,7 +7303,7 @@ export default class CancipPlugin extends Plugin {
       this.app.vault.adapter.readBinary(paths.ortWasm)
     ]);
     const meta = parsePrimeTtsMeta(metaText);
-    const workerUrl = createPrimeTtsWorkerUrl();
+    const workerUrl = await this.createPrimeTtsWorkerUrl();
     const worker = new Worker(workerUrl, { name: "cancip-prime-tts" });
     window.setTimeout(() => URL.revokeObjectURL(workerUrl), 1000);
     const client: PrimeTtsWorkerClient = { worker, requestId: 0, pending: new Map() };
@@ -7262,6 +7338,18 @@ export default class CancipPlugin extends Plugin {
       wasmTransfer
     ]);
     return { kind: "worker", client, meta };
+  }
+
+  private async createPrimeTtsWorkerUrl(): Promise<string> {
+    const path = `${this.pluginInstallDir()}/prime-tts-worker.js`;
+    try {
+      const source = await this.app.vault.adapter.read(path);
+      if (!source.trim()) throw new Error("worker source is empty");
+      return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(`PrimeTTS worker asset is unavailable at ${path}: ${reason}`);
+    }
   }
 
   private primeTtsWorkerRequest(
@@ -7529,50 +7617,11 @@ export default class CancipPlugin extends Plugin {
     return written;
   }
 
-  private configureBuiltinPrimeOrt(ort: OrtModuleLike, wasmBinary: ArrayBuffer): void {
-    const wasm = ort.env?.wasm;
-    if (!wasm) return;
-    wasm.numThreads = 1;
-    wasm.proxy = false;
-    wasm.wasmPaths = undefined;
-    wasm.wasmBinary = wasmBinary;
-  }
-
   private async synthesizeBuiltinPrimeTts(runtime: PrimeTtsRuntime, text: string): Promise<ArrayBuffer> {
-    const ids = primeTtsTextToIds(text);
-    if (!ids.phoneIds.length) throw new Error("PrimeTTS frontend produced no phones");
-    if (runtime.kind === "worker") {
-      return await this.primeTtsWorkerRequest(runtime.client, "synthesize", {
-        phoneIds: ids.phoneIds,
-        toneIds: ids.toneIds,
-        langIds: ids.langIds,
-        rate: 1
-      });
-    }
-    const { ort, encoder, decoder, vocoder, meta } = runtime;
-    const phone = int64Tensor(ort, ids.phoneIds, [1, ids.phoneIds.length]);
-    const tone = int64Tensor(ort, ids.toneIds, [1, ids.toneIds.length]);
-    const lang = int64Tensor(ort, ids.langIds, [1, ids.langIds.length]);
-    const speaker = int64Tensor(ort, [0], [1]);
-    const encoded = await encoder.run({ phone, tone, lang, speaker });
-    const conditioned = requireOrtTensor(encoded.conditioned, "conditioned");
-    const durations = requireOrtTensor(encoded.durations, "durations");
-    const pitch = requireOrtTensor(encoded.pitch, "pitch");
-    const regulated = primeTtsHostRegulate(conditioned, durations, pitch, meta.abs_frame_bins, meta.max_frames);
-    const mel = await decoder.run({
-      frames: new ort.Tensor("float32", regulated.frames, [1, regulated.frameCount, regulated.hiddenSize]),
-      frame_meta: new ort.Tensor("float32", regulated.frameMeta, [1, regulated.frameCount, 8]),
-      local_ctx_raw: new ort.Tensor("float32", regulated.localCtxRaw, [1, regulated.frameCount, regulated.hiddenSize * 3]),
-      abs_pos: new ort.Tensor("int64", regulated.absPos, [1, regulated.frameCount]),
-      pitch_frame: new ort.Tensor("float32", regulated.pitchFrame, [1, regulated.frameCount, regulated.pitchSize]),
-      frame_mask: new ort.Tensor("bool", regulated.frameMask, [1, regulated.frameCount])
+    return await this.primeTtsWorkerRequest(runtime.client, "synthesize", {
+      text,
+      rate: 1
     });
-    const melTensor = requireOrtTensor(mel.mel, "mel");
-    const wavResult = await vocoder.run({ mel: melTensor });
-    const wavTensor = requireOrtTensor(wavResult.wav, "wav");
-    if (!(wavTensor.data instanceof Float32Array)) throw new Error("PrimeTTS vocoder returned non-float audio");
-    const wav = finalizePrimeTtsSamples(wavTensor.data, meta.sample_rate);
-    return encodePcm16Wav(wav, meta.sample_rate);
   }
 
   private async startAndroidSystemTts(text: string, existingParts?: string[], startIndex = 0): Promise<boolean> {
@@ -8654,12 +8703,13 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 `);
       } else {
         const rules = await adapter.read(CANCIP_RULES_PATH);
+        const oldPlanRule = ["- Plan", "mode only adds planning/todos. It does not change write permission."].join(" ");
         let nextRules = rules.replace(
           "- Do not search the whole Vault for greetings, tests, or direct chat. For identity, memory, continuation, or user-correction questions, inspect the memory index, PROFILE/preferences, session history, or tool index before asking the user.",
           "- Do not search the whole Vault for greetings, tests, or direct chat. For identity, memory, continuation, or user-correction questions, inspect the memory index, session history, or tool index before asking the user."
         ).replace(
-          "- Plan mode only adds planning/todos. It does not change write permission.",
-          "- Plan panel only adds planning/todos. It does not change write permission."
+          oldPlanRule,
+          "- Plan feature/panel only adds planning/todos. It does not change write permission."
         );
         if (!nextRules.includes("## Memory routing")) {
           nextRules = `${nextRules.trimEnd()}
@@ -8838,6 +8888,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   uiButtonCommandOptions(): UiButtonCommandOption[] {
     const chinese = isChineseLanguage(this.language());
     const preferred = preferredUiButtonCommandIcons();
+    const builtInEntries: UiButtonCommandOption[] = [
+      { id: "obcmd:cancip:translate-current-page", name: this.t("commandTranslateCurrentPage"), icon: "languages" },
+      { id: "obcmd:cancip:add-selection-to-chat", name: this.t("commandAddSelection"), icon: "paperclip" },
+      { id: "obcmd:cancip:speak-active-note", name: this.t("commandSpeakActiveNote"), icon: "volume-2" },
+      { id: "obcmd:cancip:speak-selection", name: this.t("commandSpeakSelection"), icon: "volume-2" }
+    ];
     const commandEntries = this.pluginObsidianCommandEntries()
       .map((item) => ({
         id: `obcmd:${item.id}`,
@@ -8846,7 +8902,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }))
       .filter((item) => item.id && item.name);
     const buttonEntries = this.uiButtonClickActionOptions(chinese);
-    return [...commandEntries, ...buttonEntries]
+    const byId = new Map<string, UiButtonCommandOption>();
+    for (const item of [...builtInEntries, ...commandEntries, ...buttonEntries]) {
+      if (!byId.has(item.id)) byId.set(item.id, item);
+    }
+    return [...byId.values()]
       .sort((a, b) => {
         const rawA = a.id.startsWith("obcmd:") ? a.id.slice("obcmd:".length) : a.id;
         const rawB = b.id.startsWith("obcmd:") ? b.id.slice("obcmd:".length) : b.id;
@@ -9005,6 +9065,37 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return confident ? first : null;
   }
 
+  private resolveCustomUiButtonRuleCommand(rule: UiButtonRule): { id: string; name: string; icon?: string } | null {
+    const label = rule.commandName || rule.title || rule.label || rule.commandId || rule.selector;
+    const direct = this.resolveObsidianCommandForUiButton(label);
+    if (direct) return { id: `obcmd:${direct.id}`, name: direct.name || label, icon: direct.icon || guessUiButtonCommandIcon(direct.id, direct.name || label) };
+    const selectors = uniqueStrings([
+      rule.commandId?.startsWith("uiclick:") ? rule.commandId.slice("uiclick:".length) : "",
+      rule.selector,
+      rule.fallbackSelector ?? "",
+      rule.anchorSelector ?? ""
+    ].map((item) => item.trim()).filter(Boolean));
+    for (const selector of selectors) {
+      const scoped = this.uiRuleElementsBySelector(selector, rule.scope);
+      const global = rule.scope === "global" ? [] : this.uiRuleElementsBySelector(selector, "global");
+      const candidates = this.narrowUiRuleElementsByLabel(rule, [...scoped, ...global]);
+      for (const target of candidates) {
+        const resolved = this.resolveUiButtonElementCommand(target, label, true);
+        if (resolved) return resolved;
+        const targetLabel = uiElementLabel(target) || label;
+        const byTargetText = this.resolveObsidianCommandForUiButton(targetLabel);
+        if (byTargetText) {
+          return {
+            id: `obcmd:${byTargetText.id}`,
+            name: byTargetText.name || targetLabel,
+            icon: byTargetText.icon || guessUiButtonCommandIcon(byTargetText.id, byTargetText.name || targetLabel)
+          };
+        }
+      }
+    }
+    return null;
+  }
+
   private pluginObsidianCommandEntries(): ObsidianCommandEntry[] {
     const api = ((this.app as App & { commands?: ObsidianCommandApi }).commands ?? {});
     return Object.entries(api.commands ?? {})
@@ -9024,14 +9115,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const commandId = rule.commandId?.trim() ?? "";
       if (!commandId.startsWith("uiclick:")) return rule;
       const label = rule.commandName || rule.title || rule.label || commandId;
-      const resolved = this.resolveObsidianCommandForUiButton(label);
+      const resolved = this.resolveCustomUiButtonRuleCommand(rule);
       if (!resolved) return rule;
       changed = true;
       return {
         ...rule,
-        commandId: `obcmd:${resolved.id}`,
+        commandId: resolved.id,
         commandName: resolved.name || label,
-        icon: rule.icon || resolved.icon || guessUiButtonCommandIcon(resolved.id, resolved.name || label)
+        icon: rule.icon || resolved.icon || guessUiButtonCommandIcon(resolved.id.replace(/^obcmd:/, ""), resolved.name || label)
       };
     });
     if (!changed) return;
@@ -9053,7 +9144,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const commandId = resolvedCommand.id || requestedCommandId;
     const commandName = resolvedCommand.name || options.commandName || commandId;
     const icon = options.icon || resolvedCommand.icon || guessUiButtonCommandIcon(commandId, commandName);
-    const id = `custom-${Date.now().toString(36)}-${stableRuleId(commandId).replace(/^rule-/, "").slice(0, 48)}`;
+    const unique = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const id = `custom-${unique}-${stableRuleId(commandId).replace(/^rule-/, "").slice(0, 48)}`;
     await this.upsertUiButtonRule({
       id,
       kind: "custom",
@@ -9771,7 +9863,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       return (this.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc;
     }
     if (scope === "cancip") {
-      return (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc;
+      return (this.chatLeaves()[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc;
     }
     return doc;
   }
@@ -10257,10 +10349,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.preloadButtonEditDescriptor(descriptor);
     const rect = target.getBoundingClientRect();
     const anchorX = Number.isFinite(x) && x > 0 ? x : rect.left + rect.width / 2;
-    const anchorY = Number.isFinite(y) && y > 0 ? y : rect.top;
+    const anchorY = Number.isFinite(y) && y > 0 ? y : rect.top + rect.height / 2;
     const left = Math.max(8, Math.min(win.innerWidth - 44, anchorX - 18));
-    const preferTop = rect.top > 54 ? rect.top - 44 : rect.bottom + 8;
-    const top = Math.max(8, Math.min(win.innerHeight - 44, anchorY ? Math.min(anchorY - 48, preferTop) : preferTop));
+    const nearTop = rect.top < 64 || anchorY < 72;
+    const preferTop = nearTop ? rect.bottom + 8 : Math.min(anchorY - 18, rect.top - 44);
+    const top = Math.max(8, Math.min(win.innerHeight - 44, preferTop));
     bubble.setCssStyles({ left: `${left}px`, top: `${top}px` });
     bubble.addEventListener("click", (event) => {
       event.preventDefault();
@@ -10475,7 +10568,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private inferUiButtonRuleScope(target: HTMLElement): UiButtonRule["scope"] {
     const snapshotScope = target.dataset.cancipUiRuleScope;
     if (snapshotScope === "active" || snapshotScope === "cancip" || snapshotScope === "global") return snapshotScope;
-    const cancipLeaf = this.app.workspace.getLeavesOfType(VIEW_TYPE).find((leaf) => {
+    const cancipLeaf = this.chatLeaves().find((leaf) => {
       const container = (leaf.view as unknown as { containerEl?: HTMLElement })?.containerEl;
       return Boolean(container?.contains(target));
     });
@@ -11242,7 +11335,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const root = scope === "active"
       ? ((this.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc)
       : scope === "cancip"
-        ? (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc
+        ? (this.chatLeaves()[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc
         : doc;
     try {
       return Array.from(root.querySelectorAll<HTMLElement>(selector));
@@ -12113,8 +12206,33 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
   }
 
+  private chatLeaves(): WorkspaceLeaf[] {
+    const seen = new Set<WorkspaceLeaf>();
+    const leaves: WorkspaceLeaf[] = [];
+    for (const type of [VIEW_TYPE, LEGACY_CANCIP_CHAT_VIEW_TYPE]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        if (seen.has(leaf)) continue;
+        seen.add(leaf);
+        leaves.push(leaf);
+      }
+    }
+    return leaves;
+  }
+
+  private async migrateLegacyChatLeaves(): Promise<void> {
+    const legacyLeaves = this.app.workspace.getLeavesOfType(LEGACY_CANCIP_CHAT_VIEW_TYPE);
+    for (const leaf of legacyLeaves) {
+      try {
+        const active = leaf === this.app.workspace.getLeaf(false);
+        await leaf.setViewState({ type: VIEW_TYPE, active });
+      } catch (error) {
+        console.warn("Cancip failed to migrate legacy chat view", error);
+      }
+    }
+  }
+
   refreshOpenViews(): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
         leaf.view.refreshLanguage();
       }
@@ -12128,7 +12246,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   syncOpenReviewGateDecision(reviewPath: string): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
         void leaf.view.syncToolRunsForReviewPath(reviewPath);
         leaf.view.refreshAuditBadge();
@@ -12180,7 +12298,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       this.invalidateSkillCaches();
     }
     const viewRefreshes: Promise<void>[] = [];
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
         viewRefreshes.push(leaf.view.refreshFromVaultSync(kinds, paths));
       }
@@ -12271,7 +12389,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       ...DEFAULT_SKILL_ROOTS,
       ...this.settings.skillRoots
     ];
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) targets.push(...leaf.view.vaultSyncWatchedPaths());
     }
     return uniqueStrings(
@@ -12351,7 +12469,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private refreshOpenReviewGateState(path = ""): void {
     const reviewPath = reviewGateManifestPathFromRelatedPath(path);
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
         if (reviewPath) void leaf.view.syncToolRunsForReviewPath(reviewPath);
         leaf.view.refreshAuditBadge();
@@ -12366,7 +12484,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   invalidateSkillCaches(): void {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
         leaf.view.invalidateSkillCache();
       }
@@ -12407,7 +12525,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private collectOpenViewAttention(): StatusBarAttentionState {
     let unreadSessions = 0;
     let reviews = 0;
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+    for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
         const summary = leaf.view.statusBarInterventionSummary();
         unreadSessions += summary.unreadSessions;
@@ -12601,8 +12719,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private async ensureCancipLeaf(active: boolean): Promise<WorkspaceLeaf | null> {
-    let leaf: WorkspaceLeaf | null = this.app.workspace.getLeavesOfType(VIEW_TYPE).find((candidate) => candidate.view instanceof CancipView)
-      ?? this.app.workspace.getLeavesOfType(VIEW_TYPE)[0];
+    let leaf: WorkspaceLeaf | null = this.chatLeaves().find((candidate) => candidate.view instanceof CancipView)
+      ?? this.chatLeaves()[0];
     if (!leaf) leaf = this.app.workspace.getRightLeaf(false) ?? null;
     if (!leaf) return null;
     if (!(leaf.view instanceof CancipView)) {
@@ -12692,7 +12810,7 @@ class CancipReviewLeafView extends ItemView {
 
   private lockReviewKeyboardLayout(elements: HTMLElement[]): void {
     if (!this.keyboardLockHeight) {
-      const root = this.containerEl.children[1] as HTMLElement | undefined;
+      const root = this.contentEl;
       const rect = root?.getBoundingClientRect();
       this.keyboardLockHeight = Math.max(0, Math.floor(rect?.height ?? 0));
     }
@@ -12715,7 +12833,7 @@ class CancipReviewLeafView extends ItemView {
   private async render(): Promise<void> {
     this.unlockReviewKeyboardLayout();
     this.keyboardLockHeight = 0;
-    const root = this.containerEl.children[1];
+    const root = this.contentEl;
     root.empty();
     root.addClass("obcc-review-leaf");
     root.removeClass("has-review-detail");
@@ -12941,7 +13059,7 @@ class CancipReviewLeafView extends ItemView {
   }
 
   private renderReviewDetail(parent: HTMLElement, data: ReviewGatePackageData, item: ReviewGateManifestItem, index: number, total: number): void {
-    const root = this.containerEl.children[1] as HTMLElement;
+    const root = this.contentEl;
     root.addClass("has-review-detail");
     const body = parent.closest<HTMLElement>(".obcc-review-leaf-body");
     const shell = parent.closest<HTMLElement>(".obcc-review-leaf-shell");
@@ -13342,6 +13460,7 @@ class CancipView extends ItemView {
   private contextEl: HTMLElement | null = null;
   private queueEl: HTMLElement | null = null;
   private scrollBottomButtonEl: HTMLButtonElement | null = null;
+  private scrollPreviousUserButtonEl: HTMLButtonElement | null = null;
   private sendButtonEl: HTMLButtonElement | null = null;
   private holdQueueButtonEl: HTMLButtonElement | null = null;
   private modeButtons: Partial<Record<ComposerMode, HTMLButtonElement>> | null = null;
@@ -13394,8 +13513,8 @@ class CancipView extends ItemView {
   private subagentRole = "";
   private subagentGoal = "";
   private subagentProgress = "";
-  private sessionHistoryCache: { at: number; entries: SessionHistoryEntry[] } | null = null;
-  private sessionHistoryReadPromise: Promise<SessionHistoryEntry[]> | null = null;
+  private sessionHistoryCache: { at: number; mergeFiles: boolean; entries: SessionHistoryEntry[] } | null = null;
+  private sessionHistoryReadPromise: { mergeFiles: boolean; promise: Promise<SessionHistoryEntry[]> } | null = null;
   private historyMenuRefreshTimer: number | null = null;
   private experienceHarvestTimer: number | null = null;
   private headerMenuLoadId = 0;
@@ -13405,7 +13524,8 @@ class CancipView extends ItemView {
 
   constructor(
     leaf: WorkspaceLeaf,
-    private plugin: CancipPlugin
+    private plugin: CancipPlugin,
+    private readonly registeredViewType = VIEW_TYPE
   ) {
     super(leaf);
     this.includeCurrentFileForSession = plugin.settings.includeCurrentFile;
@@ -13503,7 +13623,7 @@ class CancipView extends ItemView {
     const currentPath = normalizePath(`${SESSION_HISTORY_DIR}/${this.sessionId}.json`);
     if (!paths.some((path) => normalizePath(path.replace(/\\/g, "/")) === currentPath)) return;
     if (!this.canAutoReloadSessionFromVaultSync()) return;
-    const entry = (await this.readSessionHistoryIndex()).find((item) => item.id === this.sessionId && !item.eventOnly);
+    const entry = (await this.readSessionHistoryIndex({ mergeFiles: false })).find((item) => item.id === this.sessionId && !item.eventOnly);
     if (!entry) return;
     await this.loadSessionHistoryEntry(entry, { saveCurrent: false, focusInput: false, status: this.t("sessionLoaded") });
   }
@@ -13614,7 +13734,7 @@ class CancipView extends ItemView {
   }
 
   getViewType(): string {
-    return VIEW_TYPE;
+    return this.registeredViewType;
   }
 
   getDisplayText(): string {
@@ -13632,8 +13752,8 @@ class CancipView extends ItemView {
     this.registerDomEvent(activeDocument, "pointerdown", (event) => this.handleDocumentPointerDown(event));
     this.registerDomEvent(activeDocument, "contextmenu", (event) => this.handleDocumentContextMenu(event));
     const restored = await this.restoreLastSessionOnOpen();
-    if (!restored) await this.ensureCurrentSessionRecord();
-    await this.refreshVaultIndex(false);
+    if (!restored) void this.ensureCurrentSessionRecord();
+    void this.refreshVaultIndex(false);
   }
 
   async onClose(): Promise<void> {
@@ -13666,7 +13786,7 @@ class CancipView extends ItemView {
     this.editingQueuedPromptId = null;
     this.editingManualTodoId = null;
     this.renderQueueStatus();
-    await this.saveCurrentSession();
+    void this.saveCurrentSession();
     this.sessionId = sessionExportId(new Date());
     this.sessionCreatedAt = new Date().toISOString();
     this.messages = [];
@@ -13699,7 +13819,7 @@ class CancipView extends ItemView {
     this.renderSources([]);
     this.setStatus(this.t("newChatStatus"));
     void this.recordSessionEvent({ kind: "session.new", status: this.currentSessionStatus });
-    await this.ensureCurrentSessionRecord();
+    void this.ensureCurrentSessionRecord();
     this.focusInput();
   }
 
@@ -14120,7 +14240,7 @@ class CancipView extends ItemView {
     this.mentionEl = null;
     this.headerMenuEl = null;
 
-    const root = this.containerEl.children[1];
+    const root = this.contentEl;
     root.empty();
     root.addClass("obcc-root");
     root.toggleClass("is-compact-header", this.plugin.settings.compactHeader);
@@ -14211,6 +14331,12 @@ class CancipView extends ItemView {
     });
     setIcon(this.scrollBottomButtonEl, "arrow-down");
     this.scrollBottomButtonEl.addEventListener("click", () => this.scrollMessagesToBottom(true));
+    this.scrollPreviousUserButtonEl = messagesFrame.createEl("button", {
+      cls: "obcc-scroll-previous-user is-hidden",
+      attr: { type: "button", title: this.t("scrollToPreviousUser"), "aria-label": this.t("scrollToPreviousUser") }
+    });
+    setIcon(this.scrollPreviousUserButtonEl, "arrow-up");
+    this.scrollPreviousUserButtonEl.addEventListener("click", () => this.scrollToPreviousUserPrompt());
 
     const overlayLayer = this.containerEl.ownerDocument.body.createDiv({ cls: "obcc-overlay-layer" });
     this.overlayLayerEl = overlayLayer;
@@ -14489,9 +14615,27 @@ class CancipView extends ItemView {
       return;
     }
 
+    row.draggable = true;
+    row.dataset.queueId = item.id;
+    row.addEventListener("dragstart", (event) => {
+      event.dataTransfer?.setData("text/plain", `queue:${item.id}`);
+      event.dataTransfer?.setDragImage(row, 12, 12);
+    });
+    row.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      row.addClass("is-drag-over");
+    });
+    row.addEventListener("dragleave", () => row.removeClass("is-drag-over"));
+    row.addEventListener("drop", (event) => {
+      event.preventDefault();
+      row.removeClass("is-drag-over");
+      const dragged = event.dataTransfer?.getData("text/plain") ?? "";
+      if (dragged.startsWith("queue:")) this.reorderQueuedPrompt(dragged.slice("queue:".length), item.id);
+    });
+    setIcon(row.createSpan({ cls: "obcc-queue-drag" }), "grip-vertical");
     const preview = row.createEl("button", {
       cls: "obcc-queue-preview",
-      text: item.held ? `${this.t("heldQueuedPrompt")} · ${item.prompt}` : item.prompt,
+      text: `${index + 1}. ${item.held ? this.t("heldQueuedPrompt") : this.t("send")} · ${item.prompt}`,
       attr: { type: "button", title: item.prompt, "aria-label": this.t("editQueuedPrompt") }
     });
     preview.addEventListener("click", () => this.editQueuedPrompt(item.id));
@@ -14504,8 +14648,6 @@ class CancipView extends ItemView {
       item.held ? this.t("releaseQueuedPrompt") : this.t("pauseQueuedPrompt"),
       () => this.toggleQueuedPromptHold(item.id)
     );
-    this.createQueueIconButton(actions, "arrow-up", this.t("moveQueuedPromptUp"), () => this.moveQueuedPrompt(item.id, -1), index === 0);
-    this.createQueueIconButton(actions, "arrow-down", this.t("moveQueuedPromptDown"), () => this.moveQueuedPrompt(item.id, 1), index === this.queuedPrompts.length - 1);
     this.createQueueIconButton(actions, "pencil", this.t("editQueuedPrompt"), () => this.editQueuedPrompt(item.id));
     this.createQueueIconButton(actions, "x", this.t("removeQueuedPrompt"), () => this.removeQueuedPrompt(item.id));
   }
@@ -14531,6 +14673,18 @@ class CancipView extends ItemView {
     const [item] = this.queuedPrompts.splice(index, 1);
     this.queuedPrompts.splice(nextIndex, 0, item);
     this.renderQueueStatus();
+  }
+
+  private reorderQueuedPrompt(id: string, beforeId: string): void {
+    if (!id || !beforeId || id === beforeId) return;
+    const from = this.queuedPrompts.findIndex((item) => item.id === id);
+    const to = this.queuedPrompts.findIndex((item) => item.id === beforeId);
+    if (from < 0 || to < 0) return;
+    const [item] = this.queuedPrompts.splice(from, 1);
+    const target = from < to ? to - 1 : to;
+    this.queuedPrompts.splice(target, 0, item);
+    this.renderQueueStatus();
+    void this.saveCurrentSession();
   }
 
   private toggleQueuedPromptHold(id: string): void {
@@ -14836,18 +14990,127 @@ class CancipView extends ItemView {
     const modelHead = modelSection.createDiv({ cls: "obcc-model-menu-section-head" });
     modelHead.createSpan({ text: this.t("modelList") });
     this.createModelMenuIconButton(modelHead, "plus", this.t("addModel"), () => void this.addModelOptionFromMenu());
+    let pointerDrag: { model: string; pointerId: number; startY: number; targetModel: string; after: boolean } | null = null;
+    const clearDragState = () => {
+      this.menuEl?.querySelectorAll<HTMLElement>(".obcc-model-menu-row").forEach((item) => {
+        item.removeClass("is-drag-over", "is-dragging", "is-drop-after");
+      });
+    };
+    const rowAtPointer = (event: PointerEvent | DragEvent): HTMLElement | null => {
+      const el = this.containerEl.ownerDocument.elementFromPoint(event.clientX, event.clientY);
+      return el?.closest<HTMLElement>(".obcc-model-menu-row[data-model]") ?? null;
+    };
+    const updatePointerTarget = (event: PointerEvent): void => {
+      if (!pointerDrag) return;
+      const moved = Math.abs(event.clientY - pointerDrag.startY);
+      if (moved < 4) return;
+      const targetRow = rowAtPointer(event);
+      clearDragState();
+      const sourceRow = this.menuEl?.querySelector<HTMLElement>(`.obcc-model-menu-row[data-model="${cssEscapeAttr(pointerDrag.model)}"]`);
+      sourceRow?.addClass("is-dragging");
+      const targetModel = targetRow?.dataset.model ?? "";
+      if (!targetRow || !targetModel || targetModel === pointerDrag.model) {
+        pointerDrag.targetModel = "";
+        return;
+      }
+      const rect = targetRow.getBoundingClientRect();
+      pointerDrag.targetModel = targetModel;
+      pointerDrag.after = event.clientY > rect.top + rect.height / 2;
+      targetRow.addClass("is-drag-over");
+      targetRow.toggleClass("is-drop-after", pointerDrag.after);
+    };
     for (const [index, model] of presets.entries()) {
-      const row = modelSection.createDiv({ cls: `obcc-model-menu-row ${model === active.model ? "is-active" : ""}` });
+      const rowProfile = this.modelProfileForModel(model);
+      const row = modelSection.createDiv({ cls: `obcc-model-menu-row ${model === active.model && rowProfile.id === active.id ? "is-active" : ""}` });
+      row.draggable = true;
+      row.dataset.model = model;
+      row.addEventListener("dragstart", (event) => {
+        event.dataTransfer?.setData("text/plain", `model:${model}`);
+        if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer?.setDragImage(row, 12, 12);
+        row.addClass("is-dragging");
+      });
+      row.addEventListener("dragend", clearDragState);
+      row.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        row.addClass("is-drag-over");
+        row.toggleClass("is-drop-after", event.clientY > rect.top + rect.height / 2);
+      });
+      row.addEventListener("dragleave", () => row.removeClass("is-drag-over", "is-drop-after"));
+      row.addEventListener("drop", (event) => {
+        event.preventDefault();
+        const rect = row.getBoundingClientRect();
+        const after = event.clientY > rect.top + rect.height / 2;
+        row.removeClass("is-drag-over", "is-drop-after");
+        const dragged = event.dataTransfer?.getData("text/plain") ?? "";
+        if (dragged.startsWith("model:")) void this.reorderModelOptionFromMenu(dragged.slice("model:".length), model, after);
+      });
       const body = row.createEl("button", { cls: "obcc-model-menu-body", attr: { type: "button", title: model } });
-      setIcon(body.createSpan({ cls: "obcc-command-icon" }), "cpu");
+      const handle = body.createSpan({ cls: "obcc-command-icon obcc-model-drag-icon" });
+      setIcon(handle, "grip-vertical");
+      let detachPointerDragListeners: (() => void) | null = null;
+      const movePointerDrag = (event: PointerEvent): void => {
+        if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        updatePointerTarget(event);
+      };
+      const finishPointerDrag = (event: PointerEvent) => {
+        if (!pointerDrag || pointerDrag.pointerId !== event.pointerId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        detachPointerDragListeners?.();
+        detachPointerDragListeners = null;
+        updatePointerTarget(event);
+        const drag = pointerDrag;
+        pointerDrag = null;
+        clearDragState();
+        try {
+          handle.releasePointerCapture(event.pointerId);
+        } catch {
+          // Ignore capture release differences across WebViews.
+        }
+        if (drag.targetModel && drag.targetModel !== drag.model) {
+          void this.reorderModelOptionFromMenu(drag.model, drag.targetModel, drag.after);
+        }
+      };
+      handle.addEventListener("pointerdown", (event) => {
+        if (event.pointerType === "mouse" && event.button !== 0) return;
+        event.preventDefault();
+        event.stopPropagation();
+        detachPointerDragListeners?.();
+        pointerDrag = { model, pointerId: event.pointerId, startY: event.clientY, targetModel: "", after: false };
+        row.addClass("is-dragging");
+        const doc = this.containerEl.ownerDocument;
+        doc.addEventListener("pointermove", movePointerDrag, { capture: true });
+        doc.addEventListener("pointerup", finishPointerDrag, { capture: true });
+        doc.addEventListener("pointercancel", finishPointerDrag, { capture: true });
+        detachPointerDragListeners = () => {
+          doc.removeEventListener("pointermove", movePointerDrag, { capture: true });
+          doc.removeEventListener("pointerup", finishPointerDrag, { capture: true });
+          doc.removeEventListener("pointercancel", finishPointerDrag, { capture: true });
+        };
+        try {
+          handle.setPointerCapture(event.pointerId);
+        } catch {
+          // Some Android WebViews do not expose pointer capture for SVG/span targets.
+        }
+      });
+      handle.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      handle.addEventListener("pointermove", movePointerDrag);
+      handle.addEventListener("pointerup", finishPointerDrag);
+      handle.addEventListener("pointercancel", finishPointerDrag);
       const text = body.createDiv({ cls: "obcc-model-menu-text" });
-      text.createDiv({ cls: "obcc-command-title", text: this.formatModelLabel(model) });
-      if (model === active.model) setIcon(body.createSpan({ cls: "obcc-command-check" }), "check");
-      body.addEventListener("click", () => void this.setModelFromMenu(model));
+      text.createDiv({ cls: "obcc-command-title", text: this.formatModelSourceLabel(rowProfile, model) });
+      text.createDiv({ cls: "obcc-command-detail", text: [rowProfile.apiMode, rowProfile.apiUrl].filter(Boolean).join(" · ") });
+      if (model === active.model && rowProfile.id === active.id) setIcon(body.createSpan({ cls: "obcc-command-check" }), "check");
+      body.addEventListener("click", () => void this.setModelFromMenu(model, rowProfile.id));
       const actions = row.createDiv({ cls: "obcc-model-menu-actions" });
-      this.createModelMenuIconButton(actions, "copy", this.t("copyModelInfo"), () => void this.copyModelInfo(model));
-      this.createModelMenuIconButton(actions, "arrow-up", this.t("moveModelUp"), () => void this.moveModelOptionFromMenu(model, -1), index === 0);
-      this.createModelMenuIconButton(actions, "arrow-down", this.t("moveModelDown"), () => void this.moveModelOptionFromMenu(model, 1), index === presets.length - 1);
+      this.createModelMenuIconButton(actions, "copy", this.t("copyModelInfo"), () => void this.copyModelInfo(model, rowProfile));
       this.createModelMenuIconButton(actions, "pencil", this.t("editModel"), () => void this.editModelOptionFromMenu(model));
       this.createModelMenuIconButton(actions, "trash-2", this.t("removeModel"), () => void this.removeModelOptionFromMenu(model), presets.length <= 1);
     }
@@ -14913,24 +15176,66 @@ class CancipView extends ItemView {
     this.render();
   }
 
-  private async setModelFromMenu(model: string): Promise<void> {
-    await this.setModel(model);
+  private async setModelFromMenu(model: string, profileId?: string): Promise<void> {
+    if (profileId && profileId !== this.plugin.activeApiProfile().id) {
+      await this.plugin.selectApiProfile(profileId);
+    }
+    await this.plugin.updateActiveApiProfile({ model });
+    this.render();
+    this.setStatus(this.t("modelChanged", { model }));
+    this.focusInput();
   }
 
   private async addModelOptionFromMenu(): Promise<void> {
-    const model = (await promptTextModal(this.app, this.t("modelNamePrompt"), this.plugin.activeApiProfile().model))?.trim();
-    if (!model) return;
+    const active = this.plugin.activeApiProfile();
+    this.closeCommandMenu();
+    await sleep(0);
+    const result = await promptModelEditModal(this.app, {
+      title: this.t("addModel"),
+      modelLabel: this.t("modelNamePrompt"),
+      profileLabel: this.t("settingsApiProfile"),
+      saveLabel: this.t("buttonEditSave"),
+      cancelLabel: this.t("reviewGateCancel"),
+      profiles: this.plugin.settings.apiProfiles,
+      initialModel: active.model,
+      initialProfileId: active.id
+    });
+    if (!result) return;
+    const model = result.model.trim();
     this.plugin.settings.modelOptions = normalizeModelOptions([model, ...this.plugin.settings.modelOptions], model);
-    await this.plugin.updateActiveApiProfile({ model });
+    this.plugin.settings.activeApiProfileId = result.profileId;
+    this.plugin.settings.apiProfiles = this.plugin.settings.apiProfiles.map((profile) =>
+      profile.id === result.profileId ? normalizeApiProfile({ ...profile, model }, profile) : profile
+    );
+    await this.plugin.saveSettings();
     this.render();
   }
 
   private async editModelOptionFromMenu(model: string): Promise<void> {
-    const next = (await promptTextModal(this.app, this.t("modelNamePrompt"), model))?.trim();
-    if (!next || next === model) return;
+    const active = this.plugin.activeApiProfile();
+    const initialProfile = this.plugin.settings.apiProfiles.find((profile) => profile.model === model) ?? active;
+    this.closeCommandMenu();
+    await sleep(0);
+    const result = await promptModelEditModal(this.app, {
+      title: this.t("editModel"),
+      modelLabel: this.t("modelNamePrompt"),
+      profileLabel: this.t("settingsApiProfile"),
+      saveLabel: this.t("buttonEditSave"),
+      cancelLabel: this.t("reviewGateCancel"),
+      profiles: this.plugin.settings.apiProfiles,
+      initialModel: model,
+      initialProfileId: initialProfile.id
+    });
+    if (!result) return;
+    const next = result.model.trim();
+    if (!next) return;
     this.plugin.settings.modelOptions = normalizeModelOptions(this.plugin.settings.modelOptions.map((item) => item === model ? next : item), next);
-    if (this.plugin.activeApiProfile().model === model) await this.plugin.updateActiveApiProfile({ model: next });
-    else await this.plugin.saveSettings();
+    this.plugin.settings.activeApiProfileId = result.profileId;
+    this.plugin.settings.apiProfiles = this.plugin.settings.apiProfiles.map((profile) => {
+      if (profile.id === result.profileId || profile.model === model) return normalizeApiProfile({ ...profile, model: next }, profile);
+      return profile;
+    });
+    await this.plugin.saveSettings();
     this.render();
   }
 
@@ -14950,6 +15255,20 @@ class CancipView extends ItemView {
     if (index < 0 || nextIndex < 0 || nextIndex >= options.length) return;
     const [item] = options.splice(index, 1);
     options.splice(nextIndex, 0, item);
+    this.plugin.settings.modelOptions = options;
+    await this.plugin.saveSettings();
+    this.openModelMenu();
+  }
+
+  private async reorderModelOptionFromMenu(model: string, targetModel: string, after = false): Promise<void> {
+    if (!model || !targetModel || model === targetModel) return;
+    const options = normalizeModelOptions(this.plugin.settings.modelOptions, this.plugin.activeApiProfile().model);
+    const from = options.findIndex((item) => item === model);
+    const to = options.findIndex((item) => item === targetModel);
+    if (from < 0 || to < 0) return;
+    const [item] = options.splice(from, 1);
+    const target = Math.max(0, Math.min(options.length, from < to ? (after ? to : to - 1) : (after ? to + 1 : to)));
+    options.splice(target, 0, item);
     this.plugin.settings.modelOptions = options;
     await this.plugin.saveSettings();
     this.openModelMenu();
@@ -14995,7 +15314,7 @@ class CancipView extends ItemView {
     const viewportLeft = visual?.offsetLeft ?? 0;
     const doc = this.containerEl.ownerDocument;
     const viewportWidth = visual?.width ?? window.innerWidth ?? doc.documentElement.clientWidth;
-    const rootRect = this.containerEl.children[1]?.getBoundingClientRect();
+    const rootRect = this.contentEl.getBoundingClientRect();
     const rootLeft = rootRect ? Math.max(viewportLeft + 4, rootRect.left + 4) : viewportLeft + 4;
     const rootRight = rootRect ? Math.min(viewportLeft + viewportWidth - 4, rootRect.right - 4) : viewportLeft + viewportWidth - 4;
     const width = Math.max(120, rootRight - rootLeft);
@@ -15015,7 +15334,7 @@ class CancipView extends ItemView {
     const doc = this.containerEl.ownerDocument;
     const viewportWidth = visual?.width ?? window.innerWidth ?? doc.documentElement.clientWidth;
     const viewportHeight = visual?.height ?? window.innerHeight ?? doc.documentElement.clientHeight;
-    const rootRect = this.containerEl.children[1]?.getBoundingClientRect();
+    const rootRect = this.contentEl.getBoundingClientRect();
     const headerRect = this.containerEl.querySelector<HTMLElement>(".obcc-header")?.getBoundingClientRect();
     const rootLeft = rootRect ? Math.max(viewportLeft + 4, rootRect.left + 4) : viewportLeft + 4;
     const rootRight = rootRect ? Math.min(viewportLeft + viewportWidth - 4, rootRect.right - 4) : viewportLeft + viewportWidth - 4;
@@ -15124,7 +15443,7 @@ class CancipView extends ItemView {
     const loadingEl = this.headerMenuEl.createDiv({ cls: "obcc-mention-empty", text: this.t("preparingContext") });
     await sleep(0);
     if (loadId !== this.headerMenuLoadId || this.activeHeaderMenu !== "history" || !this.headerMenuEl || this.headerMenuEl.hasClass("is-hidden")) return;
-    const entries = await this.readSessionHistoryIndex();
+    const entries = await this.readSessionHistoryIndex({ mergeFiles: false });
     if (loadId !== this.headerMenuLoadId || this.activeHeaderMenu !== "history" || !this.headerMenuEl || this.headerMenuEl.hasClass("is-hidden")) return;
     loadingEl.remove();
     if (!entries.length) {
@@ -15144,6 +15463,7 @@ class CancipView extends ItemView {
       if (entry.parentSessionId && pool.some((candidate) => candidate.id === entry.parentSessionId)) return true;
       return pool.some((candidate) => (candidate.subagentIds ?? []).includes(entry.id));
     };
+    let draggedHistoryEntryId = "";
     const renderEntry = (entry: SessionHistoryEntry, parent: HTMLElement, options: { child?: boolean } = {}): void => {
       const status = this.isSessionRunning(entry.id) ? "running" : entry.status ?? "idle";
       const hasNotice = shouldShowUnreadSession(entry) && entry.id !== this.sessionId;
@@ -15156,6 +15476,35 @@ class CancipView extends ItemView {
         cls: `obcc-command-item obcc-session-item ${entry.id === this.sessionId ? "is-active" : ""} is-${status} ${hasNotice ? "has-notice" : ""} ${entry.pinned ? "is-pinned" : ""} ${entry.archived ? "is-archived" : ""} ${isChild ? "is-subagent" : ""}`,
         attr: { title: entry.title }
       });
+      if (!isChild && !entry.eventOnly) {
+        row.draggable = true;
+        row.addEventListener("dragstart", (event) => {
+          draggedHistoryEntryId = entry.id;
+          row.addClass("is-dragging");
+          event.dataTransfer?.setData("text/plain", `session:${entry.id}`);
+          event.dataTransfer?.setDragImage?.(row, 18, 18);
+        });
+        row.addEventListener("dragend", () => {
+          draggedHistoryEntryId = "";
+          row.removeClass("is-dragging", "is-drag-over");
+        });
+        row.addEventListener("dragover", (event) => {
+          if (!draggedHistoryEntryId || draggedHistoryEntryId === entry.id) return;
+          event.preventDefault();
+          row.addClass("is-drag-over");
+        });
+        row.addEventListener("dragleave", () => row.removeClass("is-drag-over"));
+        row.addEventListener("drop", (event) => {
+          event.preventDefault();
+          row.removeClass("is-drag-over");
+          const dragged = event.dataTransfer?.getData("text/plain") || (draggedHistoryEntryId ? `session:${draggedHistoryEntryId}` : "");
+          if (!dragged.startsWith("session:")) return;
+          const sourceId = dragged.slice("session:".length);
+          if (!sourceId || sourceId === entry.id) return;
+          const pool = (entry.archived ? archivedEntries : visibleEntries).filter((item) => !item.eventOnly && !item.parentSessionId);
+          void this.reorderSessionHistoryFromMenu(sourceId, entry.id, pool.map((item) => item.id));
+        });
+      }
       const body = row.createEl("button", {
         cls: "obcc-command-body obcc-session-open",
         attr: { type: "button", title: entry.title }
@@ -15205,6 +15554,10 @@ class CancipView extends ItemView {
         }
         void this.loadSessionHistoryEntry(entry);
       });
+      if (!isChild && !entry.eventOnly) {
+        const dragHandle = state.createSpan({ cls: "obcc-session-drag", attr: { title: this.t("buttonEditSort") } });
+        setIcon(dragHandle, "grip-vertical");
+      }
     };
     const renderSubagentGroup = (entry: SessionHistoryEntry, parent: HTMLElement, pool: SessionHistoryEntry[]): void => {
       const children = childrenForEntry(entry, pool);
@@ -15252,6 +15605,36 @@ class CancipView extends ItemView {
       onClick();
     });
     return button;
+  }
+
+  private async reorderSessionHistoryFromMenu(sourceId: string, targetId: string, visibleIds: string[]): Promise<void> {
+    if (!sourceId || !targetId || sourceId === targetId) return;
+    const orderedIds = visibleIds.filter(Boolean);
+    const fromIndex = orderedIds.indexOf(sourceId);
+    const toIndex = orderedIds.indexOf(targetId);
+    if (fromIndex < 0 || toIndex < 0) return;
+    const [moved] = orderedIds.splice(fromIndex, 1);
+    if (!moved) return;
+    orderedIds.splice(toIndex, 0, moved);
+    try {
+      const manualOrderById = new Map(orderedIds.map((id, index) => [id, index + 1]));
+      const index = (await this.readSessionHistoryIndex({ force: true, mergeFiles: false })).filter((item) => !item.eventOnly);
+      const nextEntries = index.map((entry): SessionHistoryEntry => {
+        const manualOrder = manualOrderById.get(entry.id);
+        return typeof manualOrder === "number" ? { ...entry, manualOrder } : entry;
+      });
+      await this.writeSessionHistoryEntries(nextEntries);
+      for (const entry of nextEntries) {
+        if (!manualOrderById.has(entry.id)) continue;
+        await this.syncSessionHistorySnapshotPatch(entry, { manualOrder: entry.manualOrder });
+      }
+      if (this.activeHeaderMenu === "history" && this.headerMenuEl && !this.headerMenuEl.hasClass("is-hidden")) {
+        await this.openHistoryMenu();
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.t("sessionHistoryUpdateFailed", { reason }));
+    }
   }
 
   private async updateSessionHistoryEntry(id: string, patch: SessionHistoryEntryPatch): Promise<void> {
@@ -15327,6 +15710,7 @@ class CancipView extends ItemView {
       if (typeof patch.updatedAt === "string") snapshot.updatedAt = patch.updatedAt;
       if (typeof patch.pinned === "boolean") snapshot.pinned = patch.pinned;
       if (typeof patch.archived === "boolean") snapshot.archived = patch.archived;
+      if (typeof patch.manualOrder === "number" && Number.isFinite(patch.manualOrder)) snapshot.manualOrder = patch.manualOrder;
       if (typeof patch.parentSessionId === "string") snapshot.parentSessionId = patch.parentSessionId;
       if (typeof patch.parentSessionTitle === "string") snapshot.parentSessionTitle = patch.parentSessionTitle;
       if (Array.isArray(patch.subagentIds)) snapshot.subagentIds = uniqueStrings(patch.subagentIds);
@@ -15477,6 +15861,19 @@ class CancipView extends ItemView {
     }
   }
 
+  private scrollToPreviousUserPrompt(): void {
+    if (!this.messagesEl) return;
+    const userMessages = Array.from(this.messagesEl.querySelectorAll<HTMLElement>(".obcc-message.obcc-user[data-message-id]"));
+    if (!userMessages.length) return;
+    const viewportTop = this.messagesEl.getBoundingClientRect().top;
+    const previous = userMessages
+      .filter((item) => item.getBoundingClientRect().top < viewportTop + 32)
+      .pop();
+    const target = previous ?? userMessages[userMessages.length - 1];
+    const messageId = target?.dataset.messageId;
+    if (messageId) this.scrollToMessage(messageId);
+  }
+
   private sessionStatusLabel(status: NonNullable<SessionHistoryEntry["status"]>): string {
     if (status === "running") return this.t("sessionRunning");
     if (status === "completed") return this.t("sessionCompleted");
@@ -15520,13 +15917,26 @@ class CancipView extends ItemView {
     setIcon(closeButton, "x");
     closeButton.addEventListener("click", () => this.closeHeaderMenu());
 
-    if (this.plugin.settings.showLiveTodos) {
+    const agentTodos = this.agentPlanTodos();
+    if (this.plugin.settings.showLiveTodos && agentTodos.length) {
+      const agentSection = this.headerMenuEl.createDiv({ cls: "obcc-plan-section" });
+      agentSection.createDiv({ cls: "obcc-plan-section-title", text: this.planSectionTitle(this.t("realtimeTodos"), agentTodos) });
+      const agentList = agentSection.createDiv({ cls: "obcc-manual-todos obcc-agent-todos" });
+      this.renderTodoList(agentList, agentTodos);
+    } else if (this.plugin.settings.showLiveTodos) {
       const liveTodos = this.realtimeTodos();
       if (liveTodos.length) {
-      const liveSection = this.headerMenuEl.createDiv({ cls: "obcc-plan-section" });
-      liveSection.createDiv({ cls: "obcc-plan-section-title", text: `${this.t("realtimeTodos")} · AI` });
-        for (const todo of liveTodos) {
-          this.renderTodoRow(liveSection, todo.text, true, undefined, -1, todo.done);
+        const liveSection = this.headerMenuEl.createDiv({ cls: "obcc-plan-section" });
+        liveSection.createDiv({ cls: "obcc-plan-section-title", text: `${this.t("realtimeTodos")} · AI` });
+        for (const [index, todo] of liveTodos.entries()) {
+          this.renderTodoRow(liveSection, todo.text, true, undefined, index, todo.done, liveTodos.map((item, itemIndex) => ({
+            id: String(itemIndex),
+            text: item.text,
+            done: item.done,
+            sendToModel: true,
+            source: "programmatic" as const,
+            createdAt: ""
+          })));
         }
       }
     }
@@ -15534,14 +15944,9 @@ class CancipView extends ItemView {
     if (this.plugin.settings.showManualTodos) {
       const manualSection = this.headerMenuEl.createDiv({ cls: "obcc-plan-section" });
       const manualTodos = this.visibleManualTodos();
-      const manualVisibleCount = manualTodos.filter((todo) => todo.sendToModel !== false).length;
-      const manualHeldCount = manualTodos.length - manualVisibleCount;
-      manualSection.createDiv({
-        cls: "obcc-plan-section-title",
-        text: `${this.t("manualTodos")} · ${manualVisibleCount} AI · ${manualHeldCount} hold`
-      });
+      manualSection.createDiv({ cls: "obcc-plan-section-title", text: this.planSectionTitle(this.t("manualTodos"), manualTodos) });
       const manualList = manualSection.createDiv({ cls: "obcc-manual-todos" });
-      this.renderManualTodoList(manualList);
+      this.renderTodoList(manualList, manualTodos);
 
       const form = manualSection.createEl("form", { cls: "obcc-manual-todo-form" });
       const input = form.createEl("input", {
@@ -16000,14 +16405,48 @@ class CancipView extends ItemView {
     }));
   }
 
-  private renderTodoRow(parent: HTMLElement, text: string, readonly: boolean, todo?: ManualTodo, index = -1, readonlyDone = false): void {
+  private planSectionTitle(title: string, todos: ManualTodo[]): string {
+    const visibleCount = todos.filter((todo) => todo.sendToModel !== false).length;
+    const heldCount = todos.length - visibleCount;
+    const doneCount = todos.filter((todo) => todo.done).length;
+    return `${title} · ${doneCount}/${todos.length} · ${visibleCount} AI · ${heldCount} hold`;
+  }
+
+  private planTodoStatus(todos: ManualTodo[], todo: ManualTodo | undefined, index: number, done: boolean): "done" | "current" | "todo" {
+    if (done) return "done";
+    const firstOpen = todos.findIndex((item) => !item.done);
+    if (todo && firstOpen === index) return "current";
+    return "todo";
+  }
+
+  private renderTodoRow(parent: HTMLElement, text: string, readonly: boolean, todo?: ManualTodo, index = -1, readonlyDone = false, todos: ManualTodo[] = []): void {
     const done = todo?.done ?? readonlyDone;
-    const row = parent.createDiv({ cls: `obcc-todo-row ${done ? "is-done" : ""}` });
+    const status = this.planTodoStatus(todos, todo, index, done);
+    const row = parent.createDiv({ cls: `obcc-todo-row is-${status} ${done ? "is-done" : ""} ${todo?.sendToModel === false ? "is-held" : ""}` });
+    if (!readonly && todo && this.editingManualTodoId !== todo.id) {
+      row.draggable = true;
+      row.dataset.todoId = todo.id;
+      row.addEventListener("dragstart", (event) => {
+        event.dataTransfer?.setData("text/plain", `todo:${todo.id}`);
+        event.dataTransfer?.setDragImage(row, 12, 12);
+      });
+      row.addEventListener("dragover", (event) => {
+        event.preventDefault();
+        row.addClass("is-drag-over");
+      });
+      row.addEventListener("dragleave", () => row.removeClass("is-drag-over"));
+      row.addEventListener("drop", (event) => {
+        event.preventDefault();
+        row.removeClass("is-drag-over");
+        const dragged = event.dataTransfer?.getData("text/plain") ?? "";
+        if (dragged.startsWith("todo:")) this.reorderTodo(dragged.slice("todo:".length), todo.id);
+      });
+    }
     const check = row.createEl("button", {
       cls: "obcc-todo-check",
       attr: { type: "button", "aria-label": text, title: text }
     });
-    setIcon(check, done ? "check-circle-2" : readonly ? "circle-dot" : "circle");
+    setIcon(check, done ? "check-circle-2" : status === "current" ? "play-circle" : readonly ? "circle-dot" : "circle");
     if (!readonly && todo) {
       check.addEventListener("click", () => {
         todo.done = !todo.done;
@@ -16015,6 +16454,7 @@ class CancipView extends ItemView {
         this.openPlanMenu();
       });
     }
+    row.createSpan({ cls: "obcc-todo-index", text: index >= 0 ? `${index + 1}.` : "" });
     if (!readonly && todo && this.editingManualTodoId === todo.id) {
       const editor = row.createEl("input", {
         cls: "obcc-manual-todo-input is-inline",
@@ -16044,22 +16484,20 @@ class CancipView extends ItemView {
         return;
       }
       this.createQueueIconButton(actions, todo.sendToModel === false ? "eye-off" : "eye", todo.sendToModel === false ? this.t("todoManualOnly") : this.t("todoSendToModel"), () => this.toggleManualTodoModelVisibility(todo.id));
-      this.createQueueIconButton(actions, "arrow-up", this.t("moveQueuedPromptUp"), () => this.moveManualTodo(todo.id, -1), index <= 0);
-      this.createQueueIconButton(actions, "arrow-down", this.t("moveQueuedPromptDown"), () => this.moveManualTodo(todo.id, 1), index < 0 || index >= this.visibleManualTodos().length - 1);
+      this.createQueueIconButton(actions, "send", this.t("sendQueuedPromptNow"), () => this.sendTodoNow(todo.id));
       this.createQueueIconButton(actions, "pencil", this.t("editQueuedPrompt"), () => this.editManualTodo(todo.id));
       this.createQueueIconButton(actions, "x", this.t("clearContext"), () => this.removeManualTodo(todo.id));
     }
   }
 
-  private renderManualTodoList(parent: HTMLElement): void {
+  private renderTodoList(parent: HTMLElement, todos: ManualTodo[]): void {
     parent.empty();
-    const manualTodos = this.visibleManualTodos();
-    if (!manualTodos.length) {
+    if (!todos.length) {
       parent.createDiv({ cls: "obcc-mention-empty", text: this.t("noManualTodos") });
       return;
     }
-    for (const [index, todo] of manualTodos.entries()) {
-      this.renderTodoRow(parent, todo.text, false, todo, index);
+    for (const [index, todo] of todos.entries()) {
+      this.renderTodoRow(parent, todo.text, false, todo, index, false, todos);
     }
   }
 
@@ -16078,8 +16516,30 @@ class CancipView extends ItemView {
     this.openPlanMenu();
   }
 
+  private reorderTodo(id: string, beforeId: string): void {
+    if (!id || !beforeId || id === beforeId) return;
+    const current = this.findTodoById(id);
+    const target = this.findTodoById(beforeId);
+    if (!current || !target) return;
+    const currentSource = current.source === "programmatic" ? "programmatic" : "manual";
+    const targetSource = target.source === "programmatic" ? "programmatic" : "manual";
+    if (currentSource !== targetSource) return;
+    const from = this.manualTodos.findIndex((item) => item.id === id);
+    const to = this.manualTodos.findIndex((item) => item.id === beforeId);
+    if (from < 0 || to < 0) return;
+    const [item] = this.manualTodos.splice(from, 1);
+    const targetIndex = from < to ? to - 1 : to;
+    this.manualTodos.splice(targetIndex, 0, item);
+    void this.saveCurrentSession();
+    this.openPlanMenu();
+  }
+
+  private findTodoById(id: string): ManualTodo | null {
+    return this.manualTodos.find((item) => item.id === id) ?? null;
+  }
+
   private toggleManualTodoModelVisibility(id: string): void {
-    const todo = this.visibleManualTodos().find((item) => item.id === id);
+    const todo = this.findTodoById(id);
     if (!todo) return;
     todo.sendToModel = todo.sendToModel === false;
     void this.saveCurrentSession();
@@ -16087,13 +16547,13 @@ class CancipView extends ItemView {
   }
 
   private editManualTodo(id: string): void {
-    if (!this.visibleManualTodos().some((item) => item.id === id)) return;
+    if (!this.findTodoById(id)) return;
     this.editingManualTodoId = id;
     this.openPlanMenu();
   }
 
   private saveManualTodo(id: string, text: string): void {
-    const todo = this.visibleManualTodos().find((item) => item.id === id);
+    const todo = this.findTodoById(id);
     if (!todo) return;
     const trimmed = text.trim();
     if (!trimmed) {
@@ -16111,8 +16571,24 @@ class CancipView extends ItemView {
     this.openPlanMenu();
   }
 
+  private sendTodoNow(id: string): void {
+    const todo = this.findTodoById(id);
+    const prompt = todo?.text.trim() ?? "";
+    if (!prompt) return;
+    this.closeHeaderMenu();
+    if (this.activeRequest) {
+      this.queuedPrompts.unshift({ id: crypto.randomUUID(), prompt, createdAt: Date.now(), held: false });
+      this.renderQueueStatus();
+      this.stopRequest({ drainQueue: true, notice: false });
+      this.setStatus(this.t("directSendQueued"));
+      return;
+    }
+    this.setStatus(this.t("directSend"));
+    void this.sendPromptNow(prompt);
+  }
+
   private removeManualTodo(id: string): void {
-    this.manualTodos = this.manualTodos.filter((item) => item.id !== id || item.source === "programmatic");
+    this.manualTodos = this.manualTodos.filter((item) => item.id !== id);
     if (this.editingManualTodoId === id) this.editingManualTodoId = null;
     void this.saveCurrentSession();
     this.openPlanMenu();
@@ -16504,7 +16980,7 @@ class CancipView extends ItemView {
     if (this.initialSessionRestoreDone) return false;
     this.initialSessionRestoreDone = true;
     if (this.messages.length || this.draftContext.length) return false;
-    const entries = (await this.readSessionHistoryIndex())
+    const entries = (await this.readSessionHistoryIndex({ mergeFiles: false }))
       .filter((entry) => !entry.eventOnly && !entry.archived && entry.path && entry.messageCount > 0)
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const latest = entries[0];
@@ -16608,16 +17084,33 @@ class CancipView extends ItemView {
     return compact.length > 18 ? `${compact.slice(0, 18)}...` : compact;
   }
 
+  private modelSourceName(profile: ApiProfile): string {
+    return profile.name || profile.id || this.t("settingsApiProfile");
+  }
+
+  private modelProfileForModel(model: string): ApiProfile {
+    const active = this.plugin.activeApiProfile();
+    return this.plugin.settings.apiProfiles.find((profile) => profile.id === active.id && profile.model === model)
+      ?? this.plugin.settings.apiProfiles.find((profile) => profile.model === model)
+      ?? active;
+  }
+
+  private formatModelSourceLabel(profile: ApiProfile, model: string): string {
+    const source = this.modelSourceName(profile);
+    return `${source} · ${this.formatModelLabel(model)}`;
+  }
+
   private modelProfileShortLabel(profile: ApiProfile): string {
-    return this.formatModelLabel(profile.model);
+    return this.formatModelSourceLabel(profile, profile.model);
   }
 
   private modelProfileLabel(profile: ApiProfile): string {
-    return profile.model || this.t("settingsModel");
+    return `${this.modelSourceName(profile)} · ${profile.model || this.t("settingsModel")}`;
   }
 
-  private async copyModelInfo(modelOverride?: string): Promise<void> {
-    const profile = modelOverride ? { ...this.plugin.activeApiProfile(), model: modelOverride } : this.plugin.activeApiProfile();
+  private async copyModelInfo(modelOverride?: string, profileOverride?: ApiProfile): Promise<void> {
+    const baseProfile = profileOverride ?? this.plugin.activeApiProfile();
+    const profile = modelOverride ? { ...baseProfile, model: modelOverride } : baseProfile;
     const lines = [
       `source=${profile.name || profile.id}`,
       `sourceId=${profile.id}`,
@@ -16881,7 +17374,7 @@ class CancipView extends ItemView {
         const directReport = await this.executeProgrammaticReadOnlyActions(directReadOnlyActions, request);
         if (directReport) {
           this.addActionReportMessage(directReport);
-          this.renderMessages();
+          this.renderMessagesAfterMutation();
           const finalReport = await this.continueAfterToolRuns(context, directReport, request, taskGoal);
           const finalActionReport = finalReport ?? directReport;
           this.ensureFinalConclusion(finalActionReport, startedAt, false, taskGoal);
@@ -16931,7 +17424,7 @@ class CancipView extends ItemView {
       this.updateProgressStep(generationStep, this.generationStepSummary(this.t("generating"), this.currentModelCharUsageText()), this.formatGenerationAuditDetail(modelPrompt, context, activeProfile, answer, visibleAnswer, rawPrompt));
       const assistantMessage = visibleAnswer ? this.addMessage("assistant", visibleAnswer) : undefined;
       if (assistantMessage) this.attachChoiceSource(assistantMessage, answer);
-      if (assistantMessage) this.renderMessages();
+      if (assistantMessage) this.renderMessagesAfterMutation();
       let actionReport = suppressToolActions ? null : await this.handleActionBlocks(answer, assistantMessage, { readOnlyOnly });
       if (!actionReport && readOnlyCapabilityDiscoveryNeeded) {
         actionReport = await this.forceReadOnlyCapabilityDiscovery(taskGoal, answer, context, request);
@@ -16947,7 +17440,7 @@ class CancipView extends ItemView {
           const retryVisible = retryHasActions ? "" : visibleAssistantAnswer(retryAnswer, suppressToolActions);
           const retryMessage = retryVisible ? this.addMessage("assistant", retryVisible) : undefined;
           if (retryMessage) this.attachChoiceSource(retryMessage, retryAnswer);
-          if (retryMessage) this.renderMessages();
+          if (retryMessage) this.renderMessagesAfterMutation();
           actionReport = suppressToolActions ? null : await this.handleActionBlocks(retryAnswer, retryMessage, { readOnlyOnly });
           if (!retryVisible && !retryHasActions && !actionReport) {
             this.setStatus(this.t("callFailed"));
@@ -16964,7 +17457,7 @@ class CancipView extends ItemView {
       }
       if (actionReport) {
         this.addActionReportMessage(actionReport);
-        this.renderMessages();
+        this.renderMessagesAfterMutation();
         if (this.hasPendingToolRuns(actionReport.runs)) {
           this.setPendingToolRunStatus(actionReport.runs);
           await this.finishCurrentSessionStatus("idle", false, request);
@@ -16986,7 +17479,7 @@ class CancipView extends ItemView {
           }
           if (decision === "failed") break;
           this.addActionReportMessage(decision);
-          this.renderMessages();
+          this.renderMessagesAfterMutation();
           if (this.hasPendingToolRuns(decision.runs)) {
             this.setPendingToolRunStatus(decision.runs);
             await this.finishCurrentSessionStatus("idle", false, request);
@@ -17312,7 +17805,7 @@ class CancipView extends ItemView {
     const body = this.formatProgressStep(this.resolveProgressStepSummary(summary), detail, status, 0);
     const message = this.addMessage("assistant", body);
     this.startProgressStepTimer(message, summary, detail, status);
-    this.renderMessages();
+    this.renderMessagesAfterMutation();
     return message;
   }
 
@@ -17322,7 +17815,7 @@ class CancipView extends ItemView {
     const elapsed = Date.now() - message.createdAt;
     message.content = this.formatProgressStep(this.resolveProgressStepSummary(summary), detail, status, elapsed);
     void this.saveCurrentSession();
-    this.renderMessages();
+    this.renderMessagesAfterMutation();
   }
 
   private updateProgressStepLive(message: ChatMessage | null | undefined, summary: ProgressStepSummary, detail = "", status = this.t("toolRunExecuting")): void {
@@ -17978,54 +18471,72 @@ class CancipView extends ItemView {
   private async saveCurrentSession(): Promise<void> {
     try {
       const adapter = this.app.vault.adapter;
-      await ensureFolder(adapter, SESSION_HISTORY_DIR);
       const now = new Date();
-      const path = `${SESSION_HISTORY_DIR}/${this.sessionId}.json`;
+      const sessionId = this.sessionId;
+      const sessionCreatedAt = this.sessionCreatedAt;
+      const sessionTitle = this.sessionTitle();
+      const messageCount = this.messages.length;
+      const mode = this.mode;
+      const model = this.plugin.activeApiProfile().model;
+      const currentSessionStatus = this.currentSessionStatus;
+      const currentSessionCompletedNotice = this.currentSessionCompletedNotice;
+      const hasActiveRequest = Boolean(this.activeRequest);
+      const manualTitle = Boolean(this.sessionTitleOverride);
+      const parentSessionId = this.parentSessionId;
+      const parentSessionTitle = this.parentSessionTitle;
+      const subagentIds = [...this.subagentIds];
+      const subagentRole = this.subagentRole;
+      const subagentGoal = this.subagentGoal;
+      const subagentProgress = this.subagentProgress;
+      const path = `${SESSION_HISTORY_DIR}/${sessionId}.json`;
       const snapshot = this.sessionExportSnapshot(now);
-      const previous = (await this.readSessionHistoryIndex()).find((entry) => entry.id === this.sessionId);
-      const currentTerminal = this.currentSessionStatus === "completed" || this.currentSessionStatus === "failed" || this.currentSessionStatus === "stopped";
+      await ensureFolder(adapter, SESSION_HISTORY_DIR);
+      const previous = (await this.readSessionHistoryIndex({ mergeFiles: false })).find((entry) => entry.id === sessionId);
+      const currentTerminal = currentSessionStatus === "completed" || currentSessionStatus === "failed" || currentSessionStatus === "stopped";
       const status = currentTerminal
-        ? this.currentSessionStatus
-        : this.activeRequest
+        ? currentSessionStatus
+        : hasActiveRequest
           ? "running"
-          : previous?.status ?? this.currentSessionStatus;
+          : previous?.status ?? currentSessionStatus;
       const completedNotice = currentTerminal
-        ? this.currentSessionCompletedNotice
-        : this.activeRequest
+        ? currentSessionCompletedNotice
+        : hasActiveRequest
           ? false
-          : previous?.completedNotice ?? this.currentSessionCompletedNotice;
+          : previous?.completedNotice ?? currentSessionCompletedNotice;
       const unread = currentTerminal
-        ? this.currentSessionCompletedNotice
+        ? currentSessionCompletedNotice
         : previous?.unread ?? false;
       snapshot.status = status;
       snapshot.completedNotice = completedNotice;
       snapshot.unread = unread;
-      snapshot.title = this.sessionTitle();
-      snapshot.manualTitle = previous?.manualTitle ?? Boolean(this.sessionTitleOverride);
+      snapshot.title = sessionTitle;
+      snapshot.manualTitle = previous?.manualTitle ?? manualTitle;
+      if (typeof previous?.manualOrder === "number") snapshot.manualOrder = previous.manualOrder;
       await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
       await this.upsertSessionHistoryIndex({
-        id: this.sessionId,
-        title: this.sessionTitle(),
-        createdAt: this.sessionCreatedAt,
+        id: sessionId,
+        title: sessionTitle,
+        createdAt: sessionCreatedAt,
         updatedAt: now.toISOString(),
-        messageCount: this.messages.length,
-        mode: this.mode,
-        model: this.plugin.activeApiProfile().model,
+        messageCount,
+        mode,
+        model,
         status,
         completedNotice,
         unread,
         pinned: previous?.pinned ?? false,
         archived: previous?.archived ?? false,
-        manualTitle: previous?.manualTitle ?? Boolean(this.sessionTitleOverride),
-        parentSessionId: this.parentSessionId || previous?.parentSessionId,
-        parentSessionTitle: this.parentSessionTitle || previous?.parentSessionTitle,
-        subagentIds: uniqueStrings([...this.subagentIds, ...(previous?.subagentIds ?? [])]),
-        subagentRole: this.subagentRole || previous?.subagentRole,
-        subagentGoal: this.subagentGoal || previous?.subagentGoal,
-        subagentProgress: this.subagentProgress || previous?.subagentProgress,
+        manualTitle: previous?.manualTitle ?? manualTitle,
+        manualOrder: previous?.manualOrder,
+        parentSessionId: parentSessionId || previous?.parentSessionId,
+        parentSessionTitle: parentSessionTitle || previous?.parentSessionTitle,
+        subagentIds: uniqueStrings([...subagentIds, ...(previous?.subagentIds ?? [])]),
+        subagentRole: subagentRole || previous?.subagentRole,
+        subagentGoal: subagentGoal || previous?.subagentGoal,
+        subagentProgress: subagentProgress || previous?.subagentProgress,
         path
       });
-      void this.recordSessionEvent({ kind: "session.save", path, messageCount: this.messages.length, status, model: this.plugin.activeApiProfile().model });
+      void this.recordSessionEvent({ kind: "session.save", sessionId, title: sessionTitle, path, messageCount, status, model });
       this.plugin.refreshStatusBarAttention();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -18523,6 +19034,7 @@ class CancipView extends ItemView {
       pinned: existing?.pinned ?? false,
       archived: existing?.archived ?? false,
       manualTitle: existing?.manualTitle ?? false,
+      manualOrder: existing?.manualOrder,
       parentSessionId: typeof snapshot.parentSessionId === "string" ? snapshot.parentSessionId : existing?.parentSessionId,
       parentSessionTitle: typeof snapshot.parentSessionTitle === "string" ? snapshot.parentSessionTitle : existing?.parentSessionTitle,
       subagentIds: Array.isArray(snapshot.subagentIds) ? snapshot.subagentIds.filter((item): item is string => typeof item === "string") : existing?.subagentIds,
@@ -18587,6 +19099,7 @@ class CancipView extends ItemView {
       pinned: existing?.pinned ?? false,
       archived: existing?.archived ?? false,
       manualTitle: existing?.manualTitle ?? false,
+      manualOrder: existing?.manualOrder,
       parentSessionId: typeof snapshot.parentSessionId === "string" ? snapshot.parentSessionId : existing?.parentSessionId,
       parentSessionTitle: typeof snapshot.parentSessionTitle === "string" ? snapshot.parentSessionTitle : existing?.parentSessionTitle,
       subagentIds: Array.isArray(snapshot.subagentIds) ? snapshot.subagentIds.filter((item): item is string => typeof item === "string") : existing?.subagentIds,
@@ -18619,7 +19132,7 @@ class CancipView extends ItemView {
   }
 
   private async upsertSessionHistoryIndex(entry: SessionHistoryEntry): Promise<void> {
-    const index = (await this.readSessionHistoryIndex()).filter((item) => !item.eventOnly);
+    const index = (await this.readSessionHistoryIndex({ mergeFiles: false })).filter((item) => !item.eventOnly);
     const entries = [entry, ...index.filter((item) => item.id !== entry.id)]
       .sort(compareSessionHistoryEntries)
       .slice(0, SESSION_HISTORY_LIMIT);
@@ -18636,7 +19149,7 @@ class CancipView extends ItemView {
       entries: persistedEntries
     };
     await this.app.vault.adapter.write(SESSION_HISTORY_INDEX_PATH, `${JSON.stringify(payload, null, 2)}\n`);
-    this.sessionHistoryCache = { at: Date.now(), entries: persistedEntries };
+    this.sessionHistoryCache = { at: Date.now(), mergeFiles: false, entries: persistedEntries };
     this.sessionHistoryReadPromise = null;
   }
 
@@ -18644,7 +19157,7 @@ class CancipView extends ItemView {
     try {
       this.currentSessionStatus = status;
       this.currentSessionCompletedNotice = completedNotice;
-      const index = await this.readSessionHistoryIndex();
+      const index = await this.readSessionHistoryIndex({ mergeFiles: false });
       const existing = index.find((entry) => entry.id === this.sessionId);
       const now = new Date().toISOString();
       await this.upsertSessionHistoryIndex({
@@ -18661,6 +19174,7 @@ class CancipView extends ItemView {
         pinned: existing?.pinned ?? false,
         archived: existing?.archived ?? false,
         manualTitle: existing?.manualTitle ?? Boolean(this.sessionTitleOverride),
+        manualOrder: existing?.manualOrder,
         parentSessionId: this.parentSessionId || existing?.parentSessionId,
         parentSessionTitle: this.parentSessionTitle || existing?.parentSessionTitle,
         subagentIds: uniqueStrings([...this.subagentIds, ...(existing?.subagentIds ?? [])]),
@@ -18692,24 +19206,31 @@ class CancipView extends ItemView {
     }, delayMs);
   }
 
-  private async readSessionHistoryIndex(options: { force?: boolean } = {}): Promise<SessionHistoryEntry[]> {
+  private async readSessionHistoryIndex(options: { force?: boolean; mergeFiles?: boolean } = {}): Promise<SessionHistoryEntry[]> {
     const maxAgeMs = 3000;
-    if (!options.force && this.sessionHistoryCache && Date.now() - this.sessionHistoryCache.at < maxAgeMs) {
-      return this.sessionHistoryCache.entries;
+    const mergeFiles = options.mergeFiles !== false;
+    const cache = this.sessionHistoryCache;
+    const cacheCanServe = cache
+      && Date.now() - cache.at < maxAgeMs
+      && (cache.mergeFiles || !mergeFiles);
+    if (!options.force && cacheCanServe) {
+      return cache.entries;
     }
-    if (!options.force && this.sessionHistoryReadPromise) return await this.sessionHistoryReadPromise;
-    const readPromise = this.readSessionHistoryIndexUncached();
-    if (!options.force) this.sessionHistoryReadPromise = readPromise;
+    if (!options.force && this.sessionHistoryReadPromise && (this.sessionHistoryReadPromise.mergeFiles || !mergeFiles)) {
+      return await this.sessionHistoryReadPromise.promise;
+    }
+    const readPromise = this.readSessionHistoryIndexUncached(mergeFiles);
+    if (!options.force) this.sessionHistoryReadPromise = { mergeFiles, promise: readPromise };
     try {
       const entries = await readPromise;
-      this.sessionHistoryCache = { at: Date.now(), entries };
+      this.sessionHistoryCache = { at: Date.now(), mergeFiles, entries };
       return entries;
     } finally {
-      if (this.sessionHistoryReadPromise === readPromise) this.sessionHistoryReadPromise = null;
+      if (this.sessionHistoryReadPromise?.promise === readPromise) this.sessionHistoryReadPromise = null;
     }
   }
 
-  private async readSessionHistoryIndexUncached(): Promise<SessionHistoryEntry[]> {
+  private async readSessionHistoryIndexUncached(mergeFiles = true): Promise<SessionHistoryEntry[]> {
     try {
       const adapter = this.app.vault.adapter;
       let entries: SessionHistoryEntry[] = [];
@@ -18723,6 +19244,7 @@ class CancipView extends ItemView {
             .filter((item): item is SessionHistoryEntry => item !== null);
         }
       }
+      if (!mergeFiles) return entries.sort(compareSessionHistoryEntries).slice(0, SESSION_HISTORY_LIMIT);
       return await this.mergeEventOnlySessionHistory(await this.mergeSessionFilesIntoHistory(entries));
     } catch (error) {
       console.warn("Cancip session history index read failed", error);
@@ -19621,10 +20143,75 @@ class CancipView extends ItemView {
         }, null, 2)
       },
       { title: "Token usage", content: this.lastModelCallAudit?.usage ? this.formatTokenUsage(this.lastModelCallAudit.usage) : this.t("none") },
+      { title: "Model exchange raw contents", content: this.modelExchangeAuditForDisplay(prompt, context, rawAnswer, visibleAnswer, rawPrompt) },
       { title: "Actual API call audit", content: this.modelCallAuditForDisplay() },
       { title: "Input sizes", content: this.promptSizeAudit(context.system, context.contextText, prompt) },
       { title: "Reply filter", content: `rawReplyChars: ${rawAnswer.length}\nvisibleReplyChars: ${visibleAnswer.length}` }
     ]);
+  }
+
+  private modelExchangeAuditForDisplay(
+    prompt: string,
+    context: { system: string; contextText: string },
+    rawAnswer: string,
+    visibleAnswer: string,
+    rawPrompt = prompt
+  ): string {
+    const inputText = this.modelInputText(prompt, context, rawPrompt);
+    const audit = this.lastModelCallAudit;
+    const sections = [
+      this.modelExchangeJsonBlock("RAW SENT requestBody", audit?.requestBody),
+      this.modelExchangeTextBlock("RAW RECEIVED responseText", audit?.responseText ?? ""),
+      audit?.responseJson ? this.modelExchangeJsonBlock("RAW RECEIVED responseJson", audit.responseJson) : "",
+      this.modelExchangeTextBlock("PARSED extractedText", audit?.extractedText ?? rawAnswer),
+      visibleAnswer !== rawAnswer ? this.modelExchangeTextBlock("VISIBLE answer after filtering", visibleAnswer) : "",
+      this.modelExchangeTextBlock("SENT system / instructions", context.system),
+      this.modelExchangeTextBlock("SENT contextText", context.contextText),
+      this.modelExchangeTextBlock("SENT turn prompt", prompt),
+      rawPrompt !== prompt ? this.modelExchangeTextBlock("Original user prompt", rawPrompt) : "",
+      this.modelExchangeTextBlock("SENT actual user inputText", inputText),
+      this.previousModelAttemptsAuditForDisplay(audit?.previousAttempts ?? [])
+    ].filter(Boolean);
+    return sections.join("\n\n");
+  }
+
+  private modelExchangeTextBlock(title: string, value: unknown): string {
+    const text = ensureDisplayText(value).trim();
+    const body = text ? trimContext(text, MODEL_EXCHANGE_FRAGMENT_MAX_CHARS) : this.t("none");
+    const suffix = text.length > MODEL_EXCHANGE_FRAGMENT_MAX_CHARS ? ` · shown ${MODEL_EXCHANGE_FRAGMENT_MAX_CHARS}` : "";
+    return `### ${title}\nchars: ${text.length}${suffix}\n\n${body}`;
+  }
+
+  private modelExchangeJsonBlock(title: string, value: unknown): string {
+    if (value === undefined || value === null) return `### ${title}\n${this.t("none")}`;
+    const text = safeJsonishDisplay(value).trim();
+    const body = text ? trimContext(text, MODEL_EXCHANGE_FRAGMENT_MAX_CHARS) : this.t("none");
+    const suffix = text.length > MODEL_EXCHANGE_FRAGMENT_MAX_CHARS ? ` · shown ${MODEL_EXCHANGE_FRAGMENT_MAX_CHARS}` : "";
+    return `### ${title}\nchars: ${text.length}${suffix}\n\n${body}`;
+  }
+
+  private previousModelAttemptsAuditForDisplay(attempts: ModelCallAudit[]): string {
+    if (!attempts.length) return "";
+    return attempts
+      .map((attempt, index) => {
+        const request = trimContext(safeJsonishDisplay(attempt.requestBody), Math.floor(MODEL_EXCHANGE_FRAGMENT_MAX_CHARS / 2));
+        const response = trimContext(attempt.responseText || (attempt.responseJson ? safeJsonishDisplay(attempt.responseJson) : attempt.extractedText) || "", Math.floor(MODEL_EXCHANGE_FRAGMENT_MAX_CHARS / 2));
+        return [
+          `### Previous attempt ${index + 1}`,
+          `mode: ${attempt.mode}`,
+          `url: ${attempt.url}`,
+          `status: ${attempt.status ?? ""}`,
+          `error: ${attempt.error ?? ""}`,
+          `usage: ${attempt.usage ? this.formatTokenUsage(attempt.usage) : this.t("none")}`,
+          "",
+          "requestBody:",
+          request || this.t("none"),
+          "",
+          "response:",
+          response || this.t("none")
+        ].join("\n");
+      })
+      .join("\n\n");
   }
 
   private modelCallAuditForDisplay(): unknown {
@@ -19861,14 +20448,14 @@ class CancipView extends ItemView {
         { role: "user", content: userContent }
       ]
     };
-    this.lastModelCallAudit = { mode: "compatible", url, requestBody: redactImagePayloads(body) };
+    this.lastModelCallAudit = { mode: "compatible", url, requestBody: body };
     if (onStream) {
       try {
         const streamed = await this.postJsonStream(url, { ...body, stream: true }, profile.apiKey, "compatible", onStream, extractCompatibleStreamDelta);
         const text = sanitizeModelVisibleAnswer(streamed.text);
         const usage = extractTokenUsage(streamed.json, estimateRequestTokens(system, inputText), text);
         this.lastModelCallAudit = {
-          ...(this.lastModelCallAudit ?? { mode: "compatible", url, requestBody: redactImagePayloads({ ...body, stream: true }) }),
+          ...(this.lastModelCallAudit ?? { mode: "compatible", url, requestBody: { ...body, stream: true } }),
           status: streamed.status,
           responseText: streamed.text,
           responseJson: streamed.json,
@@ -19877,14 +20464,14 @@ class CancipView extends ItemView {
         };
         if (text) return text;
       } catch {
-        this.lastModelCallAudit = { mode: "compatible", url, requestBody: redactImagePayloads(body) };
+        this.lastModelCallAudit = { mode: "compatible", url, requestBody: body };
       }
     }
     const response = await this.postJson(url, body, profile.apiKey);
     const text = sanitizeModelVisibleAnswer(extractResponseText(response.json) || extractNonJsonText(response.text));
     const usage = extractTokenUsage(response.json, estimateRequestTokens(system, inputText), text);
     this.lastModelCallAudit = {
-      ...(this.lastModelCallAudit ?? { mode: "compatible", url, requestBody: redactImagePayloads(body) }),
+      ...(this.lastModelCallAudit ?? { mode: "compatible", url, requestBody: body }),
       status: response.status,
       responseText: response.text,
       responseJson: response.json,
@@ -19918,7 +20505,7 @@ class CancipView extends ItemView {
     } as Record<string, unknown>;
     const previousResponseId = this.previousResponseIdFor(profile);
     if (previousResponseId) body.previous_response_id = previousResponseId;
-    this.lastModelCallAudit = { mode: "responses", url, requestBody: redactImagePayloads(body) };
+    this.lastModelCallAudit = { mode: "responses", url, requestBody: body };
     if (onStream) {
       try {
         const streamed = await this.postJsonStream(url, { ...body, stream: true }, profile.apiKey, "responses", onStream, extractResponsesStreamDelta);
@@ -19929,7 +20516,7 @@ class CancipView extends ItemView {
           this.lastResponsesState = { profileId: profile.id, model: profile.model, responseId };
         }
         this.lastModelCallAudit = {
-          ...(this.lastModelCallAudit ?? { mode: "responses", url, requestBody: redactImagePayloads({ ...body, stream: true }) }),
+          ...(this.lastModelCallAudit ?? { mode: "responses", url, requestBody: { ...body, stream: true } }),
           status: streamed.status,
           responseText: streamed.text,
           responseJson: streamed.json,
@@ -19938,7 +20525,7 @@ class CancipView extends ItemView {
         };
         if (text) return text;
       } catch {
-        this.lastModelCallAudit = { mode: "responses", url, requestBody: redactImagePayloads(body) };
+        this.lastModelCallAudit = { mode: "responses", url, requestBody: body };
       }
     }
     const response = await this.postJson(url, body, profile.apiKey);
@@ -19949,7 +20536,7 @@ class CancipView extends ItemView {
       this.lastResponsesState = { profileId: profile.id, model: profile.model, responseId };
     }
     this.lastModelCallAudit = {
-      ...(this.lastModelCallAudit ?? { mode: "responses", url, requestBody: redactImagePayloads(body) }),
+      ...(this.lastModelCallAudit ?? { mode: "responses", url, requestBody: body }),
       status: response.status,
       responseText: response.text,
       responseJson: response.json,
@@ -19977,7 +20564,7 @@ class CancipView extends ItemView {
     extractDelta: (json: unknown) => string
   ): Promise<{ status: number; text: string; json: unknown }> {
     if (typeof fetch !== "function") throw new Error("streaming fetch unavailable");
-    this.lastModelCallAudit = { mode, url, requestBody: redactImagePayloads(body) };
+    this.lastModelCallAudit = { mode, url, requestBody: body };
     const response = await fetch(url, {
       method: "POST",
       headers: {
@@ -19991,6 +20578,12 @@ class CancipView extends ItemView {
       const retryAfter = response.headers.get("retry-after");
       const retryHint = retryAfter ? ` retry-after=${retryAfter}` : "";
       const text = await response.text();
+      this.lastModelCallAudit = {
+        ...(this.lastModelCallAudit ?? { mode, url, requestBody: body }),
+        status: response.status,
+        responseText: text,
+        error: `HTTP ${response.status}${retryHint}`
+      };
       throw new Error(`HTTP ${response.status}${retryHint}: ${text.slice(0, 220)}`);
     }
     if (!response.body) throw new Error("stream response body unavailable");
@@ -20063,6 +20656,15 @@ class CancipView extends ItemView {
     if (response.status < 200 || response.status >= 300) {
       const retryAfter = headerValue(response.headers, "retry-after");
       const retryHint = retryAfter ? ` retry-after=${retryAfter}` : "";
+      const current = this.lastModelCallAudit;
+      if (current) {
+        this.lastModelCallAudit = {
+          ...current,
+          status: response.status,
+          responseText: response.text,
+          error: `HTTP ${response.status}${retryHint}`
+        };
+      }
       throw new Error(`HTTP ${response.status}${retryHint}: ${response.text.slice(0, 220)}`);
     }
     return response;
@@ -20655,7 +21257,7 @@ class CancipView extends ItemView {
     const targets = [
       action("action:cancip", this.t("modeAsk"), this.t("mentionMode"), ["cancip", "chat", "answer", "问", "提问", "回答", "聊天"], 94),
       action("action:search", this.t("modeSearch"), this.t("mentionMode"), ["search", "find", "rag", "index", "vault", "搜", "搜索", "检索", "查找", "索引"], 94),
-      action("action:plan", this.t("modePlan"), this.t("mentionMode"), ["plan", "todo", "steps", "roadmap", "计划", "规划", "步骤", "方案"], 92),
+      action("action:plan", this.t("modePlan"), this.t("mentionAction"), ["plan", "todo", "steps", "roadmap", "计划", "规划", "步骤", "方案"], 92),
       action("action:review-gate", this.t("reviewGate"), this.t("mentionAction"), ["review", "gate", "audit", "approve", "ob", "审核", "审查", "批准", "整理门", "审核门"], 91),
       action("action:plan-todos", "Plan todos", this.t("mentionAction"), ["plan", "todo", "task", "status", "计划", "待办", "任务", "状态"], 90),
       action("action:edit", this.t("modeEdit"), this.t("mentionMode"), ["edit", "patch", "rewrite", "change", "修改", "改写", "补丁", "编辑"], 92),
@@ -21689,7 +22291,7 @@ class CancipView extends ItemView {
     this.upsertToolFeedbackMessage(run, startedAt);
     this.startToolRunTimer(run, startedAt);
     this.syncToolRunAcrossMessages(run);
-    this.renderMessages();
+    this.renderMessagesAfterMutation();
     void this.saveCurrentSession();
     try {
       const cachedResult = this.cachedReadOnlyActionResult(run.action);
@@ -21730,7 +22332,7 @@ class CancipView extends ItemView {
       this.stopToolRunTimer(run.id);
       this.upsertToolFeedbackMessage(run);
       this.syncToolRunAcrossMessages(run);
-      this.renderMessages();
+      this.renderMessagesAfterMutation();
       await this.recordToolFeedback({ status: "executed", summary: run.summary, detail: finalResult, at: run.executedAt });
       void this.recordSessionEvent({ kind: "tool.finish", runId: run.id, toolStatus: run.status, summary: run.summary, detail: finalResult });
       void this.saveCurrentSession();
@@ -21745,7 +22347,7 @@ class CancipView extends ItemView {
       this.stopToolRunTimer(run.id);
       this.upsertToolFeedbackMessage(run);
       this.syncToolRunAcrossMessages(run);
-      this.renderMessages();
+      this.renderMessagesAfterMutation();
       await this.recordToolFeedback({ status: "failed", summary: run.summary, detail: reason, at: run.executedAt });
       void this.recordSessionEvent({ kind: "tool.finish", runId: run.id, toolStatus: run.status, summary: run.summary, detail: reason });
       void this.saveCurrentSession();
@@ -27129,6 +27731,14 @@ class CancipView extends ItemView {
     return trimContext(lines.join("\n\n"), 5000);
   }
 
+  private renderMessagesAfterMutation(): void {
+    if (this.activeRequest) {
+      this.scheduleRenderMessages();
+      return;
+    }
+    this.renderMessages();
+  }
+
   private scheduleRenderMessages(immediate = false): void {
     if (immediate) {
       this.flushScheduledMessageRender();
@@ -27332,9 +27942,11 @@ class CancipView extends ItemView {
   }
 
   private syncScrollBottomButton(): void {
-    if (!this.scrollBottomButtonEl || !this.messagesEl) return;
-    const show = !this.shouldStickToMessageBottom();
-    this.scrollBottomButtonEl.toggleClass("is-hidden", !show);
+    if (!this.messagesEl) return;
+    const showBottom = !this.shouldStickToMessageBottom();
+    this.scrollBottomButtonEl?.toggleClass("is-hidden", !showBottom);
+    const hasUserPrompt = Boolean(this.messagesEl.querySelector(".obcc-message.obcc-user[data-message-id]"));
+    this.scrollPreviousUserButtonEl?.toggleClass("is-hidden", !hasUserPrompt);
   }
 
   private renderSingleMessage(itemData: RenderedMessage, finalAssistantIndex: number): void {
@@ -33022,631 +33634,6 @@ function parsePrimeTtsMeta(text: string): PrimeTtsMeta {
   return { sample_rate: sampleRate, abs_frame_bins: absFrameBins, max_frames: maxFrames };
 }
 
-function requireOrtTensor(value: OrtTensorLike | undefined, name: string): OrtTensorLike {
-  if (!value || !Array.isArray(value.dims) || !("data" in value)) {
-    throw new Error(`PrimeTTS missing ONNX tensor: ${name}`);
-  }
-  return value;
-}
-
-function int64Tensor(ort: OrtModuleLike, values: number[], dims: readonly number[]): OrtTensorLike {
-  return new ort.Tensor("int64", BigInt64Array.from(values.map((value) => BigInt(value))), dims);
-}
-
-function primeTtsHostRegulate(
-  conditioned: OrtTensorLike,
-  durations: OrtTensorLike,
-  pitch: OrtTensorLike,
-  absBins: number,
-  maxFrames: number
-): {
-  frameCount: number;
-  hiddenSize: number;
-  pitchSize: number;
-  frames: Float32Array;
-  frameMeta: Float32Array;
-  localCtxRaw: Float32Array;
-  absPos: BigInt64Array;
-  pitchFrame: Float32Array;
-  frameMask: boolean[];
-} {
-  if (!(conditioned.data instanceof Float32Array)) throw new Error("PrimeTTS conditioned tensor is not float32");
-  if (!(pitch.data instanceof Float32Array)) throw new Error("PrimeTTS pitch tensor is not float32");
-  const condDims = conditioned.dims;
-  const pitchDims = pitch.dims;
-  if (condDims.length !== 3 || pitchDims.length !== 3) throw new Error("PrimeTTS encoder returned unexpected tensor rank");
-  const tokenCount = condDims[1];
-  const hiddenSize = condDims[2];
-  const pitchSize = pitchDims[2];
-  const durationValues = ortTensorDataToNumbers(durations.data).map((value) => Math.max(0, value));
-  const boundedDurations = durationValues.slice(0, tokenCount);
-  let frameCount = boundedDurations.reduce((sum, value) => sum + value, 0);
-  if (frameCount <= 0) throw new Error("PrimeTTS encoder produced no audio frames");
-  if (frameCount > maxFrames) {
-    let used = 0;
-    for (let index = 0; index < boundedDurations.length; index += 1) {
-      const remaining = Math.max(0, maxFrames - used);
-      boundedDurations[index] = Math.min(boundedDurations[index], remaining);
-      used += boundedDurations[index];
-    }
-    frameCount = Math.max(1, used);
-  }
-  const cond = conditioned.data;
-  const pitchData = pitch.data;
-  const frames = new Float32Array(frameCount * hiddenSize);
-  const frameMeta = new Float32Array(frameCount * 8);
-  const localCtxRaw = new Float32Array(frameCount * hiddenSize * 3);
-  const absPos = new BigInt64Array(frameCount);
-  const pitchFrame = new Float32Array(frameCount * pitchSize);
-  const frameMask = Array.from({ length: frameCount }, () => true);
-  const voicedTokenCount = Math.max(1, boundedDurations.filter((value) => value > 0).length);
-  let frameIndex = 0;
-  for (let tokenIndex = 0; tokenIndex < tokenCount; tokenIndex += 1) {
-    const duration = boundedDurations[tokenIndex] ?? 0;
-    for (let within = 0; within < duration; within += 1) {
-      const condOffset = tokenIndex * hiddenSize;
-      const frameOffset = frameIndex * hiddenSize;
-      frames.set(cond.subarray(condOffset, condOffset + hiddenSize), frameOffset);
-      const rel = within / Math.max(duration - 1, 1);
-      const tokenPos = tokenIndex / Math.max(voicedTokenCount - 1, 1);
-      const logDuration = Math.log1p(duration) / 6;
-      const center = 1 - Math.abs(rel * 2 - 1);
-      frameMeta.set([
-        rel,
-        1 - rel,
-        center,
-        Math.sin(rel * Math.PI),
-        Math.cos(rel * Math.PI),
-        tokenPos,
-        logDuration,
-        duration / 40
-      ], frameIndex * 8);
-      const prevIndex = Math.max(0, tokenIndex - 1);
-      const nextIndex = Math.min(tokenCount - 1, tokenIndex + 1);
-      const localOffset = frameIndex * hiddenSize * 3;
-      localCtxRaw.set(cond.subarray(prevIndex * hiddenSize, prevIndex * hiddenSize + hiddenSize), localOffset);
-      localCtxRaw.set(cond.subarray(condOffset, condOffset + hiddenSize), localOffset + hiddenSize);
-      localCtxRaw.set(cond.subarray(nextIndex * hiddenSize, nextIndex * hiddenSize + hiddenSize), localOffset + hiddenSize * 2);
-      absPos[frameIndex] = BigInt(Math.min(Math.floor(frameIndex * absBins / Math.max(1, maxFrames)), absBins - 1));
-      pitchFrame.set(pitchData.subarray(tokenIndex * pitchSize, tokenIndex * pitchSize + pitchSize), frameIndex * pitchSize);
-      frameIndex += 1;
-      if (frameIndex >= frameCount) break;
-    }
-    if (frameIndex >= frameCount) break;
-  }
-  return { frameCount, hiddenSize, pitchSize, frames, frameMeta, localCtxRaw, absPos, pitchFrame, frameMask };
-}
-
-function finalizePrimeTtsSamples(samples: Float32Array, sampleRate: number): Float32Array {
-  if (!samples.length || !Number.isFinite(sampleRate) || sampleRate <= 0) return samples;
-  let sum = 0;
-  for (const sample of samples) sum += sample;
-  const dc = sum / samples.length;
-  const normalized = new Float32Array(samples.length);
-  for (let index = 0; index < samples.length; index += 1) {
-    normalized[index] = Math.max(-1, Math.min(1, samples[index] - dc));
-  }
-  const voiced = trimPrimeTtsEdgeSilence(normalized, sampleRate);
-  const tailSamples = Math.max(0, Math.round(sampleRate * PRIME_TTS_TAIL_SILENCE_MS / 1000));
-  const output = new Float32Array(voiced.length + tailSamples);
-  output.set(voiced);
-  applyPrimeTtsEdgeEnvelope(output, sampleRate, voiced.length);
-  return output;
-}
-
-function trimPrimeTtsEdgeSilence(samples: Float32Array, sampleRate: number): Float32Array {
-  if (samples.length < 8 || !Number.isFinite(sampleRate) || sampleRate <= 0) return samples;
-  let peak = 0;
-  for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
-  if (peak <= 0.0001) return samples;
-  const threshold = Math.max(0.0025, peak * 0.018);
-  let start = 0;
-  while (start < samples.length && Math.abs(samples[start]) < threshold) start += 1;
-  let end = samples.length - 1;
-  while (end > start && Math.abs(samples[end]) < threshold) end -= 1;
-  if (start <= 0 && end >= samples.length - 1) return samples;
-  const startPad = Math.round(sampleRate * 0.003);
-  const endPad = Math.round(sampleRate * 0.005);
-  const from = Math.max(0, start - startPad);
-  const to = Math.min(samples.length, end + endPad + 1);
-  if (to - from < Math.min(samples.length, Math.round(sampleRate * 0.025))) return samples;
-  return samples.slice(from, to);
-}
-
-function applyPrimeTtsEdgeEnvelope(samples: Float32Array, sampleRate: number, voicedLength: number): void {
-  const fadeInSamples = Math.min(voicedLength, Math.max(1, Math.round(sampleRate * PRIME_TTS_FADE_IN_MS / 1000)));
-  const fadeOutSamples = Math.min(voicedLength, Math.max(1, Math.round(sampleRate * PRIME_TTS_FADE_OUT_MS / 1000)));
-  for (let index = 0; index < fadeInSamples; index += 1) {
-    samples[index] *= (index + 1) / fadeInSamples;
-  }
-  const fadeStart = Math.max(0, voicedLength - fadeOutSamples);
-  for (let index = fadeStart; index < voicedLength; index += 1) {
-    samples[index] *= Math.max(0, (voicedLength - index - 1) / fadeOutSamples);
-  }
-}
-
-function ortTensorDataToNumbers(data: OrtTensorLike["data"]): number[] {
-  if (data instanceof Float32Array) {
-    return Array.from(data);
-  }
-  if (data instanceof BigInt64Array) {
-    return Array.from(data, (value) => Number(value));
-  }
-  return data.map((value) => Number(value));
-}
-
-function encodePcm16Wav(samples: Float32Array, sampleRate: number): ArrayBuffer {
-  const dataBytes = samples.length * 2;
-  const buffer = new ArrayBuffer(44 + dataBytes);
-  const view = new DataView(buffer);
-  writeAscii(view, 0, "RIFF");
-  view.setUint32(4, 36 + dataBytes, true);
-  writeAscii(view, 8, "WAVE");
-  writeAscii(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, 1, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
-  writeAscii(view, 36, "data");
-  view.setUint32(40, dataBytes, true);
-  let offset = 44;
-  for (const sample of samples) {
-    const clamped = Math.max(-1, Math.min(1, sample));
-    view.setInt16(offset, clamped < 0 ? clamped * 0x8000 : clamped * 0x7fff, true);
-    offset += 2;
-  }
-  return buffer;
-}
-
-function writeAscii(view: DataView, offset: number, text: string): void {
-  for (let index = 0; index < text.length; index += 1) {
-    view.setUint8(offset + index, text.charCodeAt(index));
-  }
-}
-
-const PRIME_TTS_SYMBOL_IDS: Record<string, number> = {
-  _blank: 0, _pad: 1, UNK: 2, SP: 3,
-  "ㄅ": 4, "ㄆ": 5, "ㄇ": 6, "ㄈ": 7, "ㄉ": 8, "ㄊ": 9, "ㄋ": 10, "ㄌ": 11, "ㄍ": 12, "ㄎ": 13, "ㄏ": 14,
-  "ㄐ": 15, "ㄑ": 16, "ㄒ": 17, "ㄓ": 18, "ㄔ": 19, "ㄕ": 20, "ㄖ": 21, "ㄗ": 22, "ㄘ": 23, "ㄙ": 24,
-  "ㄚ": 25, "ㄛ": 26, "ㄜ": 27, "ㄝ": 28, "ㄞ": 29, "ㄟ": 30, "ㄠ": 31, "ㄡ": 32, "ㄢ": 33, "ㄣ": 34,
-  "ㄤ": 35, "ㄥ": 36, "ㄦ": 37, "ㄧ": 38, "ㄨ": 39, "ㄩ": 40,
-  AA: 41, AE: 42, AH: 43, AO: 44, AW: 45, AY: 46, B: 47, CH: 48, D: 49, DH: 50, EH: 51, ER: 52,
-  EY: 53, F: 54, G: 55, HH: 56, IH: 57, IY: 58, JH: 59, K: 60, L: 61, M: 62, N: 63, NG: 64,
-  OW: 65, OY: 66, P: 67, R: 68, S: 69, SH: 70, T: 71, TH: 72, UH: 73, UW: 74, V: 75, W: 76,
-  Y: 77, Z: 78, ZH: 79,
-  ",": 80, ".": 81, "?": 82, "!": 83, "...": 84, "-": 85, "'": 86, "ㄭ": 87
-};
-
-const PRIME_TTS_PUNCT = new Set([",", ".", "?", "!", "...", "-", "'"]);
-const PRIME_TTS_PINYIN_INITIALS = ["zh", "ch", "sh", "b", "p", "m", "f", "d", "t", "n", "l", "g", "k", "h", "j", "q", "x", "r", "z", "c", "s", "y", "w"] as const;
-const PRIME_TTS_APICAL_I_INITIALS = new Set(["zh", "ch", "sh", "r", "z", "c", "s"]);
-const PRIME_TTS_INITIAL_TO_ZHUYIN: Record<string, string> = {
-  b: "ㄅ", p: "ㄆ", m: "ㄇ", f: "ㄈ", d: "ㄉ", t: "ㄊ", n: "ㄋ", l: "ㄌ", g: "ㄍ", k: "ㄎ", h: "ㄏ",
-  j: "ㄐ", q: "ㄑ", x: "ㄒ", zh: "ㄓ", ch: "ㄔ", sh: "ㄕ", r: "ㄖ", z: "ㄗ", c: "ㄘ", s: "ㄙ"
-};
-const PRIME_TTS_FINAL_TO_ZHUYIN: Record<string, string[]> = {
-  a: ["ㄚ"], o: ["ㄛ"], e: ["ㄜ"], ai: ["ㄞ"], ei: ["ㄟ"], ao: ["ㄠ"], ou: ["ㄡ"], an: ["ㄢ"], en: ["ㄣ"], ang: ["ㄤ"], eng: ["ㄥ"], er: ["ㄦ"],
-  i: ["ㄧ"], ia: ["ㄧ", "ㄚ"], ie: ["ㄧ", "ㄝ"], iao: ["ㄧ", "ㄠ"], iu: ["ㄧ", "ㄡ"], ian: ["ㄧ", "ㄢ"], in: ["ㄧ", "ㄣ"], iang: ["ㄧ", "ㄤ"], ing: ["ㄧ", "ㄥ"], iong: ["ㄩ", "ㄥ"],
-  u: ["ㄨ"], ua: ["ㄨ", "ㄚ"], uo: ["ㄨ", "ㄛ"], uai: ["ㄨ", "ㄞ"], ui: ["ㄨ", "ㄟ"], uan: ["ㄨ", "ㄢ"], un: ["ㄨ", "ㄣ"], uang: ["ㄨ", "ㄤ"], ueng: ["ㄨ", "ㄥ"], ong: ["ㄨ", "ㄥ"],
-  v: ["ㄩ"], ve: ["ㄩ", "ㄝ"], van: ["ㄩ", "ㄢ"], vn: ["ㄩ", "ㄣ"], ue: ["ㄩ", "ㄝ"], yuan: ["ㄩ", "ㄢ"], yun: ["ㄩ", "ㄣ"], yue: ["ㄩ", "ㄝ"], yu: ["ㄩ"],
-  yi: ["ㄧ"], ya: ["ㄧ", "ㄚ"], ye: ["ㄧ", "ㄝ"], yao: ["ㄧ", "ㄠ"], you: ["ㄧ", "ㄡ"], yan: ["ㄧ", "ㄢ"], yin: ["ㄧ", "ㄣ"], yang: ["ㄧ", "ㄤ"], ying: ["ㄧ", "ㄥ"], yong: ["ㄩ", "ㄥ"],
-  wu: ["ㄨ"], wa: ["ㄨ", "ㄚ"], wo: ["ㄨ", "ㄛ"], wai: ["ㄨ", "ㄞ"], wei: ["ㄨ", "ㄟ"], wan: ["ㄨ", "ㄢ"], wen: ["ㄨ", "ㄣ"], wang: ["ㄨ", "ㄤ"], weng: ["ㄨ", "ㄥ"]
-};
-
-const PRIME_TTS_WORD_PHONES: Record<string, string[]> = {
-  a: ["AH"], ai: ["EY", "AY"], api: ["EY", "P", "IY", "AY"], and: ["AE", "N", "D"], are: ["AA", "R"], as: ["AE", "Z"], at: ["AE", "T"],
-  be: ["B", "IY"], cancip: ["K", "AE", "N", "S", "IH", "P"], chat: ["CH", "AE", "T"], code: ["K", "OW", "D"],
-  file: ["F", "AY", "L"], for: ["F", "AO", "R"], from: ["F", "R", "AH", "M"], hello: ["HH", "AH", "L", "OW"], hi: ["HH", "AY"],
-  is: ["IH", "Z"], key: ["K", "IY"], markdown: ["M", "AA", "R", "K", "D", "AW", "N"], model: ["M", "AA", "D", "AH", "L"],
-  note: ["N", "OW", "T"], obsidian: ["AH", "B", "S", "IH", "D", "IY", "AH", "N"], of: ["AH", "V"], ok: ["OW", "K", "EY"], open: ["OW", "P", "AH", "N"],
-  plugin: ["P", "L", "AH", "G", "IH", "N"], read: ["R", "IY", "D"], search: ["S", "ER", "CH"], session: ["S", "EH", "SH", "AH", "N"],
-  skill: ["S", "K", "IH", "L"], system: ["S", "IH", "S", "T", "AH", "M"], thank: ["TH", "AE", "NG", "K"], thanks: ["TH", "AE", "NG", "K", "S"],
-  the: ["DH", "AH"], this: ["DH", "IH", "S"], to: ["T", "UW"], tts: ["T", "IY", "T", "IY", "EH", "S"], url: ["Y", "UW", "AA", "R", "EH", "L"],
-  user: ["Y", "UW", "Z", "ER"], vault: ["V", "AO", "L", "T"], with: ["W", "IH", "DH"], yes: ["Y", "EH", "S"], you: ["Y", "UW"]
-};
-
-const PRIME_TTS_LETTER_PHONES: Record<string, string[]> = {
-  a: ["EY"], b: ["B", "IY"], c: ["S", "IY"], d: ["D", "IY"], e: ["IY"], f: ["EH", "F"], g: ["JH", "IY"], h: ["EY", "CH"],
-  i: ["AY"], j: ["JH", "EY"], k: ["K", "EY"], l: ["EH", "L"], m: ["EH", "M"], n: ["EH", "N"], o: ["OW"], p: ["P", "IY"],
-  q: ["K", "Y", "UW"], r: ["AA", "R"], s: ["EH", "S"], t: ["T", "IY"], u: ["Y", "UW"], v: ["V", "IY"], w: ["D", "AH", "B", "AH", "L", "Y", "UW"],
-  x: ["EH", "K", "S"], y: ["W", "AY"], z: ["Z", "IY"]
-};
-
-const PRIME_TTS_DIGIT_PHONES: Record<string, string[]> = {
-  "0": ["Z", "IY", "R", "OW"], "1": ["W", "AH", "N"], "2": ["T", "UW"], "3": ["TH", "R", "IY"], "4": ["F", "AO", "R"],
-  "5": ["F", "AY", "V"], "6": ["S", "IH", "K", "S"], "7": ["S", "EH", "V", "AH", "N"], "8": ["EY", "T"], "9": ["N", "AY", "N"]
-};
-const PRIME_TTS_CJK_LETTER_READINGS: Record<string, string> = {
-  a: "诶", e: "易", i: "一", o: "哦", u: "优", v: "微"
-};
-const CHINESE_DIGITS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"] as const;
-let primeTtsCustomPinyinReady = false;
-const PRIME_TTS_CUSTOM_PINYIN: Record<string, string> = {
-  了解: "liao3 jie3",
-  了结: "liao3 jie2",
-  了却: "liao3 que4",
-  了然: "liao3 ran2",
-  明了: "ming2 liao3",
-  为了: "wei4 le0",
-  走了: "zou3 le0",
-  来了: "lai2 le0",
-  好了: "hao3 le0",
-  完了: "wan2 le0",
-  快乐: "kuai4 le4",
-  乐观: "le4 guan1",
-  乐趣: "le4 qu4",
-  娱乐: "yu2 le4",
-  可乐: "ke3 le4",
-  音乐: "yin1 yue4",
-  乐队: "yue4 dui4",
-  乐器: "yue4 qi4",
-  乐谱: "yue4 pu3",
-  长大: "zhang3 da4",
-  长高: "zhang3 gao1",
-  长短: "chang2 duan3",
-  长期: "chang2 qi1",
-  银行: "yin2 hang2",
-  行业: "hang2 ye4",
-  行为: "xing2 wei2",
-  行走: "xing2 zou3",
-  重新: "chong2 xin1",
-  重复: "chong2 fu4",
-  重要: "zhong4 yao4"
-};
-
-function primeTtsTextToIds(input: string): PrimeTtsIds {
-  const normalized = primeTtsNormalizeText(normalizeChineseNumbersForPrimeTts(input));
-  const phoneIds: number[] = [];
-  const toneIds: number[] = [];
-  const langIds: number[] = [];
-  const push = (symbol: string, tone = 0, lang = 0): void => {
-    phoneIds.push(PRIME_TTS_SYMBOL_IDS[symbol] ?? PRIME_TTS_SYMBOL_IDS.UNK);
-    toneIds.push(Math.max(0, Math.min(5, tone)));
-    langIds.push(lang);
-  };
-  let index = 0;
-  while (index < normalized.length) {
-    const char = normalized[index];
-    if (isCjkChar(char)) {
-      let end = index + 1;
-      while (end < normalized.length && isCjkChar(normalized[end])) end += 1;
-      const run = normalized.slice(index, end);
-      const syllables = primeTtsPinyinArray(run);
-      for (let offset = 0; offset < run.length; offset += 1) {
-        const syllable = syllables[offset] ?? primeTtsPinyinArray(run[offset])[0] ?? "";
-        const units = pinyinSyllableToZhuyin(syllable);
-        for (const unit of units.symbols) push(unit, units.tone, 0);
-      }
-      index = end;
-      continue;
-    }
-    if (/[A-Za-z]/.test(char)) {
-      let end = index + 1;
-      while (end < normalized.length && /[A-Za-z']/.test(normalized[end])) end += 1;
-      const word = normalized.slice(index, end).replace(/^'+|'+$/g, "");
-      const cjkLetterReading = cjkLetterWordReading(word, normalized, index, end);
-      if (cjkLetterReading) {
-        const syllables = primeTtsPinyinArray(cjkLetterReading);
-        for (let offset = 0; offset < cjkLetterReading.length; offset += 1) {
-          const units = pinyinSyllableToZhuyin(syllables[offset] ?? "");
-          for (const unit of units.symbols) push(unit, units.tone, 0);
-        }
-        index = end;
-        continue;
-      }
-      const phones = englishWordToPrimePhones(word);
-      for (const phone of phones) push(phone, 0, 1);
-      push("SP", 0, 1);
-      index = end;
-      continue;
-    }
-    if (/\d/.test(char)) {
-      for (const phone of PRIME_TTS_DIGIT_PHONES[char] ?? []) push(phone, 0, 1);
-      index += 1;
-      continue;
-    }
-    const punct = normalizePrimeTtsPunctuation(char);
-    if (punct && PRIME_TTS_PUNCT.has(punct)) push(punct, 0, isCjkNeighbor(normalized, index) ? 0 : 1);
-    else if (/\s/.test(char) && phoneIds.length && phoneIds[phoneIds.length - 1] !== PRIME_TTS_SYMBOL_IDS.SP) push("SP", 0, 0);
-    index += 1;
-  }
-  return { phoneIds, toneIds, langIds };
-}
-
-function ensurePrimeTtsCustomPinyin(): void {
-  if (primeTtsCustomPinyinReady) return;
-  primeTtsCustomPinyinReady = true;
-  try {
-    customPinyin(PRIME_TTS_CUSTOM_PINYIN, { multiple: "replace", polyphonic: "replace" });
-  } catch (error) {
-    console.debug("Cancip PrimeTTS custom pinyin skipped", error);
-  }
-}
-
-function primeTtsPinyinArray(input: string): string[] {
-  ensurePrimeTtsCustomPinyin();
-  try {
-    return pinyin(input, { toneType: "num", type: "array", toneSandhi: true, segmentit: 2 });
-  } catch {
-    return pinyin(input, { toneType: "num", type: "array" });
-  }
-}
-
-function normalizeChineseNumbersForPrimeTts(input: string, forceFull = false): string {
-  if (!/\d/.test(input) || (!forceFull && !hasCjkText(input))) return input;
-  const mode = forceFull ? "full" : chineseNumberReadingMode(input);
-  if (mode === "none") return input;
-  const normalizedPatterns = normalizeChineseDateTimeNumbers(input, mode);
-  return normalizedPatterns.replace(/\d+(?:\.\d+)?[%％]?/g, (match, offset: number, full: string) => {
-    if (isProtectedNumberToken(full, offset, match.length)) return match;
-    if (mode !== "full" && !isChineseNumberContext(full, offset, match.length)) return match;
-    const before = full.slice(Math.max(0, offset - 6), offset);
-    const after = full.slice(offset + match.length, offset + match.length + 6);
-    if (match.endsWith("%") || match.endsWith("％")) return `百分之${numberTokenToChinese(match.slice(0, -1), "value")}`;
-    if (/年/.test(after.slice(0, 1)) && /^\d{2,4}$/.test(match)) return digitsToChinese(match);
-    if (/[月日号时点分秒]/.test(after.slice(0, 1))) return numberTokenToChinese(match, "value");
-    if (/[第]/.test(before.slice(-1)) || /[章节页条项次个]/.test(after.slice(0, 1))) return numberTokenToChinese(match, "value");
-    if (/[:：]\s*$/.test(before) || /^\s*[、，,.。)]/.test(after)) return numberTokenToChinese(match, "value");
-    return numberTokenToChinese(match, mode === "full" ? "auto" : "value");
-  });
-}
-
-function normalizeChineseDateTimeNumbers(input: string, mode: "context" | "full"): string {
-  let output = input;
-  const shouldConvert = (full: string, offset: number, length: number): boolean => {
-    return mode === "full" || isChineseNumberContext(full, offset, length);
-  };
-  output = output.replace(/(^|[^\w./\\-])(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})(?=$|[^\w./\\-])/g, (match, prefix: string, year: string, month: string, day: string, offset: number, full: string) => {
-    if (!shouldConvert(full, offset + prefix.length, match.length - prefix.length)) return match;
-    return `${prefix}${digitsToChinese(year)}年${numberTokenToChinese(month, "value")}月${numberTokenToChinese(day, "value")}日`;
-  });
-  output = output.replace(/(^|[^\w./\\-])(\d{1,2})[:：](\d{2})(?:[:：](\d{2}))?(?=$|[^\w./\\-])/g, (match, prefix: string, hour: string, minute: string, second: string | undefined, offset: number, full: string) => {
-    if (!shouldConvert(full, offset + prefix.length, match.length - prefix.length)) return match;
-    const secondText = second ? `${numberTokenToChinese(second, "value")}秒` : "";
-    return `${prefix}${numberTokenToChinese(hour, "value")}点${numberTokenToChinese(minute, "value")}分${secondText}`;
-  });
-  return output;
-}
-
-function hasCjkText(input: string): boolean {
-  return /[\u3400-\u9fff]/.test(input);
-}
-
-function looksLikeEnglishTtsText(input: string): boolean {
-  const text = input.replace(/https?:\/\/\S+/gi, " ").replace(/`[^`]*`/g, " ").trim();
-  if (!text || hasCjkText(text)) return false;
-  const latinCount = (text.match(/[A-Za-z]/g) ?? []).length;
-  if (latinCount < 3) return false;
-  const letterCount = ([...text.matchAll(/\p{L}/gu)]).length;
-  if (letterCount && latinCount / letterCount < 0.8) return false;
-  const wordCount = (text.match(/[A-Za-z]{2,}/g) ?? []).length;
-  return wordCount >= 1 || latinCount >= 8;
-}
-
-function chineseNumberReadingMode(input: string): "none" | "context" | "full" {
-  const compact = input.replace(/\s+/g, "");
-  const cjkCount = (compact.match(/[\u3400-\u9fff]/g) ?? []).length;
-  const digitCount = (compact.match(/\d/g) ?? []).length;
-  const latinCount = (compact.match(/[A-Za-z]/g) ?? []).length;
-  if (!cjkCount || !digitCount) return "none";
-  if (cjkCount >= 4 && cjkCount >= latinCount * 2) return "full";
-  return "context";
-}
-
-function isProtectedNumberToken(text: string, offset: number, length: number): boolean {
-  const before = text.slice(Math.max(0, offset - 16), offset);
-  const after = text.slice(offset + length, offset + length + 16);
-  if (/https?:\/\/\S*$/i.test(before) || /(?:^|[\s([{<])(?:[A-Za-z]:)?(?:[./\\]|[A-Za-z0-9_-]+[./\\])[\w./\\-]*$/i.test(before)) return true;
-  if (/^[A-Za-z_./\\-]/.test(after) || /[A-Za-z_./\\-]$/.test(before)) return true;
-  if (/\bv(?:ersion)?\.?$/i.test(before) || /^[.-]\d/.test(after)) return true;
-  return false;
-}
-
-function isChineseNumberContext(text: string, offset: number, length: number): boolean {
-  const before = text.slice(Math.max(0, offset - 8), offset);
-  const after = text.slice(offset + length, offset + length + 8);
-  if (/https?:\/\/|[A-Za-z_./\\-]$/.test(before) || /^[A-Za-z_./\\-]/.test(after)) return false;
-  return /[\u3400-\u9fff年月日号点第个条项次章节页岁分秒小时分钟%％：:，,。！？、；;（）()]/.test(before + after);
-}
-
-function numberTokenToChinese(token: string, mode: "auto" | "value" | "digits" = "auto"): string {
-  if (!token) return "";
-  if (mode === "digits") return digitsToChinese(token);
-  if (token.includes(".")) {
-    const [integer, fraction = ""] = token.split(".");
-    return `${integerNumberToChinese(integer)}点${digitsToChinese(fraction)}`;
-  }
-  if (/^0\d+/.test(token)) return integerNumberToChinese(token.replace(/^0+(?=\d)/, "") || "0");
-  if (mode === "auto" && token.length === 4 && /^[12]\d{3}$/.test(token)) return digitsToChinese(token);
-  return integerNumberToChinese(token);
-}
-
-function digitsToChinese(input: string): string {
-  return input.split("").map((char) => CHINESE_DIGITS[Number(char)] ?? char).join("");
-}
-
-function integerNumberToChinese(input: string): string {
-  const value = Number.parseInt(input, 10);
-  if (!Number.isFinite(value)) return input;
-  if (value === 0) return "零";
-  if (value < 0 || value > 99999999) return input.split("").map((char) => CHINESE_DIGITS[Number(char)] ?? char).join("");
-  const units = ["", "十", "百", "千"];
-  const sectionUnits = ["", "万"];
-  const sections: number[] = [];
-  let rest = value;
-  while (rest > 0) {
-    sections.push(rest % 10000);
-    rest = Math.floor(rest / 10000);
-  }
-  let output = "";
-  let needZero = false;
-  for (let index = sections.length - 1; index >= 0; index -= 1) {
-    const section = sections[index];
-    if (section === 0) {
-      needZero = output.length > 0;
-      continue;
-    }
-    if (needZero || (output && section < 1000)) output += "零";
-    output += sectionToChinese(section, units) + sectionUnits[index];
-    needZero = section % 10 === 0;
-  }
-  return output.replace(/^一十/, "十").replace(/零+/g, "零").replace(/零$/g, "");
-}
-
-function sectionToChinese(section: number, units: string[]): string {
-  let output = "";
-  let zero = false;
-  for (let index = 3; index >= 0; index -= 1) {
-    const unitValue = 10 ** index;
-    const digit = Math.floor(section / unitValue) % 10;
-    if (digit === 0) {
-      if (output) zero = true;
-      continue;
-    }
-    if (zero) {
-      output += "零";
-      zero = false;
-    }
-    output += `${CHINESE_DIGITS[digit]}${units[index]}`;
-  }
-  return output;
-}
-
-function primeTtsNormalizeText(input: string): string {
-  return input
-    .replace(/[，、；]/g, ",")
-    .replace(/[。]/g, ".")
-    .replace(/[？]/g, "?")
-    .replace(/[！]/g, "!")
-    .replace(/[“”]/g, "\"")
-    .replace(/[‘’]/g, "'")
-    .replace(/[\u2014\u2013]/g, "-")
-    .replace(/\u2026/g, "...")
-    .replace(/https?:\/\/\S+/gi, " URL ")
-    .replace(/\bAPI\b/g, "api")
-    .replace(/\bTTS\b/g, "tts")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-function pinyinSyllableToZhuyin(raw: string): { symbols: string[]; tone: number } {
-  const match = raw.toLowerCase().replace(/ü/g, "v").match(/^([a-zv]+)([0-5])?$/);
-  if (!match) return { symbols: ["UNK"], tone: 0 };
-  let body = match[1];
-  const tone = Number(match[2] === "0" ? "5" : match[2] ?? "5");
-  let initial = "";
-  for (const candidate of PRIME_TTS_PINYIN_INITIALS) {
-    if (body.startsWith(candidate)) {
-      initial = candidate;
-      body = body.slice(candidate.length);
-      break;
-    }
-  }
-  if (initial === "y" || initial === "w") {
-    body = `${initial}${body}`;
-    initial = "";
-  }
-  if ((initial === "j" || initial === "q" || initial === "x") && body.startsWith("u")) {
-    body = `v${body.slice(1)}`;
-  }
-  if (body === "i" && PRIME_TTS_APICAL_I_INITIALS.has(initial)) {
-    body = "";
-  }
-  if (!body && PRIME_TTS_APICAL_I_INITIALS.has(initial)) {
-    const syllabic = PRIME_TTS_INITIAL_TO_ZHUYIN[initial];
-    return { symbols: syllabic ? [syllabic, "ㄭ"] : ["UNK"], tone };
-  }
-  const symbols = [
-    ...(initial && PRIME_TTS_INITIAL_TO_ZHUYIN[initial] ? [PRIME_TTS_INITIAL_TO_ZHUYIN[initial]] : []),
-    ...(PRIME_TTS_FINAL_TO_ZHUYIN[body] ?? [])
-  ];
-  return { symbols: symbols.length ? symbols : ["UNK"], tone };
-}
-
-function englishWordToPrimePhones(word: string): string[] {
-  const lower = word.toLowerCase();
-  if (!lower) return [];
-  const known = PRIME_TTS_WORD_PHONES[lower];
-  if (known) return known;
-  if (lower.length <= 2 || /^[bcdfghjklmnpqrstvwxyz]{2,}$/i.test(lower)) {
-    return lower.split("").flatMap((char) => PRIME_TTS_LETTER_PHONES[char] ?? []);
-  }
-  const phones: string[] = [];
-  let index = 0;
-  while (index < lower.length) {
-    const rest = lower.slice(index);
-    const two = rest.slice(0, 2);
-    const four = rest.slice(0, 4);
-    if (four === "tion") {
-      phones.push("SH", "AH", "N");
-      index += 4;
-    } else if (two === "th") {
-      phones.push("TH");
-      index += 2;
-    } else if (two === "sh") {
-      phones.push("SH");
-      index += 2;
-    } else if (two === "ch") {
-      phones.push("CH");
-      index += 2;
-    } else if (two === "ph") {
-      phones.push("F");
-      index += 2;
-    } else if (two === "ng") {
-      phones.push("NG");
-      index += 2;
-    } else if (two === "oo") {
-      phones.push("UW");
-      index += 2;
-    } else if (two === "ee" || two === "ea") {
-      phones.push("IY");
-      index += 2;
-    } else if (two === "ai" || two === "ay") {
-      phones.push("EY");
-      index += 2;
-    } else if (two === "ow" || two === "ou") {
-      phones.push("AW");
-      index += 2;
-    } else {
-      phones.push(...englishLetterSound(lower[index]));
-      index += 1;
-    }
-  }
-  return phones.filter((phone) => phone in PRIME_TTS_SYMBOL_IDS);
-}
-
-function englishLetterSound(char: string): string[] {
-  const map: Record<string, string[]> = {
-    a: ["AE"], b: ["B"], c: ["K"], d: ["D"], e: ["EH"], f: ["F"], g: ["G"], h: ["HH"], i: ["IH"], j: ["JH"], k: ["K"], l: ["L"], m: ["M"],
-    n: ["N"], o: ["AA"], p: ["P"], q: ["K"], r: ["R"], s: ["S"], t: ["T"], u: ["AH"], v: ["V"], w: ["W"], x: ["K", "S"], y: ["Y"], z: ["Z"]
-  };
-  return map[char] ?? [];
-}
-
-function normalizePrimeTtsPunctuation(char: string): string {
-  if (!char || isPrimeTtsIgnorableSymbolChar(char)) return "";
-  if (char === "," || char === "，" || char === "、" || char === ";" || char === "；" || char === ":" || char === "：") return ",";
-  if (char === "." || char === "。") return ".";
-  if (char === "?" || char === "？") return "?";
-  if (char === "!" || char === "！") return "!";
-  if (char === "…" || char === "⋯" || char === "⋮") return "...";
-  if (char === "-" || char === "—" || char === "–" || char === "―") return "-";
-  if (char === "'" || char === "’" || char === "‘" || char === "\"" || char === "“" || char === "”") return "'";
-  if (/[\p{P}\p{S}]/u.test(char)) return ",";
-  return "";
-}
-
-function isCjkChar(char: string): boolean {
-  return /[\u3400-\u9fff]/.test(char);
-}
-
-function isCjkNeighbor(text: string, index: number): boolean {
-  return isCjkChar(text[index - 1] ?? "") || isCjkChar(text[index + 1] ?? "");
-}
-
 function formatI18n(template: string, vars: Record<string, string | number> = {}): string {
   return template.replace(/\{(\w+)\}/g, (_, key: string) => String(vars[key] ?? ""));
 }
@@ -33879,8 +33866,10 @@ function normalizeModelOptions(raw: unknown, activeModel?: string): string[] {
     push(raw);
   }
   if (!values.length) values.push(...MODEL_PRESETS);
-  if (activeModel?.trim()) values.unshift(activeModel.trim());
-  return uniqueStrings(values).slice(0, 80);
+  const unique = uniqueStrings(values);
+  const active = activeModel?.trim();
+  if (active && !unique.includes(active)) unique.push(active);
+  return unique.slice(0, 80);
 }
 
 function isAutomationMechanicalMode(value: unknown): value is AutomationMechanicalMode {
@@ -33921,6 +33910,30 @@ function mechanicalTaskRouteKeyFromString(value: string): MechanicalTaskRouteKey
   if (compact === "foldercleanup" || compact === "cleanup" || compact === "folder" || compact === "整理" || compact === "文件夹整理") return "folderCleanup";
   if (compact === "frontmattertags" || compact === "frontmatter" || compact === "tags" || compact === "properties" || compact === "属性" || compact === "标签") return "frontmatterTags";
   return null;
+}
+
+const PRIME_TTS_CJK_LETTER_READINGS: Record<string, string> = {
+  a: "诶",
+  e: "鹅",
+  i: "衣",
+  o: "哦",
+  u: "乌",
+  v: "鱼"
+};
+
+function isCjkChar(char: string): boolean {
+  return /[\u3400-\u9fff]/.test(char);
+}
+
+function hasCjkText(input: string): boolean {
+  return /[\u3400-\u9fff]/.test(input);
+}
+
+function looksLikeEnglishTtsText(input: string): boolean {
+  const letters = input.match(/[A-Za-z]/g)?.length ?? 0;
+  if (!letters) return false;
+  const cjk = input.match(/[\u3400-\u9fff]/g)?.length ?? 0;
+  return letters >= Math.max(3, cjk * 2);
 }
 
 function normalizeSkillRoots(raw: unknown): string[] {
@@ -34773,6 +34786,7 @@ function normalizeSessionHistoryEntry(item: Record<string, unknown>): SessionHis
     pinned: typeof item.pinned === "boolean" ? item.pinned : false,
     archived: typeof item.archived === "boolean" ? item.archived : false,
     manualTitle: typeof item.manualTitle === "boolean" ? item.manualTitle : false,
+    manualOrder: typeof item.manualOrder === "number" && Number.isFinite(item.manualOrder) ? item.manualOrder : undefined,
     parentSessionId: typeof item.parentSessionId === "string" ? item.parentSessionId : undefined,
     parentSessionTitle: typeof item.parentSessionTitle === "string" ? item.parentSessionTitle : undefined,
     subagentIds: Array.isArray(item.subagentIds) ? uniqueStrings(item.subagentIds.filter((value): value is string => typeof value === "string")) : undefined,
@@ -34812,6 +34826,7 @@ function sessionHistoryEntryFromSnapshot(raw: unknown, path: string): SessionHis
     pinned: typeof raw.pinned === "boolean" ? raw.pinned : false,
     archived: typeof raw.archived === "boolean" ? raw.archived : false,
     manualTitle: typeof raw.manualTitle === "boolean" ? raw.manualTitle : false,
+    manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : undefined,
     parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : undefined,
     parentSessionTitle: typeof raw.parentSessionTitle === "string" ? raw.parentSessionTitle : undefined,
     subagentIds: Array.isArray(raw.subagentIds) ? uniqueStrings(raw.subagentIds.filter((value): value is string => typeof value === "string")) : undefined,
@@ -34835,6 +34850,7 @@ function mergeSessionHistoryEntry(existing: SessionHistoryEntry | undefined, fro
     pinned: existing.pinned ?? fromFile.pinned,
     archived: existing.archived ?? fromFile.archived,
     manualTitle: existing.manualTitle ?? fromFile.manualTitle,
+    manualOrder: existing.manualOrder ?? fromFile.manualOrder,
     unread: Boolean(existing.unread || fromFile.unread),
     completedNotice: Boolean(existing.completedNotice || fromFile.completedNotice),
     parentSessionId: primary.parentSessionId || secondary.parentSessionId,
@@ -34889,9 +34905,15 @@ function shouldShowUnreadSession(entry: SessionHistoryEntry): boolean {
 }
 
 function compareSessionHistoryEntries(a: SessionHistoryEntry, b: SessionHistoryEntry): number {
-  if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
   if (Boolean(a.archived) !== Boolean(b.archived)) return a.archived ? 1 : -1;
-  return b.updatedAt.localeCompare(a.updatedAt);
+  const aManualOrder = typeof a.manualOrder === "number" && Number.isFinite(a.manualOrder) ? a.manualOrder : null;
+  const bManualOrder = typeof b.manualOrder === "number" && Number.isFinite(b.manualOrder) ? b.manualOrder : null;
+  if (aManualOrder !== null && bManualOrder !== null && aManualOrder !== bManualOrder) {
+    return aManualOrder - bManualOrder;
+  }
+  const byUpdatedAt = b.updatedAt.localeCompare(a.updatedAt);
+  if (byUpdatedAt) return byUpdatedAt;
+  return b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id);
 }
 
 function generateSessionTitleFromPrompt(prompt: string, fallback: string): string {
@@ -35777,10 +35799,6 @@ async function blobUrlToArrayBuffer(url: string): Promise<ArrayBuffer> {
   return response;
 }
 
-function createPrimeTtsWorkerUrl(): string {
-  return URL.createObjectURL(new Blob([PRIME_TTS_WORKER_SOURCE], { type: "text/javascript" }));
-}
-
 function XMLHttpRequestArrayBuffer(url: string): Promise<ArrayBuffer> {
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -36073,14 +36091,6 @@ function splitPrimeTtsMicroPlayText(input: string, targetLength = PRIME_TTS_FAST
 
 function splitPrimeTtsCjkRunTokens(run: string): string[] {
   if (!run) return [];
-  ensurePrimeTtsCustomPinyin();
-  try {
-    const segments = segment(run, { format: OutputFormat.AllSegment, toneType: "num", toneSandhi: true, segmentit: 2 }) as Array<{ origin?: string }>;
-    const tokens = segments.map((item) => item.origin ?? "").filter(Boolean);
-    if (tokens.length && tokens.join("") === run) return tokens;
-  } catch {
-    // Fall back to character tokens below.
-  }
   return Array.from(run);
 }
 

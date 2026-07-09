@@ -1,4 +1,5 @@
 import * as ort from "onnxruntime-web/wasm";
+import { primeTtsTextToIds } from "./primeTtsFrontend";
 
 const PRIME_TTS_FADE_IN_MS = 4;
 const PRIME_TTS_FADE_OUT_MS = 8;
@@ -35,6 +36,7 @@ type PrimeTtsWorkerMessage = {
   vocoder?: ArrayBuffer;
   wasm?: ArrayBuffer;
   meta?: PrimeTtsMeta;
+  text?: string;
   phoneIds?: number[];
   toneIds?: number[];
   langIds?: number[];
@@ -70,12 +72,11 @@ async function handleMessage(message: PrimeTtsWorkerMessage): Promise<void> {
     }
     if (message.type === "synthesize") {
       if (!runtime) throw new Error("PrimeTTS worker is not initialized");
-      const buffer = await synthesize(
-        message.phoneIds ?? [],
-        message.toneIds ?? [],
-        message.langIds ?? [],
-        Number(message.rate) || 1
-      );
+      const ids = typeof message.text === "string"
+        ? primeTtsTextToIds(message.text)
+        : { phoneIds: message.phoneIds ?? [], toneIds: message.toneIds ?? [], langIds: message.langIds ?? [] };
+      if (!ids.phoneIds.length) throw new Error("PrimeTTS frontend produced no phones");
+      const buffer = await synthesize(ids.phoneIds, ids.toneIds, ids.langIds, Number(message.rate) || 1);
       workerSelf.postMessage({ id: message.id, type: "result", buffer }, [buffer]);
       return;
     }

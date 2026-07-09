@@ -12,11 +12,13 @@ $Root = Split-Path -Parent $PSScriptRoot
 $CasesPath = Join-Path $Root 'tests/cancip-regression-cases.json'
 $ObqPath = 'C:/Users/35007/Documents/Codex/tools/ob-cli-queue/obq.ps1'
 $ObsidianCliPath = 'C:/Program Files/Obsidian/Obsidian.com'
+$InstalledCancipDataPath = 'E:/note/.obsidian/plugins/cancip/data.json'
 $OutDir = Join-Path $Root 'reports'
 New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $Script:OriginalSessionId = ''
 $Script:SmokeSessionId = ''
 $Script:SkipSmokeSessionRestore = $false
+$Script:SmokeSettingsSnapshotPath = ''
 
 $AllCases = Get-Content -Raw -LiteralPath $CasesPath -Encoding UTF8 | ConvertFrom-Json
 $RunProfile = if ($Case -like '*ui-button*') { 'ui-button' } elseif ($Write) { 'write' } elseif ($Full) { 'full' } else { 'core' }
@@ -69,6 +71,12 @@ $Report = [ordered]@{
   totals = [ordered]@{ pass = 0; fail = 0; skip = 0; elapsedMs = 0 }
 }
 $Started = Get-Date
+
+if (Test-Path -LiteralPath $InstalledCancipDataPath) {
+  $snapshotName = "cancip-smoke-data-before-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')).json"
+  $Script:SmokeSettingsSnapshotPath = Join-Path $OutDir $snapshotName
+  Copy-Item -LiteralPath $InstalledCancipDataPath -Destination $Script:SmokeSettingsSnapshotPath -Force
+}
 
 function ConvertTo-CompactJson {
   param([object]$Value)
@@ -264,6 +272,7 @@ function Assert-CommandCase {
 function Write-FinalReport {
   param([int]$Code)
   Restore-CancipSessionAfterSmoke
+  Restore-CancipSettingsAfterSmoke
   $Report.finishedAt = (Get-Date).ToUniversalTime().ToString('o')
   $Report.totals.elapsedMs = [int]((Get-Date) - $Started).TotalMilliseconds
   $counts = [ordered]@{}
@@ -285,6 +294,49 @@ function Write-FinalReport {
   Write-Host "Report: $path"
   Write-Host "Latest: $latestPath"
   exit $Code
+}
+
+function Restore-CancipSettingsAfterSmoke {
+  if (-not $Script:SmokeSettingsSnapshotPath) { return }
+  if (-not (Test-Path -LiteralPath $Script:SmokeSettingsSnapshotPath)) { return }
+  try {
+    Copy-Item -LiteralPath $Script:SmokeSettingsSnapshotPath -Destination $InstalledCancipDataPath -Force
+    $data = Get-Content -Raw -LiteralPath $InstalledCancipDataPath -Encoding UTF8 | ConvertFrom-Json
+    if ($null -ne $data -and $null -ne $data.uiButtonRules) {
+      $dirtyMarkers = @('smoke', 'cancip-menu-', 'obcc-smoke', 'cancip-sort-smoke', 'cancip-button-context-smoke')
+      $keptRules = @()
+      $removedCount = 0
+      foreach ($rule in @($data.uiButtonRules)) {
+        $ruleText = $rule | ConvertTo-Json -Compress -Depth 40
+        $dirty = $false
+        foreach ($marker in $dirtyMarkers) {
+          if ($ruleText -match [regex]::Escape($marker)) {
+            $dirty = $true
+            break
+          }
+        }
+        if ($dirty) {
+          $removedCount += 1
+        } else {
+          $keptRules += $rule
+        }
+      }
+      if ($removedCount -gt 0) {
+        $data.uiButtonRules = @($keptRules)
+        ($data | ConvertTo-Json -Depth 100) | Set-Content -LiteralPath $InstalledCancipDataPath -Encoding UTF8
+        Write-Host "Smoke cleanup: removed $removedCount test UI button rule(s) from restored Cancip data.json."
+      }
+    }
+  } catch {
+    Write-Host "Smoke cleanup warning: failed to restore and sanitize Cancip data.json from snapshot: $($_.Exception.Message)"
+    return
+  }
+  try {
+    $code = "(async()=>{const p=app.plugins.plugins.cancip;if(!p)return JSON.stringify({ok:false});if(typeof p.loadSettings==='function')await p.loadSettings();if(typeof p.refreshOpenViews==='function')p.refreshOpenViews();return JSON.stringify({ok:true,uiButtonRules:p.settings?.uiButtonRules?.length??0});})()"
+    Invoke-CancipEval -Code $code -TimeoutSeconds 30 | Out-Null
+  } catch {
+    Write-Host "Smoke cleanup warning: restored data.json but could not reload Cancip settings in Obsidian: $($_.Exception.Message)"
+  }
 }
 
 function Restore-CancipSessionAfterSmoke {

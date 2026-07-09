@@ -393,7 +393,8 @@
   -webkit-overflow-scrolling: touch;
 }
 
-.obcc-scroll-bottom {
+.obcc-scroll-bottom,
+.obcc-scroll-previous-user {
   position: absolute;
   right: 14px;
   bottom: 12px;
@@ -411,17 +412,25 @@
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 
-.obcc-scroll-bottom.is-hidden {
+.obcc-scroll-previous-user {
+  bottom: 52px;
+}
+
+.obcc-scroll-bottom.is-hidden,
+.obcc-scroll-previous-user.is-hidden {
   display: none;
 }
 
 .obcc-scroll-bottom:hover,
-.obcc-scroll-bottom:focus-visible {
+.obcc-scroll-bottom:focus-visible,
+.obcc-scroll-previous-user:hover,
+.obcc-scroll-previous-user:focus-visible {
   border-color: var(--interactive-accent);
   color: var(--interactive-accent);
 }
 
-.obcc-scroll-bottom svg {
+.obcc-scroll-bottom svg,
+.obcc-scroll-previous-user svg {
   width: 18px;
   height: 18px;
 }
@@ -2063,19 +2072,35 @@ body .obcc-view-tts-action {
 
 .obcc-model-menu-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) max-content;
   gap: 4px;
   align-items: center;
   min-width: 0;
+  max-width: 100%;
   padding: 4px;
   border: 1px solid var(--background-modifier-border);
   border-radius: 10px;
   background: var(--background-secondary);
 }
 
+.obcc-model-menu-row.is-drag-over,
+.obcc-queue-item.is-drag-over,
+.obcc-todo-row.is-drag-over {
+  border-color: var(--interactive-accent);
+  box-shadow: inset 0 0 0 1px var(--interactive-accent);
+}
+
 .obcc-model-menu-row.is-active {
   border-color: var(--interactive-accent);
   background: var(--background-modifier-hover);
+}
+
+.obcc-model-menu-row.is-dragging {
+  opacity: 0.7;
+}
+
+.obcc-model-menu-row.is-drop-after {
+  box-shadow: inset 0 -2px 0 var(--interactive-accent);
 }
 
 .obcc-model-menu-body {
@@ -2084,6 +2109,7 @@ body .obcc-view-tts-action {
   gap: 6px;
   align-items: center;
   min-width: 0;
+  max-width: 100%;
   padding: 2px 4px;
   border: 0;
   background: transparent;
@@ -2100,6 +2126,9 @@ body .obcc-view-tts-action {
   flex: 0 0 auto;
   align-items: center;
   gap: 2px;
+  justify-content: flex-end;
+  max-width: 86px;
+  overflow: visible;
 }
 
 .obcc-model-menu-action {
@@ -2117,6 +2146,26 @@ body .obcc-view-tts-action {
 
 .obcc-model-menu-action:disabled {
   opacity: 0.35;
+}
+
+.obcc-model-drag-icon,
+.obcc-queue-drag {
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.obcc-model-edit-modal-container,
+.obcc-model-edit-modal {
+  z-index: 2147483002;
+}
+
+.obcc-model-edit-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 10px;
 }
 
 .obcc-command-popover.is-access {
@@ -2262,7 +2311,7 @@ body .obcc-view-tts-action {
 
 .obcc-todo-row {
   display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) auto;
+  grid-template-columns: 24px 24px minmax(0, 1fr) max-content;
   align-items: center;
   gap: 6px;
   min-height: 32px;
@@ -2270,6 +2319,15 @@ body .obcc-view-tts-action {
   border: 1px solid var(--background-modifier-border);
   border-radius: 10px;
   background: var(--background-secondary);
+}
+
+.obcc-todo-row.is-current {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
+.obcc-todo-row.is-held {
+  border-style: dashed;
 }
 
 .obcc-todo-row.is-done .obcc-todo-text {
@@ -2307,13 +2365,26 @@ body .obcc-view-tts-action {
   white-space: normal;
 }
 
+.obcc-todo-index {
+  color: var(--text-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
 .obcc-todo-actions {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
   gap: 2px;
-  max-width: 128px;
+  max-width: 100px;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.obcc-todo-actions::-webkit-scrollbar {
+  display: none;
 }
 
 .obcc-manual-todo-form {
@@ -2411,7 +2482,7 @@ body .obcc-view-tts-action {
 }
 
 .obcc-session-item {
-  grid-template-columns: 10px minmax(0, 1fr) 106px;
+  grid-template-columns: 16px minmax(0, 1fr) 106px;
   grid-template-rows: auto;
   align-items: center;
   gap: 4px;
@@ -2423,6 +2494,19 @@ body .obcc-view-tts-action {
   border: 1px solid var(--background-modifier-border);
   border-radius: 10px;
   background: var(--background-secondary);
+}
+
+.obcc-session-item[draggable="true"] {
+  cursor: grab;
+}
+
+.obcc-session-item.is-dragging {
+  opacity: 0.58;
+}
+
+.obcc-session-item.is-drag-over {
+  border-color: var(--interactive-accent);
+  box-shadow: inset 0 0 0 1px var(--interactive-accent);
 }
 
 .obcc-session-item.is-subagent {
@@ -2560,8 +2644,22 @@ body .obcc-view-tts-action {
   display: inline-flex;
   justify-content: center;
   align-items: center;
-  min-width: 10px;
+  gap: 1px;
+  min-width: 16px;
   align-self: center;
+}
+
+.obcc-session-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  cursor: grab;
+}
+
+.obcc-session-drag svg {
+  width: 11px;
+  height: 11px;
 }
 
 .obcc-session-dot {
@@ -2916,7 +3014,7 @@ body .obcc-view-tts-action {
 
 .obcc-queue-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: 18px minmax(0, 1fr) max-content;
   align-items: center;
   gap: 4px;
   min-width: 0;
@@ -2925,6 +3023,18 @@ body .obcc-view-tts-action {
   border: 1px solid var(--background-modifier-border);
   border-radius: 8px;
   background: var(--background-primary-alt);
+}
+
+.obcc-queue-item.is-editing {
+  grid-template-columns: minmax(0, 1fr) max-content;
+}
+
+.obcc-queue-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 22px;
 }
 
 .obcc-queue-item.is-held {
@@ -2967,7 +3077,7 @@ body .obcc-view-tts-action {
   justify-content: flex-end;
   gap: 2px;
   flex: 0 0 auto;
-  max-width: 76px;
+  max-width: 92px;
   flex-wrap: wrap;
 }
 
@@ -5421,11 +5531,31 @@ input.obcc-review-correction-input {
   }
 
   .obcc-model-menu-row {
-    grid-template-columns: minmax(0, 1fr);
+    grid-template-columns: minmax(0, 1fr) max-content;
   }
 
   .obcc-model-menu-actions {
     justify-content: flex-end;
+  }
+
+  .obcc-model-menu-action {
+    width: 24px;
+    height: 24px;
+  }
+
+  .obcc-todo-row {
+    grid-template-columns: 22px 22px minmax(0, 1fr) max-content;
+    gap: 4px;
+    padding: 4px;
+  }
+
+  .obcc-todo-actions {
+    max-width: 88px;
+  }
+
+  .obcc-queue-actions,
+  .obcc-queue-edit-actions {
+    max-width: 86px;
   }
 
   .obcc-mention-item {
@@ -5825,6 +5955,7 @@ input.obcc-review-correction-input {
 
 .obcc-send,
 .obcc-scroll-bottom,
+.obcc-scroll-previous-user,
 .obcc-tts-floating-bubble,
 .obcc-button-edit-bubble,
 .obcc-selection-send-bubble,

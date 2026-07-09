@@ -111,6 +111,7 @@ Copy these files into an Obsidian community plugin folder named `cancip`:
 ```text
 manifest.json
 main.js
+prime-tts-worker.js
 styles.css
 versions.json
 README.md
