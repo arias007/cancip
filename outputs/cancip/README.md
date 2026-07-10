@@ -16,8 +16,10 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Structured command bus actions for Obsidian internal commands, Cancip built-ins, and GitHub CLI-equivalent REST API commands.
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
 - Long-term/core memory defaults to visible `AI/Cancip/Memory/` and is included in every model interaction.
+- First-install Vault orientation writes `AI/Cancip/Memory/VAULT_OVERVIEW.md` when missing. It is a shallow programmatic map of top-level folders, file kinds, recent user-facing files, and installed Obsidian plugins, so later turns can pick the right folder/plugin to inspect on demand without sending the whole vault.
 - Full-vault search is not attached by default. Cancip should first use long-term memory and necessary short-term/session context, then decide whether to run `cancip.searchVault` and read only the necessary matched files.
 - Model calls use a payload policy: trivial chat stays lightweight, informational turns add only targeted context, and implementation/self-repair turns include the full tool protocol and compact memory.
+- Skills and experience recipes are routed on demand: memory/rule/preference, OB plugin, command, attachment, and self-optimization tasks can auto-select relevant Skills, query `cancip.skills.*` / `cancip.experience.*`, and harvest repeatable successful workflows into `.cancip/skills/generated/`.
 - Full session export from the chat header to Markdown and JSON under visible `AI/Cancip/Exports/`.
 - Lightweight project session history stays under `.cancip/sessions/`, opened from the compact history button beside the new-chat button.
 - Compact context chips live inside the rounded composer/input box: the current active file is shown automatically with its extension, and source/context chips no longer occupy a separate panel.
@@ -33,7 +35,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Built-in model presets include GPT, Claude, Gemini, DeepSeek, Qwen, and Kimi-style names while still allowing a custom model string.
 - `@` picker for files, folders, Skills, Cancip functions, command bus entries, and real Obsidian commands. Empty `@` shows useful entries like modes/current file/recent files/skills; typed text dynamically filters all categories. Selected mentions are inserted as `@[path]`, `@[action:name]`, `@[command:name]`, or `@[obsidian-command:id]`, while hand-typed `@keyword` still resolves by fuzzy match.
 - Lightweight local versioning under `.cancip/versions/`: manual commits and one daily auto snapshot, without native git and without per-edit history.
-- Built-in local automation templates for non-desktop agent tasks: review-gate package generation, local capability-pack import, lightweight local version snapshots, GitHub status checks, vault index refresh, and a daily read-only Vault maintenance/merge-candidate report.
+- Built-in local automation templates for non-desktop agent tasks: review-gate package generation, local capability-pack import, lightweight local version snapshots, GitHub status checks, vault index refresh, a daily read-only Vault maintenance/merge-candidate report, and a unified Vault curation task with programmatic new/recent-note scan packs plus explicit file/folder strong-scope lanes for beautify/refactor, properties/tags/summaries/links, and renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
 
 ## Build
@@ -268,6 +270,7 @@ Currently supported command names:
 - `cancip.automation.templates`: list built-in local automation presets.
 - `cancip.automation.addTemplate`: add a built-in preset, e.g. `{"id":"auto-review-gate-current-vault"}`.
 - `cancip.automation.addVaultDailyReport`: add or refresh the daily Vault maintenance report automation.
+- `cancip.automation.addVaultCuration`: add or refresh the unified Vault curation automation. It keeps new/recent Markdown notes and old/specified-scope notes in separate lanes, then runs beautify/refactor, properties/tags/summaries/links, and file renaming as needed. New notes are scanned by the plugin before the model call and passed as a concrete candidate pack; specified files/folders become a strong-scope lane that the model must read and act on instead of doing vague full-vault scanning. Cancip also installs `.cancip/skills/vault-curation-specified-scope.skill.md` as a built-in strong Skill for explicit file/folder curation.
 - `todo` action type: maintain the current session's visible Plan todos. Supported operations are `set`, `add`, `update`, `remove`, `list`, and `clear`.
 - `github.help`: list mobile GitHub command targets.
 - `github.repo`: show repository status from GitHub REST.

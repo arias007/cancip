@@ -789,158 +789,121 @@ if (-not $Case -or 'programmatic.tool-run-estimated-line-delta'.Contains($Case))
   }
 }
 
-if (-not $Case -or 'programmatic.specialist-routing'.Contains($Case)) {
+if (-not $Case -or 'programmatic.automation-vault-curation-template'.Contains($Case)) {
   try {
     $code = @'
-(()=>{
+(async()=>{
   const t=Date.now();
   const p=app.plugins.plugins.cancip;
-  if(!p)throw new Error('Cancip plugin unavailable');
-  if(typeof p.specialistApiProfileForPrompt!=='function')throw new Error('missing specialist route helper');
-  const old={
-    enabled:p.settings.specialistRoutingEnabled,
-    activeProfile:p.settings.activeApiProfileId,
-    apiProfiles:[...(p.settings.apiProfiles||[])],
-    profile:p.settings.mechanicalTaskApiProfileId,
-    model:p.settings.mechanicalTaskModel,
-    options:[...(p.settings.modelOptions||[])],
-    routes:{...(p.settings.mechanicalTaskRoutes||{})}
-  };
-  try{
-    p.settings.specialistRoutingEnabled=true;
-    const explicitProfile={...(p.settings.apiProfiles||[])[0],id:'cancip-smoke-explicit-profile',name:'Smoke explicit profile',model:'cancip-smoke-explicit-profile-model'};
-    p.settings.apiProfiles=[...(p.settings.apiProfiles||[]).filter((x)=>x&&x.id!=='cancip-smoke-explicit-profile'),explicitProfile];
-    p.settings.mechanicalTaskApiProfileId='';
-    p.settings.modelOptions=['gpt-5.5','qwen-plus','deepseek-chat','gpt-4o-mini'];
-    p.settings.mechanicalTaskRoutes={contentRename:true,markdownBeautify:true,folderCleanup:true,frontmatterTags:true};
-    p.settings.mechanicalTaskModel='cancip-smoke-mechanical';
-    const routePrompt='rename Markdown notes based on file content';
-    const hit=p.specialistApiProfileForPrompt(routePrompt);
-    const miss=p.specialistApiProfileForPrompt('fix Cancip sidebar status bar button styles and plugin source code');
-    p.settings.mechanicalTaskModel='';
-    const auto=p.specialistApiProfileForPrompt(routePrompt);
-    p.settings.mechanicalTaskRoutes={contentRename:false,markdownBeautify:true,folderCleanup:true,frontmatterTags:true};
-    const disabled=p.specialistApiProfileForPrompt(routePrompt);
-    const disabledKinds=p.mechanicalTaskRouteKindsForPrompt(routePrompt);
-    return JSON.stringify({
-      id:'programmatic.specialist-routing',
-      elapsedMs:Date.now()-t,
-      hitModel:hit&&hit.model,
-      miss:miss===null,
-      autoModel:auto&&auto.model,
-      disabled:disabled===null,
-      disabledKindCount:disabledKinds.length
-    });
-  } finally {
-    p.settings.specialistRoutingEnabled=old.enabled;
-    p.settings.activeApiProfileId=old.activeProfile;
-    p.settings.apiProfiles=old.apiProfiles;
-    p.settings.mechanicalTaskApiProfileId=old.profile;
-    p.settings.mechanicalTaskModel=old.model;
-    p.settings.modelOptions=old.options;
-    p.settings.mechanicalTaskRoutes=old.routes;
-  }
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!p||!v)throw new Error('Cancip plugin/view unavailable');
+  if(typeof p.automationApiProfile!=='function'||typeof p.automationModelPromptForTask!=='function')throw new Error('missing automation helpers');
+  const baseProfile=p.automationApiProfile({apiProfileId:'',model:''});
+  const explicitProfile=p.automationApiProfile({apiProfileId:'',model:'cancip-smoke-explicit-model'});
+  const promptInfo=p.automationModelPromptForTask({prompt:'curate new files; old files require explicit scope'});
+  const templatesText=String(await v.executeCommandAction('cancip.automation.templates',{}));
+  const settings=p.settings||{};
+  return JSON.stringify({
+    id:'programmatic.automation-vault-curation-template',
+    elapsedMs:Date.now()-t,
+    baseModel:baseProfile&&baseProfile.model,
+    explicitModel:explicitProfile&&explicitProfile.model,
+    prompt:promptInfo&&promptInfo.prompt,
+    hasRouteKinds:Boolean(promptInfo&&Object.prototype.hasOwnProperty.call(promptInfo,'routeKinds')),
+    hasCuration:/auto-vault-curation/.test(templatesText),
+    hasCurationLanes:/new\/old note lanes|新旧/.test(templatesText),
+    hasCurationActions:/beautify\/refactor/.test(templatesText)&&/properties\/tags\/summaries\/links/.test(templatesText)&&/renam/.test(templatesText),
+    hasDeprecated:/auto-vault-content-beautify|auto-vault-auto-tags|auto-vault-file-summaries/.test(templatesText),
+    hasMechanicalSettings:['specialistRoutingEnabled','mechanicalTaskApiProfileId','mechanicalTaskModel','mechanicalTaskRoutes'].some((key)=>Object.prototype.hasOwnProperty.call(settings,key))
+  });
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
-    if ($item.hitModel -ne 'cancip-smoke-mechanical') { throw "mechanical prompt did not route to specialist model: $($item.hitModel)" }
-    if (-not $item.miss) { throw 'engineering prompt was incorrectly routed to specialist model' }
-    if ($item.autoModel -ne 'qwen-plus') { throw "empty specialist model did not auto-pick cheap model: $($item.autoModel)" }
-    if (-not $item.disabled -or [int]$item.disabledKindCount -ne 0) { throw "disabled contentRename route still matched: $($item | ConvertTo-Json -Compress)" }
-    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; hitModel = $item.hitModel; autoModel = $item.autoModel }
+    if (-not $item.hasCuration) { throw "unified vault curation template is missing: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.hasCurationLanes -or -not $item.hasCurationActions) { throw "unified vault curation template is missing new/old lanes or action classes: $($item | ConvertTo-Json -Compress)" }
+    if ($item.hasDeprecated) { throw "deprecated split vault automation templates are still listed: $($item | ConvertTo-Json -Compress)" }
+    if ($item.hasMechanicalSettings) { throw "mechanical/specialist settings are still exposed: $($item | ConvertTo-Json -Compress)" }
+    if ($item.hasRouteKinds) { throw "automation prompt helper still exposes routeKinds: $($item | ConvertTo-Json -Compress)" }
+    if ($item.explicitModel -ne 'cancip-smoke-explicit-model') { throw "explicit automation model was not honored: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; explicitModel = $item.explicitModel }
   } catch {
-    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.specialist-routing'; pass = $false; error = $_.Exception.Message }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-vault-curation-template'; pass = $false; error = $_.Exception.Message }
   }
 }
 
-if (-not $Case -or 'programmatic.automation-mechanical-routing'.Contains($Case)) {
+if (-not $Case -or 'programmatic.automation-vault-curation-scan-pack'.Contains($Case)) {
   try {
     $code = @'
-(()=>{
-  const t=Date.now();
-  const p=app.plugins.plugins.cancip;
-  if(!p)throw new Error('Cancip plugin unavailable');
-  if(typeof p.automationApiProfile!=='function'||typeof p.automationModelPromptForTask!=='function')throw new Error('missing automation mechanical route helpers');
-  const old={
-    enabled:p.settings.specialistRoutingEnabled,
-    activeProfile:p.settings.activeApiProfileId,
-    apiProfiles:[...(p.settings.apiProfiles||[])],
-    profile:p.settings.mechanicalTaskApiProfileId,
-    model:p.settings.mechanicalTaskModel,
-    options:[...(p.settings.modelOptions||[])],
-    routes:{...(p.settings.mechanicalTaskRoutes||{})}
-  };
-  try{
-    p.settings.specialistRoutingEnabled=true;
-    const explicitProfile={...(p.settings.apiProfiles||[])[0],id:'cancip-smoke-explicit-profile',name:'Smoke explicit profile',model:'cancip-smoke-explicit-profile-model'};
-    p.settings.apiProfiles=[...(p.settings.apiProfiles||[]).filter((x)=>x&&x.id!=='cancip-smoke-explicit-profile'),explicitProfile];
-    p.settings.mechanicalTaskApiProfileId='';
-    p.settings.modelOptions=['gpt-5.5','qwen-plus','deepseek-chat','gpt-4o-mini'];
-    p.settings.mechanicalTaskRoutes={contentRename:true,markdownBeautify:true,folderCleanup:true,frontmatterTags:true};
-    p.settings.mechanicalTaskModel='cancip-smoke-mechanical';
-    const base={
-      id:'auto-smoke-mechanical',
-      title:'Batch content rename Markdown notes',
-      prompt:'rename Markdown notes in this folder based on file content',
-      schedule:'manual',
-      enabled:true,
-      intervalMinutes:60,
-      hour:9,
-      minute:0,
-      sessionMode:'current',
-      createdAt:new Date().toISOString(),
-      updatedAt:new Date().toISOString()
-    };
-    const autoTask={...base,mechanical:'auto'};
-    const autoProfile=p.automationApiProfile(autoTask);
-    const autoPrompt=p.automationModelPromptForTask(autoTask).prompt;
-    const offProfile=p.automationApiProfile({...base,mechanical:'off'});
-    const offPrompt=p.automationModelPromptForTask({...base,mechanical:'off'}).prompt;
-    const forcedTask={...base,title:'Daily exact task',prompt:'Review these files',mechanical:'on'};
-    const forcedProfile=p.automationApiProfile(forcedTask);
-    const forcedPrompt=p.automationModelPromptForTask(forcedTask).prompt;
-    const routeOffTask={...base,mechanical:'auto',mechanicalRoutes:{contentRename:false,markdownBeautify:false,folderCleanup:false,frontmatterTags:false}};
-    const routeOffProfile=p.automationApiProfile(routeOffTask);
-    const explicitModelProfile=p.automationApiProfile({...base,mechanical:'auto',model:'cancip-smoke-explicit-model'});
-    const explicitApiProfile=p.automationApiProfile({...base,mechanical:'auto',apiProfileId:'cancip-smoke-explicit-profile'});
-    const explicitBothProfile=p.automationApiProfile({...base,mechanical:'auto',apiProfileId:'cancip-smoke-explicit-profile',model:'cancip-smoke-explicit-both-model'});
-    return JSON.stringify({
-      id:'programmatic.automation-mechanical-routing',
-      elapsedMs:Date.now()-t,
-      autoModel:autoProfile&&autoProfile.model,
-      offModel:offProfile&&offProfile.model,
-      forcedModel:forcedProfile&&forcedProfile.model,
-      routeOffModel:routeOffProfile&&routeOffProfile.model,
-      explicitModel:explicitModelProfile&&explicitModelProfile.model,
-      explicitApiModel:explicitApiProfile&&explicitApiProfile.model,
-      explicitBothModel:explicitBothProfile&&explicitBothProfile.model,
-      autoGuard:/cancip-action JSON/.test(autoPrompt),
-      offGuard:/cancip-action JSON/.test(offPrompt),
-      forcedGuard:/cancip-action JSON/.test(forcedPrompt)
-    });
-  } finally {
-    p.settings.specialistRoutingEnabled=old.enabled;
-    p.settings.activeApiProfileId=old.activeProfile;
-    p.settings.apiProfiles=old.apiProfiles;
-    p.settings.mechanicalTaskApiProfileId=old.profile;
-    p.settings.mechanicalTaskModel=old.model;
-    p.settings.modelOptions=old.options;
-    p.settings.mechanicalTaskRoutes=old.routes;
-  }
+(async function(){
+  var t=Date.now();
+  var p=app.plugins.plugins.cancip;
+  var leaves=app.workspace.getLeavesOfType('cancip-view');
+  var v=(p&&typeof p.activateView==='function')?await p.activateView():((leaves[0]&&leaves[0].view)||null);
+  if(!p||!v)throw new Error('Cancip plugin/view unavailable');
+  if(typeof v.buildVaultCurationSourcePack!=='function')throw new Error('missing curation programmatic scan pack builder');
+  var pack=String(await v.buildVaultCurationSourcePack({
+    id:'auto-vault-curation',
+    title:'smoke',
+    prompt:'smoke explicit scope',
+    args:{scope:'__cancip_missing_scope_for_smoke__.md',recentHours:1,limit:3}
+  }));
+  return JSON.stringify({
+    id:'programmatic.automation-vault-curation-scan-pack',
+    elapsedMs:Date.now()-t,
+    length:pack.length,
+    hasProgrammatic:pack.indexOf('Vault Curation Programmatic Scan Pack')>=0,
+    hasRecentLane:pack.indexOf('New/recent candidate lane')>=0,
+    hasExplicitLane:pack.indexOf('Explicit old/specified scope lane')>=0,
+    hasStrongSkill:pack.indexOf('Strong Curation Skill: specified file/folder')>=0,
+    hasSkillPath:pack.indexOf('.cancip/skills/vault-curation-specified-scope.skill.md')>=0,
+    hasAuthoritative:pack.indexOf('programmatic-first')>=0||pack.indexOf('authoritative')>=0,
+    hasUnresolved:pack.indexOf('__cancip_missing_scope_for_smoke__')>=0
+  });
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
-    if ($item.autoModel -ne 'cancip-smoke-mechanical') { throw "automation auto task did not route to specialist model: $($item.autoModel)" }
-    if ($item.offModel -eq 'cancip-smoke-mechanical') { throw "automation off task still routed to specialist model: $($item.offModel)" }
-    if ($item.forcedModel -ne 'cancip-smoke-mechanical') { throw "automation forced task did not route to specialist model: $($item.forcedModel)" }
-    if ($item.routeOffModel -eq 'cancip-smoke-mechanical') { throw "automation per-task route disabled but still routed: $($item | ConvertTo-Json -Compress)" }
-    if ($item.explicitModel -ne 'cancip-smoke-explicit-model') { throw "automation explicit model was overridden by mechanical routing: $($item | ConvertTo-Json -Compress)" }
-    if ($item.explicitApiModel -ne 'cancip-smoke-explicit-profile-model') { throw "automation explicit API profile was not honored: $($item | ConvertTo-Json -Compress)" }
-    if ($item.explicitBothModel -ne 'cancip-smoke-explicit-both-model') { throw "automation explicit API+model override was not honored: $($item | ConvertTo-Json -Compress)" }
-    if (-not $item.autoGuard -or $item.offGuard -or -not $item.forcedGuard) { throw "automation mechanical prompt guard mismatch: $($item | ConvertTo-Json -Compress)" }
-    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; autoModel = $item.autoModel; forcedModel = $item.forcedModel; explicitModel = $item.explicitModel }
+    if (-not $item.hasProgrammatic -or -not $item.hasRecentLane -or -not $item.hasExplicitLane) { throw "curation scan pack missing lanes: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.hasStrongSkill -or -not $item.hasSkillPath -or -not $item.hasAuthoritative) { throw "curation scan pack missing strong skill/authoritative contract: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.hasUnresolved) { throw "curation scan pack did not preserve unresolved explicit scope: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; length = $item.length }
   } catch {
-    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-mechanical-routing'; pass = $false; error = $_.Exception.Message }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-vault-curation-scan-pack'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.vault-overview-memory'.Contains($Case)) {
+  try {
+    $code = @'
+(async function(){
+  var t=Date.now();
+  var p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  if(typeof p.ensureVaultOverviewMemory!=='function')throw new Error('missing vault overview memory initializer');
+  if(typeof p.buildVaultOverviewMemory!=='function')throw new Error('missing vault overview memory builder');
+  await p.ensureVaultOverviewMemory();
+  var path='AI/Cancip/Memory/VAULT_OVERVIEW.md';
+  var exists=await app.vault.adapter.exists(path);
+  var raw=exists?String(await app.vault.adapter.read(path)):'';
+  var generated=String(await p.buildVaultOverviewMemory());
+  var indexPath='AI/Cancip/Memory/CANCIP_INDEX.md';
+  var index=(await app.vault.adapter.exists(indexPath))?String(await app.vault.adapter.read(indexPath)):'';
+  return JSON.stringify({
+    id:'programmatic.vault-overview-memory',
+    elapsedMs:Date.now()-t,
+    exists:exists,
+    hasMarker:raw.indexOf('cancip-programmatic-vault-overview')>=0||raw.indexOf('# Vault Overview')>=0,
+    generatedHasFolders:generated.indexOf('Top-level folders')>=0,
+    generatedHasPlugins:generated.indexOf('Installed Obsidian plugins')>=0,
+    indexHasOverview:index.indexOf('VAULT_OVERVIEW')>=0
+  });
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 60
+    if (-not $item.exists -or -not $item.hasMarker) { throw "vault overview memory was not generated: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.generatedHasFolders -or -not $item.generatedHasPlugins -or -not $item.indexHasOverview) { throw "vault overview memory missing required sections/index: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.vault-overview-memory'; pass = $false; error = $_.Exception.Message }
   }
 }
 

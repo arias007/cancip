@@ -2566,6 +2566,54 @@ body .obcc-view-tts-action {
   overflow: visible;
 }
 
+.obcc-session-item.is-editing {
+  grid-template-columns: 10px minmax(0, 1fr);
+}
+
+.obcc-session-item.is-editing .obcc-session-actions,
+.obcc-session-item.is-editing .obcc-session-state {
+  display: none;
+}
+
+.obcc-session-inline-edit {
+  grid-column: 2;
+  transform: none;
+}
+
+.obcc-session-edit-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  gap: 4px;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+}
+
+.obcc-session-edit-input {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 2px 7px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.obcc-session-edit-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 7px;
+  background: var(--background-primary);
+  color: var(--text-muted);
+}
+
 .obcc-session-item.is-subagent .obcc-session-actions {
   width: 58px;
   max-width: 58px;
@@ -4408,6 +4456,7 @@ input.obcc-review-correction-input {
 }
 
 .obcc-review-leaf {
+  --obcc-review-mobile-bottom-clearance: max(120px, calc(env(safe-area-inset-bottom) + 84px));
   display: flex;
   width: 100%;
   height: 100%;
@@ -4493,6 +4542,24 @@ input.obcc-review-correction-input {
   background: color-mix(in srgb, var(--text-error) 13%, var(--background-secondary));
 }
 
+.obcc-notice-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.obcc-notice-action {
+  min-height: 28px;
+  padding: 3px 10px;
+  border: 1px solid var(--interactive-accent);
+  border-radius: 6px;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  font-size: 12px;
+  font-weight: 650;
+}
+
 .obcc-review-leaf-body {
   display: grid;
   grid-template-columns: 1fr;
@@ -4519,6 +4586,8 @@ input.obcc-review-correction-input {
 .obcc-review-file-nav.is-page {
   max-width: 920px;
   margin: 0 auto;
+  height: 100%;
+  min-height: 0;
 }
 
 .obcc-review-file-nav-head {
@@ -4539,6 +4608,8 @@ input.obcc-review-correction-input {
   padding: 6px;
   overflow: auto;
   overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scroll-padding-bottom: var(--obcc-review-mobile-bottom-clearance, 24px);
 }
 
 .obcc-review-nav-kind {
@@ -5321,12 +5392,17 @@ input.obcc-review-correction-input {
     padding: 6px 6px var(--obcc-review-mobile-bottom-clearance);
   }
 
+  .obcc-review-leaf.has-review-nav .obcc-review-leaf-body {
+    padding: 6px 6px max(10px, calc(env(safe-area-inset-bottom) + 8px));
+  }
+
   .obcc-review-file-nav {
     min-height: 0;
   }
 
   .obcc-review-file-nav-tree {
-    padding: 5px 5px var(--obcc-review-mobile-bottom-clearance);
+    max-height: 100%;
+    padding: 5px 5px max(112px, calc(env(safe-area-inset-bottom) + 84px));
   }
 
   .obcc-review-file-nav-head {
