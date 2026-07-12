@@ -356,6 +356,10 @@ function Restore-CancipSessionAfterSmoke {
 
 try {
   if ($RunProfile -eq 'ui-button') {
+    $RefreshStylesCode = "(async()=>{const path=app.vault.configDir + '/plugins/cancip/styles.css';const css=await app.vault.adapter.read(path);let el=activeDocument.getElementById('cancip-smoke-style-refresh');if(!el){el=activeDocument.createElement('style');el.id='cancip-smoke-style-refresh';activeDocument.head.appendChild(el);}el.textContent=css;return JSON.stringify({ok:true,bytes:css.length});})()"
+    Invoke-CancipEval -Code $RefreshStylesCode -TimeoutSeconds 25 | Out-Null
+  }
+  if ($RunProfile -eq 'ui-button') {
     $ProbeCode = "(()=>{const p=app.plugins.plugins.cancip;const leaves=app.workspace.getLeavesOfType('cancip-view');const v=leaves[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!p,version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:leaves.length,sessionId:v?.sessionId||'',devErrors:(p?.devErrors||[]).slice(-5)});})()"
   } else {
     $ProbeCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;const m=app.plugins.manifests.cancip;return JSON.stringify({ok:!!(p&&v),version:m?.version??'',promptHead:String(p?.settings?.systemPrompt||'').split('\n')[0],views:app.workspace.getLeavesOfType('cancip-view').length,sessionId:v?.sessionId||'',devErrors:(p?.devErrors||[]).slice(-5)});})()"
@@ -596,6 +600,76 @@ if (-not $Case -or 'programmatic.config-read-routing'.Contains($Case)) {
   }
 }
 
+if (-not $Case -or 'programmatic.runtime-status-routing'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const view=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!view)throw new Error('Cancip view unavailable');
+  const prompt='\u67e5\u770b Cancip \u5f53\u524d\u7248\u672c\u3001\u8bbf\u95ee\u6a21\u5f0f\u3001\u5f53\u524d\u6a21\u578b\u540d\u548c devErrors\uff0c\u4e0d\u4fee\u6539\u4efb\u4f55\u5185\u5bb9';
+  const actions=view.programmaticReadOnlyActionsForPrompt(prompt);
+  const run={
+    id:'smoke-runtime-status',
+    action:{type:'command',command:'cancip.status',args:{includeDevErrors:true}},
+    summary:'command cancip.status {"includeDevErrors":true}',
+    status:'executed',
+    createdAt:new Date().toISOString(),
+    result:'command cancip.status\n{"plugin":{"id":"cancip","name":"Cancip","version":"2.2.3"},"accessMode":"full-access","activeApiProfile":{"id":"default","name":"OpenRouter","apiMode":"compatible","model":"gpt-5.5"},"session":{"status":"running"},"devErrors":["startup UI enhancement failed: smoke"]}'
+  };
+  const fallback=view.informationalFallbackFromToolRuns([run],prompt,'empty model reply');
+  return JSON.stringify({id:'programmatic.runtime-status-routing',elapsedMs:Date.now()-t,actions,fallback});
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $actions = @($item.actions)
+    $action0 = if ($actions.Count) { $actions[0] } else { $null }
+    $fallbackText = [string]$item.fallback
+    if ([int]$actions.Count -ne 1) { throw "expected one status action got $($actions.Count): $($item | ConvertTo-Json -Compress -Depth 20)" }
+    if ($action0.type -ne 'command' -or $action0.command -ne 'cancip.status') { throw "expected cancip.status action got $($action0 | ConvertTo-Json -Compress)" }
+    if ($fallbackText -notmatch '2\.2\.3') { throw "fallback missing version: $fallbackText" }
+    if ($fallbackText -notmatch 'full-access') { throw "fallback missing access mode: $fallbackText" }
+    if ($fallbackText -notmatch 'gpt-5\.5') { throw "fallback missing model: $fallbackText" }
+    if ($fallbackText -notmatch 'startup UI enhancement failed') { throw "fallback missing devErrors: $fallbackText" }
+    if ($fallbackText -match '只完成读取|只读完成|没有修改任何内容。\\s*$') { throw "fallback still reads like process-only answer: $fallbackText" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.runtime-status-routing'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.structured-final-contract'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
+  if(!v)throw new Error('Cancip view unavailable');
+  const raw='<!-- cancip-final {"status":"answered","summary":"Answered from structured metadata","conclusion":"Status answer is complete","answers":[{"label":"version","value":"2.2.3"},{"label":"model","value":"gpt-5.5"}],"actions":["Parsed cancip.status output"],"verification":["status result parsed"],"memory":["no durable memory update"],"choices":["Open status details"]} -->';
+  const debug=v.structuredFinalDebug(raw);
+  const infoPrompt=String(v.informationalAnswerSystemPrompt());
+  const modePrompt=String(v.modePrompt('change a note title'));
+  return JSON.stringify({id:'programmatic.structured-final-contract',elapsedMs:Date.now()-t,debug,infoHasContract:infoPrompt.includes('cancip-final'),modeHasContract:modePrompt.includes('cancip-final')});
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $debug = $item.debug
+    if (-not $item.infoHasContract) { throw 'informational answer prompt missing cancip-final contract' }
+    if (-not $item.modeHasContract) { throw 'implementation mode prompt missing cancip-final contract' }
+    if ([string]$debug.visible -match 'cancip-final|Answered from structured metadata') { throw "hidden cancip-final leaked into visible answer: $($debug.visible)" }
+    if ([string]$debug.generatedVisible -notmatch 'Answered from structured metadata') { throw "structured final did not generate visible fallback: $($debug.generatedVisible)" }
+    if ([string]$debug.generatedVisible -notmatch 'gpt-5\.5') { throw "structured final missing answer field: $($debug.generatedVisible)" }
+    if ([string]$debug.generatedVisible -match '改动：无|读取/检查|command:cancip.status') { throw "structured final leaked read/no-change file filler: $($debug.generatedVisible)" }
+    if ([string]$debug.generatedVisible -notmatch 'Status answer is complete') { throw "structured final missing closing summary: $($debug.generatedVisible)" }
+    if (@($debug.choices).Count -ne 1 -or [string]@($debug.choices)[0] -ne 'Open status details') { throw "structured final choices not parsed: $($debug | ConvertTo-Json -Compress -Depth 20)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.structured-final-contract'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.plugin-manifest-read-routing'.Contains($Case)) {
   try {
     $code = @'
@@ -658,7 +732,9 @@ if (-not $Case -or 'programmatic.progress-step-compact-no-prompt-leak'.Contains(
     const msg=v.addProgressStep(v.t('preparingContext'));
     const liveContent=String(msg.content||'');
     const liveOpen=!!(v.progressStepTimers&&typeof v.progressStepTimers.has==='function'&&v.progressStepTimers.has(msg.id));
-    v.updateProgressStep(msg,v.t('preparingContext'),v.formatContextAuditDetail('progress smoke','progress smoke','progress smoke',{system:'system',contextText:'ctx',searchHits:[],images:[]}));
+    const concreteLiveDetail='模型正在分析字段：版本、访问模式、模型、devErrors';
+    v.updateProgressStepLive(msg,v.t('preparingContext'),concreteLiveDetail);
+    v.updateProgressStep(msg,v.t('preparingContext'),v.t('done'));
     const finalContent=String(msg.content||'');
     if(typeof v.stopProgressStepTimer==='function')v.stopProgressStepTimer(msg.id);
     const legacyContent=[
@@ -677,6 +753,7 @@ if (-not $Case -or 'programmatic.progress-step-compact-no-prompt-leak'.Contains(
         liveLeaksPromptishNote:/\u6700\u5c0f\u5fc5\u8981|smallest useful|System prompt sent|User input sent|Raw model reply|Model prompt for this turn|\u76ee\u7684[：:]|\u505a\u6cd5[：:]|Goal:|Method:/i.test(liveContent),
         liveOpen,
         finalHasDetail:/Step details|步骤详情|<details>/.test(finalContent),
+        finalKeepsLiveDetail:finalContent.includes(concreteLiveDetail),
         finalLeaksPrompt:/\u6700\u5c0f\u5fc5\u8981|smallest useful|System prompt sent|User input sent|Raw model reply|Model prompt for this turn|User prompt|Resolved task goal/i.test(finalContent),
         legacyRenderedLeaks:/\u6700\u5c0f\u5fc5\u8981|smallest useful|System prompt sent|User input sent|Raw model reply/i.test(rendered)
       });
@@ -691,6 +768,7 @@ if (-not $Case -or 'programmatic.progress-step-compact-no-prompt-leak'.Contains(
     if ($item.liveLeaksPromptishNote) { throw 'live progress still leaks prompt-like note' }
     if (-not $item.liveOpen) { throw 'live progress timer not active' }
     if (-not $item.finalHasDetail) { throw 'final progress missing folded detail' }
+    if (-not $item.finalKeepsLiveDetail) { throw 'final progress lost concrete live model detail' }
     if ($item.finalLeaksPrompt) { throw 'final progress detail still leaks prompt text' }
     if ($item.legacyRenderedLeaks) { throw 'legacy progress render still leaks prompt-like note' }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
@@ -1196,10 +1274,11 @@ if (-not $Case -or 'programmatic.process-record-live-open-final-collapsed'.Conta
   try{
     const progress='<!-- cancip-progress-step -->\\n<!-- cancip-process-message -->\\n已执行 · 正在读取文件...';
     v.messages=[{id:'smoke-process-live',role:'assistant',createdAt:Date.now(),content:progress}];
-    v.activeRequest={};
+    v.activeRequest=new AbortController();
     if(v.detailsOpenState instanceof Map)v.detailsOpenState.clear();
     v.renderMessages();
     const liveOpen=!!v.messagesEl?.querySelector('.obcc-process-record-details')?.open;
+    const liveStepOpen=!!v.messagesEl?.querySelector('.obcc-process-step')?.open;
     v.messages=[
       {id:'smoke-process-live',role:'assistant',createdAt:Date.now()-1000,content:progress},
       {id:'smoke-process-final',role:'assistant',createdAt:Date.now(),content:__PROCESS_FINAL_CONTENT__}
@@ -1208,7 +1287,7 @@ if (-not $Case -or 'programmatic.process-record-live-open-final-collapsed'.Conta
     if(v.detailsOpenState instanceof Map)v.detailsOpenState.set('process-record:smoke-process-live',true);
     v.renderMessages();
     const finalOpen=!!v.messagesEl?.querySelector('.obcc-process-record-details')?.open;
-    return JSON.stringify({id:'programmatic.process-record-live-open-final-collapsed',elapsedMs:Date.now()-t,liveOpen,finalOpen});
+    return JSON.stringify({id:'programmatic.process-record-live-open-final-collapsed',elapsedMs:Date.now()-t,liveOpen,liveStepOpen,finalOpen});
   } finally {
     v.messages=oldMessages;
     v.activeRequest=oldActive;
@@ -1220,6 +1299,7 @@ if (-not $Case -or 'programmatic.process-record-live-open-final-collapsed'.Conta
     $code = $code.Replace('__PROCESS_FINAL_CONTENT__', $processFinalJson)
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
     if (-not $item.liveOpen) { throw "live process record did not open one level: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.liveStepOpen) { throw "live process record did not open process step details: $($item | ConvertTo-Json -Compress)" }
     if ($item.finalOpen) { throw "process record did not auto-collapse after final answer: $($item | ConvertTo-Json -Compress)" }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
   } catch {
@@ -1289,6 +1369,7 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-sort-filters') {
   const p=app.plugins.plugins.cancip;
   if(!p)throw new Error('Cancip plugin unavailable');
   const doc=activeDocument;
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
   const root=doc.createElement('div');
   root.setAttribute('data-cancip-smoke','sort-filter');
   root.style.position='fixed';
@@ -1344,6 +1425,7 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-sort-menu-snapshot') {
   const p=app.plugins.plugins.cancip;
   if(!p)throw new Error('Cancip plugin unavailable');
   const doc=activeDocument;
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
   const root=doc.createElement('div');
   root.className='menu';
   root.style.position='fixed';
@@ -1653,7 +1735,7 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-copy-paste-payload') {
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
-    if ([string]$item.payload.schema -ne 'cancip-ui-button' -or [int]$item.payload.version -ne 1) { throw "button copied payload schema mismatch: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.payload.schema -ne 'cancip-ui-button' -or ([int]$item.payload.version -ne 1 -and [int]$item.payload.version -ne 2)) { throw "button copied payload schema mismatch: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.payload.commandId -ne 'obcmd:app:open-settings') { throw "button copied payload did not preserve command id: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.customCount -ne 1) { throw "pasted button did not create exactly one custom rule: $($item | ConvertTo-Json -Compress)" }
     if ([string]$item.anchorSelector -notmatch 'cancip-copy-anchor') { throw "pasted button used the old source location instead of current add location: $($item | ConvertTo-Json -Compress)" }
@@ -2126,6 +2208,55 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-rule-broad-selector-isola
   }
 }
 
+if (Should-RunProgrammaticCase 'programmatic.ui-button-pdf-toolbar-stability') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.className='sr-card review-card spaced-repetition';
+  root.style.cssText='position:fixed;left:8px;top:8px;width:320px;height:220px;z-index:-1;display:flex;flex-direction:column;overflow:hidden;';
+  root.innerHTML='<div class="pdf-embed"><div class="pdf-container" style="max-height:1px;overflow:hidden"><div class="pdf-toolbar-container obcc-ui-rule-hidden" data-cancip-ui-hidden="true" style="height:1px;max-height:1px;overflow:hidden"><button class="clickable-icon">A</button><button class="clickable-icon">B</button></div><div class="pdfViewer"></div></div></div>';
+  doc.body.appendChild(root);
+  try{
+    p.applyUiButtonRules?.();
+    await new Promise((resolve)=>setTimeout(resolve,120));
+    const toolbar=root.querySelector('.pdf-toolbar-container');
+    const container=root.querySelector('.pdf-container');
+    const ts=getComputedStyle(toolbar);
+    const cs=getComputedStyle(container);
+    return JSON.stringify({
+      id:'programmatic.ui-button-pdf-toolbar-stability',
+      elapsedMs:Date.now()-t,
+      toolbarHidden:toolbar.classList.contains('obcc-ui-rule-hidden')||toolbar.dataset.cancipUiHidden==='true',
+      toolbarHeight:toolbar.getBoundingClientRect().height,
+      toolbarMinHeight:ts.minHeight,
+      toolbarMaxHeight:ts.maxHeight,
+      toolbarOverflow:ts.overflow,
+      toolbarFlexShrink:ts.flexShrink,
+      containerMaxHeight:cs.maxHeight,
+      containerOverflow:cs.overflow
+    });
+  } finally {
+    root.remove();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 30
+    if ($item.toolbarHidden) { throw "pdf toolbar still carries Cancip hidden marks: $($item | ConvertTo-Json -Compress)" }
+    if ([double]$item.toolbarHeight -lt 28) { throw "pdf toolbar collapsed below usable height: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.toolbarMaxHeight -ne 'none' -or [string]$item.containerMaxHeight -ne 'none') { throw "pdf toolbar chain still has max-height compression: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.toolbarOverflow -ne 'visible' -or [string]$item.containerOverflow -ne 'visible') { throw "pdf toolbar chain still clips controls: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.toolbarFlexShrink -ne '0') { throw "pdf toolbar can still flex-shrink: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.ui-button-pdf-toolbar-stability'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (Should-RunProgrammaticCase 'programmatic.ui-button-menu-complete-sort-label-guard') {
   try {
     $code = @'
@@ -2207,6 +2338,7 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
   const p=app.plugins.plugins.cancip;
   if(!p)throw new Error('Cancip plugin unavailable');
   const doc=activeDocument;
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
   const root=doc.createElement('div');
   root.className='mobile-menu mobile-menu-smoke';
   root.style.position='fixed';
@@ -2224,6 +2356,9 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
   ].join('');
   doc.body.appendChild(root);
   try{
+    p.settings.uiButtonRules=[];
+    p.clearUiRuleMarks?.();
+    p.applyUiButtonRules?.();
     await new Promise((resolve)=>setTimeout(resolve,60));
     const target=root.querySelector('#cancip-mobile-menu-a');
     const directTarget=root.querySelector('#cancip-mobile-menu-direct');
@@ -2251,6 +2386,9 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
     });
   } finally {
     root.remove();
+    p.settings.uiButtonRules=oldRules;
+    p.clearUiRuleMarks?.();
+    p.applyUiButtonRules?.();
     p.stopUiButtonSortMode?.();
   }
 })()
@@ -2261,6 +2399,7 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
   const p=app.plugins.plugins.cancip;
   if(!p)throw new Error('Cancip plugin unavailable');
   const doc=activeDocument;
+  const oldRules=(p.settings.uiButtonRules||[]).map((rule)=>({...rule}));
   const root=doc.createElement('div');
   root.className='mobile-menu mobile-menu-smoke';
   root.style.position='fixed';
@@ -2278,6 +2417,9 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
   ].join('');
   doc.body.appendChild(root);
   try{
+    p.settings.uiButtonRules=[];
+    p.clearUiRuleMarks?.();
+    p.applyUiButtonRules?.();
     const target=root.querySelector('#cancip-mobile-menu-a');
     const descriptor=p.describeUiButtonEditTarget(target);
     root.remove();
@@ -2330,6 +2472,9 @@ if (Should-RunProgrammaticCase 'programmatic.ui-button-mobile-menu-label-snapsho
     });
   } finally {
     root.remove();
+    p.settings.uiButtonRules=oldRules;
+    p.clearUiRuleMarks?.();
+    p.applyUiButtonRules?.();
     p.stopUiButtonSortMode?.();
   }
 })()
@@ -2701,6 +2846,80 @@ if (-not $Case -or 'programmatic.obsidian-execute-unresolved-fails'.Contains($Ca
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
   } catch {
     Add-CaseResult 'programmaticCases' @{ id = 'programmatic.obsidian-execute-unresolved-fails'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.workspace-empty-leaf-cleanup'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p||typeof p.emptyWorkspaceLeafSet!=='function'||typeof p.cleanupNewEmptyWorkspaceLeaves!=='function')throw new Error('workspace cleanup API unavailable');
+  const before=p.emptyWorkspaceLeafSet();
+  const leaf=app.workspace.getLeaf('tab');
+  await new Promise((resolve)=>setTimeout(resolve,40));
+  const viewType=leaf?.view?.getViewType?.()||'';
+  const cleaned=await p.cleanupNewEmptyWorkspaceLeaves(before,{id:'cancip-smoke:sidebar-open',name:'Open sidebar smoke'});
+  let stillPresent=false;
+  app.workspace.iterateAllLeaves((candidate)=>{ if(candidate===leaf) stillPresent=true; });
+  return JSON.stringify({id:'programmatic.workspace-empty-leaf-cleanup',elapsedMs:Date.now()-t,viewType,cleaned,stillPresent});
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ($item.viewType -ne 'empty') { throw "test leaf was not empty: $($item.viewType)" }
+    if ($item.stillPresent) { throw "new empty leaf is still present: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.workspace-empty-leaf-cleanup'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.sr-pdf-pdftion-toolbar'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p||typeof p.applyUiButtonRules!=='function')throw new Error('Cancip plugin unavailable');
+  const doc=activeDocument;
+  const root=doc.createElement('div');
+  root.className='sr-card review-card spaced-repetition';
+  root.style.cssText='position:fixed;left:8px;top:8px;width:360px;height:260px;z-index:-1;';
+  root.innerHTML='<div class="pdf-embed" data-href="Smoke.pdf"><div class="pdf-toolbar-container"><button class="clickable-icon" aria-label="Zoom out"></button></div><div class="pdf-container"><div class="pdfViewer"><div class="page" data-page-number="1"><canvas width="10" height="10"></canvas></div><div class="page" data-page-number="2"><canvas width="10" height="10"></canvas></div></div></div></div>';
+  doc.body.appendChild(root);
+  try{
+    p.applyUiButtonRules();
+    await new Promise((resolve)=>setTimeout(resolve,120));
+    const buttons=Array.from(root.querySelectorAll('[data-cancip-pdftion-action]')).map((el)=>el.getAttribute('data-cancip-pdftion-action'));
+    const surface=root.querySelector('.pdf-embed');
+    const inner=root.querySelector('.pdf-container');
+    const styles=surface?getComputedStyle(surface):null;
+    return JSON.stringify({
+      id:'programmatic.sr-pdf-pdftion-toolbar',
+      elapsedMs:Date.now()-t,
+      buttons,
+      surfaceClass:surface?.className||'',
+      innerClass:inner?.className||'',
+      maxHeight:styles?.maxHeight||'',
+      overflowY:styles?.overflowY||'',
+      hasPdftionToggle:!!app.commands.commands['pdftion:toggle'],
+      hasPdftionNavigator:!!app.commands.commands['pdftion:show-pdf-page-navigator']
+    });
+  } finally {
+    root.remove();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $buttons = @($item.buttons)
+    if (-not ($buttons -contains 'toggle') -or -not ($buttons -contains 'navigator')) { throw "missing pdftion buttons: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.surfaceClass -notmatch 'obcc-sr-pdf-scroll-surface') { throw "surface was not made scrollable: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.innerClass -notmatch 'obcc-sr-pdf-scroll-surface-inner') { throw "inner pdf container was not made scrollable: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.hasPdftionToggle -or -not $item.hasPdftionNavigator) { throw "Pdftion commands are unavailable: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.sr-pdf-pdftion-toolbar'; pass = $false; error = $_.Exception.Message }
   }
 }
 

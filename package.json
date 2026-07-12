@@ -1,11 +1,11 @@
 {
   "name": "cancip",
-  "version": "2.2.9",
+  "version": "2.6.10",
   "private": true,
   "main": "main.js",
   "scripts": {
-    "build": "tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
-    "check": "tsc --noEmit --skipLibCheck"
+    "build": "node scripts/prepare-release-output.mjs && tsc --noEmit --skipLibCheck && node esbuild.config.mjs production",
+    "check": "node scripts/prepare-release-output.mjs && tsc --noEmit --skipLibCheck"
   },
   "devDependencies": {
     "@types/node": "^20.14.10",

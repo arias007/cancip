@@ -22,6 +22,9 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Skills and experience recipes are routed on demand: memory/rule/preference, OB plugin, command, attachment, and self-optimization tasks can auto-select relevant Skills, query `cancip.skills.*` / `cancip.experience.*`, and harvest repeatable successful workflows into `.cancip/skills/generated/`.
 - Full session export from the chat header to Markdown and JSON under visible `AI/Cancip/Exports/`.
 - Lightweight project session history stays under `.cancip/sessions/`, opened from the compact history button beside the new-chat button.
+- Every session now keeps a normalized timeline: immutable creation time, latest activity, first start, and available completion/stop/failure times. History rows expand to exact local time with seconds and no timezone suffix; session commands, event audit, parent/child rows, and Markdown/JSON exports expose the same canonical ISO timestamps. Legacy sessions recover only timestamps that can be determined from stored data or a valid session ID.
+- The Review Gate view opens immediately on desktop and mobile, recovers deferred or stale leaves, reuses an already rendered review page, and avoids scanning the same package again when the requested package and file have not changed. New review packages use visible `AI/Cancip/Review/` as the synchronized source of truth; startup merges legacy `.cancip/review-gates/` packages and decisions into it, and visible packages shadow same-name hidden copies so desktop/mobile counts converge without duplicate files. Paired review panes synchronize vertically on mobile and horizontally on desktop.
+- Review data now uses one deduplicated parsed snapshot shared by the status bar, pending count, file list, and Review view. The snapshot is invalidated by Review changes, prewarmed before the view is revealed, and reused for ten seconds, eliminating repeated package scans and empty-list flashes. Status attention refreshes are coalesced and DOM updates are skipped when counts are unchanged.
 - Compact context chips live inside the rounded composer/input box: the current active file is shown automatically with its extension, and source/context chips no longer occupy a separate panel.
 - Context chips can be opened directly: file chips open the file in a tab, folder chips reveal the folder in the file navigator, and the small `x` removes only that context chip.
 - On-demand Vault Search hits are metadata-only source suggestions until the agent explicitly reads selected files. They are not added to the composer chip row or model `contextText` by default. Exports keep the real full session snapshot, so the exported `contextText` is the authoritative record of what was sent as context.
@@ -30,12 +33,23 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - The header includes an OB Review Gate button wired to a programmatic TypeScript builder adapted from `arias007/ob-review-gate-skill`: it scans selected vault files, writes review data under `AI/Cancip/Review/`, and opens it inside a native Cancip audit panel with file lists, structure changes, diffs, old text, and new text.
 - Structured Plan todos are available as `cancip-action` tools, so the agent can set/add/update/remove/list/clear the visible Plan panel during an agent run instead of only describing a plan in prose.
 - The composer keeps the access selector visible and wider for mobile tapping, with a paperclip attachment button beside it for quickly adding file/folder context.
-- Settings keep core items up front and move optional controls into advanced folded groups for interface, context, plan, command bus, local versioning, export, payment QR codes, and advanced model behavior.
+- Settings expose common settings and every advanced category as peer horizontal pages. The tab strip scrolls on mobile, only the selected page is rendered, and changing an option no longer collapses an outer advanced section.
 - The settings page can show two local payment QR codes at the bottom from `extras/code-1.jpg` and `extras/code-2.png`; the QR images are local plugin resources and are not included in prompts or JSON exports.
 - Built-in model presets include GPT, Claude, Gemini, DeepSeek, Qwen, and Kimi-style names while still allowing a custom model string.
-- `@` picker for files, folders, Skills, Cancip functions, command bus entries, and real Obsidian commands. Empty `@` shows useful entries like modes/current file/recent files/skills; typed text dynamically filters all categories. Selected mentions are inserted as `@[path]`, `@[action:name]`, `@[command:name]`, or `@[obsidian-command:id]`, while hand-typed `@keyword` still resolves by fuzzy match.
+- `@` picker for files, folders, Skills, automations, plugins, Cancip functions, command bus entries, and real Obsidian commands. Empty `@` interleaves categories so Skills cannot crowd out every other target; typed text dynamically filters all categories. Selecting a target resolves it into an editable/removable composer context chip, while hand-typed `@keyword` still resolves by fuzzy match.
+- Mobile composer geometry follows the active Obsidian WebView visual viewport, keeping the input and `@` picker above the Android keyboard. The Review detail shell reserves the Obsidian mobile status bar and keeps structure changes directly beside the content diff.
+- Mobile keyboard positioning measures overlap between the stable chat host and the active WebView `visualViewport` while the composer is focused. Review bottom clearance uses the measured Obsidian status-bar height on every mobile viewport width instead of relying on a fixed narrow-screen media query.
+- Button settings include `Send button info to Cancip` again, using the existing actionable button-context route without changing the button's normal short-press behavior.
+- Running conversations use one first-level process record. Explicit readable model progress stays visible as numbered step headlines while API profiles, raw sent/received payloads, routing audits, tool JSON, tool results, and file-action details remain collapsed. Attribute-bearing `<details>` audit blocks are parsed structurally, empty audit blocks are omitted, and markup/JSON/truncation text cannot leak into step headlines. The process record opens while the request is running and collapses after the final answer.
+- Compact live plan and changed-file summaries sit immediately beside the Cancip title. The plan summary opens the full plan panel; the file summary opens a scrollable, deduplicated file list with green added lines, red removed lines, and direct Vault navigation. The composer now reserves its status area for actually queued prompts.
+- New chat renders and focuses immediately, then serializes the previous session and bootstraps the new session in the background. Session history reads before replacing visible rows, keeps the previous list during refresh, lazy-loads in batches, puts pinned sessions first, and shows `loaded/total` counts in the header.
+- Completed multi-step workflows are harvested only after at least two successful tool actions. The verified action sequence and final result feed the generated experience Skill so similar future tasks can route to a concrete prior workflow instead of repeating broad discovery.
+- Completion now requires a real user-visible final answer after process/tool work. Missing or process-only closure retries up to five times, then remains resumable instead of being stored as a false completion. Running and completed sessions broadcast disk-backed updates to every open view of the same session so background/foreground transitions preserve their correct shape.
+- PrimeTTS uses paired source/spoken chunks: the source chunk keeps original digits for display/highlight, while the spoken chunk applies language-aware number conversion. Chinese chunks use word segmentation without splitting ordinary words, adjacent English words stay together and use the system English voice when available, and decoded look-ahead is widened to reduce playback gaps.
+- Button rules store view, command, icon, stable target identity, creation time, and modification time. Recently changed buttons sort first in settings. Menu insertion applies rules only to the newly mounted menu subtree and runs one short subtree-only trailing pass; full refreshes cache repeated scope/selector queries. Observers and timers follow each live Obsidian document/WebView, ignore unrelated body/container class churn, and react only to actual editable buttons/menu/status items/tab headers; internal DOM writes never re-enter the queue, and stable menu-group/name identity prevents adjacent-item cross-application.
 - Lightweight local versioning under `.cancip/versions/`: manual commits and one daily auto snapshot, without native git and without per-edit history.
 - Built-in local automation templates for non-desktop agent tasks: review-gate package generation, local capability-pack import, lightweight local version snapshots, GitHub status checks, vault index refresh, a daily read-only Vault maintenance/merge-candidate report, and a unified Vault curation task with programmatic new/recent-note scan packs plus explicit file/folder strong-scope lanes for beautify/refactor, properties/tags/summaries/links, and renaming.
+- New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic preflight skips clean short notes without an API request, sends bounded full text for at most four meaningful candidates, leaves deferred candidates queued, and rejects writes whose only effect is whitespace, blank lines, punctuation, heading markers, or other cosmetic Markdown syntax.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
 
 ## Build
@@ -231,6 +245,22 @@ The export intentionally does not include plaintext API keys or GitHub tokens.
 
 ## Command Bus
 
+## 2.5.5
+
+- Daily automations created after today's scheduled instant wait for the next scheduled day; opening Obsidian later can still catch up a genuinely missed run.
+- Every model response carries hidden `continue` or `final` control metadata. Cancip no longer treats ordinary prose or a preparation plan as a final answer.
+- Simple tasks may finish with a direct short answer. Complex tasks keep process updates folded, continue through actions and verification, and finish with a compact total-detail-total answer.
+- Ordinary chat, tool continuation, approval continuation, and prompt/model-backed automations share the same structured completion gate. Missing or invalid control metadata is retried with a bounded correction prompt.
+- Elapsed time, token usage, changed-file links, and verification facts remain programmatic; the model controls the useful visible conclusion and optional recommendations.
+
+## 2.5.4
+
+- Keeps the mobile composer and `@` panel attached to the Android visual keyboard viewport.
+- Expands `@` discovery to installed plugins, automation instances, attachments, Skills, tools, functions, and Obsidian commands.
+- Keeps the review panel above the mobile status bar and renders structure changes as a compact type plus `old -> new` route.
+- Treats only manually created Markdown files as automatic new-file curation candidates; Cancip-created review items are excluded programmatically.
+- Adds reciprocal links only for strongly related, currently unlinked notes, and skips clean notes that do not need curation.
+
 Cancip treats command execution like a CLI surface inside the vault, but the executable layer is structured and auditable instead of raw string eval.
 
 Example:
@@ -328,3 +358,26 @@ See [docs/VISION.md](docs/VISION.md) for the detailed product boundary and
 architecture direction.
 See [docs/GITHUB_AND_VERSIONING.md](docs/GITHUB_AND_VERSIONING.md) for the
 mobile GitHub and local versioning design.
+
+
+## 2.6.8
+
+- Review now filters Cancip's own review/export artifacts out of pending visible-note review lists, keeps the mobile review tree/detail panels scrollable above the status bar, and avoids stale internal files inflating review counts.
+- Mobile chat keyboard handling uses both visual viewport shrinkage and direct footer overlap, so the composer and @ panel follow the Android keyboard more reliably.
+- Session history omits created/last-activity rows from the list details, while individual chat messages show exact timestamps for task replay.
+- Process records now auto-expand only for the currently running turn, fold structured raw details, and filter Cancip-generated progress filler such as generic "continue from result" messages.
+
+
+## 2.6.9
+
+- Internal review-gate JSON/JSONL now writes to the hidden `.cancip/review-gates` store by default instead of the visible `AI/Cancip/Review` note tree.
+- Startup migrates legacy visible Cancip review JSON and session export JSON into hidden internal folders, then removes only the old internal JSON files when safe.
+- Review package lookup accepts old visible paths but canonicalizes them to hidden paths, so old sessions and pending approvals keep working without recreating visible JSON.
+- Session export keeps the human Markdown export visible and stores the machine JSON snapshot under `.cancip/exports`.
+
+
+## 2.6.10
+
+- Chat/session display times now show local seconds without the `+08:00` suffix.
+- Mobile composer footer records visual-viewport bottom/side offsets and fixes the input box above the Android keyboard while focused.
+- Mobile Review Gate constrains the outer shell above the Obsidian status bar and lets the file tree, diff body, and detail rail own their vertical scrolling.

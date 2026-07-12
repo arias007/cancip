@@ -1,6 +1,6 @@
 import { type DataAdapter, normalizePath } from "obsidian";
 
-export type ReviewGateStructureKind = "rename" | "move" | "copy" | "merge" | "split" | "folder";
+export type ReviewGateStructureKind = "rename" | "move" | "merge" | "split" | "folder";
 
 export type ReviewGateStructureChange = {
   kind: ReviewGateStructureKind;
@@ -444,5 +444,5 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isStructureKind(value: string): value is ReviewGateStructureKind {
-  return value === "rename" || value === "move" || value === "copy" || value === "merge" || value === "split" || value === "folder";
+  return value === "rename" || value === "move" || value === "merge" || value === "split" || value === "folder";
 }
