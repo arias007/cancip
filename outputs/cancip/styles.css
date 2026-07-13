@@ -1302,7 +1302,7 @@ body.is-phone .menu-item > * {
 body .obcc-ui-rule-hidden,
 body [data-cancip-ui-hidden="true"],
 body [data-cancip-ui-rule-hidden="true"],
-body [data-cancip-tag-hidden="true"] {
+body [data-cancip-tag-hidden] {
   display: none;
 }
 

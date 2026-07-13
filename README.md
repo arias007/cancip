@@ -381,3 +381,9 @@ mobile GitHub and local versioning design.
 - Chat/session display times now show local seconds without the `+08:00` suffix.
 - Mobile composer footer records visual-viewport bottom/side offsets and fixes the input box above the Android keyboard while focused.
 - Mobile Review Gate constrains the outer shell above the Obsidian status bar and lets the file tree, diff body, and detail rail own their vertical scrolling.
+
+
+## 2.6.11
+
+- Fixed Obsidian review errors by moving dynamic UI hiding/render scratch styles into `styles.css`, using Obsidian CSS helpers for runtime positions/order, and rendering Markdown with a short-lived component.
+- Fixed release automation so semver tags such as `2.6.11` trigger GitHub release asset upload and artifact attestation.

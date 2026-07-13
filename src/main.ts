@@ -1,5 +1,6 @@
 import {
   App,
+  Component,
   type DataAdapter,
   Editor,
   ItemView,
@@ -3832,7 +3833,6 @@ export default class CancipPlugin extends Plugin {
   private statusBarBadgeEl: HTMLElement | null = null;
   private statusBarAttentionState: StatusBarAttentionState = { unreadSessions: 0, reviews: 0 };
   private statusBarReviewRefreshTimer: number | null = null;
-  private uiRuleStyleEl: HTMLStyleElement | null = null;
   private activeUtterance: SpeechSynthesisUtterance | null = null;
   private activeTtsParts: string[] = [];
   private activeTtsPartIndex = 0;
@@ -4072,8 +4072,6 @@ export default class CancipPlugin extends Plugin {
 
   onunload(): void {
     this.clearUiRuleMarks();
-    this.uiRuleStyleEl?.remove();
-    this.uiRuleStyleEl = null;
     this.stopTts(false);
     this.disposeBuiltinPrimeTtsRuntime();
     this.builtinPrimeTtsRuntime = null;
@@ -4692,10 +4690,12 @@ export default class CancipPlugin extends Plugin {
     const viewportHeight = viewport?.height ?? window.innerHeight;
     const safeLeft = Math.max(viewportLeft + 8, Math.min(viewportLeft + viewportWidth - width - 8, left));
     const safeTop = Math.max(viewportTop + 8, Math.min(viewportTop + viewportHeight - height - 8, top));
-    root.style.left = `${Math.round(safeLeft)}px`;
-    root.style.top = `${Math.round(safeTop)}px`;
-    root.style.right = "auto";
-    root.style.bottom = "auto";
+    root.setCssStyles({
+      left: `${Math.round(safeLeft)}px`,
+      top: `${Math.round(safeTop)}px`,
+      right: "auto",
+      bottom: "auto"
+    });
   }
 
   private persistTtsOverlayPosition(root: HTMLElement): void {
@@ -5962,18 +5962,15 @@ export default class CancipPlugin extends Plugin {
     const markdown = await this.app.vault.cachedRead(file);
     const container = document.createElement("div");
     container.addClass("obcc-tts-render-scratch");
-    container.style.position = "fixed";
-    container.style.left = "-10000px";
-    container.style.top = "0";
-    container.style.width = "360px";
-    container.style.pointerEvents = "none";
-    container.style.opacity = "0";
     document.body.appendChild(container);
+    const renderComponent = new Component();
     try {
-      await MarkdownRenderer.render(this.app, markdown, container, file.path, this);
+      renderComponent.load();
+      await MarkdownRenderer.render(this.app, markdown, container, file.path, renderComponent);
       const renderedText = extractVisibleRenderedText(container);
       return trimContext(renderedText || markdown, maxChars);
     } finally {
+      renderComponent.unload();
       container.remove();
     }
   }
@@ -6341,7 +6338,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   applyUiButtonRules(): void {
-    this.applyUiButtonRuleStyles();
     this.clearUiRuleMarks();
     const rules = this.settings.uiButtonRules.filter((rule) => rule.hidden || (Number.isFinite(rule.order) && rule.order !== 0));
     window.requestAnimationFrame(() => {
@@ -6354,8 +6350,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             const parent = el.parentElement;
             if (!parent) continue;
             el.dataset.cancipUiOrder = String(rule.order);
-            el.style.order = String(rule.order);
-            if (parent.style.display !== "flex" && parent.style.display !== "inline-flex") parent.style.display = "flex";
+            el.setCssStyles({ order: String(rule.order) });
+            const parentDisplay = window.getComputedStyle(parent).display;
+            const parentMode = parentDisplay === "inline-flex" ? "inline-flex" : "flex";
+            parent.dataset.cancipUiRuleFlexParent = parentMode;
+            parent.toggleClass("obcc-ui-rule-inline-flex-parent", parentMode === "inline-flex");
+            parent.toggleClass("obcc-ui-rule-flex-parent", parentMode !== "inline-flex");
           }
         }
       }
@@ -6368,26 +6368,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     });
   }
 
-  private applyUiButtonRuleStyles(): void {
-    if (!this.uiRuleStyleEl) {
-      this.uiRuleStyleEl = document.createElement("style");
-      this.uiRuleStyleEl.dataset.cancipUiRules = "1";
-      document.head.appendChild(this.uiRuleStyleEl);
-    }
-    this.uiRuleStyleEl.textContent = [
-      `[data-cancip-ui-hidden="true"] { display: none !important; }`,
-      `[data-cancip-tag-hidden] { display: none !important; }`
-    ].join("\n");
-  }
-
   private clearUiRuleMarks(): void {
     for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-tag-hidden]"))) {
       delete el.dataset.cancipUiHidden;
       delete el.dataset.cancipTagHidden;
       if (el.dataset.cancipUiOrder !== undefined) {
         delete el.dataset.cancipUiOrder;
-        el.style.order = "";
+        el.setCssStyles({ order: "" });
       }
+    }
+    for (const parent of Array.from(document.querySelectorAll<HTMLElement>("[data-cancip-ui-rule-flex-parent]"))) {
+      delete parent.dataset.cancipUiRuleFlexParent;
+      parent.removeClass("obcc-ui-rule-flex-parent");
+      parent.removeClass("obcc-ui-rule-inline-flex-parent");
     }
   }
 
