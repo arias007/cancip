@@ -107,7 +107,9 @@ const PRIME_TTS_CUSTOM_PINYIN: Record<string, string> = {
 };
 
 export function primeTtsTextToIds(input: string): PrimeTtsIds {
-  const normalized = primeTtsNormalizeText(normalizeChineseNumbersForPrimeTts(input));
+  const normalized = primeTtsNormalizeText(
+    looksLikeEnglishTtsText(input) ? input : normalizeChineseNumbersForPrimeTts(input)
+  );
   const phoneIds: number[] = [];
   const toneIds: number[] = [];
   const langIds: number[] = [];

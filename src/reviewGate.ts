@@ -58,6 +58,8 @@ export type ReviewGateBuildResult = {
   structureCount: number;
 };
 
+export const REVIEW_GATE_SCHEMA_VERSION = 1;
+
 type PreparedReviewItem = {
   index: number;
   path: string;
@@ -136,7 +138,7 @@ async function buildManifest(adapter: DataAdapter, options: ReviewGateBuildOptio
     throw new Error("No reviewable files or manifest items found.");
   }
   return {
-    schemaVersion: 1,
+    schemaVersion: REVIEW_GATE_SCHEMA_VERSION,
     title,
     vault_label: cleanText(options.vaultLabel) || "note",
     folder: outputDir,
@@ -244,7 +246,7 @@ async function readTextIfExists(adapter: DataAdapter, path: string, maxFileChars
     const stat = await adapter.stat(path);
     if (!stat || stat.type !== "file") return null;
     const text = await adapter.read(path);
-    return truncateText(text.replace(/\0/g, ""), maxFileChars);
+    return truncateText(removeNulCharacters(text), maxFileChars);
   } catch {
     return null;
   }
@@ -431,7 +433,11 @@ function basename(path: string): string {
 }
 
 function cleanText(value: unknown): string {
-  return typeof value === "string" ? value.replace(/\0/g, "").trim() : "";
+  return typeof value === "string" ? removeNulCharacters(value).trim() : "";
+}
+
+function removeNulCharacters(value: string): string {
+  return value.split("\0").join("");
 }
 
 function truncateText(value: string, maxChars: number): string {

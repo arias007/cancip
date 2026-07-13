@@ -1,5 +1,6 @@
 import {
   App,
+  Component,
   type DataAdapter,
   Editor,
   ItemView,
@@ -28,6 +29,7 @@ import {
   buildObReviewGatePackage,
   formatReviewGateResult,
   listReviewGatePackages,
+  REVIEW_GATE_SCHEMA_VERSION,
   type ReviewGateBuildResult,
   type ReviewGateManifest,
   type ReviewGateManifestItem,
@@ -67,28 +69,29 @@ type TtsProvider = "auto" | "builtin-prime-tts" | "android-system" | "web-speech
 type TtsQualityMode = "quality-first";
 type TtsPlaybackMode = "idle" | "starting" | "playing" | "paused" | "stopped" | "failed";
 const CANCIP_REVIEW_VIEW_TYPE = "cancip-review-view";
-const BUILTIN_PRIME_TTS_BASE = ".obsidian/plugins/cancip/tts/prime-tts";
-const BUILTIN_PRIME_TTS_ENCODER = `${BUILTIN_PRIME_TTS_BASE}/acoustic_encoder.onnx`;
-const BUILTIN_PRIME_TTS_DECODER = `${BUILTIN_PRIME_TTS_BASE}/acoustic_decoder.onnx`;
-const BUILTIN_PRIME_TTS_VOCODER = `${BUILTIN_PRIME_TTS_BASE}/vocoder.onnx`;
-const BUILTIN_PRIME_TTS_META = `${BUILTIN_PRIME_TTS_BASE}/meta.json`;
-const BUILTIN_PRIME_TTS_SYMBOLS = `${BUILTIN_PRIME_TTS_BASE}/symbol_table.json`;
-const BUILTIN_PRIME_TTS_ORT_BASE = `${BUILTIN_PRIME_TTS_BASE}/ort`;
+const BUILTIN_PRIME_TTS_RELATIVE_BASE = "tts/prime-tts";
+const BUILTIN_PRIME_TTS_ENCODER = "acoustic_encoder.onnx";
+const BUILTIN_PRIME_TTS_DECODER = "acoustic_decoder.onnx";
+const BUILTIN_PRIME_TTS_VOCODER = "vocoder.onnx";
+const BUILTIN_PRIME_TTS_META = "meta.json";
+const BUILTIN_PRIME_TTS_SYMBOLS = "symbol_table.json";
+const BUILTIN_PRIME_TTS_ORT_WASM = "ort/ort-wasm-simd-threaded.wasm";
+const BUILTIN_PRIME_TTS_ORT_MJS = "ort/ort-wasm-simd-threaded.mjs";
 const BUILTIN_PRIME_TTS_PACKAGE_TAG = "prime-tts";
 const BUILTIN_PRIME_TTS_PACKAGE_ASSET = "prime-tts.zip";
 const BUILTIN_PRIME_TTS_PACKAGE_URL = `https://github.com/arias007/cancip/releases/download/${BUILTIN_PRIME_TTS_PACKAGE_TAG}/${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`;
 const BUILTIN_PRIME_TTS_REQUIRED_ASSETS = [
-  { relative: "acoustic_encoder.onnx", path: BUILTIN_PRIME_TTS_ENCODER },
-  { relative: "acoustic_decoder.onnx", path: BUILTIN_PRIME_TTS_DECODER },
-  { relative: "vocoder.onnx", path: BUILTIN_PRIME_TTS_VOCODER },
-  { relative: "meta.json", path: BUILTIN_PRIME_TTS_META },
-  { relative: "symbol_table.json", path: BUILTIN_PRIME_TTS_SYMBOLS },
-  { relative: "ort/ort-wasm-simd-threaded.wasm", path: `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm` },
-  { relative: "ort/ort-wasm-simd-threaded.mjs", path: `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.mjs` }
+  { relative: BUILTIN_PRIME_TTS_ENCODER },
+  { relative: BUILTIN_PRIME_TTS_DECODER },
+  { relative: BUILTIN_PRIME_TTS_VOCODER },
+  { relative: BUILTIN_PRIME_TTS_META },
+  { relative: BUILTIN_PRIME_TTS_SYMBOLS },
+  { relative: BUILTIN_PRIME_TTS_ORT_WASM },
+  { relative: BUILTIN_PRIME_TTS_ORT_MJS }
 ] as const;
 const BUILTIN_PRIME_TTS_OPTIONAL_ASSETS = [
-  { relative: "manifest.json", path: `${BUILTIN_PRIME_TTS_BASE}/manifest.json` },
-  { relative: "README.md", path: `${BUILTIN_PRIME_TTS_BASE}/README.md` }
+  { relative: "manifest.json" },
+  { relative: "README.md" }
 ] as const;
 const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
 const BUILTIN_PRIME_TTS_PREFETCH_AHEAD = 3;
@@ -1127,10 +1130,8 @@ const PROCESS_INLINE_DETAIL_MAX_CHARS = 560;
 const LIVE_TIMER_INTERVAL_MS = 2000;
 const REVIEW_GATE_DIR = `${CANCIP_AI_DIR}/Review`;
 const REVIEW_GATE_HIDDEN_DIR = `${CANCIP_CONFIG_DIR}/review-gates`;
-const REVIEW_GATE_SCHEMA_VERSION = 1;
 const REVIEW_GATE_MAX_FILES = 80;
 const REVIEW_GATE_MAX_FILE_CHARS = 120000;
-const RUNTIME_STATE_PATH = `${CANCIP_CONFIG_DIR}/runtime.json`;
 const CONTEXT_STEP_TIMEOUT_MS = 3500;
 const VAULT_SEARCH_TIME_BUDGET_MS = 2200;
 const VAULT_SEARCH_MAX_SCAN_FILES = 160;
@@ -1642,7 +1643,7 @@ const EN = {
   settingsTtsChunkChars: "TTS chunk characters",
   settingsTtsCustomUrl: "TTS custom URL",
   settingsTtsCustomUrlDesc: "Optional relay/fallback. Placeholders GET: {text}, {lang}, {voice}, {rate}, {pitch}, {provider}. Without placeholders Cancip POSTs JSON and accepts audio bytes, {url}, or {audioBase64,mimeType}.",
-  settingsTtsHighQualityHint: "Local package route: .obsidian/plugins/cancip/tts/prime-tts/. It borrows the 0.1.207 method that generated WAV audio locally; voice quality is limited, but it can work when Android WebView exposes no system TTS bridge.",
+  settingsTtsHighQualityHint: "Local package route: the installed Cancip plugin folder under the current Obsidian config dir, tts/prime-tts/. It borrows the 0.1.207 method that generated WAV audio locally; voice quality is limited, but it can work when Android WebView exposes no system TTS bridge.",
   settingsTtsInstallLocalPackage: "Download/install local PrimeTTS package",
   ttsProbe: "Probe TTS",
   settingsShowSupportCodes: "Show payment QR codes",
@@ -2194,7 +2195,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsTtsChunkChars: "TTS 分块字符数",
     settingsTtsCustomUrl: "TTS 自定义 URL",
     settingsTtsCustomUrlDesc: "可选 relay/兜底。GET 占位符：{text}/{lang}/{voice}/{rate}/{pitch}/{provider}；无占位符时 POST JSON，并接受音频字节、{url} 或 {audioBase64,mimeType}。",
-    settingsTtsHighQualityHint: "本地包路线：.obsidian/plugins/cancip/tts/prime-tts/。这是借回 0.1.207 的本地生成 WAV 方法，音质有限，但在安卓 WebView 没暴露系统 TTS 桥时仍可能出声。",
+    settingsTtsHighQualityHint: "本地包路线：当前 Obsidian 配置目录下的 Cancip 插件安装目录 tts/prime-tts/。这是借回 0.1.207 的本地生成 WAV 方法，音质有限，但在安卓 WebView 没暴露系统 TTS 桥时仍可能出声。",
     settingsTtsInstallLocalPackage: "下载/安装本地 PrimeTTS 包",
     ttsProbe: "探测 TTS",
     settingsShowSupportCodes: "显示我的两个收款码",
@@ -3832,7 +3833,6 @@ export default class CancipPlugin extends Plugin {
   private statusBarBadgeEl: HTMLElement | null = null;
   private statusBarAttentionState: StatusBarAttentionState = { unreadSessions: 0, reviews: 0 };
   private statusBarReviewRefreshTimer: number | null = null;
-  private uiRuleStyleEl: HTMLStyleElement | null = null;
   private activeUtterance: SpeechSynthesisUtterance | null = null;
   private activeTtsParts: string[] = [];
   private activeTtsPartIndex = 0;
@@ -4072,8 +4072,6 @@ export default class CancipPlugin extends Plugin {
 
   onunload(): void {
     this.clearUiRuleMarks();
-    this.uiRuleStyleEl?.remove();
-    this.uiRuleStyleEl = null;
     this.stopTts(false);
     this.disposeBuiltinPrimeTtsRuntime();
     this.builtinPrimeTtsRuntime = null;
@@ -4128,6 +4126,21 @@ export default class CancipPlugin extends Plugin {
     return `${this.obsidianPluginsDir()}/${pluginId}`;
   }
 
+  builtinPrimeTtsBasePath(): string {
+    return `${this.pluginInstallDir()}/${BUILTIN_PRIME_TTS_RELATIVE_BASE}`;
+  }
+
+  private builtinPrimeTtsAssetPath(relative: string): string {
+    return `${this.builtinPrimeTtsBasePath()}/${relative}`;
+  }
+
+  private builtinPrimeTtsAssets(includeOptional = false): Array<{ relative: string; path: string }> {
+    const assets: Array<{ relative: string }> = includeOptional
+      ? [...BUILTIN_PRIME_TTS_REQUIRED_ASSETS, ...BUILTIN_PRIME_TTS_OPTIONAL_ASSETS]
+      : [...BUILTIN_PRIME_TTS_REQUIRED_ASSETS];
+    return assets.map((asset) => ({ relative: asset.relative, path: this.builtinPrimeTtsAssetPath(asset.relative) }));
+  }
+
   accelerateGithubDownloadUrl(url: string): string {
     const prefix = this.settings.githubDownloadBaseUrl.trim().replace(/\/+$/, "");
     if (!prefix) return url;
@@ -4136,6 +4149,11 @@ export default class CancipPlugin extends Plugin {
 
   communityPluginsPath(): string {
     return `${this.obsidianConfigDir()}/community-plugins.json`;
+  }
+
+  activeViewContainer(): HTMLElement | null {
+    const leaf = this.app.workspace.getLeaf(false);
+    return (leaf?.view as unknown as { containerEl?: HTMLElement } | null)?.containerEl ?? null;
   }
 
   private async startTts(text: string, label?: string, forcedProvider?: TtsProvider, sourcePath = "", sourceText = ""): Promise<void> {
@@ -4152,7 +4170,7 @@ export default class CancipPlugin extends Plugin {
       this.activeTtsSourcePath = sourcePath;
       this.activeTtsSourceText = sourceText || text;
       this.syncTtsOverlay();
-      const providers = this.ttsProviderChain(forcedProvider, text);
+      const providers = this.ttsProviderChain(forcedProvider);
       const errors: string[] = [];
       for (const provider of providers) {
         try {
@@ -4296,7 +4314,7 @@ export default class CancipPlugin extends Plugin {
     this.activeTtsPrimeCache.clear();
     this.activeTtsPrimeCacheRunId = 0;
     this.syncTtsOverlay();
-    const resumeProvider = provider === "auto" ? this.ttsProviderChain(undefined, this.activeTtsParts.join("\n\n")).find((item) => item !== "auto") ?? "web-speech" : provider;
+    const resumeProvider = provider === "auto" ? this.ttsProviderChain().find((item) => item !== "auto") ?? "web-speech" : provider;
     window.setTimeout(() => {
       void this.resumeTtsFromActivePart(resumeProvider);
     }, 0);
@@ -4363,7 +4381,7 @@ export default class CancipPlugin extends Plugin {
 
   private createTtsOverlay(): TtsOverlayElements {
     if (this.ttsOverlay) return this.ttsOverlay;
-    const root = document.body.createDiv({ cls: "obcc-tts-floating is-hidden is-collapsed" });
+    const root = activeDocument.body.createDiv({ cls: "obcc-tts-floating is-hidden is-collapsed" });
     root.setAttribute("role", "region");
     root.setAttribute("aria-label", this.t("ttsFloatingTitle"));
     const bubble = root.createEl("button", {
@@ -4435,19 +4453,19 @@ export default class CancipPlugin extends Plugin {
       attr: { type: "range", min: "0.5", max: "2", value: "1", step: "0.05", "aria-label": this.t("ttsRateControl") }
     });
 
-    stopButton.addEventListener("click", (event) => {
+    stopButton.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
       this.stopTts();
     });
-    collapseButton.addEventListener("click", (event) => {
+    collapseButton.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
       this.setTtsOverlayCollapsed(true);
     });
-    bubble.addEventListener("click", (event) => {
+    bubble.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
       if (!this.ttsOverlayDragMoved) this.setTtsOverlayCollapsed(false);
     });
-    settingsButton.addEventListener("click", (event) => {
+    settingsButton.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
       const open = settingsPanel.hasClass("is-hidden");
       settingsPanel.toggleClass("is-hidden", !open);
@@ -4506,12 +4524,12 @@ export default class CancipPlugin extends Plugin {
       this.settings.ttsVoice = voiceInput.value.trim();
       void this.saveSettings();
     });
-    installButton.addEventListener("click", (event) => {
+    installButton.addEventListener("click", (event: MouseEvent) => {
       event.stopPropagation();
       void this.installBuiltinPrimeTtsPackage(true);
     });
-    handle.addEventListener("pointerdown", (event) => this.startTtsOverlayDrag(event));
-    bubble.addEventListener("pointerdown", (event) => this.startTtsOverlayDrag(event));
+    handle.addEventListener("pointerdown", (event: PointerEvent) => this.startTtsOverlayDrag(event));
+    bubble.addEventListener("pointerdown", (event: PointerEvent) => this.startTtsOverlayDrag(event));
     const keepInView = () => this.placeTtsOverlay(root, root.getBoundingClientRect().left, root.getBoundingClientRect().top);
     window.addEventListener("resize", keepInView);
     window.visualViewport?.addEventListener("resize", keepInView);
@@ -4616,7 +4634,7 @@ export default class CancipPlugin extends Plugin {
     overlay.pitch.value = String(pitch);
     overlay.pitchLabel.setText(`${this.t("settingsTtsPitch")} ${pitch.toFixed(2)}x`);
     overlay.providerSelect.value = isTtsProvider(this.settings.ttsProvider) ? this.settings.ttsProvider : "auto";
-    if (document.activeElement !== overlay.voiceInput) {
+    if (overlay.voiceInput.ownerDocument.activeElement !== overlay.voiceInput) {
       overlay.voiceInput.value = this.settings.ttsVoice.trim();
     }
     overlay.installButton.disabled = Boolean(this.builtinPrimeTtsInstallPromise);
@@ -4660,13 +4678,13 @@ export default class CancipPlugin extends Plugin {
       this.ttsOverlayDragging = false;
       overlay.root.removeClass("is-dragging");
       this.persistTtsOverlayPosition(overlay.root);
-      document.removeEventListener("pointermove", move);
-      document.removeEventListener("pointerup", up);
-      document.removeEventListener("pointercancel", up);
+      overlay.root.ownerDocument.removeEventListener("pointermove", move);
+      overlay.root.ownerDocument.removeEventListener("pointerup", up);
+      overlay.root.ownerDocument.removeEventListener("pointercancel", up);
     };
-    document.addEventListener("pointermove", move, { passive: false });
-    document.addEventListener("pointerup", up);
-    document.addEventListener("pointercancel", up);
+    overlay.root.ownerDocument.addEventListener("pointermove", move, { passive: false });
+    overlay.root.ownerDocument.addEventListener("pointerup", up);
+    overlay.root.ownerDocument.addEventListener("pointercancel", up);
   }
 
   private restoreTtsOverlayPosition(root: HTMLElement): void {
@@ -4692,10 +4710,12 @@ export default class CancipPlugin extends Plugin {
     const viewportHeight = viewport?.height ?? window.innerHeight;
     const safeLeft = Math.max(viewportLeft + 8, Math.min(viewportLeft + viewportWidth - width - 8, left));
     const safeTop = Math.max(viewportTop + 8, Math.min(viewportTop + viewportHeight - height - 8, top));
-    root.style.left = `${Math.round(safeLeft)}px`;
-    root.style.top = `${Math.round(safeTop)}px`;
-    root.style.right = "auto";
-    root.style.bottom = "auto";
+    root.setCssStyles({
+      left: `${Math.round(safeLeft)}px`,
+      top: `${Math.round(safeTop)}px`,
+      right: "auto",
+      bottom: "auto"
+    });
   }
 
   private persistTtsOverlayPosition(root: HTMLElement): void {
@@ -4715,14 +4735,14 @@ export default class CancipPlugin extends Plugin {
       const file = view.file instanceof TFile ? view.file : null;
       const container = view.containerEl;
       if (!container) continue;
-      const existing = container.querySelector(".obcc-view-tts-action") as HTMLButtonElement | null;
+      const existing = container.querySelector<HTMLButtonElement>(".obcc-view-tts-action");
       const canRead = Boolean(file && (isContextTextFile(file) || isPdfFile(file)));
       if (!canRead) {
         existing?.remove();
         continue;
       }
       if (existing) continue;
-      const actions = container.querySelector(".view-actions") as HTMLElement | null;
+      const actions = container.querySelector<HTMLElement>(".view-actions");
       if (!actions) continue;
       const button = actions.createEl("button", {
         cls: "clickable-icon view-action obcc-view-tts-action",
@@ -4743,14 +4763,14 @@ export default class CancipPlugin extends Plugin {
   private clearTtsSourceHighlight(): void {
     for (const node of this.activeTtsSourceHighlightNodes) {
       if (!node.isConnected) continue;
-      const text = document.createTextNode(node.textContent ?? "");
+      const text = node.ownerDocument.createTextNode(node.textContent ?? "");
       node.replaceWith(text);
       text.parentElement?.normalize();
     }
     this.activeTtsSourceHighlightNodes = [];
-    document.querySelectorAll(".obcc-tts-source-highlight").forEach((node) => {
-      if (!(node instanceof HTMLElement)) return;
-      const text = document.createTextNode(node.textContent ?? "");
+    activeDocument.querySelectorAll(".obcc-tts-source-highlight").forEach((node: Element) => {
+      if (!node.instanceOf(HTMLElement)) return;
+      const text = node.ownerDocument.createTextNode(node.textContent ?? "");
       node.replaceWith(text);
       text.parentElement?.normalize();
     });
@@ -4780,12 +4800,11 @@ export default class CancipPlugin extends Plugin {
 
   private highlightActiveRenderedTtsPart(current: string): void {
     this.clearTtsSourceHighlight();
-    const leaf = this.app.workspace.activeLeaf;
-    const container = (leaf?.view as unknown as { containerEl?: HTMLElement } | null)?.containerEl;
+    const container = this.activeViewContainer();
     if (!container) return;
     const roots = Array.from(container.querySelectorAll(".markdown-preview-view, .pdf-viewer, .pdf-container, .pdfViewer, .textLayer"));
     for (const root of roots) {
-      if (!(root instanceof HTMLElement)) continue;
+      if (!root.instanceOf(HTMLElement)) continue;
       if (this.wrapFirstTextMatch(root, current)) return;
     }
   }
@@ -4810,21 +4829,23 @@ export default class CancipPlugin extends Plugin {
   private wrapFirstTextMatch(root: HTMLElement, current: string): boolean {
     const needle = this.ttsHighlightNeedle(current);
     if (!needle) return false;
-    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    const doc = root.ownerDocument;
+    const filter = doc.defaultView?.NodeFilter ?? NodeFilter;
+    const walker = doc.createTreeWalker(root, filter.SHOW_TEXT, {
       acceptNode: (node) => {
         const parent = node.parentElement;
-        if (!parent || parent.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) return NodeFilter.FILTER_REJECT;
-        return node.textContent?.includes(needle) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+        if (!parent || parent.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) return filter.FILTER_REJECT;
+        return node.textContent?.includes(needle) ? filter.FILTER_ACCEPT : filter.FILTER_SKIP;
       }
     });
     const node = walker.nextNode();
     if (!node || !node.textContent) return false;
     const index = node.textContent.indexOf(needle);
     if (index < 0) return false;
-    const range = document.createRange();
+    const range = doc.createRange();
     range.setStart(node, index);
     range.setEnd(node, index + needle.length);
-    const mark = document.createElement("span");
+    const mark = doc.createElement("span");
     mark.addClass("obcc-tts-source-highlight");
     try {
       range.surroundContents(mark);
@@ -4856,7 +4877,7 @@ export default class CancipPlugin extends Plugin {
     }
   }
 
-  private ttsProviderChain(forcedProvider?: TtsProvider, text = ""): TtsProvider[] {
+  private ttsProviderChain(forcedProvider?: TtsProvider): TtsProvider[] {
     if (forcedProvider && forcedProvider !== "auto") {
       return [forcedProvider];
     }
@@ -4869,7 +4890,7 @@ export default class CancipPlugin extends Plugin {
 
   private async startTtsWithProvider(provider: TtsProvider, text: string): Promise<boolean> {
     if (provider === "auto") {
-      for (const item of this.ttsProviderChain(undefined, text).filter((entry) => entry !== "auto")) {
+      for (const item of this.ttsProviderChain().filter((entry) => entry !== "auto")) {
         if (await this.startTtsWithProvider(item, text)) return true;
       }
       return false;
@@ -4957,12 +4978,11 @@ export default class CancipPlugin extends Plugin {
     }
     if (this.activeTtsPrimeCache.has(index)) return;
     const promise = this.queueBuiltinPrimeTtsSynthesis(runtime, chunks[index], runId)
-      .then((wav) => wav)
       .catch((error) => {
         this.activeTtsPrimeCache.delete(index);
         if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return new ArrayBuffer(0);
         throw error;
-      }) as Promise<ArrayBuffer>;
+      });
     this.activeTtsPrimeCache.set(index, promise);
   }
 
@@ -5029,12 +5049,17 @@ export default class CancipPlugin extends Plugin {
 
   private async createBuiltinPrimeTtsMainRuntime(): Promise<PrimeTtsMainRuntime> {
     const ort = await import("onnxruntime-web/wasm") as unknown as OrtModuleLike;
+    const encoderPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_ENCODER);
+    const decoderPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_DECODER);
+    const vocoderPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_VOCODER);
+    const metaPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_META);
+    const wasmPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_ORT_WASM);
     const [encoderBuffer, decoderBuffer, vocoderBuffer, metaText, wasmBuffer] = await Promise.all([
-      this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_ENCODER),
-      this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_DECODER),
-      this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_VOCODER),
-      this.app.vault.adapter.read(BUILTIN_PRIME_TTS_META),
-      this.app.vault.adapter.readBinary(`${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm`)
+      this.app.vault.adapter.readBinary(encoderPath),
+      this.app.vault.adapter.readBinary(decoderPath),
+      this.app.vault.adapter.readBinary(vocoderPath),
+      this.app.vault.adapter.read(metaPath),
+      this.app.vault.adapter.readBinary(wasmPath)
     ]);
     this.configureBuiltinPrimeOrt(ort, wasmBuffer.slice(0));
     const meta = parsePrimeTtsMeta(metaText);
@@ -5048,12 +5073,17 @@ export default class CancipPlugin extends Plugin {
   }
 
   private async createBuiltinPrimeTtsWorkerRuntime(): Promise<PrimeTtsWorkerRuntime> {
+    const encoderPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_ENCODER);
+    const decoderPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_DECODER);
+    const vocoderPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_VOCODER);
+    const metaPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_META);
+    const wasmPath = this.builtinPrimeTtsAssetPath(BUILTIN_PRIME_TTS_ORT_WASM);
     const [encoderBuffer, decoderBuffer, vocoderBuffer, metaText, wasmBuffer] = await Promise.all([
-      this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_ENCODER),
-      this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_DECODER),
-      this.app.vault.adapter.readBinary(BUILTIN_PRIME_TTS_VOCODER),
-      this.app.vault.adapter.read(BUILTIN_PRIME_TTS_META),
-      this.app.vault.adapter.readBinary(`${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm`)
+      this.app.vault.adapter.readBinary(encoderPath),
+      this.app.vault.adapter.readBinary(decoderPath),
+      this.app.vault.adapter.readBinary(vocoderPath),
+      this.app.vault.adapter.read(metaPath),
+      this.app.vault.adapter.readBinary(wasmPath)
     ]);
     const meta = parsePrimeTtsMeta(metaText);
     const workerUrl = createPrimeTtsWorkerUrl();
@@ -5106,7 +5136,7 @@ export default class CancipPlugin extends Plugin {
         client.worker.postMessage({ id, type, ...payload }, transfer);
       } catch (error) {
         client.pending.delete(id);
-        reject(error);
+        reject(error instanceof Error ? error : new Error(String(error)));
       }
     });
   }
@@ -5135,7 +5165,7 @@ export default class CancipPlugin extends Plugin {
   private async missingBuiltinPrimeTtsAssets(): Promise<string[]> {
     const adapter = this.app.vault.adapter;
     const missing: string[] = [];
-    for (const asset of BUILTIN_PRIME_TTS_REQUIRED_ASSETS) {
+    for (const asset of this.builtinPrimeTtsAssets()) {
       if (!(await adapter.exists(asset.path))) missing.push(asset.path);
     }
     return missing;
@@ -5189,7 +5219,7 @@ export default class CancipPlugin extends Plugin {
   private async completeBuiltinPrimeTtsStatus(): Promise<string> {
     const missing = await this.missingBuiltinPrimeTtsAssets();
     if (missing.length) return "";
-    const result = `complete (${BUILTIN_PRIME_TTS_BASE})`;
+    const result = `complete (${this.builtinPrimeTtsBasePath()})`;
     this.builtinPrimeTtsInstallPromise = null;
     this.builtinPrimeTtsInstallStartedAt = 0;
     this.builtinPrimeTtsInstallStatus = result;
@@ -5216,7 +5246,7 @@ export default class CancipPlugin extends Plugin {
       const afterMissing = await this.missingBuiltinPrimeTtsAssets();
       if (afterMissing.length) throw new Error(`still missing ${afterMissing.join(", ")}`);
       const result = this.t("ttsLocalPackageInstalled", { count: installed });
-      this.builtinPrimeTtsInstallStatus = `${result} (${BUILTIN_PRIME_TTS_BASE})`;
+      this.builtinPrimeTtsInstallStatus = `${result} (${this.builtinPrimeTtsBasePath()})`;
       this.builtinPrimeTtsInstallLastError = "";
       if (showNotice) new Notice(result, 8000);
       return this.builtinPrimeTtsInstallStatus;
@@ -5243,7 +5273,7 @@ export default class CancipPlugin extends Plugin {
     }
     const adapter = this.app.vault.adapter;
     let written = 0;
-    for (const asset of [...BUILTIN_PRIME_TTS_REQUIRED_ASSETS, ...BUILTIN_PRIME_TTS_OPTIONAL_ASSETS]) {
+    for (const asset of this.builtinPrimeTtsAssets(true)) {
       const entry = byName.get(asset.relative);
       if (!entry) {
         if (BUILTIN_PRIME_TTS_REQUIRED_ASSETS.some((required) => required.relative === asset.relative)) {
@@ -5403,8 +5433,9 @@ export default class CancipPlugin extends Plugin {
   }
 
   private async fetchTtsAudioUrl(templateUrl: string, text: string, provider: TtsProvider): Promise<string> {
-    const lang = this.ttsLanguageCode();
-    const voice = this.settings.ttsVoice.trim() || defaultTtsVoiceForLanguage(lang);
+    const configuredVoice = this.settings.ttsVoice.trim();
+    const lang = languageFromVoiceName(configuredVoice) || this.ttsLanguageCode();
+    const voice = configuredVoice || defaultTtsVoiceForLanguage(lang);
     const rate = Math.max(0.25, Math.min(4, Number(this.settings.ttsRate) || 1));
     const pitch = Math.max(0, Math.min(2, Number(this.settings.ttsPitch) || 1));
     const encoded = {
@@ -5448,7 +5479,16 @@ export default class CancipPlugin extends Plugin {
       if (typeof json.audioUrl === "string" && json.audioUrl.trim()) return json.audioUrl.trim();
       const base64 = typeof json.audioBase64 === "string" ? json.audioBase64 : typeof json.audio === "string" ? json.audio : "";
       if (base64.trim()) {
-        const mimeType = typeof json.mimeType === "string" && json.mimeType.trim() ? json.mimeType.trim() : "audio/mpeg";
+        const responsePath = typeof json.fileName === "string"
+          ? json.fileName
+          : typeof json.path === "string"
+            ? json.path
+            : "";
+        const mimeType = typeof json.mimeType === "string" && json.mimeType.trim()
+          ? json.mimeType.trim()
+          : responsePath
+            ? mimeTypeForPath(responsePath)
+            : "audio/mpeg";
         return this.audioBlobUrl(base64ToArrayBuffer(base64), mimeType);
       }
       throw new Error("JSON TTS response needs url/audioUrl/audioBase64");
@@ -5846,7 +5886,7 @@ export default class CancipPlugin extends Plugin {
       `- configured provider: ${provider}`,
       `- auto policy: ${this.settings.ttsQualityMode}`,
       `- auto chain: ${this.ttsProviderChain().join(" -> ")}`,
-      `- Chinese quality chain: ${this.ttsProviderChain(undefined, "你好，Cancip 中文朗读测试。").join(" -> ")}`,
+      `- Chinese quality chain: ${this.ttsProviderChain().join(" -> ")}`,
       `- playback: ${this.formatTtsStatus().replace(/\n/g, " | ")}`,
       `- local PrimeTTS package: ${localPrimeStatus}`,
       `- PrimeTTS installer: ${this.builtinPrimeTtsInstallStatus || (this.builtinPrimeTtsInstallPromise ? this.t("ttsInstallingLocalPackage") : "idle")}`,
@@ -5897,21 +5937,13 @@ export default class CancipPlugin extends Plugin {
   }
 
   private async localPrimeTtsAssetStatus(): Promise<string> {
-    const paths = [
-      BUILTIN_PRIME_TTS_ENCODER,
-      BUILTIN_PRIME_TTS_DECODER,
-      BUILTIN_PRIME_TTS_VOCODER,
-      BUILTIN_PRIME_TTS_META,
-      BUILTIN_PRIME_TTS_SYMBOLS,
-      `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.wasm`,
-      `${BUILTIN_PRIME_TTS_ORT_BASE}/ort-wasm-simd-threaded.mjs`
-    ];
+    const paths = this.builtinPrimeTtsAssets().map((asset) => asset.path);
     const missing: string[] = [];
     for (const path of paths) {
       if (!(await this.app.vault.adapter.exists(path))) missing.push(path);
     }
     if (!missing.length) return await this.completeBuiltinPrimeTtsStatus();
-    if (missing.length === paths.length) return `not installed (${BUILTIN_PRIME_TTS_BASE})`;
+    if (missing.length === paths.length) return `not installed (${this.builtinPrimeTtsBasePath()})`;
     return `incomplete, missing ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ` +${missing.length - 3}` : ""}`;
   }
 
@@ -5960,20 +5992,17 @@ export default class CancipPlugin extends Plugin {
 
   private async readMarkdownRenderedText(file: TFile, maxChars: number): Promise<string> {
     const markdown = await this.app.vault.cachedRead(file);
-    const container = document.createElement("div");
+    const container = activeDocument.createElement("div");
     container.addClass("obcc-tts-render-scratch");
-    container.style.position = "fixed";
-    container.style.left = "-10000px";
-    container.style.top = "0";
-    container.style.width = "360px";
-    container.style.pointerEvents = "none";
-    container.style.opacity = "0";
-    document.body.appendChild(container);
+    activeDocument.body.appendChild(container);
+    const renderContext = new Component();
+    renderContext.load();
     try {
-      await MarkdownRenderer.render(this.app, markdown, container, file.path, this);
+      await MarkdownRenderer.render(this.app, markdown, container, file.path, renderContext);
       const renderedText = extractVisibleRenderedText(container);
       return trimContext(renderedText || markdown, maxChars);
     } finally {
+      renderContext.unload();
       container.remove();
     }
   }
@@ -6341,7 +6370,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   applyUiButtonRules(): void {
-    this.applyUiButtonRuleStyles();
     this.clearUiRuleMarks();
     const rules = this.settings.uiButtonRules.filter((rule) => rule.hidden || (Number.isFinite(rule.order) && rule.order !== 0));
     window.requestAnimationFrame(() => {
@@ -6354,8 +6382,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             const parent = el.parentElement;
             if (!parent) continue;
             el.dataset.cancipUiOrder = String(rule.order);
-            el.style.order = String(rule.order);
-            if (parent.style.display !== "flex" && parent.style.display !== "inline-flex") parent.style.display = "flex";
+            el.setCssStyles({ order: String(rule.order) });
+            parent.addClass("obcc-ui-rule-flex-parent");
           }
         }
       }
@@ -6368,35 +6396,27 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     });
   }
 
-  private applyUiButtonRuleStyles(): void {
-    if (!this.uiRuleStyleEl) {
-      this.uiRuleStyleEl = document.createElement("style");
-      this.uiRuleStyleEl.dataset.cancipUiRules = "1";
-      document.head.appendChild(this.uiRuleStyleEl);
-    }
-    this.uiRuleStyleEl.textContent = [
-      `[data-cancip-ui-hidden="true"] { display: none !important; }`,
-      `[data-cancip-tag-hidden] { display: none !important; }`
-    ].join("\n");
-  }
-
   private clearUiRuleMarks(): void {
-    for (const el of Array.from(document.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-tag-hidden]"))) {
+    const doc = activeDocument;
+    for (const parent of Array.from(doc.querySelectorAll<HTMLElement>(".obcc-ui-rule-flex-parent, .obcc-ui-rule-inline-flex-parent"))) {
+      parent.removeClass("obcc-ui-rule-flex-parent", "obcc-ui-rule-inline-flex-parent");
+    }
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-order], [data-cancip-tag-hidden]"))) {
       delete el.dataset.cancipUiHidden;
       delete el.dataset.cancipTagHidden;
       if (el.dataset.cancipUiOrder !== undefined) {
         delete el.dataset.cancipUiOrder;
-        el.style.order = "";
+        el.setCssStyles({ order: "" });
       }
     }
   }
 
   private uiRuleElements(rule: UiButtonRule): HTMLElement[] {
     const root = rule.scope === "active"
-      ? ((this.app.workspace.activeLeaf?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? document)
+      ? (this.activeViewContainer() ?? activeDocument)
       : rule.scope === "cancip"
-        ? (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? document
-        : document;
+        ? (this.app.workspace.getLeavesOfType(VIEW_TYPE)[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? activeDocument
+        : activeDocument;
     try {
       return Array.from(root.querySelectorAll<HTMLElement>(rule.selector));
     } catch {
@@ -6405,8 +6425,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private rightSidebarTagElements(): Array<{ el: HTMLElement; tag: string }> {
-    const right = document.querySelector<HTMLElement>(".mod-right-split, .workspace-split.mod-right-split");
-    const root = right ?? document;
+    const doc = activeDocument;
+    const right = doc.querySelector<HTMLElement>(".mod-right-split, .workspace-split.mod-right-split");
+    const root = right ?? doc;
     const elements = Array.from(root.querySelectorAll<HTMLElement>(".tree-item-self, .tag-pane-tag, [data-tag], [href^='#']"));
     const seen = new Set<string>();
     const results: Array<{ el: HTMLElement; tag: string }> = [];
@@ -6753,7 +6774,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         const oldPath = `${oldFolder}/${fileName}`;
         const newPath = `${base}/${fileName}`;
         if (!(await adapter.exists(oldPath))) continue;
-        const content = await adapter.read(oldPath);
+        const content = sanitizeImportedMemory(await adapter.read(oldPath));
         await adapter.write(newPath, content);
       }
     } catch (error) {
@@ -7497,11 +7518,11 @@ class CancipReviewLeafView extends ItemView {
     const text = button.createDiv({ cls: "obcc-review-file-text" });
     text.createDiv({ cls: "obcc-review-file-name", text: reviewFileName(item.path) });
     text.createDiv({ cls: "obcc-review-file-path", text: item.path });
-    button.addEventListener("click", async () => {
+    button.addEventListener("click", () => {
       this.selectedItemPath = item.path;
       this.sourceMode = "render";
       this.reviewViewMode = "diff";
-      await this.render();
+      void this.render();
     });
   }
 
@@ -7536,7 +7557,7 @@ class CancipReviewLeafView extends ItemView {
     const folder = reviewGatePackageFolder(path);
     const manifestPath = `${folder}/manifest.json`;
     const raw = await this.app.vault.adapter.read(manifestPath);
-    const manifest = JSON.parse(raw) as ReviewGateManifest;
+    const manifest = parseReviewGateManifest(raw);
     return {
       path,
       folder,
@@ -7586,10 +7607,10 @@ class CancipReviewLeafView extends ItemView {
   }
 
   private renderReviewDetail(parent: HTMLElement, data: ReviewGatePackageData, item: ReviewGateManifestItem, index: number, total: number): void {
-    const root = this.containerEl.children[1] as HTMLElement;
-    root.addClass("has-review-detail");
-    const body = parent.closest(".obcc-review-leaf-body") as HTMLElement | null;
-    const shell = parent.closest(".obcc-review-leaf-shell") as HTMLElement | null;
+    const root = this.containerEl.children[1];
+    if (root?.instanceOf(HTMLElement)) root.addClass("has-review-detail");
+    const body = parent.closest<HTMLElement>(".obcc-review-leaf-body");
+    const shell = parent.closest<HTMLElement>(".obcc-review-leaf-shell");
     const detail = parent.createDiv({ cls: "obcc-review-detail-view" });
     const toolbar = detail.createDiv({ cls: "obcc-review-detail-rail" });
     const content = detail.createDiv({ cls: "obcc-review-detail-content" });
@@ -7608,9 +7629,9 @@ class CancipReviewLeafView extends ItemView {
       attr: { type: "button", title: this.t("reviewGateBack"), "aria-label": this.t("reviewGateBack") }
     });
     setIcon(back, "arrow-left");
-    back.addEventListener("click", async () => {
+    back.addEventListener("click", () => {
       this.selectedItemPath = "";
-      await this.render();
+      void this.render();
     });
     const openNoteButton = toolbar.createEl("button", {
       cls: "obcc-review-icon-button",
@@ -7783,6 +7804,10 @@ class CancipReviewLeafView extends ItemView {
       parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
       return;
     }
+    const changedLines = changedReviewDiffLines(oldText, newText);
+    const addedCount = changedLines.filter((line) => line.kind === "added").length;
+    const removedCount = changedLines.filter((line) => line.kind === "removed").length;
+    parent.createDiv({ cls: "obcc-review-diff-stat", text: `+${addedCount} / -${removedCount}` });
     for (const hunk of hunks) {
       const hunkEl = parent.createDiv({ cls: "obcc-review-diff-hunk" });
       for (const line of hunk.lines) {
@@ -8077,7 +8102,7 @@ class CancipView extends ItemView {
     this.render();
     this.registerEvent(this.app.workspace.on("file-open", () => this.renderContextChips()));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.renderContextChips()));
-    this.registerDomEvent(document, "pointerdown", (event) => this.handleDocumentPointerDown(event));
+    this.registerDomEvent(this.containerEl.ownerDocument, "pointerdown", (event) => this.handleDocumentPointerDown(event));
     await this.ensureCurrentSessionRecord();
     await this.refreshVaultIndex(false);
   }
@@ -9064,9 +9089,8 @@ class CancipView extends ItemView {
       row.createSpan({ cls: "obcc-command-title", text: item.shortLabel ?? item.label });
       if (item.active) setIcon(row.createSpan({ cls: "obcc-command-check" }), "check");
       row.addEventListener("pointerdown", (event) => event.preventDefault());
-      row.addEventListener("click", async () => {
-        await item.action();
-        this.closeCommandMenu();
+      row.addEventListener("click", () => {
+        void Promise.resolve(item.action()).finally(() => this.closeCommandMenu());
       });
     }
     this.placeCommandMenu();
@@ -9120,11 +9144,11 @@ class CancipView extends ItemView {
   }
 
   private handleDocumentPointerDown(event: PointerEvent): void {
-    const target = event.target;
-    if (!(target instanceof Node)) return;
+    const target = event.target as Node | null;
+    if (!target?.instanceOf(Node)) return;
     if (this.activeMenu) {
       if (
-        target instanceof this.containerEl.ownerDocument.defaultView!.Element &&
+        target.instanceOf(this.containerEl.ownerDocument.defaultView!.Element) &&
         target.closest(".obcc-command-popover, .obcc-tool-button, .obcc-access-button, .obcc-model-button")
       ) {
         return;
@@ -9133,7 +9157,7 @@ class CancipView extends ItemView {
     }
     if (this.activeHeaderMenu) {
       if (
-      target instanceof this.containerEl.ownerDocument.defaultView!.Element &&
+        target.instanceOf(this.containerEl.ownerDocument.defaultView!.Element) &&
         target.closest(".obcc-history-popover, .obcc-icon-button, .obcc-plan-button")
       ) {
         return;
@@ -9527,7 +9551,7 @@ class CancipView extends ItemView {
 
   private scrollToMessage(messageId: string): void {
     const target = this.messagesEl.querySelector(`[data-message-id="${CSS.escape(messageId)}"]`);
-    if (target instanceof HTMLElement) {
+    if (target?.instanceOf(HTMLElement)) {
       target.scrollIntoView({ block: "center", behavior: "smooth" });
       target.addClass("is-outline-target");
       window.setTimeout(() => target.removeClass("is-outline-target"), 1200);
@@ -9784,7 +9808,7 @@ class CancipView extends ItemView {
     const folder = reviewGatePackageFolder(path);
     const manifestPath = `${folder}/manifest.json`;
     const raw = await this.app.vault.adapter.read(manifestPath);
-    const manifest = JSON.parse(raw) as ReviewGateManifest;
+    const manifest = parseReviewGateManifest(raw);
     return {
       path,
       folder,
@@ -9908,6 +9932,10 @@ class CancipView extends ItemView {
       parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
       return;
     }
+    const changedLines = changedReviewDiffLines(oldText, newText);
+    const addedCount = changedLines.filter((line) => line.kind === "added").length;
+    const removedCount = changedLines.filter((line) => line.kind === "removed").length;
+    parent.createDiv({ cls: "obcc-review-diff-stat", text: `+${addedCount} / -${removedCount}` });
     for (const hunk of hunks) {
       const hunkEl = parent.createDiv({ cls: "obcc-review-diff-hunk" });
       for (const line of hunk.lines) {
@@ -12317,7 +12345,6 @@ class CancipView extends ItemView {
     const images: ImageAttachmentContext[] = [];
     const settings = this.plugin.settings;
     const policy = this.promptPayloadPolicy(prompt);
-    const lightContext = policy.intent === "trivial";
     const implementationContext = policy.intent === "implementation";
     if (!this.taskControl && prompt.trim()) {
       this.ensureTaskControl(rawPrompt, prompt);
@@ -13703,7 +13730,6 @@ class CancipView extends ItemView {
 
     const runs = actions.map((action) => this.createToolRun(action));
     if (message) message.toolRuns = runs;
-    const summary = runs.map((run) => run.summary).join("\n");
     if (options.readOnlyOnly) {
       const executable = runs.filter((run) => isReadOnlyAction(run.action));
       const blocked = runs.filter((run) => !isReadOnlyAction(run.action));
@@ -15769,7 +15795,7 @@ class CancipView extends ItemView {
       "- Cancip has message/session/note read-aloud buttons.",
       "- Providers: auto, builtin-prime-tts optional local package, android-system/native bridge, custom-url local neural bridge, web-speech probe.",
       "- Command bus: cancip.tts.probe, cancip.tts.voices, cancip.tts.status, cancip.tts.installLocal, cancip.tts.speak {text,label,provider}, cancip.tts.readActive, cancip.tts.pause/resume/stop, cancip.tts.seek {part}. provider can be auto, builtin-prime-tts, android-system, web-speech, or custom-url.",
-      "- builtin-prime-tts borrows the old 0.1.207 route: read .obsidian/plugins/cancip/tts/prime-tts, run ONNX locally, generate WAV, play with audio/WebAudio. If assets are missing during use, Cancip tries to download and install the optional prime-tts.zip package automatically.",
+      "- builtin-prime-tts borrows the old 0.1.207 route: read the installed Cancip plugin folder tts/prime-tts, run ONNX locally, generate WAV, play with audio/WebAudio. If assets are missing during use, Cancip tries to download and install the optional prime-tts.zip package automatically.",
       "- Review-clean releases do not bundle model assets in release files. Optional installed assets are detected at runtime and can be repaired with cancip.tts.installLocal.",
       "- custom-url contract: use URL placeholders {text}/{lang}/{voice}/{rate}/{pitch}, or POST JSON {text,lang,voice,rate,pitch,provider}. Return audio bytes, {url}, or {audioBase64,mimeType}.",
       "- Android/system uses a native TTS bridge only when Obsidian exposes one; Web Speech is separate. On Android, an empty voice list does not block a real speak attempt.",
@@ -15859,7 +15885,7 @@ class CancipView extends ItemView {
   }
 
   private async currentObsidianViewSummary(args: Record<string, unknown>): Promise<string> {
-    const leaf = this.app.workspace.activeLeaf;
+    const leaf = this.app.workspace.getLeaf(false);
     const view = leaf?.view as unknown as { getViewType?: () => string; getDisplayText?: () => string; containerEl?: HTMLElement; editor?: Editor };
     const file = this.app.workspace.getActiveFile();
     const selection = view?.editor?.getSelection?.() ?? "";
@@ -15909,7 +15935,7 @@ class CancipView extends ItemView {
     const append = Boolean(args.append);
     const result = this.domTarget(args);
     const el = result.element;
-    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {
+    if (el.instanceOf(HTMLInputElement) || el.instanceOf(HTMLTextAreaElement)) {
       el.focus();
       el.value = append ? `${el.value}${text}` : text;
       el.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertText", data: text }));
@@ -15929,7 +15955,7 @@ class CancipView extends ItemView {
     const scope = typeof args.scope === "string" ? args.scope.trim() : "";
     if (scope === "cancip") return this.containerEl;
     if (scope === "active") {
-      const container = (this.app.workspace.activeLeaf?.view as unknown as { containerEl?: HTMLElement })?.containerEl;
+      const container = this.plugin.activeViewContainer();
       if (container) return container;
     }
     return this.containerEl.ownerDocument;
@@ -16787,11 +16813,8 @@ class CancipView extends ItemView {
   private async showCopyText(text: string, status: string): Promise<void> {
     try {
       const win = this.containerEl.ownerDocument.defaultView ?? window;
-      if (win.navigator.clipboard?.writeText) {
-        await win.navigator.clipboard.writeText(text);
-      } else {
-        this.copyTextWithHiddenTextarea(text);
-      }
+      if (!win.navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
+      await win.navigator.clipboard.writeText(text);
       this.setStatus(status);
       new Notice(status, 1200);
     } catch (error) {
@@ -16800,20 +16823,6 @@ class CancipView extends ItemView {
       this.setStatus(message);
       new Notice(message, 3000);
     }
-  }
-
-  private copyTextWithHiddenTextarea(text: string): void {
-    const doc = this.containerEl.ownerDocument;
-    const textarea = doc.body.createEl("textarea", {
-      cls: "obcc-hidden-copy-area",
-      attr: { readonly: "true", tabindex: "-1", "aria-hidden": "true" }
-    });
-    textarea.value = text;
-    textarea.focus();
-    textarea.select();
-    const copied = doc.execCommand("copy");
-    textarea.remove();
-    if (!copied) throw new Error("clipboard unavailable");
   }
 
   private renderHiddenToolJson(parent: HTMLElement, blocks: FoldedMessageBlock[], hasProcessFold = false): void {
@@ -17309,9 +17318,9 @@ class CancipView extends ItemView {
       ".obcc-composer"
     ];
     const lines = selectors.map((selector) => {
-      const el = this.containerEl.ownerDocument.querySelector(selector) as HTMLElement | null;
+      const el = this.containerEl.ownerDocument.querySelector<HTMLElement>(selector);
       if (!el) return `${selector}: missing`;
-      const style = window.getComputedStyle(el);
+      const style = el.win.getComputedStyle(el);
       const rect = el.getBoundingClientRect();
       return [
         selector,
@@ -18071,7 +18080,7 @@ class CancipSettingTab extends PluginSettingTab {
       .setDesc(this.plugin.t("settingsTtsHighQualityHint"));
     new Setting(parent)
       .setName(this.plugin.t("settingsTtsInstallLocalPackage"))
-      .setDesc(`${BUILTIN_PRIME_TTS_BASE} · ${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`)
+      .setDesc(`${this.plugin.builtinPrimeTtsBasePath()} · ${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`)
       .addButton((button) => {
         button
           .setButtonText(this.plugin.t("ttsInstallLocalPackage"))
@@ -18387,7 +18396,7 @@ function isLocalVersionCandidate(file: TFile, maxBytes: number, obsidianConfigDi
 function isSensitiveLocalVersionPath(path: string): boolean {
   const lower = path.toLowerCase();
   if (lower.endsWith("config.json") || lower.includes(".config.")) return true;
-  return /(^|[\/._-])(secret|secrets|password|passwd|token|tokens|credential|credentials|recovery|codes|config|apikey|api-key|api_key|private-key|private_key|ssh-key|ssh_key)([\/._-]|$)/i.test(lower);
+  return /(^|[/._-])(secret|secrets|password|passwd|token|tokens|credential|credentials|recovery|codes|config|apikey|api-key|api_key|private-key|private_key|ssh-key|ssh_key)([/._-]|$)/i.test(lower);
 }
 
 function localDateKey(date: Date): string {
@@ -18398,7 +18407,7 @@ function localDateKey(date: Date): string {
 }
 
 function safeVaultFileName(name: string): string {
-  return name.replace(/[\\/:*?"<>|]+/g, "_").replace(/\0/g, "").slice(0, 120) || "memory.md";
+  return removeNulCharacters(name.replace(/[\\/:*?"<>|]+/g, "_")).slice(0, 120) || "memory.md";
 }
 
 function isImportedCodexMemoryFile(path: string): boolean {
@@ -18408,7 +18417,7 @@ function isImportedCodexMemoryFile(path: string): boolean {
 
 function sanitizeImportedMemory(content: string): string {
   return content
-    .replace(/\0/g, "")
+    .split("\0").join("")
     .replace(/sk-[A-Za-z0-9_-]{20,}/g, "[REDACTED_OPENAI_KEY]")
     .replace(/ghp_[A-Za-z0-9_]{20,}/g, "[REDACTED_GITHUB_TOKEN]")
     .replace(/github_pat_[A-Za-z0-9_]{20,}/g, "[REDACTED_GITHUB_TOKEN]")
@@ -18416,7 +18425,7 @@ function sanitizeImportedMemory(content: string): string {
 }
 
 function makeMemorySnippet(content: string, tokens: string[], maxChars: number): string {
-  const normalized = content.replace(/\0/g, "").trim();
+  const normalized = removeNulCharacters(content).trim();
   if (!tokens.length) return trimContext(normalized, maxChars);
   const lower = normalized.toLowerCase();
   const hit = tokens
@@ -19000,11 +19009,45 @@ function normalizeReviewGateItems(raw: unknown): ReviewGateManifestItem[] {
       old_text: oldText,
       new_text: newText,
       changes: Array.isArray(item.changes) ? item.changes.filter((value): value is string => typeof value === "string") : [],
-      links: (isRecord(item.links) ? item.links : {}) as ReviewGateManifestItem["links"],
+      links: normalizeReviewGateLinks(item.links),
       structure: normalizeReviewStructureChanges(item.structure)
     });
   }
   return items;
+}
+
+function parseReviewGateManifest(raw: string): ReviewGateManifest {
+  const parsed = JSON.parse(raw) as unknown;
+  if (!isRecord(parsed)) throw new Error("Invalid review manifest");
+  const schemaVersion = typeof parsed.schemaVersion === "number" && Number.isInteger(parsed.schemaVersion)
+    ? parsed.schemaVersion
+    : REVIEW_GATE_SCHEMA_VERSION;
+  if (schemaVersion > REVIEW_GATE_SCHEMA_VERSION) {
+    throw new Error(`Unsupported review schema: ${schemaVersion}`);
+  }
+  return {
+    schemaVersion,
+    title: typeof parsed.title === "string" ? parsed.title : "",
+    vault_label: typeof parsed.vault_label === "string" ? parsed.vault_label : "",
+    folder: typeof parsed.folder === "string" ? parsed.folder : "",
+    generated_at: typeof parsed.generated_at === "string" ? parsed.generated_at : "",
+    source: typeof parsed.source === "string" ? parsed.source : "",
+    items: normalizeReviewGateItems(parsed.items)
+  };
+}
+
+function normalizeReviewGateLinks(raw: unknown): ReviewGateManifestItem["links"] {
+  if (!isRecord(raw)) return {};
+  const strings = (value: unknown): string[] | undefined => {
+    if (!Array.isArray(value)) return undefined;
+    return value.filter((item): item is string => typeof item === "string");
+  };
+  return {
+    added: strings(raw.added),
+    removed: strings(raw.removed),
+    current: strings(raw.current),
+    suggested: strings(raw.suggested)
+  };
 }
 
 function normalizeReviewStructureChanges(raw: unknown): ReviewGateStructureChange[] {
@@ -19253,7 +19296,10 @@ function makeReviewDiffLinesByLcs(oldLines: string[], newLines: string[]): Revie
   const rows: ReviewDiffLine[] = [];
   const oldCount = oldLines.length;
   const newCount = newLines.length;
-  const table: number[][] = Array.from({ length: oldCount + 1 }, () => Array(newCount + 1).fill(0));
+  const table: number[][] = [];
+  for (let index = 0; index <= oldCount; index += 1) {
+    table.push(new Array<number>(newCount + 1).fill(0));
+  }
   for (let oldIndex = oldCount - 1; oldIndex >= 0; oldIndex -= 1) {
     for (let newIndex = newCount - 1; newIndex >= 0; newIndex -= 1) {
       table[oldIndex][newIndex] = oldLines[oldIndex] === newLines[newIndex]
@@ -19302,7 +19348,7 @@ function mentionKindRank(kind: MentionKind): number {
 }
 
 function mentionPathKeywords(path: string, title: string): string[] {
-  const parts = path.split(/[\/\\._\-\s]+/).filter(Boolean);
+  const parts = path.split(/[/\\._\s-]+/).filter(Boolean);
   return uniqueStrings([path, title, path.replace(/\.[^.]+$/, ""), ...parts]);
 }
 
@@ -19643,7 +19689,8 @@ function firstStringValue(record: Record<string, unknown>, keys: string[]): stri
     const value = record[key];
     if (typeof value === "string" && value.trim()) return value.trim();
     if (Array.isArray(value)) {
-      const first = value.find((item) => typeof item === "string" && item.trim());
+      const values: unknown[] = value;
+      const first = values.find((item) => typeof item === "string" && item.trim());
       if (typeof first === "string") return first.trim();
     }
   }
@@ -19724,13 +19771,13 @@ function scoreSkillForPrompt(skill: CancipSkill, prompt: string): number {
 
 function isSkillLikeMention(path: string, title: string): boolean {
   const text = `${path}\n${title}`.toLowerCase();
-  return /(^|[\/\\._\-\s])skills?($|[\/\\._\-\s])/.test(text) || text.includes("skillob") || text.includes("skill.md") || /技能|能力/.test(text);
+  return /(^|[/\\._\s-])skills?($|[/\\._\s-])/.test(text) || text.includes("skillob") || text.includes("skill.md") || /技能|能力/.test(text);
 }
 
 function mentionQueryParts(query: string): string[] {
   const q = query.toLowerCase().trim();
   if (!q) return [];
-  const parts = q.split(/[\s\/\\._\-:]+/).filter(Boolean);
+  const parts = q.split(/[\s/\\._:-]+/).filter(Boolean);
   const cjk = q.match(/[\u4e00-\u9fff]/g) ?? [];
   return uniqueStrings([q, ...parts, ...cjk]);
 }
@@ -20400,7 +20447,7 @@ function isRepairSlashCommand(input: string): boolean {
 }
 
 function looksLikePathQuery(input: string): boolean {
-  return /(^|[\s"'`])\.?[A-Za-z0-9_\-\u4e00-\u9fff]+[\/\\][^\s"'`]+/.test(input) || /\.[A-Za-z0-9]{2,6}($|[\s"'`，。；,;])/.test(input);
+  return /(^|[\s"'`])\.?[A-Za-z0-9_\u4e00-\u9fff-]+[/\\][^\s"'`]+/.test(input) || /\.[A-Za-z0-9]{2,6}($|[\s"'`，。；,;])/.test(input);
 }
 
 function shouldScanHiddenForQuery(query: string): boolean {
@@ -20861,7 +20908,7 @@ function normalizeChineseDateTimeNumbers(input: string, mode: "context" | "full"
   const shouldConvert = (full: string, offset: number, length: number): boolean => {
     return mode === "full" || isChineseNumberContext(full, offset, length);
   };
-  output = output.replace(/(^|[^\w./\\-])(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})(?=$|[^\w./\\-])/g, (match, prefix: string, year: string, month: string, day: string, offset: number, full: string) => {
+  output = output.replace(/(^|[^\w./\\-])(\d{4})[/.-](\d{1,2})[/.-](\d{1,2})(?=$|[^\w./\\-])/g, (match, prefix: string, year: string, month: string, day: string, offset: number, full: string) => {
     if (!shouldConvert(full, offset + prefix.length, match.length - prefix.length)) return match;
     return `${prefix}${digitsToChinese(year)}年${numberTokenToChinese(month, "value")}月${numberTokenToChinese(day, "value")}日`;
   });
@@ -20892,7 +20939,7 @@ function isProtectedNumberToken(text: string, offset: number, length: number): b
   const after = text.slice(offset + length, offset + length + 16);
   if (/https?:\/\/\S*$/i.test(before) || /(?:^|[\s([{<])(?:[A-Za-z]:)?(?:[./\\]|[A-Za-z0-9_-]+[./\\])[\w./\\-]*$/i.test(before)) return true;
   if (/^[A-Za-z_./\\-]/.test(after) || /[A-Za-z_./\\-]$/.test(before)) return true;
-  if (/\bv(?:ersion)?\.?$/i.test(before) || /^[.\-]\d/.test(after)) return true;
+  if (/\bv(?:ersion)?\.?$/i.test(before) || /^[.-]\d/.test(after)) return true;
   return false;
 }
 
@@ -21181,7 +21228,7 @@ function normalizeApiProfiles(raw: unknown, legacy: ApiProfile): ApiProfile[] {
   raw.forEach((item, index) => {
     if (!isRecord(item)) return;
     const fallback = index === 0 ? legacy : { ...legacy, id: `profile-${index + 1}`, name: `Profile ${index + 1}`, apiKey: "" };
-    let profile = normalizeApiProfile(item as Partial<ApiProfile>, fallback);
+    let profile = normalizeApiProfile(item, fallback);
     if (seen.has(profile.id)) {
       profile = { ...profile, id: `${profile.id}-${index + 1}` };
     }
@@ -21816,7 +21863,7 @@ function deepMergeJsonObject(target: Record<string, unknown>, patch: Record<stri
     if (!key) continue;
     const keyPath = prefix ? `${prefix}.${key}` : key;
     if (isRecord(value) && isRecord(target[key])) {
-      deepMergeJsonObject(target[key] as Record<string, unknown>, value, changed, keyPath);
+      deepMergeJsonObject(target[key], value, changed, keyPath);
       continue;
     }
     target[key] = cloneJsonValue(value);
@@ -21908,7 +21955,7 @@ function generateSessionTitleFromPrompt(prompt: string, fallback: string): strin
   const cleaned = removeCancipActionBlocks(prompt)
     .replace(/```[\s\S]*?```/g, " ")
     .replace(/<details\b[^>]*>[\s\S]*?<\/details>/gi, " ")
-    .replace(/[#>*_`~\[\](){}|]/g, " ")
+    .replace(/[#>*_`~(){}|]|\[|\]/g, " ")
     .replace(/\b(cancip-action|Raw user prompt|Resolved task goal|Model prompt for this turn)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
@@ -22191,9 +22238,9 @@ function extractVisibleRenderedText(root: HTMLElement): string {
       if (text) chunks.push(text);
       return;
     }
-    if (!(node instanceof HTMLElement)) return;
+    if (!node.instanceOf(HTMLElement)) return;
     if (ignored.has(node.tagName)) return;
-    const style = window.getComputedStyle(node);
+    const style = node.win.getComputedStyle(node);
     if (style.display === "none" || style.visibility === "hidden") return;
     for (const child of Array.from(node.childNodes)) walk(child);
     if (["P", "DIV", "LI", "TR", "BLOCKQUOTE", "H1", "H2", "H3", "H4", "H5", "H6", "PRE", "TABLE"].includes(node.tagName)) {
@@ -23636,11 +23683,15 @@ function decodeXmlEntities(input: string): string {
 
 function normalizeExtractedText(input: string): string {
   return input
-    .replace(/\u0000/g, "")
+    .split("\0").join("")
     .replace(/[ \t]{2,}/g, " ")
     .replace(/\s+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function removeNulCharacters(value: string): string {
+  return value.split("\0").join("");
 }
 
 function looksLikeReadableText(input: string): boolean {
@@ -23801,6 +23852,8 @@ function lineRangeAroundIndex(content: string, index: number, maxLength: number)
 }
 
 function compactReadResultForPrompt(result: string, maxChars: number): string {
+  const folderSummary = summarizeFolderListing(result);
+  if (folderSummary) return trimContext(redactSensitiveText(folderSummary), maxChars);
   const lines = usefulResultLines(result);
   const header = lines
     .filter((line) => /^(file|read|query|match|lines?|chars?|folder|folders:|files:)/i.test(line.trim()))

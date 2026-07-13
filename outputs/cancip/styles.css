@@ -1162,7 +1162,13 @@ body .menu-scroll .menu-group,
 body .mobile-menu .menu-group,
 body .modal.mod-mobile-menu .menu-group,
 body [class*="mobile-menu"] > .menu-group {
-  display: contents;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 body .menu .menu-separator,
@@ -1245,14 +1251,16 @@ body.is-phone .menu-item > * {
 .menu-group.obcc-ui-rule-menu-complete-sort-parent > .menu-section,
 .menu-group.obcc-ui-rule-flex-parent > .obcc-ui-rule-menu-section-contents,
 .menu-group.obcc-ui-rule-menu-complete-sort-parent > .obcc-ui-rule-menu-section-contents {
-  display: contents;
+  display: flex;
+  flex-direction: column;
 }
 
 .menu.obcc-ui-rule-flex-parent > .menu-group,
 .menu.obcc-ui-rule-menu-complete-sort-parent > .menu-group,
 .menu-group.obcc-ui-rule-flex-parent > .menu-group,
 .menu-group.obcc-ui-rule-menu-complete-sort-parent > .menu-group {
-  display: contents;
+  display: flex;
+  flex-direction: column;
 }
 
 .menu.obcc-ui-rule-flex-parent > .menu-section,
@@ -1267,6 +1275,7 @@ body.is-phone .menu-item > * {
 .menu.obcc-ui-rule-menu-complete-sort-parent > .menu-group,
 .menu-group.obcc-ui-rule-flex-parent > .menu-group,
 .menu-group.obcc-ui-rule-menu-complete-sort-parent > .menu-group {
+  display: flex;
   flex-direction: column;
   gap: 0;
   margin: 0;
