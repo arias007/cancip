@@ -7312,3 +7312,341 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail {
   padding-bottom: 10px;
   scroll-padding-bottom: 12px;
 }
+
+
+/* Cancip 2.8.5: mobile review panel scrolls inside the visible area and only reserves real bottom overlap. */
+body.is-mobile .workspace-leaf-content[data-type="cancip-review-view"],
+body.is-phone .workspace-leaf-content[data-type="cancip-review-view"],
+.is-mobile .workspace-leaf-content[data-type="cancip-review-view"],
+.is-phone .workspace-leaf-content[data-type="cancip-review-view"] {
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-mobile .workspace-leaf-content[data-type="cancip-review-view"] .view-content,
+body.is-phone .workspace-leaf-content[data-type="cancip-review-view"] .view-content,
+.is-mobile .workspace-leaf-content[data-type="cancip-review-view"] .view-content,
+.is-phone .workspace-leaf-content[data-type="cancip-review-view"] .view-content {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf,
+body.is-phone .obcc-review-leaf,
+.is-mobile .obcc-review-leaf,
+.is-phone .obcc-review-leaf {
+  --obcc-review-mobile-bottom-clearance: max(6px, env(safe-area-inset-bottom));
+  display: flex;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  padding: 0 0 var(--obcc-review-mobile-bottom-clearance);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf-shell,
+body.is-phone .obcc-review-leaf-shell,
+.is-mobile .obcc-review-leaf-shell,
+.is-phone .obcc-review-leaf-shell {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf-body,
+body.is-phone .obcc-review-leaf-body,
+.is-mobile .obcc-review-leaf-body,
+.is-phone .obcc-review-leaf-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  padding: 4px;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-leaf-body,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-leaf-body,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-leaf-body,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-leaf-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: hidden;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-head,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-head,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-head,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-head {
+  flex: 0 0 auto;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  flex: 1 1 0;
+  height: auto;
+  max-height: 100%;
+  min-height: 0;
+  padding: 4px 4px max(10px, var(--obcc-review-mobile-bottom-clearance));
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scroll-padding-bottom: max(14px, var(--obcc-review-mobile-bottom-clearance));
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree *,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree *,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree *,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree * {
+  touch-action: pan-y;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-content,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-content,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-content,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-content,
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-main,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-main,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-main,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-main {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-changes-body,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-changes-body,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-changes-body,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-changes-body,
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-sources-paired,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-sources-paired,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-sources-paired,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-sources-paired {
+  min-height: 0;
+  padding-bottom: max(10px, var(--obcc-review-mobile-bottom-clearance));
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  scroll-padding-bottom: max(14px, var(--obcc-review-mobile-bottom-clearance));
+}
+
+@media (max-width: 700px) {
+  .obcc-review-leaf {
+    --obcc-review-mobile-bottom-clearance: max(6px, env(safe-area-inset-bottom));
+    padding-bottom: var(--obcc-review-mobile-bottom-clearance);
+  }
+
+  .obcc-review-leaf.has-review-nav .obcc-review-leaf-body {
+    grid-template-rows: minmax(0, 1fr);
+    overflow-y: hidden;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+  .obcc-review-leaf.has-review-detail .obcc-review-changes-body,
+  .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+  .obcc-review-leaf.has-review-detail .obcc-review-sources-paired {
+    overflow-y: auto;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* 2.8.6: make the review detail file rail fill the available height. */
+.obcc-review-leaf.has-review-detail .obcc-review-detail-view {
+  align-items: stretch;
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-rail {
+  align-self: stretch;
+  height: 100%;
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info {
+  flex: 1 1 0;
+  height: auto;
+  min-height: 0;
+  max-height: none;
+  box-sizing: border-box;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-rail-text {
+  height: 100%;
+  min-height: 0;
+  max-height: 100%;
+}
+
+/* 2.8.7: make the review file list use the same bounded scroll frame as the detail content panel. */
+.obcc-review-leaf.has-review-nav .obcc-review-leaf-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page {
+  align-self: stretch;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav-head {
+  min-height: 0;
+}
+
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  height: 100%;
+  max-height: var(--obcc-review-file-tree-max-height, 100%);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+  padding-bottom: max(8px, var(--obcc-review-mobile-bottom-clearance));
+  scroll-padding-bottom: max(12px, var(--obcc-review-mobile-bottom-clearance));
+}
+
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree > * {
+  min-height: 0;
+}
+
+/* 2.8.8: override mobile-specific review rules that otherwise keep the old full-height frames. */
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-leaf-body {
+  align-items: start;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page {
+  align-self: start;
+  display: grid;
+  grid-template-rows: auto minmax(0, auto);
+  height: auto;
+  max-height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+  align-self: start;
+  flex: 0 1 auto;
+  height: auto;
+  max-height: var(--obcc-review-file-tree-max-height, 100%);
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 8px;
+  scroll-padding-bottom: 12px;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-rail,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail {
+  padding: 3px;
+  padding-bottom: 3px;
+  scroll-padding-bottom: 3px;
+  overflow: hidden;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
+body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
+.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
+.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info {
+  flex: 1 1 0;
+  min-height: 0;
+}

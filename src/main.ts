@@ -160,6 +160,10 @@ type ReviewGatePackageData = {
   items: ReviewGateManifestItem[];
 };
 
+type ReviewGateLightItem = ReviewGateManifestItem & {
+  summaryLineDelta?: LineDeltaSummary;
+};
+
 type ReviewGateSnapshotEntry = {
   path: string;
   folder: string;
@@ -9511,7 +9515,6 @@ export default class CancipPlugin extends Plugin {
       await ensureFolder(adapter, SESSION_EXPORT_DIR);
       await ensureFolder(adapter, SESSION_HISTORY_DIR);
       await ensureFolder(adapter, AUTOMATION_DIR);
-      await ensureFolder(adapter, REVIEW_GATE_DIR);
       await ensureFolder(adapter, REVIEW_GATE_HIDDEN_DIR);
       if (this.settings.memoryFolder.trim()) {
         await ensureFolder(adapter, this.settings.memoryFolder.trim());
@@ -11880,17 +11883,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async buildReviewGate(args: Record<string, unknown> = {}): Promise<ReviewGateBuildResult> {
+    const requestedOutput = typeof args.output === "string" ? normalizeReviewGateOutputPath(args.output) : undefined;
     const result = await buildObReviewGatePackage(this.app.vault.adapter, {
       title: typeof args.title === "string" ? args.title : undefined,
       vaultLabel: typeof args.vault_label === "string" ? args.vault_label : typeof args.vaultLabel === "string" ? args.vaultLabel : undefined,
-      outputRoot: typeof args.hidden === "boolean" && args.hidden ? REVIEW_GATE_HIDDEN_DIR : REVIEW_GATE_DIR,
-      output: typeof args.output === "string" ? args.output : undefined,
+      outputRoot: REVIEW_GATE_HIDDEN_DIR,
+      output: requestedOutput,
       paths: args.paths,
       scope: args.scope,
       items: args.items,
       maxFiles: clampInt(args.maxFiles, REVIEW_GATE_MAX_FILES, 1, 500),
       maxFileChars: clampInt(args.maxFileChars, REVIEW_GATE_MAX_FILE_CHARS, 1000, 1000000)
     });
+    this.invalidateReviewGateSnapshot();
     return result;
   }
 
@@ -11925,8 +11930,71 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
-      items: normalizeReviewGateItems(manifest.items)
+      items: filterReviewGateVisibleItems(normalizeReviewGateItems(manifest.items), this.obsidianConfigDir())
     };
+  }
+
+  async readReviewGateSummaryPackage(path: string): Promise<ReviewGatePackageData> {
+    const folder = reviewGatePackageFolder(path);
+    const summaryPath = `${folder}/summary.json`;
+    const raw = await readTextIfExists(this.app.vault.adapter, summaryPath, "");
+    if (!raw.trim()) return await this.readReviewGatePackage(path);
+    const summary = JSON.parse(raw) as unknown;
+    if (!isRecord(summary) || !Array.isArray(summary.items)) return await this.readReviewGatePackage(path);
+    const items: ReviewGateLightItem[] = [];
+    for (const rawItem of summary.items) {
+      if (!isRecord(rawItem) || typeof rawItem.path !== "string" || !rawItem.path.trim()) continue;
+      const changes = Array.isArray(rawItem.changes)
+        ? rawItem.changes.filter((item): item is string => typeof item === "string")
+        : [];
+      const structure = normalizeReviewStructureChanges(
+        Array.isArray(rawItem.structure) ? rawItem.structure as ReviewGateStructureChange[] : []
+      );
+      const added = typeof rawItem.added_lines === "number" ? rawItem.added_lines : 0;
+      const removed = typeof rawItem.removed_lines === "number" ? rawItem.removed_lines : 0;
+      const changed = rawItem.changed !== false && (Boolean(added || removed || changes.length || structure.length));
+      items.push({
+        path: normalizePath(rawItem.path),
+        old_text: changed ? "__cancip_summary_old__" : "",
+        new_text: changed ? "__cancip_summary_new__" : "",
+        changes,
+        links: {},
+        structure,
+        summaryLineDelta: { added: Math.max(0, added), removed: Math.max(0, removed), estimated: true }
+      });
+    }
+    return {
+      path,
+      folder,
+      title: typeof summary.title === "string" && summary.title.trim() ? summary.title.trim() : reviewGateDisplayName(path),
+      generatedAt: typeof summary.generated_at === "string" ? summary.generated_at : "",
+      items: filterReviewGateVisibleItems(items, this.obsidianConfigDir())
+    };
+  }
+
+  async pendingReviewGateItemPathsFromData(data: ReviewGatePackageData): Promise<string[]> {
+    const rawDecisions = await readTextIfExists(this.app.vault.adapter, `${data.folder}/review-corrections/pending.jsonl`, "");
+    const decided = new Set<string>();
+    for (const line of rawDecisions.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const parsed = JSON.parse(trimmed) as unknown;
+        if (!isRecord(parsed) || typeof parsed.path !== "string" || typeof parsed.decision !== "string") continue;
+        if (isTerminalReviewGateDecision(parsed.decision)) {
+          decided.add(normalizePath(parsed.path));
+        }
+      } catch {
+        // Ignore malformed review records.
+      }
+    }
+    return uniqueStrings(data.items
+      .filter((item) =>
+        isReviewGateItemChanged(item)
+        && isReviewGateItemReviewable(item, this.obsidianConfigDir())
+        && !decided.has(normalizePath(item.path))
+      )
+      .map((item) => normalizePath(item.path)));
   }
 
   async reviewGateSnapshot(force = false): Promise<ReviewGateSnapshot> {
@@ -11937,7 +12005,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (this.reviewGateSnapshotPromise) return await this.reviewGateSnapshotPromise;
     this.reviewGateSnapshotPromise = (async () => {
       const limit = 120;
-      const roots = [REVIEW_GATE_HIDDEN_DIR, REVIEW_GATE_DIR];
+      const roots = [REVIEW_GATE_HIDDEN_DIR];
       const packages = uniqueStrings((await Promise.all(
         roots.map((root) => listReviewGatePackages(this.app.vault.adapter, root, limit).catch(() => [] as string[]))
       )).flat())
@@ -11948,14 +12016,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const keptPackages: string[] = [];
       for (const path of packages) {
         try {
-          const data = await this.readReviewGatePackage(path);
-          const pendingPaths = new Set(await this.pendingReviewGateItemPaths(path));
+          const data = await this.readReviewGateSummaryPackage(path);
+          const pendingPaths = new Set(await this.pendingReviewGateItemPathsFromData(data));
           for (const pendingPath of pendingPaths) pending.add(pendingPath);
           const entry: ReviewGateSnapshotEntry = { path: data.path, folder: data.folder, data, pendingPaths };
           keptPackages.push(data.path);
           byPath.set(normalizePath(data.path), entry);
           byPath.set(normalizePath(data.folder), entry);
-          for (const item of data.items) byPath.set(normalizePath(item.path), entry);
+          for (const item of data.items) {
+            if (isReviewGateItemReviewable(item, this.obsidianConfigDir())) byPath.set(normalizePath(item.path), entry);
+          }
         } catch (error) {
           console.warn("Cancip review snapshot package skipped", path, error);
         }
@@ -14141,7 +14211,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       AUTOMATION_DIR,
       LOCAL_VERSION_DIR,
       LOCAL_VERSION_INDEX_PATH,
-      REVIEW_GATE_DIR,
       REVIEW_GATE_HIDDEN_DIR,
       DEFAULT_MEMORY_FOLDER,
       this.settings.memoryFolder || DEFAULT_MEMORY_FOLDER,
@@ -14628,6 +14697,104 @@ class CancipReviewLeafView extends ItemView {
     const shell = root.createDiv({ cls: "obcc-review-leaf-shell" });
     const body = shell.createDiv({ cls: "obcc-review-leaf-body" });
     await this.renderReviewGatePanel(body, this.packagePath);
+    this.scheduleMobileReviewLayoutSync();
+  }
+
+  private installReviewTreeTouchScroll(tree: HTMLElement): void {
+    let lastY: number | null = null;
+    const canScroll = (): boolean => tree.scrollHeight > tree.clientHeight + 2;
+    tree.addClass("is-touch-scrollable");
+    tree.addEventListener("touchstart", (event) => {
+      lastY = event.touches[0]?.clientY ?? null;
+    }, { passive: true });
+    tree.addEventListener("touchend", () => {
+      lastY = null;
+    }, { passive: true });
+    tree.addEventListener("touchcancel", () => {
+      lastY = null;
+    }, { passive: true });
+    tree.addEventListener("touchmove", (event) => {
+      const currentY = event.touches[0]?.clientY;
+      if (currentY === undefined || lastY === null || !canScroll()) {
+        lastY = currentY ?? null;
+        return;
+      }
+      const before = tree.scrollTop;
+      const maxScroll = Math.max(0, tree.scrollHeight - tree.clientHeight);
+      tree.scrollTop = Math.min(maxScroll, Math.max(0, before + lastY - currentY));
+      if (tree.scrollTop !== before) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+      lastY = currentY;
+    }, { passive: false });
+    tree.addEventListener("wheel", (event) => {
+      if (!canScroll()) return;
+      const before = tree.scrollTop;
+      const maxScroll = Math.max(0, tree.scrollHeight - tree.clientHeight);
+      tree.scrollTop = Math.min(maxScroll, Math.max(0, before + event.deltaY));
+      if (tree.scrollTop !== before) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    }, { passive: false });
+  }
+
+  private scheduleReviewTreeLayoutSync(tree: HTMLElement): void {
+    this.syncReviewTreeLayout(tree);
+    const win = tree.ownerDocument.defaultView;
+    win?.requestAnimationFrame(() => this.syncReviewTreeLayout(tree));
+    win?.setTimeout(() => this.syncReviewTreeLayout(tree), 120);
+  }
+
+  private syncReviewTreeLayout(tree: HTMLElement): void {
+    if (!tree.isConnected) return;
+    const nav = tree.closest<HTMLElement>(".obcc-review-file-nav");
+    const head = nav?.querySelector<HTMLElement>(".obcc-review-file-nav-head");
+    if (!nav || !head) {
+      tree.setCssProps({ "--obcc-review-file-tree-max-height": "" });
+      return;
+    }
+    const rootRect = this.contentEl.getBoundingClientRect();
+    const headRect = head.getBoundingClientRect();
+    const statusBar = tree.ownerDocument.querySelector<HTMLElement>(".status-bar");
+    const statusRect = statusBar?.getBoundingClientRect();
+    const bottomLimit = statusBar?.isConnected && statusRect && statusRect.height > 0 && statusRect.top > rootRect.top
+      ? Math.min(rootRect.bottom, statusRect.top)
+      : rootRect.bottom;
+    const available = Math.floor(bottomLimit - headRect.bottom - 4);
+    if (available > 80) {
+      tree.setCssProps({ "--obcc-review-file-tree-max-height": `${available}px` });
+    } else {
+      tree.setCssProps({ "--obcc-review-file-tree-max-height": "" });
+    }
+  }
+
+  private scheduleMobileReviewLayoutSync(): void {
+    this.syncMobileReviewBottomClearance();
+    const win = this.contentEl.ownerDocument.defaultView;
+    win?.requestAnimationFrame(() => this.syncMobileReviewBottomClearance());
+  }
+
+  private syncMobileReviewBottomClearance(): void {
+    const root = this.contentEl;
+    const doc = root.ownerDocument;
+    const body = doc.body;
+    if (!(Platform.isMobile || body.hasClass("is-mobile") || body.hasClass("is-phone"))) {
+      root.setCssProps({ "--obcc-review-mobile-bottom-clearance": "" });
+      return;
+    }
+    const statusBar = doc.querySelector<HTMLElement>(".status-bar");
+    const rootRect = root.getBoundingClientRect();
+    const statusRect = statusBar?.getBoundingClientRect();
+    const overlap = statusBar?.isConnected && statusRect && statusRect.height > 0
+      ? Math.max(0, Math.ceil(rootRect.bottom - statusRect.top))
+      : 0;
+    if (overlap > 0) {
+      root.setCssProps({ "--obcc-review-mobile-bottom-clearance": `${Math.min(72, overlap + 4)}px` });
+    } else {
+      root.setCssProps({ "--obcc-review-mobile-bottom-clearance": "" });
+    }
   }
 
   private renderReviewGateNavigation(parent: HTMLElement, data: ReviewGatePackageData, items: ReviewGateManifestItem[]): void {
@@ -14641,7 +14808,9 @@ class CancipReviewLeafView extends ItemView {
     head.createDiv({ cls: "obcc-review-title", text: this.t("reviewGatePendingFiles") });
     head.createDiv({ cls: "obcc-review-meta", text: `${this.t("reviewGateChangedCount", { count: items.filter(isReviewGateItemChanged).length })} · ${reviewGateCompactTitle(data.title)}` });
     const tree = parent.createDiv({ cls: "obcc-review-file-nav-tree" });
+    this.installReviewTreeTouchScroll(tree);
     this.renderReviewNavSections(tree, items.map((item) => ({ packagePath: data.path, item })));
+    this.scheduleReviewTreeLayoutSync(tree);
   }
 
   private renderReviewNavSections(parent: HTMLElement, entries: Array<{ packagePath: string; item: ReviewGateManifestItem }>): void {
@@ -14750,9 +14919,11 @@ class CancipReviewLeafView extends ItemView {
     const seenPaths = new Set<string>();
     for (const packagePath of packages) {
       try {
-        const data = await this.loadReviewGatePackage(packagePath);
-        const items = (await this.pendingReviewGateItems(data)).filter((item) => {
+        const data = await this.plugin.readReviewGateSummaryPackage(packagePath);
+        const pendingPaths = new Set(await this.plugin.pendingReviewGateItemPathsFromData(data));
+        const items = data.items.filter((item) => {
           const key = normalizePath(item.path);
+          if (!pendingPaths.has(key)) return false;
           if (seenPaths.has(key)) return false;
           seenPaths.add(key);
           return true;
@@ -14781,6 +14952,7 @@ class CancipReviewLeafView extends ItemView {
     head.createDiv({ cls: "obcc-review-title", text: this.t("reviewGatePendingFiles") });
     head.createDiv({ cls: "obcc-review-meta", text: this.t("reviewPendingCount", { count: total }) });
     const tree = navigation.createDiv({ cls: "obcc-review-file-nav-tree" });
+    this.installReviewTreeTouchScroll(tree);
     const entries: Array<{ packagePath: string; item: ReviewGateManifestItem }> = [];
     for (const entry of pendingData) {
       for (const item of entry.items) {
@@ -14788,6 +14960,7 @@ class CancipReviewLeafView extends ItemView {
       }
     }
     this.renderReviewNavSections(tree, entries);
+    this.scheduleReviewTreeLayoutSync(tree);
   }
 
   private async loadReviewGatePackage(path: string): Promise<ReviewGatePackageData> {
@@ -14803,7 +14976,7 @@ class CancipReviewLeafView extends ItemView {
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
-      items: normalizeReviewGateItems(manifest.items)
+      items: filterReviewGateVisibleItems(normalizeReviewGateItems(manifest.items), this.plugin.obsidianConfigDir())
     };
     this.reviewPackageCache.set(cacheKey, data);
     return data;
@@ -18268,7 +18441,7 @@ class CancipView extends ItemView {
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
-      items: normalizeReviewGateItems(manifest.items)
+      items: filterReviewGateVisibleItems(normalizeReviewGateItems(manifest.items), this.plugin.obsidianConfigDir())
     };
   }
 
@@ -27328,8 +27501,7 @@ class CancipView extends ItemView {
     let packages: string[] = [];
     try {
       packages = uniqueStrings([
-        ...await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 80),
-        ...await listReviewGatePackages(adapter, REVIEW_GATE_DIR, 80)
+        ...await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 80)
       ]);
     } catch {
       return null;
@@ -27380,8 +27552,7 @@ class CancipView extends ItemView {
     let packages: string[] = [];
     try {
       packages = uniqueStrings([
-        ...await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 120),
-        ...await listReviewGatePackages(adapter, REVIEW_GATE_DIR, 120)
+        ...await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 120)
       ]);
     } catch {
       return;
@@ -34120,7 +34291,7 @@ function isVaultCurationContentFile(file: TFile, obsidianConfigDir: string): boo
   if (path.startsWith(".cancip/")) return false;
   if (path.startsWith(".trash/")) return false;
   if (path.startsWith("AI/Cancip/Exports/")) return false;
-  if (path.startsWith("AI/Cancip/Review/")) return false;
+  if (isLegacyVisibleReviewGateArtifactPath(path)) return false;
   if (path.startsWith("AI/Cancip/Memory/")) return false;
   if (path.startsWith("AI/Cancip/Skills/")) return false;
   if (isSensitiveLocalVersionPath(path)) return false;
@@ -34176,7 +34347,7 @@ function isVaultDailyReportContentFile(file: TFile, obsidianConfigDir: string): 
   if (isPathInFolder(path, obsidianConfigDir)) return false;
   if (path.startsWith(".cancip/")) return false;
   if (path.startsWith("AI/Cancip/Exports/")) return false;
-  if (path.startsWith("AI/Cancip/Review/")) return false;
+  if (isLegacyVisibleReviewGateArtifactPath(path)) return false;
   if (path.startsWith("AI/Cancip/Memory/")) return false;
   if (isSensitiveLocalVersionPath(path)) return false;
   return true;
@@ -34747,10 +34918,41 @@ function isReviewGateAttentionExcluded(path: string): boolean {
 function isReviewGateRelatedPath(path: string): boolean {
   const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/"));
   if (!normalized) return false;
-  return normalized === REVIEW_GATE_DIR
-    || normalized === REVIEW_GATE_HIDDEN_DIR
-    || normalized.startsWith(`${REVIEW_GATE_DIR}/`)
+  return normalized === REVIEW_GATE_HIDDEN_DIR
     || normalized.startsWith(`${REVIEW_GATE_HIDDEN_DIR}/`);
+}
+
+function isReviewGateMachineFilePath(path: string): boolean {
+  const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/").replace(/^\/+/, ""));
+  if (!normalized) return false;
+  if (isReviewGateRelatedPath(normalized)) return true;
+  return isLegacyVisibleReviewGateArtifactPath(normalized);
+}
+
+function isLegacyVisibleReviewGateArtifactPath(path: string): boolean {
+  const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/").replace(/^\/+/, ""));
+  const prefix = `${REVIEW_GATE_DIR}/`;
+  if (!normalized.startsWith(prefix)) return false;
+  const parts = normalized.slice(prefix.length).split("/").filter(Boolean);
+  if (!parts.length || !/^review-\d{8,}/i.test(parts[0])) return false;
+  if (parts.length === 1) return true;
+  const name = parts[parts.length - 1]?.toLowerCase() ?? "";
+  return parts.includes("review-corrections")
+    || parts.includes("proposed")
+    || name === "manifest.json"
+    || name === "summary.json"
+    || name === "review-manifest.normalized.json"
+    || name === "pending.jsonl"
+    || name === "00-ob-review-index.html"
+    || /^\d{3}-.+\.html$/i.test(name);
+}
+
+function normalizeReviewGateOutputPath(rawPath: string): string | undefined {
+  const normalized = normalizePath(String(rawPath ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""));
+  if (!normalized) return undefined;
+  if (normalized === REVIEW_GATE_HIDDEN_DIR || normalized.startsWith(`${REVIEW_GATE_HIDDEN_DIR}/`)) return normalized;
+  const name = normalized.split("/").filter(Boolean).pop() || `review-${Date.now().toString(36)}`;
+  return `${REVIEW_GATE_HIDDEN_DIR}/${name}`;
 }
 
 function cancipVaultSyncKindsForPath(path: string, settings: Settings): Set<CancipVaultSyncKind> {
@@ -34803,13 +35005,10 @@ function reviewGateManifestPathFromRelatedPath(path: string): string {
   const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/"));
   if (!isReviewGateRelatedPath(normalized)) return "";
   if (normalized.endsWith("/manifest.json")) return normalized;
-  for (const root of [REVIEW_GATE_DIR, REVIEW_GATE_HIDDEN_DIR]) {
-    const prefix = `${root}/`;
-    if (!normalized.startsWith(prefix)) continue;
-    const packageName = normalized.slice(prefix.length).split("/").filter(Boolean)[0] ?? "";
-    return packageName ? `${prefix}${packageName}/manifest.json` : "";
-  }
-  return "";
+  const prefix = `${REVIEW_GATE_HIDDEN_DIR}/`;
+  if (!normalized.startsWith(prefix)) return "";
+  const packageName = normalized.slice(prefix.length).split("/").filter(Boolean)[0] ?? "";
+  return packageName ? `${prefix}${packageName}/manifest.json` : "";
 }
 
 function reviewGatePackageFolder(path: string): string {
@@ -34832,7 +35031,9 @@ function isDotFolderVaultPath(path: string): boolean {
 }
 
 function isChangedFileDisplayPath(path: string): boolean {
-  return Boolean(normalizePath(String(path ?? "").replace(/\\/g, "/")).trim()) && !isDotFolderVaultPath(path);
+  return Boolean(normalizePath(String(path ?? "").replace(/\\/g, "/")).trim())
+    && !isDotFolderVaultPath(path)
+    && !isReviewGateMachineFilePath(path);
 }
 
 function reviewItemOpenPaths(item: ReviewGateManifestItem): string[] {
@@ -34871,6 +35072,8 @@ function formatLineDeltaLabel(delta: LineDeltaSummary | null): string {
 }
 
 function reviewItemLineDelta(item: ReviewGateManifestItem): LineDeltaSummary {
+  const summaryLineDelta = (item as ReviewGateLightItem).summaryLineDelta;
+  if (summaryLineDelta) return summaryLineDelta;
   const lines = makeReviewDiffLines(item.old_text ?? "", item.new_text ?? "");
   const added = lines.filter((line) => line.kind === "added").length;
   const removed = lines.filter((line) => line.kind === "removed").length;
@@ -34892,14 +35095,29 @@ function isReviewGateItemChanged(item: ReviewGateManifestItem): boolean {
 
 function isReviewGateItemReviewable(item: ReviewGateManifestItem, obsidianConfigDir: string): boolean {
   try {
+    if (isReviewGateMachineFilePath(item.path)) return false;
     if (isReviewableVaultContentPath(item.path, obsidianConfigDir)) return true;
     return normalizeReviewStructureChanges(item.structure).some((change) =>
-      isReviewableVaultContentPath(change.old_path || item.path, obsidianConfigDir)
-      || isReviewableVaultContentPath(change.new_path || item.path, obsidianConfigDir)
+      !isReviewGateMachineFilePath(change.old_path || item.path)
+      && !isReviewGateMachineFilePath(change.new_path || item.path)
+      && (
+        isReviewableVaultContentPath(change.old_path || item.path, obsidianConfigDir)
+        || isReviewableVaultContentPath(change.new_path || item.path, obsidianConfigDir)
+      )
     );
   } catch {
     return false;
   }
+}
+
+function filterReviewGateVisibleItems(items: ReviewGateManifestItem[], obsidianConfigDir: string): ReviewGateManifestItem[] {
+  return items.filter((item) =>
+    !isReviewGateMachineFilePath(item.path)
+    && (
+      isReviewGateItemReviewable(item, obsidianConfigDir)
+      || reviewItemOpenPaths(item).length > 0
+    )
+  );
 }
 
 function isTerminalReviewGateDecision(decision: string): decision is ReviewGateTerminalDecision {
@@ -37061,7 +37279,7 @@ function isVaultOverviewUserFacingPath(path: string, obsidianConfigDir: string):
   if (normalized.startsWith(".cancip/")) return false;
   if (normalized.startsWith(".trash/")) return false;
   if (normalized.startsWith("AI/Cancip/Exports/")) return false;
-  if (normalized.startsWith("AI/Cancip/Review/")) return false;
+  if (isLegacyVisibleReviewGateArtifactPath(normalized)) return false;
   return true;
 }
 
@@ -42433,6 +42651,7 @@ function isConfigOrRuntimeVaultPath(path: string, obsidianConfigDir: string): bo
   const configDir = normalizePath(obsidianConfigDir).toLowerCase();
   return lower === ".cancip"
     || lower.startsWith(".cancip/")
+    || isReviewGateMachineFilePath(normalized)
     || (configDir ? isPathInFolder(lower, configDir) : false)
     || lower === ".trash"
     || lower.startsWith(".trash/")

@@ -404,7 +404,7 @@ function isReviewGateCandidate(path: string, includeHidden: boolean): boolean {
   if (normalized.startsWith(".cancip/automations/")) return false;
   if (normalized.startsWith(".cancip/review-gates/")) return false;
   if (normalized.startsWith("AI/Cancip/Exports/")) return false;
-  if (normalized.startsWith("AI/Cancip/Review/")) return false;
+  if (isLegacyVisibleReviewGateArtifactPath(normalized)) return false;
   if (normalized.startsWith(".trash/")) return false;
   return true;
 }
@@ -422,8 +422,16 @@ function isReviewGateExcludedFolder(path: string): boolean {
     || normalized.startsWith(".cancip/review-gates/")
     || normalized === "AI/Cancip/Exports"
     || normalized.startsWith("AI/Cancip/Exports/")
-    || normalized === "AI/Cancip/Review"
-    || normalized.startsWith("AI/Cancip/Review/");
+    || isLegacyVisibleReviewGateArtifactPath(normalized);
+}
+
+function isLegacyVisibleReviewGateArtifactPath(path: string): boolean {
+  const normalized = normalizePath(path);
+  const prefix = "AI/Cancip/Review/";
+  if (!normalized.startsWith(prefix)) return false;
+  const parts = normalized.slice(prefix.length).split("/").filter(Boolean);
+  if (!parts.length || !/^review-\d{8,}/i.test(parts[0])) return false;
+  return true;
 }
 
 function basename(path: string): string {
