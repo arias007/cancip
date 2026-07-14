@@ -26,6 +26,7 @@ $DefaultCommandIds = @(
   'command.tools.index',
   'command.memory.read.profile',
   'command.obsidian.currentView',
+  'command.obsidian.files.pins',
   'command.findTarget.daily-note',
   'command.obsidian.js.help',
   'command.obsidian.js.probe',
@@ -420,8 +421,9 @@ if (-not $Case -or 'programmatic.vault-state-sync-classifier'.Contains($Case)) {
     skill:'AI/Cancip/Skills/Desktop/obsidian/SKILL.md',
     skillIndex:'.cancip/index/skills-index.json',
     memory:'AI/Cancip/Memory/CANCIP_INDEX.md',
-    review:'AI/Cancip/Review/smoke/manifest.json',
+    visibleReview:'AI/Cancip/Review/smoke/manifest.json',
     hiddenReview:'.cancip/review-gates/smoke/manifest.json',
+    filePins:'.cancip/file-pins.json',
     versions:'.cancip/versions/index.json'
   };
   const result={};
@@ -439,8 +441,8 @@ if (-not $Case -or 'programmatic.vault-state-sync-classifier'.Contains($Case)) {
       skill = 'skills'
       skillIndex = 'skills'
       memory = 'memory'
-      review = 'review'
       hiddenReview = 'review'
+      filePins = 'file-pins'
       versions = 'versions'
     }
     foreach ($key in $expect.Keys) {
@@ -448,9 +450,106 @@ if (-not $Case -or 'programmatic.vault-state-sync-classifier'.Contains($Case)) {
         throw "$key expected $($expect[$key]) got $(@($item.result.$key) -join ',')"
       }
     }
+    if (@($item.result.visibleReview) -contains 'review') {
+      throw "visible Review JSON must not be classified as machine review state"
+    }
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; result = $item.result }
   } catch {
     Add-CaseResult 'programmaticCases' @{ id = 'programmatic.vault-state-sync-classifier'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.native-file-pins'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p||typeof p.setFilePinned!=='function')throw new Error('native file pin API missing');
+  await app.commands.executeCommandById('file-explorer:open');
+  await new Promise(resolve=>setTimeout(resolve,180));
+  const original=JSON.parse(JSON.stringify(await p.loadFilePinState(true)));
+  const mountedPaths=()=>Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).map(el=>String(el.dataset.path||'')).filter(Boolean);
+  try{
+    const before=mountedPaths();
+    const groups={};
+    for(const path of before){
+      const index=path.lastIndexOf('/');
+      const folder=index>=0?path.slice(0,index):'';
+      (groups[folder]??=[]).push(path);
+    }
+    const selected=Object.entries(groups).find(([,paths])=>paths.length>=2);
+    if(!selected)throw new Error('no mounted sibling files for native pin smoke');
+    const folder=selected[0];
+    const first=selected[1][0];
+    const second=selected[1][1];
+    await p.setFilePinned(first,true);
+    await new Promise(resolve=>setTimeout(resolve,180));
+    await p.setFilePinned(first,false);
+    await new Promise(resolve=>setTimeout(resolve,260));
+    const unpinRestoresNative=before.join('|')===mountedPaths().join('|');
+    await p.setFilePinned(first,true);
+    await p.setFilePinned(second,true);
+    await p.setPinnedFileOrder(folder,[second,first]);
+    p.scheduleFilePinsApply(0);
+    await new Promise(resolve=>setTimeout(resolve,220));
+    const state=await p.loadFilePinState(true);
+    const after=mountedPaths();
+    const pinned=state.folders[folder]||[];
+    const mountedPinned=pinned.filter(path=>after.includes(path));
+    const domPinned=after.filter(path=>pinned.includes(path));
+    const normalBefore=before.filter(path=>!pinned.includes(path));
+    const normalAfter=after.filter(path=>!pinned.includes(path));
+    const firstRow=Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).find(el=>el.dataset.path===first);
+    const nativeDraggable=firstRow?.getAttribute('draggable')==='true';
+    const indicator=!!firstRow?.querySelector('.obcc-file-pin-indicator');
+    const view=await p.activateView();
+    const writeNeedsApproval=view.isWriteLikeAction({type:'command',command:'obsidian.files.pin',args:{path:first}});
+    const extension=first.includes('.')?first.slice(first.lastIndexOf('.')):'';
+    const renamed=folder+'/__cancip-pin-rename-smoke'+extension;
+    const originalIndex=pinned.indexOf(first);
+    await p.migrateRenamedFilePins(first,renamed);
+    const renamedState=await p.loadFilePinState(true);
+    const renameKeepsIndex=(renamedState.folders[folder]||[]).indexOf(renamed)===originalIndex;
+    const movedFolder=folder+'/__cancip-pin-move-smoke';
+    const moved=movedFolder+'/'+renamed.split('/').pop();
+    await p.migrateRenamedFilePins(renamed,moved);
+    const movedState=await p.loadFilePinState(true);
+    const movedPresent=(movedState.folders[movedFolder]||[]).includes(moved);
+    await p.removeDeletedFilePins(movedFolder);
+    const deletedState=await p.loadFilePinState(true);
+    const deleteClears=!Object.values(deletedState.folders).flat().includes(moved);
+    return JSON.stringify({
+      id:'programmatic.native-file-pins',
+      elapsedMs:Date.now()-t,
+      folder,
+      stateOrder:pinned.slice(0,6),
+      domOrder:domPinned.slice(0,6),
+      orderApplied:mountedPinned.join('|')===domPinned.join('|'),
+      normalOrderPreserved:normalBefore.join('|')===normalAfter.join('|'),
+      unpinRestoresNative,
+      nativeDraggable,
+      indicator,
+      writeNeedsApproval,
+      renameKeepsIndex,
+      movedPresent,
+      deleteClears
+    });
+  } finally {
+    await p.saveFilePinState(original);
+    await p.loadFilePinState(true);
+    p.stopFilePinSortMode(false);
+    p.scheduleFilePinsApply(0);
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    foreach ($field in @('orderApplied','normalOrderPreserved','unpinRestoresNative','nativeDraggable','indicator','writeNeedsApproval','renameKeepsIndex','movedPresent','deleteClears')) {
+      if (-not $item.$field) { throw "native file pin check failed: $field ($($item | ConvertTo-Json -Compress -Depth 8))" }
+    }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; folder = $item.folder; stateOrder = $item.stateOrder }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.native-file-pins'; pass = $false; error = $_.Exception.Message }
   }
 }
 
@@ -484,7 +583,7 @@ if (-not $Case -or 'programmatic.approval-review-line-delta'.Contains($Case)) {
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
-    if (-not $item.pending) { throw 'write action did not stay pending in approval mode' }
+    if (-not $item.pending) { throw "write action did not stay pending in approval mode: $($item | ConvertTo-Json -Compress -Depth 8)" }
     if (-not $item.noFinalAdded) { throw 'pending action generated a final summary before approval' }
     if ($item.structureKind -ne 'move') { throw "review structure kind expected move got $($item.structureKind)" }
     if (-not $item.lineDelta -or [int]$item.lineDelta.added -lt 2) { throw "line delta missing or too small: $($item.lineDelta | ConvertTo-Json -Compress)" }
@@ -814,6 +913,7 @@ if (-not $Case -or 'programmatic.automation-vault-curation-template'.Contains($C
     hasNewOnly:/newly created Markdown files once/.test(templatesText),
     hasOldSkill:/specified-scope curation Skill/.test(templatesText),
     hasCurationActions:/beautif|refactor/.test(templatesText)&&/properties\/tags\/summaries\/links/.test(templatesText)&&/renam/.test(templatesText),
+    hasBenefitGate:/benefit gate/i.test(templatesText)&&/frequently referenced notes/i.test(templatesText)&&/protected/i.test(templatesText),
     hasDeprecated:/auto-vault-content-beautify|auto-vault-auto-tags|auto-vault-file-summaries/.test(templatesText),
     hasMechanicalSettings:['specialistRoutingEnabled','mechanicalTaskApiProfileId','mechanicalTaskModel','mechanicalTaskRoutes'].some((key)=>Object.prototype.hasOwnProperty.call(settings,key))
   });
@@ -821,7 +921,7 @@ if (-not $Case -or 'programmatic.automation-vault-curation-template'.Contains($C
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
     if (-not $item.hasCuration) { throw "unified vault curation template is missing: $($item | ConvertTo-Json -Compress)" }
-    if (-not $item.hasNewOnly -or -not $item.hasOldSkill -or -not $item.hasCurationActions) { throw "vault curation template is missing new-file automation or old-file Skill route: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.hasNewOnly -or -not $item.hasOldSkill -or -not $item.hasCurationActions -or -not $item.hasBenefitGate) { throw "vault curation template is missing new-file benefit gate, automation, or old-file Skill route: $($item | ConvertTo-Json -Compress)" }
     if ($item.hasDeprecated) { throw "deprecated split vault automation templates are still listed: $($item | ConvertTo-Json -Compress)" }
     if ($item.hasMechanicalSettings) { throw "mechanical/specialist settings are still exposed: $($item | ConvertTo-Json -Compress)" }
     if ($item.hasRouteKinds) { throw "automation prompt helper still exposes routeKinds: $($item | ConvertTo-Json -Compress)" }
@@ -836,70 +936,154 @@ if (-not $Case -or 'programmatic.automation-vault-curation-scan-pack'.Contains($
   try {
     $code = @'
 (async function(){
-  var t=Date.now();
-  var p=app.plugins.plugins.cancip;
-  var leaves=app.workspace.getLeavesOfType('cancip-view');
-  var v=(p&&typeof p.activateView==='function')?await p.activateView():((leaves[0]&&leaves[0].view)||null);
-  if(!p||!v)throw new Error('Cancip plugin/view unavailable');
-  if(typeof v.buildVaultCurationSourcePack!=='function')throw new Error('missing curation programmatic scan pack builder');
-  var adapter=app.vault.adapter;
-  var statePath='.cancip/automations/vault-curation-new-files.json';
-  var automationPath='.cancip/automations.json';
-  var oldExists=await adapter.exists(statePath);
-  var oldRaw=oldExists?await adapter.read(statePath):'';
-  var oldAutomationExists=await adapter.exists(automationPath);
-  var oldAutomationRaw=oldAutomationExists?await adapter.read(automationPath):'';
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view;
+  if(!p||!v||typeof v.buildVaultCurationSourcePack!=='function')throw new Error('curation scan pack unavailable');
+  const files=app.vault.getMarkdownFiles().slice(0,2);
+  if(files.length<2)throw new Error('not enough Markdown files for synthetic scan');
+  const oldRefresh=v.refreshVaultCurationNewFileState;
+  const oldItems=v.vaultCurationCandidateItems;
+  const oldRun=v.runAutomationPrompt;
+  let modelCalls=0;
+  v.refreshVaultCurationNewFileState=async()=>({initialized:false,pending:files});
+  v.vaultCurationCandidateItems=async(items,reason)=>items.map((file,index)=>{
+    const decision=index===0
+      ?{action:'curate',reasons:['objective Markdown syntax defect'],protections:[],allowedActions:['format']}
+      :{action:'protected',reasons:['change risk'],protections:['template-like path'],allowedActions:[]};
+    return {path:file.path,ctime:file.stat.ctime,mtime:file.stat.mtime,size:file.stat.size,reason,curationReasons:decision.reasons,decision,title:file.basename,tags:[],outLinks:0,backlinks:0,composition:{characters:20,lines:2,headings:1,listItems:0,tasks:0,tables:0,codeBlocks:0,quotes:0,embeds:0},linkRelations:[],content:index===0?'#Broken\nText':undefined};
+  });
+  v.runAutomationPrompt=async()=>{modelCalls+=1;return 'unexpected';};
+  const beforeSession=v.sessionId;
+  const beforeMessages=(v.messages||[]).length;
+  let pack='';
   try{
-    if(oldExists)await adapter.remove(statePath);
-    var baseline=String(await v.buildVaultCurationSourcePack({id:'auto-vault-curation',title:'smoke',prompt:'smoke',args:{limit:3}}));
-    var beforeSession=v.sessionId;
-    var beforeMessages=(v.messages||[]).length;
-    var modelCalls=0;
-    var oldRun=v.runAutomationPrompt;
-    v.runAutomationPrompt=async function(){modelCalls+=1;return 'unexpected model call';};
-    var emptyResult;
-    try{emptyResult=await p.runAutomationById('auto-vault-curation');}finally{v.runAutomationPrompt=oldRun;}
-    var state=JSON.parse(await adapter.read(statePath));
-    var entries=Object.entries(state.known||{});
-    var counts=new Map();
-    entries.forEach(function(entry){counts.set(entry[1],(counts.get(entry[1])||0)+1);});
-    var target=(entries.find(function(entry){return counts.get(entry[1])===1;})||entries[0]||[])[0]||'';
-    if(!target)throw new Error('no curatable file available for smoke');
-    delete state.known[target];
-    state.pending=[];
-    await adapter.write(statePath,JSON.stringify(state));
-    var pack=String(await v.buildVaultCurationSourcePack({id:'auto-vault-curation',title:'smoke',prompt:'smoke',args:{limit:3}}));
-    var pathMatch=pack.match(/^- candidatePathsJson:\s*(\[[^\r\n]*\])/m);
-    var paths=pathMatch?JSON.parse(pathMatch[1]):[];
-    await v.completeVaultCurationNewFiles(paths);
-    var completed=JSON.parse(await adapter.read(statePath));
-    return JSON.stringify({
-      id:'programmatic.automation-vault-curation-scan-pack',
-      elapsedMs:Date.now()-t,
-      length:pack.length,
-      baselineEmpty:/^- batchCandidates:\s*0$/m.test(baseline),
-      emptyRunSilent:modelCalls===0&&emptyResult&&emptyResult.text===''&&v.sessionId===beforeSession&&(v.messages||[]).length===beforeMessages,
-      hasProgrammatic:pack.indexOf('Vault Curation Programmatic Scan Pack')>=0,
-      hasNewOnly:pack.indexOf('scanMode: new-files-only')>=0&&pack.indexOf('## New file candidates')>=0,
-      excludesOldLane:pack.indexOf('Explicit old/specified scope lane')<0,
-      hasSkillPath:pack.indexOf('.cancip/skills/vault-curation-specified-scope.skill.md')>=0,
-      queuedTarget:paths.indexOf(target)>=0,
-      consumed:!(completed.pending||[]).includes(target)
-    });
+    pack=String(await v.buildVaultCurationSourcePack({args:{limit:3}}));
   } finally {
-    if(await adapter.exists(statePath))await adapter.remove(statePath);
-    if(oldExists)await adapter.write(statePath,oldRaw);
-    if(await adapter.exists(automationPath))await adapter.remove(automationPath);
-    if(oldAutomationExists)await adapter.write(automationPath,oldAutomationRaw);
+    v.refreshVaultCurationNewFileState=oldRefresh;
+    v.vaultCurationCandidateItems=oldItems;
+    v.runAutomationPrompt=oldRun;
   }
+  const paths=JSON.parse(pack.match(/^- candidatePathsJson:\s*(\[[^\r\n]*\])/m)?.[1]||'[]');
+  const scanned=JSON.parse(pack.match(/^- scannedPathsJson:\s*(\[[^\r\n]*\])/m)?.[1]||'[]');
+  return JSON.stringify({id:'programmatic.automation-vault-curation-scan-pack',elapsedMs:Date.now()-t,length:pack.length,silent:modelCalls===0&&v.sessionId===beforeSession&&(v.messages||[]).length===beforeMessages,contract:pack.includes('newness only triggers one scan')&&pack.includes('allowedActions=format')&&/^- protectedThisBatch:\s*1$/m.test(pack),paths:paths.length===1&&paths[0]===files[0].path,scanned:files.every(file=>scanned.includes(file.path)),skill:pack.includes('.cancip/skills/vault-curation-specified-scope.skill.md')});
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
-    if (-not $item.baselineEmpty -or -not $item.emptyRunSilent -or -not $item.hasProgrammatic -or -not $item.hasNewOnly -or -not $item.excludesOldLane) { throw "curation scan pack is not silent/new-files-only: $($item | ConvertTo-Json -Compress)" }
-    if (-not $item.hasSkillPath -or -not $item.queuedTarget -or -not $item.consumed) { throw "curation new-file queue or old-file Skill route failed: $($item | ConvertTo-Json -Compress)" }
+    foreach ($field in @('silent','contract','paths','scanned','skill')) {
+      if (-not $item.$field) { throw "curation scan-pack check failed: $field ($($item | ConvertTo-Json -Compress))" }
+    }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; length = $item.length }
   } catch {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-vault-curation-scan-pack'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.automation-vault-curation-benefit-gate'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view;
+  if(!p||!v||typeof v.vaultCurationDecision!=='function')throw new Error('curation benefit gate unavailable');
+  const d=(path,content,reasons,backlinks=0,frontmatter={})=>v.vaultCurationDecision({path,content,curationReasons:reasons,backlinks,vaultFileCount:500,frontmatter});
+  const clean=d('Notes/Clean.md','# Clean\n\nConcise.',[]);
+  const inbox=d('Inbox/Clear.md','# Clear\n\nUseful.',['temporary or inbox location needs classification']);
+  const format=d('Notes/Broken.md','#Broken',['objective Markdown syntax defect']);
+  const rename=d('Notes/Untitled.md','# Useful',['vague or machine-generated filename']);
+  const link=d('Notes/Related.md','# Useful',['objective Markdown syntax defect','explicitly mentioned related note lacks a link']);
+  const pathTemplate=d('Templates/Daily.md','#Broken',['objective Markdown syntax defect']);
+  const syntaxTemplate=d('Notes/Seed.md','{{date}}',['objective Markdown syntax defect']);
+  const frequent=d('Notes/Index.md','#Broken',['objective Markdown syntax defect'],8);
+  const plugin=d('Notes/Dashboard.md','```dataview\nTABLE file.name\n```',['objective Markdown syntax defect']);
+  const generated=d('Notes/Generated.md','#Broken',['objective Markdown syntax defect'],0,{generated_by:'reporter'});
+  return JSON.stringify({id:'programmatic.automation-vault-curation-benefit-gate',elapsedMs:Date.now()-t,clean:clean.action==='skip'&&clean.allowedActions.length===0,inbox:inbox.action==='skip'&&inbox.allowedActions.length===0,format:format.action==='curate'&&format.allowedActions.join(',')==='format',rename:rename.action==='curate'&&rename.allowedActions.join(',')==='rename',link:link.action==='curate'&&link.allowedActions.includes('format')&&link.allowedActions.includes('links'),templates:pathTemplate.action==='protected'&&syntaxTemplate.action==='protected',frequent:frequent.action==='protected'&&frequent.protections.some(x=>x.includes('frequently referenced')),plugin:plugin.action==='protected',generated:generated.action==='protected'});
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 20
+    foreach ($field in @('clean','inbox','format','rename','link','templates','frequent','plugin','generated')) {
+      if (-not $item.$field) { throw "curation benefit gate variant failed: $field ($($item | ConvertTo-Json -Compress))" }
+    }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-vault-curation-benefit-gate'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.automation-background-focus-neutral'.Contains($Case)) {
+  try {
+    $code = @'
+(async function(){
+  var t=Date.now();
+  var p=app.plugins.plugins.cancip;
+  if(!p||typeof p.getAutomationRunnerView!=='function')throw new Error('background automation runner unavailable');
+  var before=app.workspace.getLeaf(false);
+  var runner=await p.getAutomationRunnerView();
+  var afterCreate=app.workspace.getLeaf(false);
+  if(!runner)throw new Error('background automation runner view unavailable');
+  var original={
+    load:p.loadAutomations,
+    begin:p.beginAiVaultMutationCapture,
+    write:p.writeAutomationLog,
+    mark:p.markAutomationRun,
+    prepare:runner.prepareAutomationSession,
+    run:runner.runAutomationPrompt
+  };
+  var result;
+  try{
+    p.loadAutomations=async function(){return [{
+      id:'smoke-background-focus-neutral',
+      title:'smoke background',
+      prompt:'smoke',
+      schedule:'manual',
+      enabled:true,
+      intervalMinutes:60,
+      hour:0,
+      minute:0,
+      sessionMode:'new',
+      createdAt:new Date().toISOString(),
+      updatedAt:new Date().toISOString()
+    }];};
+    p.beginAiVaultMutationCapture=function(){return null;};
+    p.writeAutomationLog=async function(){return '';};
+    p.markAutomationRun=async function(){};
+    runner.prepareAutomationSession=async function(){};
+    runner.runAutomationPrompt=async function(){return 'background smoke complete';};
+    result=await p.runAutomationById('smoke-background-focus-neutral',{trigger:'scheduled'});
+  }finally{
+    p.loadAutomations=original.load;
+    p.beginAiVaultMutationCapture=original.begin;
+    p.writeAutomationLog=original.write;
+    p.markAutomationRun=original.mark;
+    runner.prepareAutomationSession=original.prepare;
+    runner.runAutomationPrompt=original.run;
+  }
+  var backgroundBeforeCleanup=app.workspace.getLeavesOfType('cancip-automation-runner-view').length;
+  var released=p.releaseAutomationRunnerIfIdle();
+  await new Promise(function(resolve){setTimeout(resolve,0);});
+  var afterRun=app.workspace.getLeaf(false);
+  return JSON.stringify({
+    id:'programmatic.automation-background-focus-neutral',
+    elapsedMs:Date.now()-t,
+    focusStayed:before===afterCreate&&before===afterRun,
+    runnerType:runner.getViewType(),
+    visibleChatLeaves:app.workspace.getLeavesOfType('cancip-view').length,
+    backgroundBeforeCleanup:backgroundBeforeCleanup,
+    backgroundAfterCleanup:app.workspace.getLeavesOfType('cancip-automation-runner-view').length,
+    released:released,
+    result:String(result&&result.text||'')
+  });
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 30
+    if (-not $item.focusStayed) { throw "automation runner changed the active leaf: $($item | ConvertTo-Json -Compress)" }
+    if ($item.runnerType -ne 'cancip-automation-runner-view' -or $item.backgroundBeforeCleanup -ne 1) { throw "automation runner view isolation failed: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.released -or $item.backgroundAfterCleanup -ne 0) { throw "automation runner cleanup failed: $($item | ConvertTo-Json -Compress)" }
+    if ($item.result -ne 'background smoke complete') { throw "background automation result failed: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; runnerType = $item.runnerType }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.automation-background-focus-neutral'; pass = $false; error = $_.Exception.Message }
   }
 }
 

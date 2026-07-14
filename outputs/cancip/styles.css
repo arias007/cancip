@@ -7650,3 +7650,68 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
   flex: 1 1 0;
   min-height: 0;
 }
+
+/* Native File Explorer pinning keeps Obsidian's normal rows and adds only scoped controls. */
+.nav-file-title.is-cancip-file-pinned > .obcc-file-pin-indicator {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  margin-inline-start: 4px;
+  color: var(--interactive-accent);
+  opacity: 0.76;
+  pointer-events: none;
+}
+
+.obcc-file-pin-indicator > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.nav-file-title > .obcc-file-pin-sort-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  min-width: 24px;
+  min-height: 24px;
+  margin-inline-start: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: grab;
+  touch-action: none;
+}
+
+.nav-file-title > .obcc-file-pin-sort-handle:active,
+.nav-file-title.is-cancip-file-pin-dragging > .obcc-file-pin-sort-handle {
+  cursor: grabbing;
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+
+.nav-file-title.is-cancip-file-pin-dragging {
+  background: var(--background-modifier-hover);
+  outline: 1px solid var(--interactive-accent);
+  outline-offset: -1px;
+}
+
+.obcc-file-pin-sort-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+}
+
+.obcc-file-pin-sort-toolbar > .clickable-icon {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  min-height: 28px;
+}

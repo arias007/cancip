@@ -363,6 +363,15 @@
       }
     },
     {
+      "id": "command.obsidian.files.pins",
+      "command": "obsidian.files.pins",
+      "args": {},
+      "expect": {
+        "containsAny": ["没有置顶文件", "No pinned files", " ("],
+        "maxMs": 3000
+      }
+    },
+    {
       "id": "command.findTarget.daily-note",
       "command": "cancip.findTarget",
       "args": { "query": "打开今日日记", "limit": 8 },

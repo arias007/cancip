@@ -89,6 +89,7 @@ type ConfigBackupIndex = {
   entries: Record<string, ConfigBackupEntry>;
 };
 const CANCIP_REVIEW_VIEW_TYPE = "cancip-review-view";
+const CANCIP_AUTOMATION_RUNNER_VIEW_TYPE = "cancip-automation-runner-view";
 const LEGACY_CANCIP_CHAT_VIEW_TYPE = "cancip-chat";
 const SR_CARD_REVIEW_VIEW_TYPE = "spaced-repetition-tab-view";
 const SR_NOTE_REVIEW_QUEUE_VIEW_TYPE = "review-queue-list-view";
@@ -145,6 +146,11 @@ const PRIME_TTS_LATIN_WORD_MAX_CHARS = 18;
 const PRIME_TTS_PROGRESSIVE_FALLBACK_CHARS = [2, 5, 10] as const;
 const PRIME_TTS_PLAYBACK_DRAIN_MS = 0;
 const PRIME_TTS_WEB_AUDIO_FALLBACK_GRACE_MS = 650;
+const AUTOMATION_STATE_CACHE_TTL_MS = 5000;
+const AUTOMATION_RUNNER_IDLE_DISPOSE_MS = 60000;
+const FOREGROUND_LIVE_SESSION_SAVE_MIN_INTERVAL_MS = 1000;
+const BACKGROUND_LIVE_SESSION_SAVE_MIN_INTERVAL_MS = 2000;
+const STARTUP_MAINTENANCE_IDLE_TIMEOUT_MS = 1600;
 const TTS_CAPTURE_MAX_CHARS = 300000;
 const TTS_MAX_PARTS = 50000;
 const LANGUAGE_VALUES = ["zh", "zh-TW", "en", "ug", "tr", "ru", "ja", "ko", "es", "fr", "de", "ar"] as const;
@@ -206,7 +212,7 @@ type ToolRunLineDelta = LineDeltaSummary & {
 };
 type HeaderMenuKind = "history" | "events" | "outline" | "plan" | "live-files" | "audit" | "git" | "more" | "skills" | "automation";
 type ComposerSubmitMode = "queue" | "direct" | "hold";
-type CancipVaultSyncKind = "review" | "sessions" | "config" | "automations" | "skills" | "memory" | "versions";
+type CancipVaultSyncKind = "review" | "sessions" | "config" | "automations" | "skills" | "memory" | "versions" | "file-pins";
 
 type ApiProfile = {
   id: string;
@@ -877,6 +883,15 @@ type VaultCurationLinkRelation = {
   evidence?: string;
 };
 
+type VaultCurationAllowedAction = "format" | "properties" | "summary" | "links" | "rename";
+
+type VaultCurationDecision = {
+  action: "curate" | "skip" | "protected";
+  reasons: string[];
+  protections: string[];
+  allowedActions: VaultCurationAllowedAction[];
+};
+
 type VaultCurationCandidate = {
   path: string;
   ctime: number;
@@ -884,6 +899,7 @@ type VaultCurationCandidate = {
   size: number;
   reason: string;
   curationReasons: string[];
+  decision: VaultCurationDecision;
   title?: string;
   tags: string[];
   outLinks: number;
@@ -995,6 +1011,22 @@ type ChoiceOption = {
 
 type FileExplorerViewLike = {
   revealInFolder?: (target: TFile | TFolder) => void | Promise<void>;
+  requestSort?: () => void;
+  sort?: () => void;
+};
+
+type FilePinState = {
+  schemaVersion: 1;
+  updatedAt: string;
+  folders: Record<string, string[]>;
+};
+
+type FilePinSortSession = {
+  folderPath: string;
+  initialOrder: string[];
+  draftOrder: string[];
+  draggingPath: string;
+  cleanup: () => void;
 };
 
 type LocalVersionKind = "manual" | "daily";
@@ -2241,6 +2273,8 @@ const DEFAULT_SETTINGS: Settings = {
 
 const CANCIP_CONFIG_DIR = ".cancip";
 const CANCIP_CONFIG_PATH = `${CANCIP_CONFIG_DIR}/config.json`;
+const CANCIP_FILE_PINS_PATH = `${CANCIP_CONFIG_DIR}/file-pins.json`;
+const CANCIP_FILE_PINS_SCHEMA_VERSION = 1;
 const CANCIP_CONFIG_SCHEMA_VERSION = 1;
 const CANCIP_CONFIG_BACKUP_DIR = `${CANCIP_CONFIG_DIR}/config-backups`;
 const CANCIP_CONFIG_BACKUP_INDEX_PATH = `${CANCIP_CONFIG_BACKUP_DIR}/index.json`;
@@ -2276,7 +2310,7 @@ const AUTOMATION_DIR = `${CANCIP_CONFIG_DIR}/automations`;
 const AUTOMATION_STATE_PATH = `${CANCIP_CONFIG_DIR}/automations.json`;
 const AUTOMATION_SCHEMA_VERSION = 1;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
-const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v5";
+const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v6";
 const VAULT_CURATION_NEW_FILE_STATE_PATH = `${AUTOMATION_DIR}/vault-curation-new-files.json`;
 const DEPRECATED_VAULT_CURATION_AUTOMATION_IDS = new Set([
   "auto-vault-content-beautify",
@@ -2395,6 +2429,8 @@ const EN = {
   openCancip: "Open Cancip",
   commandOpenChat: "Open chat",
   commandNewChat: "New chat",
+  commandTogglePinActiveFile: "Toggle pin for active file",
+  commandSortPinnedFiles: "Sort pinned files in current folder",
   exportSession: "Export session",
   exportNoMessages: "No messages to export",
   exportDone: "Session exported: {path}",
@@ -2615,6 +2651,22 @@ const EN = {
   reviewGatePrompt: "Use the programmatic cancip.reviewGate builder before risky vault organization. Pass concrete paths/proposed items when possible; do not use prompt-only review.",
   noSelection: "No selection to add",
   sendToAI: "Send to Cancip",
+  filePinPin: "Pin file",
+  filePinUnpin: "Unpin file",
+  filePinPinned: "Pinned: {path}",
+  filePinUnpinned: "Unpinned: {path}",
+  filePinMoveUp: "Move up in pinned files",
+  filePinMoveDown: "Move down in pinned files",
+  filePinSort: "Sort pinned files",
+  filePinSortHandle: "Drag to sort pinned files",
+  filePinSortStarted: "Pinned-file sort mode started",
+  filePinSortNeedsTwo: "Pin at least two files in this folder to sort them",
+  filePinSortDone: "Finish pinned-file sorting",
+  filePinSortCancel: "Cancel pinned-file sorting",
+  filePinSortCancelled: "Pinned-file order restored",
+  filePinOrderSaved: "Pinned-file order saved",
+  filePinNone: "No pinned files",
+  filePinFailed: "File pin operation failed: {reason}",
   editButtonSettings: "Edit button",
   buttonEditTitle: "Button settings",
   buttonEditName: "Name",
@@ -3125,6 +3177,8 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     openCancip: "打开 Cancip",
     commandOpenChat: "打开聊天",
     commandNewChat: "新对话",
+    commandTogglePinActiveFile: "置顶或取消置顶当前文件",
+    commandSortPinnedFiles: "调整当前文件夹的置顶文件顺序",
     exportSession: "导出会话",
     exportNoMessages: "没有可导出的消息",
     exportDone: "会话已导出：{path}",
@@ -3345,6 +3399,22 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGatePrompt: "高风险整理前使用程序化 cancip.reviewGate 生成原生审核面板数据；尽量传入具体路径/提案，不要只发提示词。",
     noSelection: "没有可加入的选中文本",
     sendToAI: "发给 Cancip",
+    filePinPin: "置顶文件",
+    filePinUnpin: "取消置顶",
+    filePinPinned: "已置顶：{path}",
+    filePinUnpinned: "已取消置顶：{path}",
+    filePinMoveUp: "在置顶文件中上移",
+    filePinMoveDown: "在置顶文件中下移",
+    filePinSort: "调整置顶文件顺序",
+    filePinSortHandle: "拖动调整置顶顺序",
+    filePinSortStarted: "已进入置顶文件排序",
+    filePinSortNeedsTwo: "当前文件夹至少置顶两个文件后才能排序",
+    filePinSortDone: "完成置顶排序",
+    filePinSortCancel: "取消置顶排序",
+    filePinSortCancelled: "已恢复原置顶顺序",
+    filePinOrderSaved: "置顶文件顺序已保存",
+    filePinNone: "没有置顶文件",
+    filePinFailed: "文件置顶操作失败：{reason}",
     editButtonSettings: "编辑按钮",
     settingsUiButtonManagement: "按钮管理",
     settingsUiButtonManagementDesc: "长按按钮可编辑、隐藏、排序、改名或增加同级命令按钮；关闭后不再接管 Obsidian 和插件按钮。",
@@ -5417,6 +5487,12 @@ export default class CancipPlugin extends Plugin {
   private automationFirstRunTimer: number | null = null;
   private automationIntervalTimer: number | null = null;
   private automationScheduleCleanupRegistered = false;
+  private automationStateCache: { at: number; tasks: AutomationTask[] } | null = null;
+  private automationStateReadPromise: Promise<AutomationTask[]> | null = null;
+  private automationRunnerLeaf: WorkspaceLeaf | null = null;
+  private automationRunnerCleanupTimer: number | null = null;
+  private startupMaintenanceCancel: (() => void) | null = null;
+  private startupMaintenanceStarted = false;
   private settingTab: CancipSettingTab | null = null;
   private activeUtterance: SpeechSynthesisUtterance | null = null;
   private activeTtsParts: string[] = [];
@@ -5476,6 +5552,13 @@ export default class CancipPlugin extends Plugin {
   private uiButtonRuleLastApplyAt = 0;
   private uiButtonRulesRevealHidden = false;
   private rightSidebarTabToolbarTimer: number | null = null;
+  private filePinStateCache: FilePinState | null = null;
+  private filePinStateReadPromise: Promise<FilePinState> | null = null;
+  private filePinWriteQueue: Promise<void> = Promise.resolve();
+  private filePinObserverHandle: UiButtonRuleObserverHandle | null = null;
+  private filePinApplyTimer: UiButtonRuleTimer | null = null;
+  private filePinApplying = false;
+  private filePinSortSession: FilePinSortSession | null = null;
   private buttonEditLongPressTimer: number | null = null;
   private buttonEditLongPressTarget: HTMLElement | null = null;
   private buttonEditBubbleEl: HTMLButtonElement | null = null;
@@ -5543,7 +5626,9 @@ export default class CancipPlugin extends Plugin {
 
     this.registerView(VIEW_TYPE, (leaf) => new CancipView(leaf, this));
     this.registerView(LEGACY_CANCIP_CHAT_VIEW_TYPE, (leaf) => new CancipView(leaf, this, LEGACY_CANCIP_CHAT_VIEW_TYPE));
+    this.registerView(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE, (leaf) => new CancipView(leaf, this, CANCIP_AUTOMATION_RUNNER_VIEW_TYPE));
     this.registerView(CANCIP_REVIEW_VIEW_TYPE, (leaf) => new CancipReviewLeafView(leaf, this));
+    this.app.workspace.detachLeavesOfType(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE);
     this.installAiVaultMutationCaptureBridge();
     void this.ensureVisibleDataFolders();
     void recordCancipSessionEvent(this.app.vault.adapter, {
@@ -5564,10 +5649,12 @@ export default class CancipPlugin extends Plugin {
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.captureAiVaultEventMutation("delete", file.path);
+      void this.removeDeletedFilePins(file.path).catch((error) => this.recordFilePinError("delete migration", error));
       this.handleCancipVaultFileChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       this.captureAiVaultEventMutation("rename", file.path, oldPath);
+      void this.migrateRenamedFilePins(oldPath, file.path).catch((error) => this.recordFilePinError("rename migration", error));
       this.handleCancipVaultFileChanged(oldPath);
       this.handleCancipVaultFileChanged(file.path);
     }));
@@ -5593,6 +5680,29 @@ export default class CancipPlugin extends Plugin {
       callback: async () => {
         const view = await this.activateView();
         void view?.newChat();
+      }
+    });
+
+    this.addCommand({
+      id: "toggle-pin-active-file",
+      name: this.t("commandTogglePinActiveFile"),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        if (!checking) void this.toggleFilePin(file.path).catch((error) => this.recordFilePinError("toggle active file", error, true));
+        return true;
+      }
+    });
+
+    this.addCommand({
+      id: "sort-pinned-files-current-folder",
+      name: this.t("commandSortPinnedFiles"),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        const folderPath = file ? vaultPathParent(file.path) : "";
+        if (this.pinnedFilePaths(folderPath).length < 2) return false;
+        if (!checking) void this.startFilePinSortMode(folderPath);
+        return true;
       }
     });
 
@@ -5637,6 +5747,11 @@ export default class CancipPlugin extends Plugin {
       });
     }));
 
+    this.registerEvent(this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+      if (!(file instanceof TFile)) return;
+      this.addFilePinMenuItems(menu, file);
+    }));
+
     this.registerEvent(this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view: MarkdownView) => {
       const selected = editor.getSelection().trim() || getWindowSelectionText().trim();
       if (!selected) return;
@@ -5673,12 +5788,14 @@ export default class CancipPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => {
       this.scheduleTtsViewActionRefresh();
       this.scheduleRightSidebarTabToolbarRefresh(80);
+      this.scheduleFilePinsApply(80);
     }));
     this.registerEvent(this.app.workspace.on("file-open", () => this.scheduleTtsViewActionRefresh()));
     this.registerEvent(this.app.workspace.on("layout-change", () => {
       this.scheduleTtsViewActionRefresh();
       this.scheduleUiButtonRulesApply(80);
       this.scheduleRightSidebarTabToolbarRefresh(80);
+      this.scheduleFilePinsApply(80);
     }));
     this.registerEvent(this.app.workspace.on("editor-menu", (menu: Menu, editor: Editor, view: MarkdownView) => {
       menu.addItem((item) => {
@@ -5823,7 +5940,7 @@ export default class CancipPlugin extends Plugin {
 
     this.settingTab = new CancipSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
-    void this.runStartupMaintenance();
+    this.scheduleStartupMaintenance();
   }
 
   private installStartupUiEnhancements(): void {
@@ -5844,6 +5961,8 @@ export default class CancipPlugin extends Plugin {
       });
       this.installUiButtonRuleObserver();
       this.scheduleUiButtonRulesApply(120);
+      this.installFilePinObserver();
+      void this.loadFilePinState().then(() => this.scheduleFilePinsApply(0));
       this.installRightSidebarTabToolbar();
       this.installSrPdfToolbarPatch();
       this.installSrReviewQueueCommandPatch();
@@ -6250,6 +6369,19 @@ export default class CancipPlugin extends Plugin {
     return true;
   }
 
+  private scheduleStartupMaintenance(): void {
+    if (this.startupMaintenanceStarted || this.startupMaintenanceCancel) return;
+    this.app.workspace.onLayoutReady(() => {
+      if (this.startupMaintenanceStarted || this.startupMaintenanceCancel) return;
+      this.startupMaintenanceCancel = scheduleIdleWork(() => {
+        this.startupMaintenanceCancel = null;
+        if (this.startupMaintenanceStarted) return;
+        this.startupMaintenanceStarted = true;
+        void this.runStartupMaintenance();
+      }, STARTUP_MAINTENANCE_IDLE_TIMEOUT_MS);
+    });
+  }
+
   private async runStartupMaintenance(): Promise<void> {
     const run = async (label: string, task: () => Promise<void> | void): Promise<void> => {
       try {
@@ -6259,21 +6391,22 @@ export default class CancipPlugin extends Plugin {
         const reason = error instanceof Error ? error.message : String(error);
         this.devErrors.push(`${label} failed: ${reason}`);
       }
+      await sleep(0);
     };
+    await run("ensureDefaultDailyAutomations", () => this.ensureDefaultDailyAutomations());
+    this.scheduleAutomations();
+    this.scheduleCancipStatePolling();
+    this.scheduleBuiltinPrimeTtsWarmup();
+    await run("repairCustomUiButtonCommands", () => this.repairCustomUiButtonCommands());
+    this.scheduleUiButtonRulesApply(120);
     await run("pruneLocalVersionIndex", () => this.pruneLocalVersionIndex());
     await run("reconcileStaleRunningSessions", () => this.reconcileStaleRunningSessions());
     await run("migrateCodexMemoryFolder", () => this.migrateCodexMemoryFolder());
     await run("ensureMemoryIndexFiles", () => this.ensureMemoryIndexFiles());
     await run("ensureVaultOverviewMemory", () => this.ensureVaultOverviewMemory());
     await run("ensureBuiltInCurationSkill", () => this.ensureBuiltInCurationSkill());
-    await run("ensureDefaultDailyAutomations", () => this.ensureDefaultDailyAutomations());
     this.scheduleCodexMemoryAutoImport();
     this.scheduleDailyLocalVersioning();
-    this.scheduleAutomations();
-    this.scheduleCancipStatePolling();
-    this.scheduleBuiltinPrimeTtsWarmup();
-    await run("repairCustomUiButtonCommands", () => this.repairCustomUiButtonCommands());
-    this.scheduleUiButtonRulesApply(120);
   }
 
   private async ensureBuiltInCurationSkill(): Promise<void> {
@@ -6463,6 +6596,19 @@ export default class CancipPlugin extends Plugin {
     for (const request of this.sessionRequests.values()) request.abort();
     this.sessionRequests.clear();
     this.sessionRequestOwners.clear();
+    this.startupMaintenanceCancel?.();
+    this.startupMaintenanceCancel = null;
+    if (this.automationRunnerCleanupTimer !== null) {
+      window.clearTimeout(this.automationRunnerCleanupTimer);
+      this.automationRunnerCleanupTimer = null;
+    }
+    this.automationRunnerLeaf = null;
+    this.app.workspace.detachLeavesOfType(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE);
+    this.stopFilePinSortMode(false);
+    this.clearFilePinApplyTimer();
+    this.filePinObserverHandle?.disconnect();
+    this.filePinObserverHandle = null;
+    this.clearFilePinDom();
     this.stopUiButtonSortMode();
     this.removeStaleUiButtonSortDom();
     this.clearUiRuleMarks();
@@ -12169,6 +12315,635 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     await this.saveSettings();
   }
 
+  private addFilePinMenuItems(menu: Menu, file: TFile): void {
+    const path = normalizeFilePinPath(file.path);
+    const folderPath = vaultPathParent(path);
+    const pinnedPaths = this.pinnedFilePaths(folderPath);
+    const index = pinnedPaths.indexOf(path);
+    const pinned = index >= 0;
+    menu.addItem((item) => {
+      item
+        .setSection("cancip-file-pins")
+        .setTitle(this.t(pinned ? "filePinUnpin" : "filePinPin"))
+        .setIcon(pinned ? "pin-off" : "pin")
+        .onClick(async () => {
+          try {
+            const state = await this.toggleFilePin(path);
+            const nowPinned = (state.folders[folderPath] ?? []).includes(path);
+            new Notice(this.t(nowPinned ? "filePinPinned" : "filePinUnpinned", { path }));
+          } catch (error) {
+            this.recordFilePinError("menu toggle", error, true);
+          }
+        });
+    });
+    if (!pinned || pinnedPaths.length < 2) return;
+    if (index > 0) {
+      menu.addItem((item) => {
+        item
+          .setSection("cancip-file-pins")
+          .setTitle(this.t("filePinMoveUp"))
+          .setIcon("arrow-up")
+          .onClick(() => {
+            void this.movePinnedFile(path, -1).catch((error) => this.recordFilePinError("menu move up", error, true));
+          });
+      });
+    }
+    if (index < pinnedPaths.length - 1) {
+      menu.addItem((item) => {
+        item
+          .setSection("cancip-file-pins")
+          .setTitle(this.t("filePinMoveDown"))
+          .setIcon("arrow-down")
+          .onClick(() => {
+            void this.movePinnedFile(path, 1).catch((error) => this.recordFilePinError("menu move down", error, true));
+          });
+      });
+    }
+    menu.addItem((item) => {
+      item
+        .setSection("cancip-file-pins")
+        .setTitle(this.t("filePinSort"))
+        .setIcon("list-ordered")
+        .onClick(() => {
+          void this.startFilePinSortMode(folderPath);
+        });
+    });
+  }
+
+  private recordFilePinError(operation: string, error: unknown, showNotice = false): void {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(`Cancip file pin ${operation} failed`, error);
+    this.devErrors.push(`file pin ${operation} failed: ${reason}`);
+    if (showNotice) new Notice(this.t("filePinFailed", { reason }));
+  }
+
+  isFilePinned(path: string): boolean {
+    const normalized = normalizeFilePinPath(path);
+    if (!normalized || !this.filePinStateCache) return false;
+    return this.pinnedFilePaths(vaultPathParent(normalized)).includes(normalized);
+  }
+
+  pinnedFilePaths(folderPath = ""): string[] {
+    const folder = normalizeFilePinFolderPath(folderPath);
+    return [...(this.filePinStateCache?.folders[folder] ?? [])];
+  }
+
+  async loadFilePinState(force = false): Promise<FilePinState> {
+    if (!force && this.filePinStateCache) return this.filePinStateCache;
+    if (this.filePinStateReadPromise) {
+      if (!force) return await this.filePinStateReadPromise;
+      await this.filePinStateReadPromise;
+    }
+    const readPromise = (async (): Promise<FilePinState> => {
+      try {
+        const adapter = this.app.vault.adapter;
+        if (!(await adapter.exists(CANCIP_FILE_PINS_PATH))) return emptyFilePinState();
+        return normalizeFilePinState(JSON.parse(await adapter.read(CANCIP_FILE_PINS_PATH)) as unknown);
+      } catch (error) {
+        this.recordFilePinError("state read", error);
+        return emptyFilePinState();
+      }
+    })();
+    this.filePinStateReadPromise = readPromise;
+    try {
+      const state = await readPromise;
+      this.filePinStateCache = state;
+      return state;
+    } finally {
+      if (this.filePinStateReadPromise === readPromise) this.filePinStateReadPromise = null;
+    }
+  }
+
+  private async saveFilePinState(state: FilePinState): Promise<void> {
+    const normalized = normalizeFilePinState({
+      ...state,
+      schemaVersion: CANCIP_FILE_PINS_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString()
+    });
+    await ensureFolder(this.app.vault.adapter, CANCIP_CONFIG_DIR);
+    await this.app.vault.adapter.write(CANCIP_FILE_PINS_PATH, `${JSON.stringify(normalized, null, 2)}\n`);
+    this.filePinStateCache = normalized;
+    this.filePinStateReadPromise = null;
+    this.requestNativeFileExplorerSort();
+  }
+
+  private async mutateFilePinState(mutator: (state: FilePinState) => FilePinState): Promise<FilePinState> {
+    let result = this.filePinStateCache ?? emptyFilePinState();
+    const operation = this.filePinWriteQueue.then(async () => {
+      const current = await this.loadFilePinState(true);
+      const next = normalizeFilePinState(mutator(cloneFilePinState(current)));
+      result = next;
+      if (stableCacheKey(current.folders) === stableCacheKey(next.folders)) {
+        this.filePinStateCache = next;
+        this.scheduleFilePinsApply(0);
+        return;
+      }
+      await this.saveFilePinState(next);
+    });
+    this.filePinWriteQueue = operation.then(() => undefined, () => undefined);
+    await operation;
+    return result;
+  }
+
+  async toggleFilePin(path: string): Promise<FilePinState> {
+    const normalized = normalizeFilePinPath(path);
+    await this.loadFilePinState(true);
+    return await this.setFilePinned(normalized, !this.isFilePinned(normalized));
+  }
+
+  async setFilePinned(path: string, pinned: boolean): Promise<FilePinState> {
+    const normalized = normalizeFilePinPath(path);
+    if (!normalized) throw new Error("file path is required");
+    if (pinned && !(this.app.vault.getAbstractFileByPath(normalized) instanceof TFile)) {
+      throw new Error(`file not found: ${normalized}`);
+    }
+    return await this.mutateFilePinState((state) => {
+      removePathFromFilePinFolders(state.folders, normalized);
+      if (pinned) {
+        const folder = vaultPathParent(normalized);
+        state.folders[folder] = [...(state.folders[folder] ?? []), normalized];
+      }
+      removeEmptyFilePinFolders(state.folders);
+      return state;
+    });
+  }
+
+  async movePinnedFile(path: string, delta: number): Promise<FilePinState> {
+    const normalized = normalizeFilePinPath(path);
+    const direction = delta < 0 ? -1 : delta > 0 ? 1 : 0;
+    if (!normalized || !direction) return await this.loadFilePinState();
+    const state = await this.mutateFilePinState((draft) => {
+      const folder = vaultPathParent(normalized);
+      const paths = [...(draft.folders[folder] ?? [])];
+      const from = paths.indexOf(normalized);
+      if (from < 0) throw new Error(`file is not pinned: ${normalized}`);
+      const to = Math.max(0, Math.min(paths.length - 1, from + direction));
+      if (to !== from) {
+        paths.splice(from, 1);
+        paths.splice(to, 0, normalized);
+        draft.folders[folder] = paths;
+      }
+      return draft;
+    });
+    new Notice(this.t("filePinOrderSaved"));
+    return state;
+  }
+
+  async setPinnedFileOrder(folderPath: string, requestedPaths: string[]): Promise<FilePinState> {
+    const folder = normalizeFilePinFolderPath(folderPath);
+    const requested = uniqueStrings(requestedPaths.map(normalizeFilePinPath).filter(Boolean));
+    return await this.mutateFilePinState((state) => {
+      const existing = [...(state.folders[folder] ?? [])];
+      if (!existing.length) throw new Error(`no pinned files in folder: ${folder || "/"}`);
+      const existingSet = new Set(existing);
+      for (const path of requested) {
+        if (vaultPathParent(path) !== folder) throw new Error(`pinned files must share folder: ${path}`);
+        if (!existingSet.has(path)) throw new Error(`file is not pinned: ${path}`);
+      }
+      state.folders[folder] = [...requested, ...existing.filter((path) => !requested.includes(path))];
+      return state;
+    });
+  }
+
+  async filePinsSummary(folderPath?: string): Promise<string> {
+    const state = await this.loadFilePinState(true);
+    const hasFolderFilter = typeof folderPath === "string";
+    const folder = normalizeFilePinFolderPath(folderPath ?? "");
+    const entries = Object.entries(state.folders)
+      .filter(([key]) => !hasFolderFilter || key === folder)
+      .sort(([a], [b]) => a.localeCompare(b));
+    if (!entries.length) return this.t("filePinNone");
+    return entries.map(([key, paths]) => [
+      `${key || "/"} (${paths.length})`,
+      ...paths.map((path, index) => `${index + 1}. ${path}`)
+    ].join("\n")).join("\n\n");
+  }
+
+  private async migrateRenamedFilePins(oldPath: string, newPath: string): Promise<void> {
+    const oldNormalized = normalizeFilePinPath(oldPath);
+    const newNormalized = normalizeFilePinPath(newPath);
+    if (!oldNormalized || !newNormalized || oldNormalized === newNormalized) return;
+    const current = await this.loadFilePinState(true);
+    const allPaths = Object.values(current.folders).flat();
+    if (!allPaths.some((path) => filePinPathMatchesBase(path, oldNormalized))) return;
+    await this.mutateFilePinState((state) => migrateFilePinStatePaths(state, oldNormalized, newNormalized));
+  }
+
+  private async removeDeletedFilePins(path: string): Promise<void> {
+    const normalized = normalizeFilePinPath(path);
+    if (!normalized) return;
+    const current = await this.loadFilePinState(true);
+    const allPaths = Object.values(current.folders).flat();
+    if (!allPaths.some((item) => filePinPathMatchesBase(item, normalized))) return;
+    await this.mutateFilePinState((state) => {
+      for (const [folder, paths] of Object.entries(state.folders)) {
+        state.folders[folder] = paths.filter((item) => !filePinPathMatchesBase(item, normalized));
+      }
+      removeEmptyFilePinFolders(state.folders);
+      return state;
+    });
+  }
+
+  private filePinDocuments(): Document[] {
+    return this.uiButtonDocuments();
+  }
+
+  private requestNativeFileExplorerSort(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
+      const view = leaf.view as FileExplorerViewLike;
+      try {
+        if (typeof view.requestSort === "function") view.requestSort();
+        else if (typeof view.sort === "function") view.sort();
+      } catch (error) {
+        this.recordFilePinError("native sort refresh", error);
+      }
+    }
+    this.scheduleFilePinsApply(60);
+  }
+
+  private clearFilePinApplyTimer(): void {
+    const timer = this.filePinApplyTimer;
+    if (timer === null) return;
+    if (typeof timer === "object") timer.window.clearTimeout(timer.id);
+    else if (typeof window !== "undefined") window.clearTimeout(timer);
+    this.filePinApplyTimer = null;
+  }
+
+  scheduleFilePinsApply(delayMs = 80): void {
+    this.clearFilePinApplyTimer();
+    const win = this.filePinDocuments().map((doc) => doc.defaultView).find((item): item is UiButtonRuleWindow => Boolean(item))
+      ?? activeDocument.defaultView
+      ?? window;
+    const id = win.setTimeout(() => {
+      this.filePinApplyTimer = null;
+      void this.applyFilePins();
+    }, Math.max(0, delayMs));
+    this.filePinApplyTimer = { window: win, id };
+  }
+
+  private installFilePinObserver(): void {
+    if (typeof MutationObserver === "undefined" || this.filePinObserverHandle) return;
+    const observers = new Map<Document, MutationObserver>();
+    const nodeTouchesFileExplorer = (node: Node): boolean => {
+      if (node.nodeType !== 1) return false;
+      const element = node as HTMLElement;
+      if (element.matches(".obcc-file-pin-indicator, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-toolbar") || element.closest(".obcc-file-pin-sort-toolbar")) return false;
+      return element.matches(".nav-file, .nav-file-title, .nav-folder, .nav-folder-children, .nav-files-container")
+        || Boolean(element.querySelector(".nav-file-title[data-path], .nav-folder-children"));
+    };
+    const onMutations = (mutations: MutationRecord[]) => {
+      if (this.filePinApplying) return;
+      const relevant = mutations.some((mutation) => {
+        if (mutation.type === "attributes") return true;
+        return [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)].some(nodeTouchesFileExplorer);
+      });
+      if (relevant) this.scheduleFilePinsApply(45);
+    };
+    const refreshObservers = () => {
+      const docs = new Set(this.filePinDocuments());
+      for (const [doc, observer] of observers) {
+        if (!docs.has(doc) || !doc.defaultView) {
+          observer.disconnect();
+          observers.delete(doc);
+        }
+      }
+      for (const doc of docs) {
+        if (observers.has(doc)) continue;
+        const ObserverCtor = doc.defaultView?.MutationObserver ?? MutationObserver;
+        const observer = new ObserverCtor(onMutations);
+        observer.observe(doc.body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["data-path"]
+        });
+        observers.set(doc, observer);
+      }
+    };
+    const handle: UiButtonRuleObserverHandle = {
+      disconnect: () => {
+        for (const observer of observers.values()) observer.disconnect();
+        observers.clear();
+      }
+    };
+    this.filePinObserverHandle = handle;
+    refreshObservers();
+    this.registerEvent(this.app.workspace.on("layout-change", refreshObservers));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", refreshObservers));
+    this.register(() => {
+      handle.disconnect();
+      this.clearFilePinApplyTimer();
+      if (this.filePinObserverHandle === handle) this.filePinObserverHandle = null;
+    });
+  }
+
+  private async applyFilePins(): Promise<void> {
+    if (this.filePinApplying) return;
+    this.filePinApplying = true;
+    try {
+      const baseState = await this.loadFilePinState();
+      const state = cloneFilePinState(baseState);
+      const sortSession = this.filePinSortSession;
+      if (sortSession) state.folders[sortSession.folderPath] = [...sortSession.draftOrder];
+      for (const doc of this.filePinDocuments()) this.applyFilePinStateToDocument(doc, state);
+    } catch (error) {
+      this.recordFilePinError("DOM apply", error);
+    } finally {
+      this.filePinApplying = false;
+    }
+  }
+
+  private applyFilePinStateToDocument(doc: Document, state: FilePinState): void {
+    const rows = Array.from(doc.querySelectorAll<HTMLElement>(".nav-file-title[data-path]"))
+      .filter((row) => this.isNativeFileExplorerRow(row));
+    const groups = new Map<HTMLElement, HTMLElement[]>();
+    for (const row of rows) {
+      const wrapper = row.parentElement;
+      const container = wrapper?.parentElement;
+      if (!wrapper?.hasClass("nav-file") || !container) continue;
+      const group = groups.get(container) ?? [];
+      group.push(row);
+      groups.set(container, group);
+    }
+    for (const groupRows of groups.values()) this.applyFilePinOrder(groupRows, state);
+    for (const row of rows) {
+      const path = normalizeFilePinPath(row.dataset.path ?? "");
+      const pinned = Boolean(path && (state.folders[vaultPathParent(path)] ?? []).includes(path));
+      this.setFilePinRowState(row, path, pinned);
+    }
+    this.renderFilePinSortToolbar(doc);
+  }
+
+  private isNativeFileExplorerRow(row: HTMLElement): boolean {
+    const leaf = row.closest<HTMLElement>(".workspace-leaf-content");
+    return leaf?.dataset.type === "file-explorer" || Boolean(row.closest(".nav-files-container"));
+  }
+
+  private applyFilePinOrder(rows: HTMLElement[], state: FilePinState): void {
+    if (rows.length < 2) return;
+    const wrapperByPath = new Map<string, HTMLElement>();
+    for (const row of rows) {
+      const path = normalizeFilePinPath(row.dataset.path ?? "");
+      const wrapper = row.parentElement;
+      if (path && wrapper) wrapperByPath.set(path, wrapper);
+    }
+    const mountedPaths = [...wrapperByPath.keys()];
+    const folder = vaultPathParent(mountedPaths[0] ?? "");
+    if (mountedPaths.some((path) => vaultPathParent(path) !== folder)) return;
+    const pinned = (state.folders[folder] ?? []).filter((path) => wrapperByPath.has(path));
+    if (!pinned.length) return;
+    const pinnedSet = new Set(pinned);
+    const current = rows.map((row) => normalizeFilePinPath(row.dataset.path ?? "")).filter(Boolean);
+    const desired = [...pinned, ...current.filter((path) => !pinnedSet.has(path))];
+    if (sameStringArray(current, desired)) return;
+    const container = rows[0].parentElement?.parentElement;
+    if (!container) return;
+    const firstUnpinned = current.find((path) => !pinnedSet.has(path));
+    const lastWrapper = wrapperByPath.get(current[current.length - 1] ?? "");
+    const anchor = firstUnpinned ? wrapperByPath.get(firstUnpinned) ?? null : lastWrapper?.nextSibling ?? null;
+    for (const path of pinned) {
+      const wrapper = wrapperByPath.get(path);
+      if (wrapper) container.insertBefore(wrapper, anchor);
+    }
+  }
+
+  private setFilePinRowState(row: HTMLElement, path: string, pinned: boolean): void {
+    const wrapper = row.parentElement;
+    row.toggleClass("is-cancip-file-pinned", pinned);
+    wrapper?.toggleClass("is-cancip-file-pinned", pinned);
+    if (pinned) {
+      row.dataset.cancipFilePinned = "true";
+      let indicator = row.querySelector<HTMLElement>(":scope > .obcc-file-pin-indicator");
+      if (!indicator) {
+        indicator = row.createSpan({ cls: "obcc-file-pin-indicator", attr: { "aria-hidden": "true" } });
+        setIcon(indicator, "pin");
+      }
+    } else {
+      delete row.dataset.cancipFilePinned;
+      row.querySelectorAll(":scope > .obcc-file-pin-indicator, :scope > .obcc-file-pin-sort-handle").forEach((element) => element.remove());
+    }
+    const sortable = Boolean(pinned && this.filePinSortSession?.folderPath === vaultPathParent(path));
+    row.toggleClass("is-cancip-file-pin-sortable", sortable);
+    if (sortable) this.ensureFilePinSortHandle(row, path);
+    else row.querySelectorAll(":scope > .obcc-file-pin-sort-handle").forEach((element) => element.remove());
+  }
+
+  private ensureFilePinSortHandle(row: HTMLElement, path: string): void {
+    if (row.querySelector(":scope > .obcc-file-pin-sort-handle")) return;
+    const handle = row.createEl("button", {
+      cls: "obcc-file-pin-sort-handle clickable-icon",
+      attr: {
+        type: "button",
+        title: this.t("filePinSortHandle"),
+        "aria-label": this.t("filePinSortHandle"),
+        draggable: "true"
+      }
+    });
+    setIcon(handle, "grip-vertical");
+    const stop = (event: Event) => event.stopPropagation();
+    handle.addEventListener("click", (event) => {
+      event.preventDefault();
+      stop(event);
+    });
+    handle.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0 && event.pointerType === "mouse") return;
+      const session = this.filePinSortSession;
+      if (!session || !session.draftOrder.includes(path)) return;
+      session.draggingPath = path;
+      row.addClass("is-cancip-file-pin-dragging");
+      try {
+        handle.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is optional in Android WebView.
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("pointermove", (event) => {
+      const session = this.filePinSortSession;
+      if (!session?.draggingPath || !handle.hasPointerCapture(event.pointerId)) return;
+      this.autoScrollFilePinContainer(row, event.clientY);
+      const target = row.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(".nav-file-title[data-cancip-file-pinned='true']");
+      const targetPath = normalizeFilePinPath(target?.dataset.path ?? "");
+      if (targetPath && targetPath !== session.draggingPath && vaultPathParent(targetPath) === session.folderPath) {
+        const before = event.clientY < (target?.getBoundingClientRect().top ?? 0) + (target?.getBoundingClientRect().height ?? 0) / 2;
+        this.updateFilePinSortDraft(session.draggingPath, targetPath, before);
+      }
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    const finishPointer = (event: PointerEvent) => {
+      const session = this.filePinSortSession;
+      if (!session?.draggingPath) return;
+      session.draggingPath = "";
+      row.removeClass("is-cancip-file-pin-dragging");
+      try {
+        if (handle.hasPointerCapture(event.pointerId)) handle.releasePointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture may already be released.
+      }
+      void this.commitFilePinSortDraft();
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    handle.addEventListener("pointerup", finishPointer);
+    handle.addEventListener("pointercancel", finishPointer);
+    handle.addEventListener("dragstart", (event) => {
+      const session = this.filePinSortSession;
+      if (!session) return;
+      session.draggingPath = path;
+      row.addClass("is-cancip-file-pin-dragging");
+      event.dataTransfer?.setData("text/plain", path);
+      if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+      event.stopPropagation();
+    });
+    handle.addEventListener("dragover", (event) => {
+      const session = this.filePinSortSession;
+      if (!session?.draggingPath || vaultPathParent(path) !== session.folderPath) return;
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("drop", (event) => {
+      const session = this.filePinSortSession;
+      if (!session?.draggingPath || session.draggingPath === path) return;
+      const rect = row.getBoundingClientRect();
+      this.updateFilePinSortDraft(session.draggingPath, path, event.clientY < rect.top + rect.height / 2);
+      session.draggingPath = "";
+      void this.commitFilePinSortDraft();
+      event.preventDefault();
+      event.stopPropagation();
+    });
+    handle.addEventListener("dragend", (event) => {
+      const session = this.filePinSortSession;
+      if (session) session.draggingPath = "";
+      row.removeClass("is-cancip-file-pin-dragging");
+      event.stopPropagation();
+    });
+  }
+
+  private updateFilePinSortDraft(draggingPath: string, targetPath: string, before: boolean): void {
+    const session = this.filePinSortSession;
+    if (!session) return;
+    const next = session.draftOrder.filter((path) => path !== draggingPath);
+    const targetIndex = next.indexOf(targetPath);
+    if (targetIndex < 0) return;
+    next.splice(targetIndex + (before ? 0 : 1), 0, draggingPath);
+    if (sameStringArray(next, session.draftOrder)) return;
+    session.draftOrder = next;
+    this.scheduleFilePinsApply(0);
+  }
+
+  private autoScrollFilePinContainer(row: HTMLElement, clientY: number): void {
+    const scroller = row.closest<HTMLElement>(".nav-files-container, .workspace-leaf-content");
+    if (!scroller || scroller.scrollHeight <= scroller.clientHeight) return;
+    const rect = scroller.getBoundingClientRect();
+    if (clientY < rect.top + 44) scroller.scrollTop -= 20;
+    else if (clientY > rect.bottom - 44) scroller.scrollTop += 20;
+  }
+
+  private async commitFilePinSortDraft(): Promise<boolean> {
+    const session = this.filePinSortSession;
+    if (!session) return false;
+    try {
+      await this.setPinnedFileOrder(session.folderPath, session.draftOrder);
+      return true;
+    } catch (error) {
+      this.recordFilePinError("sort save", error, true);
+      return false;
+    }
+  }
+
+  async startFilePinSortMode(folderPath: string): Promise<void> {
+    const folder = normalizeFilePinFolderPath(folderPath);
+    await this.loadFilePinState(true);
+    const order = this.pinnedFilePaths(folder);
+    if (order.length < 2) {
+      new Notice(this.t("filePinSortNeedsTwo"));
+      return;
+    }
+    this.stopFilePinSortMode(false);
+    const session: FilePinSortSession = {
+      folderPath: folder,
+      initialOrder: [...order],
+      draftOrder: [...order],
+      draggingPath: "",
+      cleanup: () => {
+        for (const doc of this.filePinDocuments()) {
+          doc.querySelectorAll(".obcc-file-pin-sort-toolbar, .obcc-file-pin-sort-handle").forEach((element) => element.remove());
+          doc.querySelectorAll<HTMLElement>(".is-cancip-file-pin-sortable, .is-cancip-file-pin-dragging").forEach((element) => {
+            element.removeClass("is-cancip-file-pin-sortable", "is-cancip-file-pin-dragging");
+          });
+        }
+      }
+    };
+    this.filePinSortSession = session;
+    this.scheduleFilePinsApply(0);
+    new Notice(this.t("filePinSortStarted"));
+  }
+
+  private renderFilePinSortToolbar(doc: Document): void {
+    const session = this.filePinSortSession;
+    if (!session) {
+      doc.querySelectorAll(".obcc-file-pin-sort-toolbar").forEach((element) => element.remove());
+      return;
+    }
+    const roots = Array.from(doc.querySelectorAll<HTMLElement>(".workspace-leaf-content[data-type='file-explorer']"));
+    for (const root of roots) {
+      const host = root.querySelector<HTMLElement>(".nav-header .nav-buttons-container, .nav-buttons-container");
+      if (!host || host.querySelector(".obcc-file-pin-sort-toolbar")) continue;
+      const toolbar = host.createDiv({ cls: "obcc-file-pin-sort-toolbar" });
+      const cancel = toolbar.createEl("button", {
+        cls: "clickable-icon",
+        attr: { type: "button", title: this.t("filePinSortCancel"), "aria-label": this.t("filePinSortCancel") }
+      });
+      setIcon(cancel, "x");
+      cancel.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const initial = [...session.initialOrder];
+        this.stopFilePinSortMode(false);
+        void this.setPinnedFileOrder(session.folderPath, initial)
+          .then(() => new Notice(this.t("filePinSortCancelled")))
+          .catch((error) => this.recordFilePinError("sort cancel", error, true));
+      });
+      const done = toolbar.createEl("button", {
+        cls: "clickable-icon",
+        attr: { type: "button", title: this.t("filePinSortDone"), "aria-label": this.t("filePinSortDone") }
+      });
+      setIcon(done, "check");
+      done.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        void this.commitFilePinSortDraft().then((saved) => {
+          if (!saved) return;
+          this.stopFilePinSortMode(false);
+          new Notice(this.t("filePinOrderSaved"));
+        });
+      });
+    }
+  }
+
+  private stopFilePinSortMode(restoreInitial: boolean): void {
+    const session = this.filePinSortSession;
+    this.filePinSortSession = null;
+    session?.cleanup();
+    if (restoreInitial && session) {
+      void this.setPinnedFileOrder(session.folderPath, session.initialOrder)
+        .catch((error) => this.recordFilePinError("sort restore", error));
+    }
+    this.scheduleFilePinsApply(0);
+  }
+
+  private clearFilePinDom(): void {
+    for (const doc of this.filePinDocuments()) {
+      doc.querySelectorAll(".obcc-file-pin-indicator, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-toolbar").forEach((element) => element.remove());
+      doc.querySelectorAll<HTMLElement>(".is-cancip-file-pinned, .is-cancip-file-pin-sortable, .is-cancip-file-pin-dragging").forEach((element) => {
+        element.removeClass("is-cancip-file-pinned", "is-cancip-file-pin-sortable", "is-cancip-file-pin-dragging");
+        delete element.dataset.cancipFilePinned;
+      });
+    }
+  }
+
   private uiButtonDocuments(): Document[] {
     const docs = new Set<Document>();
     const add = (doc: Document | null | undefined): void => {
@@ -13524,24 +14299,37 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       if (!isAutomationDue(task, now)) continue;
       if (this.automationRunningIds.has(task.id)) continue;
       try {
-        await this.runAutomationById(task.id);
+        await this.runAutomationById(task.id, { trigger: "scheduled" });
       } catch (error) {
         console.warn("Cancip automation failed", task.id, error);
       }
     }
   }
 
-  async loadAutomations(): Promise<AutomationTask[]> {
+  async loadAutomations(force = false): Promise<AutomationTask[]> {
+    const cache = this.automationStateCache;
+    if (!force && cache && Date.now() - cache.at < AUTOMATION_STATE_CACHE_TTL_MS) return cache.tasks;
+    if (!force && this.automationStateReadPromise) return await this.automationStateReadPromise;
+    const readPromise = (async (): Promise<AutomationTask[]> => {
+      try {
+        const adapter = this.app.vault.adapter;
+        if (!(await adapter.exists(AUTOMATION_STATE_PATH))) return [];
+        const raw = await adapter.read(AUTOMATION_STATE_PATH);
+        const parsed = JSON.parse(raw) as unknown;
+        if (!isRecord(parsed) || !Array.isArray(parsed.tasks)) return [];
+        return parsed.tasks.map(normalizeAutomationTask).filter((task): task is AutomationTask => task !== null);
+      } catch (error) {
+        console.warn("Cancip automation state read failed", error);
+        return [];
+      }
+    })();
+    if (!force) this.automationStateReadPromise = readPromise;
     try {
-      const adapter = this.app.vault.adapter;
-      if (!(await adapter.exists(AUTOMATION_STATE_PATH))) return [];
-      const raw = await adapter.read(AUTOMATION_STATE_PATH);
-      const parsed = JSON.parse(raw) as unknown;
-      if (!isRecord(parsed) || !Array.isArray(parsed.tasks)) return [];
-      return parsed.tasks.map(normalizeAutomationTask).filter((task): task is AutomationTask => task !== null);
-    } catch (error) {
-      console.warn("Cancip automation state read failed", error);
-      return [];
+      const tasks = await readPromise;
+      this.automationStateCache = { at: Date.now(), tasks };
+      return tasks;
+    } finally {
+      if (this.automationStateReadPromise === readPromise) this.automationStateReadPromise = null;
     }
   }
 
@@ -13553,6 +14341,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       tasks
     };
     await this.app.vault.adapter.write(AUTOMATION_STATE_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+    this.automationStateCache = { at: Date.now(), tasks };
+    this.automationStateReadPromise = null;
   }
 
   async ensureDefaultDailyAutomations(): Promise<void> {
@@ -13913,7 +14703,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     state.before.set(path, { path, text, exists: true });
   }
 
-  async runAutomationById(id: string): Promise<AutomationRunResult> {
+  async runAutomationById(id: string, options: { trigger?: "manual" | "scheduled" } = {}): Promise<AutomationRunResult> {
     const tasks = await this.loadAutomations();
     const task = tasks.find((item) => item.id === id);
     if (!task) throw new Error(this.t("automationNotFound", { id }));
@@ -13931,8 +14721,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       if (view) await view.registerCapturedAiMutationReview(result, `Automation: ${task.title}`);
     };
     try {
-      view = await this.activateView();
-      if (!view) throw new Error("Cancip view unavailable");
+      view = await this.getAutomationRunnerView();
+      if (!view) throw new Error("Cancip background automation runner unavailable");
       if (task.id === VAULT_CURATION_AUTOMATION_ID && !task.command) {
         curationPack = await view.buildVaultCurationSourcePack(task);
         const candidatePaths = vaultCurationCandidatePathsFromPack(curationPack);
@@ -13943,8 +14733,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           return { ok: true, text: "" };
         }
       }
-      await view.prepareAutomationSession(task);
-      new Notice(this.t("automationStarted", { title: task.title }));
+      const targetSessionId = await this.persistForegroundAutomationSession(task);
+      await view.prepareAutomationSession(task, targetSessionId);
+      if (options.trigger !== "scheduled") new Notice(this.t("automationStarted", { title: task.title }));
       capture = this.beginAiVaultMutationCapture(`automation:${task.id}:${task.title}`);
       if (task.command) await this.primeAiVaultMutationCaptureReviewScope(capture);
       const result = task.command
@@ -13954,7 +14745,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       if (curationPaths.length) await view.completeVaultCurationNewFiles(curationPaths);
       const resultPath = await this.writeAutomationLog(task, result);
       await this.markAutomationRun(task.id, true, trimContext(result, 600), resultPath);
-      new Notice(this.t("automationDone", { title: task.title }));
+      if (options.trigger !== "scheduled") new Notice(this.t("automationDone", { title: task.title }));
       return { ok: true, text: result, path: resultPath };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -13969,6 +14760,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       throw error;
     } finally {
       this.automationRunningIds.delete(task.id);
+      this.scheduleAutomationRunnerCleanup();
     }
   }
 
@@ -14213,6 +15005,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/"));
     const kinds = cancipVaultSyncKindsForPath(normalized, this.settings);
     if (!kinds.size) return;
+    if (kinds.has("automations")) {
+      this.automationStateCache = null;
+      this.automationStateReadPromise = null;
+    }
+    if (kinds.has("file-pins")) {
+      this.filePinStateCache = null;
+      this.filePinStateReadPromise = null;
+    }
     for (const kind of kinds) this.pendingCancipSyncKinds.add(kind);
     if (normalized) this.pendingCancipSyncPaths.add(normalized);
     this.scheduleCancipStateSync();
@@ -14241,6 +15041,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     if (kinds.has("skills")) {
       this.invalidateSkillCaches();
+    }
+    if (kinds.has("file-pins")) {
+      await this.filePinWriteQueue;
+      const state = await this.loadFilePinState(true);
+      const session = this.filePinSortSession;
+      if (session && !sameStringArray(state.folders[session.folderPath] ?? [], session.draftOrder)) {
+        this.stopFilePinSortMode(false);
+      }
+      this.requestNativeFileExplorerSort();
     }
     const viewRefreshes: Promise<void>[] = [];
     for (const leaf of this.chatLeaves()) {
@@ -14316,6 +15125,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private cancipStatePollTargets(): string[] {
     const targets = [
       CANCIP_CONFIG_PATH,
+      CANCIP_FILE_PINS_PATH,
       CANCIP_MACHINE_INDEX_DIR,
       CANCIP_SKILLS_INDEX_PATH,
       CANCIP_MEMORY_INDEX_PATH,
@@ -14646,6 +15456,83 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (!leaf) return null;
     await this.app.workspace.revealLeaf(leaf);
     return leaf.view instanceof CancipView ? leaf.view : null;
+  }
+
+  private async getAutomationRunnerView(): Promise<CancipView | null> {
+    if (this.automationRunnerCleanupTimer !== null) {
+      window.clearTimeout(this.automationRunnerCleanupTimer);
+      this.automationRunnerCleanupTimer = null;
+    }
+    const foregroundLeaf = this.app.workspace.getLeaf(false);
+    let leaf = this.automationRunnerLeaf;
+    if (!leaf || leaf.view?.getViewType?.() !== CANCIP_AUTOMATION_RUNNER_VIEW_TYPE) {
+      leaf = this.app.workspace.getLeavesOfType(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE)[0] ?? null;
+    }
+    if (!leaf) leaf = this.app.workspace.getRightLeaf(true) ?? null;
+    if (!leaf) return null;
+    if (leaf.isDeferred) await leaf.loadIfDeferred();
+    if (!(leaf.view instanceof CancipView) || leaf.view.getViewType() !== CANCIP_AUTOMATION_RUNNER_VIEW_TYPE) {
+      await leaf.setViewState({ type: CANCIP_AUTOMATION_RUNNER_VIEW_TYPE, active: false });
+      await sleep(0);
+    }
+    if (!(leaf.view instanceof CancipView)) return null;
+    this.automationRunnerLeaf = leaf;
+    const currentLeaf = this.app.workspace.getLeaf(false);
+    if (foregroundLeaf && currentLeaf !== foregroundLeaf) {
+      const workspaceWithFocus = this.app.workspace as unknown as {
+        setActiveLeaf?: (leaf: WorkspaceLeaf, params?: { focus?: boolean } | boolean) => void;
+      };
+      workspaceWithFocus.setActiveLeaf?.(foregroundLeaf, { focus: false });
+    }
+    return leaf.view;
+  }
+
+  private async persistForegroundAutomationSession(task: AutomationTask): Promise<string> {
+    const fixedSessionId = task.sessionMode === "session" ? task.sessionId?.trim() ?? "" : "";
+    const views = this.chatLeaves()
+      .map((leaf) => leaf.view)
+      .filter((view): view is CancipView => view instanceof CancipView);
+    const activeView = this.app.workspace.getLeaf(false).view;
+    const source = fixedSessionId
+      ? views.find((view) => view.automationSessionId() === fixedSessionId)
+      : task.sessionMode === "current"
+        ? activeView instanceof CancipView && views.includes(activeView)
+          ? activeView
+          : views[0]
+        : null;
+    if (!source) return fixedSessionId;
+    if (source.automationSessionBusy()) {
+      if (fixedSessionId) throw new Error(this.t("todoRequestRunning"));
+      return "";
+    }
+    await source.persistForBackgroundAutomation();
+    return source.automationSessionId();
+  }
+
+  private scheduleAutomationRunnerCleanup(): void {
+    if (this.automationRunnerCleanupTimer !== null) window.clearTimeout(this.automationRunnerCleanupTimer);
+    this.automationRunnerCleanupTimer = window.setTimeout(() => {
+      this.automationRunnerCleanupTimer = null;
+      if (!this.releaseAutomationRunnerIfIdle()) {
+        this.scheduleAutomationRunnerCleanup();
+      }
+    }, AUTOMATION_RUNNER_IDLE_DISPOSE_MS);
+  }
+
+  private releaseAutomationRunnerIfIdle(): boolean {
+    const leaves = this.app.workspace.getLeavesOfType(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE);
+    const runner = this.automationRunnerLeaf?.view instanceof CancipView
+      ? this.automationRunnerLeaf.view
+      : leaves[0]?.view instanceof CancipView
+        ? leaves[0].view
+        : null;
+    const runnerBusy = runner
+      ? [...this.sessionRequestOwners.values()].some((owner) => owner === runner)
+      : false;
+    if (this.automationRunningIds.size || runnerBusy) return false;
+    this.automationRunnerLeaf = null;
+    this.app.workspace.detachLeavesOfType(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE);
+    return true;
   }
 
   async getOrCreateChatView(options: { reveal?: boolean; focus?: boolean } = {}): Promise<CancipView | null> {
@@ -15612,6 +16499,7 @@ class CancipView extends ItemView {
   private diskSessionRefreshIds = new Set<string>();
   private liveSessionSaveTimer: number | null = null;
   private liveSessionSaveLastAt = 0;
+  private foregroundWarmupCancel: (() => void) | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -15877,15 +16765,41 @@ class CancipView extends ItemView {
     return "bot";
   }
 
+  private isBackgroundAutomationRunner(): boolean {
+    return this.registeredViewType === CANCIP_AUTOMATION_RUNNER_VIEW_TYPE;
+  }
+
+  automationSessionId(): string {
+    return this.sessionId;
+  }
+
+  automationSessionBusy(): boolean {
+    return Boolean(this.activeRequest);
+  }
+
+  async persistForBackgroundAutomation(): Promise<void> {
+    await this.saveCurrentSession();
+  }
+
   async onOpen(): Promise<void> {
     this.render();
+    if (this.isBackgroundAutomationRunner()) return;
     this.registerEvent(this.app.workspace.on("file-open", () => this.renderContextChips()));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.renderContextChips()));
     this.registerDomEvent(activeDocument, "pointerdown", (event) => this.handleDocumentPointerDown(event));
     this.registerDomEvent(activeDocument, "contextmenu", (event) => this.handleDocumentContextMenu(event));
+    void this.initializeForegroundView();
+  }
+
+  private async initializeForegroundView(): Promise<void> {
+    await sleep(0);
     const restored = await this.restoreLastSessionOnOpen();
     if (!restored) void this.ensureCurrentSessionRecord();
-    void this.refreshVaultIndex(false);
+    this.foregroundWarmupCancel?.();
+    this.foregroundWarmupCancel = scheduleIdleWork(() => {
+      this.foregroundWarmupCancel = null;
+      void this.refreshVaultIndex(false);
+    }, 1200);
   }
 
   async onClose(): Promise<void> {
@@ -15901,6 +16815,8 @@ class CancipView extends ItemView {
     if (this.footerLayoutFrame !== null) window.cancelAnimationFrame(this.footerLayoutFrame);
     this.footerResizeObserver?.disconnect();
     this.footerResizeCleanup?.();
+    this.foregroundWarmupCancel?.();
+    this.foregroundWarmupCancel = null;
     this.programmaticScrollReleaseTimer = null;
     this.experienceHarvestTimer = null;
     this.footerLayoutFrame = null;
@@ -15915,7 +16831,7 @@ class CancipView extends ItemView {
     }
   }
 
-  async newChat(options: { force?: boolean } = {}): Promise<void> {
+  async newChat(options: { force?: boolean; skipSaveCurrent?: boolean; focus?: boolean } = {}): Promise<void> {
     if (!options.force && this.ownsSessionRequest()) {
       await this.plugin.openNewChatInAdditionalView();
       return;
@@ -15925,7 +16841,7 @@ class CancipView extends ItemView {
     this.editingQueuedPromptId = null;
     this.editingManualTodoId = null;
     this.renderQueueStatus();
-    void this.saveCurrentSession();
+    if (!options.skipSaveCurrent) void this.saveCurrentSession();
     this.sessionId = sessionExportId(new Date());
     this.sessionCreatedAt = new Date().toISOString();
     this.sessionStartedAt = "";
@@ -15963,8 +16879,8 @@ class CancipView extends ItemView {
     this.renderSources([]);
     this.setStatus(this.t("newChatStatus"));
     void this.recordSessionEvent({ kind: "session.new", status: this.currentSessionStatus });
-    void this.ensureCurrentSessionRecord();
-    this.focusInput();
+    if (!this.isBackgroundAutomationRunner()) void this.ensureCurrentSessionRecord();
+    if (options.focus !== false) this.focusInput();
   }
 
   addDraftContext(label: string, content: string, path?: string, source: ContextSource = "virtual", extra: Partial<Pick<DraftContext, "mimeType" | "dataUrl">> = {}): void {
@@ -16371,7 +17287,41 @@ class CancipView extends ItemView {
     }, 2500);
   }
 
+  private renderBackgroundAutomationShell(): void {
+    this.footerResizeObserver?.disconnect();
+    this.footerResizeObserver = null;
+    this.footerResizeCleanup?.();
+    this.footerResizeCleanup = null;
+    if (this.footerLayoutFrame !== null) window.cancelAnimationFrame(this.footerLayoutFrame);
+    this.footerLayoutFrame = null;
+    this.overlayLayerEl?.remove();
+    this.overlayLayerEl = null;
+    this.menuEl = null;
+    this.mentionEl = null;
+    this.headerMenuEl = null;
+    this.headerSessionIdEl = null;
+    this.headerSessionTitleEl = null;
+    this.headerAuditBadgeEl = null;
+    this.headerLiveStatusEl = null;
+    this.contextEl = null;
+    this.queueEl = null;
+    this.sendButtonEl = null;
+    this.modeButtons = null;
+    this.footerEl = null;
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("obcc-root", "obcc-background-runner");
+    root.setAttr("aria-hidden", "true");
+    this.messagesEl = root.createDiv({ cls: "obcc-background-runner-messages" });
+    this.statusEl = root.createDiv({ cls: "obcc-background-runner-status" });
+    this.setStatus(this.t("ready"));
+  }
+
   private render(): void {
+    if (this.isBackgroundAutomationRunner()) {
+      this.renderBackgroundAutomationShell();
+      return;
+    }
     this.footerResizeObserver?.disconnect();
     this.footerResizeObserver = null;
     this.footerResizeCleanup?.();
@@ -19439,17 +20389,21 @@ class CancipView extends ItemView {
     return loaded;
   }
 
-  async prepareAutomationSession(task: AutomationTask): Promise<void> {
+  async prepareAutomationSession(task: AutomationTask, currentSessionId = ""): Promise<void> {
     if (this.activeRequest) return;
     if (task.sessionMode === "new") {
-      await this.newChat();
+      await this.newChat({ force: true, skipSaveCurrent: this.isBackgroundAutomationRunner(), focus: false });
       return;
     }
-    if (task.sessionMode !== "session") return;
-    const targetId = task.sessionId?.trim();
-    if (!targetId || targetId === this.sessionId) return;
-    const entry = (await this.readSessionHistoryIndex()).find((item) => item.id === targetId && !item.eventOnly);
-    if (entry) await this.loadSessionHistoryEntry(entry);
+    const targetId = task.sessionMode === "session" ? task.sessionId?.trim() : currentSessionId.trim();
+    if (task.sessionMode === "current" && !targetId) {
+      await this.newChat({ force: true, skipSaveCurrent: this.isBackgroundAutomationRunner(), focus: false });
+      return;
+    }
+    if (!targetId || (targetId === this.sessionId && !this.isBackgroundAutomationRunner())) return;
+    const entry = (await this.readSessionHistoryIndex({ force: true, mergeFiles: false })).find((item) => item.id === targetId && !item.eventOnly);
+    if (!entry) throw new Error(`Automation session not found: ${targetId}`);
+    await this.loadSessionHistoryEntry(entry, { saveCurrent: false, focusInput: false, markRead: false });
   }
 
   private normalizeSessionMessage(item: Record<string, unknown>): ChatMessage | null {
@@ -20256,7 +21210,10 @@ class CancipView extends ItemView {
     if (!this.ownsSessionRequest()) return;
     if (this.liveSessionSaveTimer !== null) return;
     const elapsed = Date.now() - this.liveSessionSaveLastAt;
-    const delay = Math.max(0, 600 - elapsed);
+    const minInterval = this.isBackgroundAutomationRunner()
+      ? BACKGROUND_LIVE_SESSION_SAVE_MIN_INTERVAL_MS
+      : FOREGROUND_LIVE_SESSION_SAVE_MIN_INTERVAL_MS;
+    const delay = Math.max(0, minInterval - elapsed);
     this.liveSessionSaveTimer = window.setTimeout(() => {
       this.liveSessionSaveTimer = null;
       this.liveSessionSaveLastAt = Date.now();
@@ -21242,11 +22199,13 @@ class CancipView extends ItemView {
       .sort((a, b) => a.stat.ctime - b.stat.ctime || a.path.localeCompare(b.path))
       .slice(0, scanLimit);
     const scannedCandidates = await this.vaultCurationCandidateItems(scannedFiles, "new Markdown file not handled by auto-curation yet", curatableFiles);
-    const meaningfulCandidates = scannedCandidates.filter((item) => item.curationReasons.length > 0).slice(0, candidateLimit);
-    const candidatePaths = meaningfulCandidates.map((item) => item.path);
+    const actionableCandidates = scannedCandidates.filter((item) => item.decision.action === "curate").slice(0, candidateLimit);
+    const candidatePaths = actionableCandidates.map((item) => item.path);
     const scannedPaths = scannedCandidates
-      .filter((item) => !item.curationReasons.length || candidatePaths.includes(item.path))
+      .filter((item) => item.decision.action !== "curate" || candidatePaths.includes(item.path))
       .map((item) => item.path);
+    const protectedCount = scannedCandidates.filter((item) => item.decision.action === "protected").length;
+    const skippedCount = scannedCandidates.filter((item) => item.decision.action === "skip").length;
     const lines: string[] = [
       "# Vault Curation Programmatic Scan Pack",
       "",
@@ -21255,16 +22214,19 @@ class CancipView extends ItemView {
       `- stateInitialized: ${stateResult.initialized}`,
       `- pendingNewFiles: ${stateResult.pending.length}`,
       `- scannedThisBatch: ${scannedPaths.length}`,
-      `- meaningfulCandidates: ${meaningfulCandidates.length}`,
+      `- meaningfulCandidates: ${actionableCandidates.length}`,
+      `- protectedThisBatch: ${protectedCount}`,
+      `- skippedThisBatch: ${skippedCount}`,
       `- scannedPathsJson: ${JSON.stringify(scannedPaths)}`,
       `- candidatePathsJson: ${JSON.stringify(candidatePaths)}`,
-      "- safety: files without a concrete preflight reason are marked handled without an API call; cosmetic-only writes are rejected again at execution time.",
+      "- safety: newness only triggers one scan. Files without a concrete high-value defect are handled without an API call; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic changes.",
       "",
       "## Meaningful candidates with bounded source text",
-      formatVaultCurationCandidates(meaningfulCandidates, candidateLimit),
+      formatVaultCurationCandidates(actionableCandidates, candidateLimit),
       "",
       "## Contract",
       "- Process only candidatePathsJson. The source text is already attached; avoid a duplicate read unless it is truncated or an external relation must be verified.",
+      "- For each candidate, execute only its allowedActions. A formatting defect does not authorize tags, links, summaries, or renaming.",
       "- Use composition/linkRelations only for concise property enrichment: summary, link_count, link_relations, related_candidates. Do not create visible body sections for these facts.",
       "- Suggested link relations are candidates only. Verify with a focused read/search before adding a new wikilink; skip weak candidates instead of inventing relationship text.",
       "- Pure spaces, blank lines, punctuation, heading markers, list indentation, or date-spacing edits are not meaningful and will be skipped programmatically.",
@@ -21355,6 +22317,55 @@ class CancipView extends ItemView {
     return uniqueStrings(reasons);
   }
 
+  vaultCurationDecision(input: {
+    path: string;
+    content: string;
+    curationReasons: string[];
+    backlinks: number;
+    vaultFileCount: number;
+    frontmatter?: Record<string, unknown>;
+  }): VaultCurationDecision {
+    const protections = vaultCurationProtectionReasons(input);
+    if (protections.length) {
+      return {
+        action: "protected",
+        reasons: ["automatic curation is not worth the change risk"],
+        protections,
+        allowedActions: []
+      };
+    }
+
+    const allowedActions: VaultCurationAllowedAction[] = [];
+    const allow = (action: VaultCurationAllowedAction): void => {
+      if (!allowedActions.includes(action)) allowedActions.push(action);
+    };
+    for (const reason of input.curationReasons) {
+      if (reason === "objective Markdown syntax defect" || reason === "long prose lacks usable structure") allow("format");
+      if (reason === "long note lacks a useful summary") {
+        allow("properties");
+        allow("summary");
+      }
+      if (reason === "vague or machine-generated filename") allow("rename");
+      if (reason === "explicitly mentioned related note lacks a link") allow("links");
+    }
+    if (!allowedActions.length) {
+      return {
+        action: "skip",
+        reasons: input.curationReasons.length
+          ? ["preflight signals do not justify an automatic content or path change"]
+          : ["no concrete high-value defect"],
+        protections: [],
+        allowedActions: []
+      };
+    }
+    return {
+      action: "curate",
+      reasons: [...input.curationReasons],
+      protections: [],
+      allowedActions
+    };
+  }
+
   private async vaultCurationCandidateItems(files: TFile[], reason: string, relatedScopeFiles: TFile[] = this.app.vault.getMarkdownFiles()): Promise<VaultCurationCandidate[]> {
     const items: VaultCurationCandidate[] = [];
     for (const file of files) {
@@ -21373,8 +22384,30 @@ class CancipView extends ItemView {
           content = "";
         }
       }
-      const curationReasons = this.vaultCurationPreflight(file, content, cache);
-      const linkRelations = this.vaultCurationLinkRelations(file, content, cache, tags, relatedScopeFiles);
+      let curationReasons = this.vaultCurationPreflight(file, content, cache);
+      const backlinks = this.vaultCurationBacklinkCount(file.path);
+      let decision = this.vaultCurationDecision({
+        path: file.path,
+        content,
+        curationReasons,
+        backlinks,
+        vaultFileCount: relatedScopeFiles.length,
+        frontmatter
+      });
+      const linkRelations = decision.action === "curate"
+        ? this.vaultCurationLinkRelations(file, content, cache, tags, relatedScopeFiles)
+        : [];
+      if (decision.action === "curate" && linkRelations.some((relation) => relation.direction === "suggested" && /正文提到/.test(relation.evidence ?? ""))) {
+        curationReasons = uniqueStrings([...curationReasons, "explicitly mentioned related note lacks a link"]);
+        decision = this.vaultCurationDecision({
+          path: file.path,
+          content,
+          curationReasons,
+          backlinks,
+          vaultFileCount: relatedScopeFiles.length,
+          frontmatter
+        });
+      }
       items.push({
         path: file.path,
         ctime: file.stat.ctime,
@@ -21382,14 +22415,15 @@ class CancipView extends ItemView {
         size: file.stat.size,
         reason,
         curationReasons,
+        decision,
         title,
         tags,
         outLinks: Object.keys(this.app.metadataCache.resolvedLinks[file.path] ?? {}).length,
-        backlinks: this.vaultCurationBacklinkCount(file.path),
+        backlinks,
         composition: this.vaultCurationComposition(content, cache),
         linkRelations,
-        content: curationReasons.length ? trimContext(content, 6000) : undefined,
-        excerpt: content ? makeExcerpt(content, []) : undefined
+        content: decision.action === "curate" ? trimContext(content, 6000) : undefined,
+        excerpt: decision.action === "curate" && content ? makeExcerpt(content, []) : undefined
       });
     }
     return items;
@@ -24623,6 +25657,11 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.tags", "obsidian.tags", ["tag", "tags", "right", "sidebar", "fixed", "pin", "标签", "右侧栏", "固定", "删除"], 84),
       commandTarget("command:obsidian.tags.pin", "obsidian.tags.pin", ["tag", "pin", "fixed", "right", "sidebar", "标签", "固定", "右侧栏"], 82),
       commandTarget("command:obsidian.tags.deleteUnpinned", "obsidian.tags.deleteUnpinned", ["tag", "delete", "unpinned", "clean", "标签", "删除", "非固定", "清理"], 80),
+      commandTarget("command:obsidian.files.pins", "obsidian.files.pins", ["file", "files", "pin", "pinned", "order", "explorer", "文件", "置顶", "顺序", "文件列表"], 88),
+      commandTarget("command:obsidian.files.pin", "obsidian.files.pin", ["file", "pin", "top", "explorer", "文件", "置顶", "固定", "文件列表"], 86),
+      commandTarget("command:obsidian.files.unpin", "obsidian.files.unpin", ["file", "unpin", "explorer", "文件", "取消置顶", "取消固定", "文件列表"], 84),
+      commandTarget("command:obsidian.files.movePin", "obsidian.files.movePin", ["file", "pin", "move", "up", "down", "order", "文件", "置顶", "上移", "下移", "排序"], 84),
+      commandTarget("command:obsidian.files.reorderPins", "obsidian.files.reorderPins", ["file", "pins", "reorder", "sort", "folder", "文件", "置顶", "重排", "排序", "文件夹"], 86),
       commandTarget("command:obsidian.tabs", "obsidian.tabs", ["tab", "tabs", "leaf", "pane", "right sidebar", "标签页", "页签", "固定页", "右侧栏"], 84),
       commandTarget("command:obsidian.tabs.pin", "obsidian.tabs.pin", ["tab", "tabs", "pin", "fixed", "标签页", "页签", "固定页", "固定"], 82),
       commandTarget("command:obsidian.tabs.unpin", "obsidian.tabs.unpin", ["tab", "tabs", "unpin", "fixed", "标签页", "页签", "取消固定"], 80),
@@ -24865,6 +25904,11 @@ class CancipView extends ItemView {
       "obsidian.tags": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags\",\"args\":{\"limit\":80}}]}",
       "obsidian.tags.pin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags.pin\",\"args\":{\"tags\":[\"important\"],\"hideUnpinned\":true}}]}",
       "obsidian.tags.deleteUnpinned": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags.deleteUnpinned\",\"args\":{\"dryRun\":true}}]}",
+      "obsidian.files.pins": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.files.pins\",\"args\":{\"folder\":\"Folder\"}}]}",
+      "obsidian.files.pin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.files.pin\",\"args\":{\"path\":\"Folder/Note.md\"}}]}",
+      "obsidian.files.unpin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.files.unpin\",\"args\":{\"path\":\"Folder/Note.md\"}}]}",
+      "obsidian.files.movePin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.files.movePin\",\"args\":{\"path\":\"Folder/Note.md\",\"direction\":\"up\"}}]}",
+      "obsidian.files.reorderPins": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.files.reorderPins\",\"args\":{\"folder\":\"Folder\",\"paths\":[\"Folder/First.md\",\"Folder/Second.md\"]}}]}",
       "obsidian.tabs": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tabs\",\"args\":{\"scope\":\"all\"}}]}",
       "obsidian.tabs.pin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tabs.pin\",\"args\":{\"active\":true}}]}",
       "obsidian.tabs.unpin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tabs.unpin\",\"args\":{\"active\":true}}]}",
@@ -27151,6 +28195,10 @@ class CancipView extends ItemView {
       || command === "obsidian.tags.pin"
       || command === "obsidian.tags.unpin"
       || command === "obsidian.tags.deleteUnpinned"
+      || command === "obsidian.files.pin"
+      || command === "obsidian.files.unpin"
+      || command === "obsidian.files.movePin"
+      || command === "obsidian.files.reorderPins"
       || command === "obsidian.tabs.pin"
       || command === "obsidian.tabs.unpin"
       || command === "obsidian.tabs.closeUnpinned"
@@ -27191,6 +28239,10 @@ class CancipView extends ItemView {
       || command === "obsidian.dom.click"
       || command === "obsidian.dom.input"
       || command === "obsidian.execute"
+      || command === "obsidian.files.pin"
+      || command === "obsidian.files.unpin"
+      || command === "obsidian.files.movePin"
+      || command === "obsidian.files.reorderPins"
       || isObsidianEvalCommandAlias(command)
       || command === "cancip.pluginAction"
       || command === "cancip.annotate.note"
@@ -28843,6 +29895,37 @@ class CancipView extends ItemView {
 
     if (normalized === "obsidian.tags.deleteUnpinned") {
       return this.t("commandExecuted", { command: normalized, result: await this.deleteUnpinnedTagsCommand(args) });
+    }
+
+    if (normalized === "obsidian.files.pins") {
+      const folder = typeof args.folder === "string" ? args.folder : undefined;
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.filePinsSummary(folder) });
+    }
+
+    if (normalized === "obsidian.files.pin" || normalized === "obsidian.files.unpin") {
+      const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+      const path = normalizeFilePinPath(typeof args.path === "string" ? args.path : activePath);
+      if (!path) throw new Error(`${normalized} requires args.path or an active file`);
+      await this.plugin.setFilePinned(path, normalized.endsWith(".pin"));
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.filePinsSummary(vaultPathParent(path)) });
+    }
+
+    if (normalized === "obsidian.files.movePin") {
+      const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+      const path = normalizeFilePinPath(typeof args.path === "string" ? args.path : activePath);
+      const direction = String(args.direction ?? "").toLowerCase();
+      const delta = direction === "up" || direction === "before" ? -1 : direction === "down" || direction === "after" ? 1 : Number(args.delta ?? 0);
+      if (!path || !delta) throw new Error("obsidian.files.movePin requires path and direction up/down");
+      await this.plugin.movePinnedFile(path, delta);
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.filePinsSummary(vaultPathParent(path)) });
+    }
+
+    if (normalized === "obsidian.files.reorderPins") {
+      const paths = Array.isArray(args.paths) ? args.paths.filter((item): item is string => typeof item === "string") : [];
+      const folder = normalizeFilePinFolderPath(typeof args.folder === "string" ? args.folder : vaultPathParent(paths[0] ?? ""));
+      if (!paths.length) throw new Error("obsidian.files.reorderPins requires args.paths in the requested order");
+      await this.plugin.setPinnedFileOrder(folder, paths);
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.filePinsSummary(folder) });
     }
 
     if (normalized === "obsidian.tabs") {
@@ -31379,6 +32462,7 @@ class CancipView extends ItemView {
   }
 
   private renderMessagesAfterMutation(): void {
+    if (this.isBackgroundAutomationRunner()) return;
     if (this.activeRequest) {
       this.scheduleRenderMessages();
       return;
@@ -31387,6 +32471,7 @@ class CancipView extends ItemView {
   }
 
   private scheduleRenderMessages(immediate = false): void {
+    if (this.isBackgroundAutomationRunner()) return;
     if (immediate) {
       this.flushScheduledMessageRender();
       return;
@@ -31426,6 +32511,10 @@ class CancipView extends ItemView {
   private renderMessages(): void {
     this.cancelScheduledMessageRender();
     this.messageRenderLastAt = Date.now();
+    if (this.isBackgroundAutomationRunner()) {
+      this.pendingMessageRender = false;
+      return;
+    }
     if (this.shouldDeferMessageRender()) {
       this.pendingMessageRender = true;
       return;
@@ -34273,7 +35362,7 @@ function cancipAutomationTemplates(): AutomationTemplate[] {
     {
       id: VAULT_CURATION_AUTOMATION_ID,
       title: "Vault 新文件自动整理",
-      description: "Automatically beautifies/refactors newly created Markdown files once, adding only useful properties/tags/summaries/links or concise renames. Existing files and folders are handled on demand by the specified-scope curation Skill.",
+      description: "A programmatic benefit gate beautifies/refactors newly created Markdown files once only for concrete defects, with useful properties/tags/summaries/links or concise renames; clean notes are skipped, while templates, frequently referenced notes, plugin syntax, and generated files are protected. Existing files and folders are handled on demand by the specified-scope curation Skill.",
       prompt: buildVaultCurationPrompt(),
       schedule: "hourly",
       enabled: true,
@@ -34473,13 +35562,15 @@ function buildVaultCurationPrompt(): string {
     "",
     "执行顺序：",
     "1. 只读取扫描包中的新文件候选。",
-    "2. 对每个候选按 A/B/C 判断实际需要；需要就输出 cancip-action 做 read/patch/write/move，不需要就跳过。",
+    "2. 对每个候选按 A/B/C 判断实际需要，但只能执行 Scan Pack 中该文件 allowedActions 明确授权的类别；需要就输出 cancip-action 做 read/patch/write/move，不需要就跳过。",
     "3. 每次只处理少量文件，先 read，再小步 patch/write/move，并读回验证；目标不清时只允许对该目标用一次 cancip.findTarget。",
     "4. 最终只写实际处理结果、改动文件和验证；不存在的项目不写，不解释空池或未发生的动作。",
     "",
     "边界与审核：",
     "- 不删除实质内容，不改事实含义，不合并/拆分/删除文件，除非用户明确要求。",
     "- 不要为了凑动作而挂 tag、摘要、链接或重命名。",
+    "- 新建只代表进入一次扫描，不代表必须整理。模板、高被引笔记、插件语法和生成文件已由程序保护，不得绕过 candidatePathsJson 处理。",
+    "- allowedActions 是逐文件硬边界：格式问题不能顺带授权 tag、摘要、链接或改名，其他类别同理。",
     "- Scan Pack 已提供 composition/linkRelations：优先使用这些程序化事实；需要补链时先核对 suggested 关系，不要把弱相关候选写成确定关系。",
     "- 摘要、链接数、链接关系、推测关联只能写进 properties/frontmatter；不要新增或改写正文里的摘要/知识关系段落。",
     "- 属性要尽可能短又不失关键信息：summary 一句话，link_relations/related_candidates 最多几条短项；不明确、不高价值、不好短写就不写。",
@@ -34682,13 +35773,14 @@ function formatVaultCurationCandidates(items: VaultCurationCandidate[], limit: n
       const title = item.title ? ` title: ${item.title.replace(/\n+/g, " ").slice(0, 120)}` : "";
       const tags = item.tags.length ? ` tags: ${item.tags.map((tag) => `#${tag}`).join(" ")}` : " tags: none";
       const reasons = item.curationReasons.length ? ` reasons: ${item.curationReasons.join("; ")}` : "";
+      const decision = ` decision: ${item.decision.action} allowedActions=${item.decision.allowedActions.join(",") || "none"}`;
       const composition = `\n  composition: chars=${item.composition.characters} lines=${item.composition.lines} headings=${item.composition.headings} lists=${item.composition.listItems} tasks=${item.composition.tasks} tables=${item.composition.tables} codeBlocks=${item.composition.codeBlocks} quotes=${item.composition.quotes} embeds=${item.composition.embeds}`;
       const linkRelations = item.linkRelations.length
         ? `\n  linkRelations:\n${indentBlock(formatVaultCurationLinkRelations(item.linkRelations), "    ")}`
         : "\n  linkRelations: none";
       const content = item.content ? `\n  content:\n${indentBlock(item.content, "    ")}` : "";
       const excerpt = item.excerpt ? `\n  excerpt: ${item.excerpt.replace(/\n+/g, " ")}` : "";
-      return `- ${item.path} (${formatFileSize(item.size)}, created ${new Date(item.ctime).toISOString()}, modified ${new Date(item.mtime).toISOString()}) reason: ${item.reason}${reasons}${title}${tags} links: out=${item.outLinks} backlinks=${item.backlinks}${composition}${linkRelations}${excerpt}${content}`;
+      return `- ${item.path} (${formatFileSize(item.size)}, created ${new Date(item.ctime).toISOString()}, modified ${new Date(item.mtime).toISOString()}) reason: ${item.reason}${reasons}${decision}${title}${tags} links: out=${item.outLinks} backlinks=${item.backlinks}${composition}${linkRelations}${excerpt}${content}`;
     })
     .join("\n");
 }
@@ -34706,6 +35798,50 @@ function formatVaultCurationLinkRelations(relations: VaultCurationLinkRelation[]
 function isVaultCurationInboxLikePath(path: string): boolean {
   const normalized = normalizePath(path).toLowerCase();
   return /(^|\/)(inbox|收件箱|临时|暂存|草稿|drafts?|tmp|temp|未整理|待整理)(\/|$)/i.test(normalized);
+}
+
+function vaultCurationProtectionReasons(input: {
+  path: string;
+  content: string;
+  backlinks: number;
+  vaultFileCount: number;
+  frontmatter?: Record<string, unknown>;
+}): string[] {
+  const protections: string[] = [];
+  const path = normalizePath(input.path.replace(/\\/g, "/"));
+  const content = String(input.content ?? "");
+  const frontmatter = input.frontmatter ?? {};
+  if (/(^|\/)(templates?|模板|模板库|模版|模版库)(\/|$)/i.test(path)) protections.push("template-like path");
+  if (/<%[\s\S]{0,1200}?%>|\{\{\s*(?:title|date|time|name|content|cursor|selection|value(?::[^}]*)?|[^{}\n]{1,60})\s*\}\}|\btp\.(?:file|date|system|web|config)\b/i.test(content)) {
+    protections.push("template syntax or placeholders");
+  }
+  const frequentThreshold = vaultCurationFrequentBacklinkThreshold(input.vaultFileCount);
+  if (input.backlinks >= frequentThreshold) protections.push(`frequently referenced (${input.backlinks} backlinks; threshold ${frequentThreshold})`);
+
+  const pluginFrontmatterKeys = ["excalidraw-plugin", "kanban-plugin", "database-plugin", "meta-bind", "obsidianUIMode"];
+  if (pluginFrontmatterKeys.some((key) => Object.prototype.hasOwnProperty.call(frontmatter, key))
+    || /(^|\n)\s*```(?:dataview|dataviewjs|tasks|runjs|button|meta-bind|base)\b|(^|\n)# Excalidraw Data\b|%%\s*(?:Excalidraw|notedraw|spaced-repetition)\b/i.test(content)) {
+    protections.push("plugin-owned or plugin-syntax-heavy content");
+  }
+
+  const generatedKeys = ["generated", "generator", "generated_by", "generated-by", "auto_generated", "auto-generated"];
+  const generatedMetadata = generatedKeys.some((key) => {
+    if (!Object.prototype.hasOwnProperty.call(frontmatter, key)) return false;
+    const value = frontmatter[key];
+    if (value === true) return true;
+    if (value === false || value === null || value === undefined) return false;
+    const text = flattenKeywordValue(value).join(" ").trim();
+    return Boolean(text) && !/^(?:0|false|no)$/i.test(text);
+  });
+  if (generatedMetadata || /<!--\s*(?:auto[- ]?generated|generated file|do not edit)\b|\bDO NOT EDIT\b/i.test(content)) {
+    protections.push("generated or do-not-edit content");
+  }
+  return uniqueStrings(protections);
+}
+
+function vaultCurationFrequentBacklinkThreshold(vaultFileCount: number): number {
+  const proportional = Math.ceil(Math.max(0, vaultFileCount) * 0.01);
+  return Math.max(6, Math.min(24, proportional));
 }
 
 function cancipCurationHasMarkdownDefect(content: string): boolean {
@@ -35466,6 +36602,7 @@ function cancipVaultSyncKindsForPath(path: string, settings: Settings): Set<Canc
   if (!normalized) return kinds;
   if (isReviewGateRelatedPath(normalized)) kinds.add("review");
   if (normalized === CANCIP_CONFIG_PATH) kinds.add("config");
+  if (normalized === CANCIP_FILE_PINS_PATH) kinds.add("file-pins");
   if (
     normalized === SESSION_HISTORY_INDEX_PATH ||
     normalized === SESSION_EVENTS_PATH ||
@@ -37942,6 +39079,7 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "obsidian.ui.buttons",
     "obsidian.ui.buttonRules",
     "obsidian.tags",
+    "obsidian.files.pins",
     "obsidian.tabs",
     "cancip.tools.index",
     "cancip.tools.help",
@@ -38127,6 +39265,30 @@ function memoryFilePriority(path: string, prompt = ""): number {
   ];
   const index = order.indexOf(name);
   return index >= 0 ? index : 100;
+}
+
+function scheduleIdleWork(callback: () => void, timeoutMs: number): () => void {
+  const idleWindow = window as unknown as Window & {
+    requestIdleCallback?: (handler: () => void, options?: { timeout?: number }) => number;
+    cancelIdleCallback?: (id: number) => void;
+  };
+  let cancelled = false;
+  if (typeof idleWindow.requestIdleCallback === "function") {
+    const id = idleWindow.requestIdleCallback(() => {
+      if (!cancelled) callback();
+    }, { timeout: timeoutMs });
+    return () => {
+      cancelled = true;
+      idleWindow.cancelIdleCallback?.(id);
+    };
+  }
+  const timer = window.setTimeout(() => {
+    if (!cancelled) callback();
+  }, Math.min(timeoutMs, 800));
+  return () => {
+    cancelled = true;
+    window.clearTimeout(timer);
+  };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -38410,6 +39572,22 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
     .replace(
       /不确定路线时先用 cancip\.tools\.index/,
       "目标或命令不明确时先用 cancip.findTarget；不确定路线时再用 cancip.tools.index"
+    )
+    .replace(
+      /obsidian\.tags\.deleteUnpinned, obsidian\.tabs,/g,
+      "obsidian.tags.deleteUnpinned, obsidian.files.pins, obsidian.files.pin, obsidian.files.unpin, obsidian.files.movePin, obsidian.files.reorderPins, obsidian.tabs,"
+    )
+    .replace(
+      /obsidian\.tags\.deleteUnpinned、obsidian\.tabs、/g,
+      "obsidian.tags.deleteUnpinned、obsidian.files.pins、obsidian.files.pin、obsidian.files.unpin、obsidian.files.movePin、obsidian.files.reorderPins、obsidian.tabs、"
+    )
+    .replace(
+      /Use obsidian\.tabs to inspect workspace tabs\/leaves,/,
+      "Use obsidian.files.pins to inspect native File Explorer pin order and obsidian.files.pin/unpin/movePin/reorderPins to change folder-local pinned order without replacing native unpinned sorting. Use obsidian.tabs to inspect workspace tabs/leaves,"
+    )
+    .replace(
+      /可用 obsidian\.tabs 查看工作区标签页，/,
+      "可用 obsidian.files.pins 查看原生文件列表置顶顺序，用 obsidian.files.pin/unpin/movePin/reorderPins 修改同文件夹置顶顺序且不替换普通文件原生排序。可用 obsidian.tabs 查看工作区标签页，"
     );
 }
 
@@ -38427,6 +39605,7 @@ function isReadOnlyAction(action: CancipAction): boolean {
     "obsidian.ui.buttons",
     "obsidian.ui.buttonRules",
     "obsidian.tags",
+    "obsidian.files.pins",
     "obsidian.tabs",
     "cancip.tools.index",
     "cancip.tools.help",
@@ -38484,6 +39663,113 @@ function vaultPathParent(path: string): string {
   const normalized = normalizePath(path.replace(/\\/g, "/"));
   const index = normalized.lastIndexOf("/");
   return index >= 0 ? normalized.slice(0, index) : "";
+}
+
+function normalizeFilePinPath(path: string): string {
+  return normalizePath(String(path ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""));
+}
+
+function normalizeFilePinFolderPath(path: string): string {
+  return normalizeFilePinPath(path);
+}
+
+function emptyFilePinState(): FilePinState {
+  return {
+    schemaVersion: CANCIP_FILE_PINS_SCHEMA_VERSION,
+    updatedAt: new Date(0).toISOString(),
+    folders: {}
+  };
+}
+
+function cloneFilePinState(state: FilePinState): FilePinState {
+  return {
+    schemaVersion: CANCIP_FILE_PINS_SCHEMA_VERSION,
+    updatedAt: state.updatedAt,
+    folders: Object.fromEntries(Object.entries(state.folders).map(([folder, paths]) => [folder, [...paths]]))
+  };
+}
+
+function normalizeFilePinState(raw: unknown): FilePinState {
+  const folders: Record<string, string[]> = {};
+  const seen = new Set<string>();
+  const rawFolders = isRecord(raw) && isRecord(raw.folders) ? raw.folders : {};
+  for (const paths of Object.values(rawFolders)) {
+    if (!Array.isArray(paths)) continue;
+    for (const value of paths) {
+      if (typeof value !== "string") continue;
+      const path = normalizeFilePinPath(value);
+      if (!path || seen.has(path)) continue;
+      seen.add(path);
+      const folder = vaultPathParent(path);
+      (folders[folder] ??= []).push(path);
+    }
+  }
+  return {
+    schemaVersion: CANCIP_FILE_PINS_SCHEMA_VERSION,
+    updatedAt: isRecord(raw) && typeof raw.updatedAt === "string" && raw.updatedAt.trim() ? raw.updatedAt : new Date(0).toISOString(),
+    folders
+  };
+}
+
+function removePathFromFilePinFolders(folders: Record<string, string[]>, path: string): void {
+  for (const [folder, paths] of Object.entries(folders)) {
+    folders[folder] = paths.filter((item) => item !== path);
+  }
+  removeEmptyFilePinFolders(folders);
+}
+
+function removeEmptyFilePinFolders(folders: Record<string, string[]>): void {
+  for (const [folder, paths] of Object.entries(folders)) {
+    const unique = uniqueStrings(paths.map(normalizeFilePinPath).filter(Boolean));
+    if (unique.length) folders[folder] = unique;
+    else delete folders[folder];
+  }
+}
+
+function filePinPathMatchesBase(path: string, basePath: string): boolean {
+  return path === basePath || path.startsWith(`${basePath}/`);
+}
+
+function migrateFilePinStatePaths(state: FilePinState, oldPath: string, newPath: string): FilePinState {
+  const oldNormalized = normalizeFilePinPath(oldPath);
+  const newNormalized = normalizeFilePinPath(newPath);
+  if (!oldNormalized || !newNormalized || oldNormalized === newNormalized) return state;
+  const exactSameFolder = vaultPathParent(oldNormalized) === vaultPathParent(newNormalized)
+    && Object.values(state.folders).flat().some((path) => path === oldNormalized)
+    && !Object.values(state.folders).flat().some((path) => path.startsWith(`${oldNormalized}/`));
+  if (exactSameFolder) {
+    for (const [folder, paths] of Object.entries(state.folders)) {
+      state.folders[folder] = paths.map((path) => path === oldNormalized ? newNormalized : path);
+    }
+    return normalizeFilePinState(state);
+  }
+  const unaffected: string[] = [];
+  const affected: string[] = [];
+  for (const path of Object.values(state.folders).flat()) {
+    if (filePinPathMatchesBase(path, oldNormalized)) {
+      affected.push(`${newNormalized}${path.slice(oldNormalized.length)}`);
+    } else {
+      unaffected.push(path);
+    }
+  }
+  const folders: Record<string, string[]> = {};
+  for (const path of [...unaffected, ...affected]) {
+    const normalized = normalizeFilePinPath(path);
+    if (!normalized) continue;
+    const folder = vaultPathParent(normalized);
+    const paths = folders[folder] ?? [];
+    if (!paths.includes(normalized)) paths.push(normalized);
+    folders[folder] = paths;
+  }
+  return {
+    schemaVersion: CANCIP_FILE_PINS_SCHEMA_VERSION,
+    updatedAt: state.updatedAt,
+    folders
+  };
+}
+
+function sameStringArray(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 function stableCacheKey(value: unknown): string {
