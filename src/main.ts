@@ -96,7 +96,7 @@ const PRIME_TTS_PACKAGES_RELATIVE = "plugins/cancip/tts";
 const BUILTIN_PRIME_TTS_PACKAGE_FOLDER = "prime-tts";
 const BUILTIN_PRIME_TTS_PACKAGE_TAG = "prime-tts";
 const BUILTIN_PRIME_TTS_PACKAGE_ASSET = "prime-tts.zip";
-const BUILTIN_PRIME_TTS_PACKAGE_URL = `https://github.com/arias007/cancip/releases/download/${BUILTIN_PRIME_TTS_PACKAGE_TAG}/${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`;
+const BUILTIN_PRIME_TTS_PACKAGE_URL = `https://github.com/arias007/obsidian-cancip-ai/releases/download/${BUILTIN_PRIME_TTS_PACKAGE_TAG}/${BUILTIN_PRIME_TTS_PACKAGE_ASSET}`;
 const PRIME_TTS_REQUIRED_RELATIVES = [
   "acoustic_encoder.onnx",
   "acoustic_decoder.onnx",
@@ -2162,7 +2162,7 @@ const DEFAULT_SETTINGS: Settings = {
   githubApiBaseUrl: "https://api.github.com",
   githubDownloadBaseUrl: "",
   githubOwner: "arias007",
-  githubRepo: "cancip",
+  githubRepo: "obsidian-cancip-ai",
   githubToken: "",
   autoContinueAfterTools: true,
   maxToolIterations: 3,
@@ -24641,7 +24641,7 @@ class CancipView extends ItemView {
       "github.branches": "{\"actions\":[{\"type\":\"command\",\"command\":\"github.branches\",\"args\":{\"limit\":20}}]}",
       "github.file": "{\"actions\":[{\"type\":\"command\",\"command\":\"github.file\",\"args\":{\"path\":\"README.md\"}}]}",
       "github.createIssue": "{\"actions\":[{\"type\":\"command\",\"command\":\"github.createIssue\",\"args\":{\"title\":\"Issue title\",\"body\":\"Issue body\"}}]}",
-      "github.installObsidianPlugin": "{\"actions\":[{\"type\":\"command\",\"command\":\"github.installObsidianPlugin\",\"args\":{\"repo\":\"arias007/cancip\",\"pluginId\":\"cancip\",\"tag\":\"latest\"}}]}"
+      "github.installObsidianPlugin": "{\"actions\":[{\"type\":\"command\",\"command\":\"github.installObsidianPlugin\",\"args\":{\"repo\":\"arias007/obsidian-cancip-ai\",\"pluginId\":\"cancip\",\"tag\":\"latest\"}}]}"
     };
     const example = examples[command] ?? `{"actions":[{"type":"command","command":"${command}"}]}`;
     return chinese

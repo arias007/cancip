@@ -166,7 +166,7 @@ The official review-clean plugin release ships only the core plugin files. Model
 The default downloadable package is:
 
 ```text
-https://github.com/arias007/cancip/releases/download/prime-tts/prime-tts.zip
+https://github.com/arias007/obsidian-cancip-ai/releases/download/prime-tts/prime-tts.zip
 ```
 
 The zip may contain the files at the archive root or inside one top-level folder such as `prime-tts/` or `prime-tts-zh-en/`.
@@ -320,7 +320,7 @@ GitHub settings live in the advanced Command bus group and mirror to `.cancip/co
 {
   "githubApiBaseUrl": "https://api.github.com",
   "githubOwner": "arias007",
-  "githubRepo": "cancip",
+  "githubRepo": "obsidian-cancip-ai",
   "githubToken": "",
   "autoContinueAfterTools": true,
   "maxToolIterations": 3
