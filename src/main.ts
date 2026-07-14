@@ -17531,12 +17531,43 @@ class CancipView extends ItemView {
   }
 
   private setupFooterLayoutObserver(root: HTMLElement): void {
+    const viewWindow = root.ownerDocument.defaultView ?? window;
+    const viewportMetrics = () => {
+      const layoutHeight = Math.max(root.ownerDocument.documentElement.clientHeight, viewWindow.innerHeight || 0);
+      const visualViewport = viewWindow.visualViewport;
+      const visualHeight = visualViewport?.height ?? layoutHeight;
+      const visualBottom = (visualViewport?.offsetTop ?? 0) + visualHeight;
+      return { layoutHeight, visualHeight, visualBottom };
+    };
+    let baseline = viewportMetrics();
+    let inputFocused = false;
     const sync = () => {
-      if (this.footerLayoutFrame !== null) window.cancelAnimationFrame(this.footerLayoutFrame);
-      this.footerLayoutFrame = window.requestAnimationFrame(() => {
+      if (this.footerLayoutFrame !== null) viewWindow.cancelAnimationFrame(this.footerLayoutFrame);
+      this.footerLayoutFrame = viewWindow.requestAnimationFrame(() => {
         this.footerLayoutFrame = null;
         const footer = this.footerEl;
         if (!footer) return;
+        const current = viewportMetrics();
+        if (!inputFocused) {
+          baseline = current;
+        }
+        const layoutResize = Math.max(0, baseline.layoutHeight - current.layoutHeight);
+        const visualResize = Math.max(0, baseline.visualHeight - current.visualHeight);
+        const visualOcclusion = Math.max(0, baseline.visualBottom - current.visualBottom);
+        const keyboardHeight = Math.max(layoutResize, visualResize, visualOcclusion);
+        const keyboardVisible = inputFocused && keyboardHeight > 80;
+        // A resized layout already keeps fixed elements above the keyboard. Only
+        // compensate for the portion that overlays the unchanged layout viewport.
+        const keyboardOverlay = keyboardVisible ? Math.max(0, Math.ceil(visualOcclusion - layoutResize)) : 0;
+        const rootRect = root.getBoundingClientRect();
+        const layoutWidth = Math.max(root.ownerDocument.documentElement.clientWidth, viewWindow.innerWidth || 0);
+        root.toggleClass("has-visual-keyboard", keyboardVisible);
+        root.setCssProps({
+          "--obcc-keyboard-inset": "0px",
+          "--obcc-footer-viewport-bottom": `${keyboardOverlay}px`,
+          "--obcc-footer-left": keyboardVisible ? `${Math.max(0, Math.floor(rootRect.left))}px` : "0px",
+          "--obcc-footer-right": keyboardVisible ? `${Math.max(0, Math.floor(layoutWidth - rootRect.right))}px` : "0px"
+        });
         const height = Math.ceil(footer.getBoundingClientRect().height);
         const footerHeight = `${Math.max(48, height)}px`;
         root.setCssProps({ "--obcc-footer-height": footerHeight });
@@ -17549,16 +17580,40 @@ class CancipView extends ItemView {
       this.footerResizeObserver = new ResizeObserver(sync);
       this.footerResizeObserver.observe(this.footerEl);
     }
-    window.addEventListener("resize", sync);
-    window.visualViewport?.addEventListener("resize", sync);
-    window.visualViewport?.addEventListener("scroll", sync);
-    this.footerResizeCleanup = () => {
-      window.removeEventListener("resize", sync);
-      window.visualViewport?.removeEventListener("resize", sync);
-      window.visualViewport?.removeEventListener("scroll", sync);
+    viewWindow.addEventListener("resize", sync);
+    viewWindow.visualViewport?.addEventListener("resize", sync);
+    viewWindow.visualViewport?.addEventListener("scroll", sync);
+    const handleFocus = () => {
+      baseline = viewportMetrics();
+      inputFocused = true;
+      sync();
+      viewWindow.setTimeout(sync, 80);
+      viewWindow.setTimeout(sync, 220);
+      viewWindow.setTimeout(sync, 420);
     };
-    window.setTimeout(sync, 50);
-    window.setTimeout(sync, 250);
+    const handleBlur = () => {
+      inputFocused = false;
+      sync();
+      viewWindow.setTimeout(sync, 180);
+    };
+    this.inputEl.addEventListener("focus", handleFocus);
+    this.inputEl.addEventListener("blur", handleBlur);
+    this.footerResizeCleanup = () => {
+      viewWindow.removeEventListener("resize", sync);
+      viewWindow.visualViewport?.removeEventListener("resize", sync);
+      viewWindow.visualViewport?.removeEventListener("scroll", sync);
+      this.inputEl.removeEventListener("focus", handleFocus);
+      this.inputEl.removeEventListener("blur", handleBlur);
+      root.removeClass("has-visual-keyboard");
+      root.setCssProps({
+        "--obcc-keyboard-inset": "0px",
+        "--obcc-footer-viewport-bottom": "0px",
+        "--obcc-footer-left": "0px",
+        "--obcc-footer-right": "0px"
+      });
+    };
+    viewWindow.setTimeout(sync, 50);
+    viewWindow.setTimeout(sync, 250);
   }
 
   private syncOverlayGeometry(root: HTMLElement, footerHeight?: string): void {

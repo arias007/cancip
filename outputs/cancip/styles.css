@@ -7104,8 +7104,7 @@ body.is-phone .obcc-review-leaf .obcc-review-detail-rail {
   scroll-padding-bottom: 4px;
 }
 
-body.is-mobile .obcc-root.has-visual-keyboard .obcc-footer,
-body.is-phone .obcc-root.has-visual-keyboard .obcc-footer {
+.obcc-root.has-visual-keyboard .obcc-footer {
   padding-bottom: 2px;
 }
 
@@ -7180,8 +7179,7 @@ body.is-phone .obcc-root {
   --obcc-footer-right: 0px;
 }
 
-body.is-mobile .obcc-root.has-visual-keyboard .obcc-footer,
-body.is-phone .obcc-root.has-visual-keyboard .obcc-footer {
+.obcc-root.has-visual-keyboard .obcc-footer {
   position: fixed;
   right: var(--obcc-footer-right, 0px);
   bottom: var(--obcc-footer-viewport-bottom, var(--obcc-keyboard-inset, 0px));
@@ -7192,13 +7190,11 @@ body.is-phone .obcc-root.has-visual-keyboard .obcc-footer {
   padding-bottom: 2px;
 }
 
-body.is-mobile .obcc-root.has-visual-keyboard .obcc-shell,
-body.is-phone .obcc-root.has-visual-keyboard .obcc-shell {
+.obcc-root.has-visual-keyboard .obcc-shell {
   padding-bottom: var(--obcc-footer-height, 72px);
 }
 
-body.is-mobile .obcc-root.has-visual-keyboard .obcc-messages,
-body.is-phone .obcc-root.has-visual-keyboard .obcc-messages {
+.obcc-root.has-visual-keyboard .obcc-messages {
   padding-bottom: calc(16px + var(--obcc-footer-height, 72px));
 }
 
