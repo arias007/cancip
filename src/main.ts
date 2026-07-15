@@ -5573,8 +5573,7 @@ export default class CancipPlugin extends Plugin {
   private srReviewBlankTabRestoreUntil = 0;
   private srReviewBlankTabRestoreLeafId = "";
   private srReviewBlankTabRestoreLeaf: WorkspaceLeaf | null = null;
-  private srReviewTabInterceptUntil = 0;
-  private srReviewTabInterceptLeafId = "";
+  private srReviewObservedActiveLeaf: WorkspaceLeaf | null = null;
   private srReviewQueueCommand: ObsidianCommandDefinition | null = null;
   private srReviewQueueOriginalCallback: (() => unknown) | null = null;
   private srReviewQueuePatchedCallback: (() => unknown) | null = null;
@@ -6270,68 +6269,23 @@ export default class CancipPlugin extends Plugin {
   }
 
   private installSrReviewBlankTabGuard(): void {
-    const doc = this.app.workspace.containerEl?.ownerDocument ?? activeDocument;
-    if (!doc?.body) return;
     let layoutTimer = 0;
-    const recordIntent = (event: Event): void => {
-      const target = event.target as HTMLElement | null;
-      if (!target?.closest) return;
-      const srCard = target.closest<HTMLElement>(".sr-card-container");
-      if (srCard && target.closest("a, .internal-embed, .pdf-embed, .pdf-toolbar, .pdf-container")) {
-        const sourceLeaf = this.findSrLeafForElement(srCard);
-        if (sourceLeaf) this.markSrReviewTabIntent(sourceLeaf, 120000);
-      }
-      const header = target.closest<HTMLElement>(".workspace-tab-header");
-      const viewType = header?.getAttribute("data-type") ?? "";
-      const srLeaves = [
-        ...this.app.workspace.getLeavesOfType(SR_CARD_REVIEW_VIEW_TYPE),
-        ...this.app.workspace.getLeavesOfType(SR_NOTE_REVIEW_QUEUE_VIEW_TYPE)
-      ];
-      const headerLeaf = header
-        ? srLeaves.find((leaf) => (leaf as unknown as { tabHeaderEl?: HTMLElement }).tabHeaderEl === header)
-        : undefined;
-      if (headerLeaf || viewType === SR_CARD_REVIEW_VIEW_TYPE || viewType === SR_NOTE_REVIEW_QUEUE_VIEW_TYPE) {
-        const leaf = headerLeaf ?? this.app.workspace.getLeavesOfType(viewType)[0];
-        this.markSrReviewTabIntent(leaf);
-        const currentLeaf = this.app.workspace.getLeaf(false);
-        const activeType = currentLeaf?.view?.getViewType?.() ?? "";
-        const leafId = (leaf as unknown as { id?: string } | undefined)?.id ?? "";
-        const continueIntercept = Date.now() < this.srReviewTabInterceptUntil && leafId === this.srReviewTabInterceptLeafId;
-        if (leaf && ((leaf !== currentLeaf && (activeType === "pdf" || activeType === "empty")) || continueIntercept)
-          && !target.closest(".workspace-tab-header-inner-close-button, .workspace-tab-header-status-container")) {
-          this.srReviewTabInterceptUntil = Date.now() + 700;
-          this.srReviewTabInterceptLeafId = leafId;
-          event.preventDefault();
-          event.stopImmediatePropagation();
-          void this.revealSrReviewLeaf(leaf);
-        }
-        return;
-      }
-      if (target.closest(".workspace-tab-header, .workspace-tab-header-new-tab, .workspace-tab-header-container")) {
-        this.srReviewBlankTabRestoreUntil = 0;
-      }
-    };
-    doc.addEventListener("pointerdown", recordIntent, true);
-    doc.addEventListener("touchstart", recordIntent, true);
-    doc.addEventListener("click", recordIntent, true);
     this.register(() => {
-      doc.removeEventListener("pointerdown", recordIntent, true);
-      doc.removeEventListener("touchstart", recordIntent, true);
-      doc.removeEventListener("click", recordIntent, true);
       if (layoutTimer) window.clearTimeout(layoutTimer);
     });
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
+      this.srReviewObservedActiveLeaf = leaf ?? null;
       const viewType = leaf?.view?.getViewType?.() ?? "";
       if (viewType === SR_CARD_REVIEW_VIEW_TYPE || viewType === SR_NOTE_REVIEW_QUEUE_VIEW_TYPE) this.markSrReviewTabIntent(leaf ?? undefined);
-      window.setTimeout(() => this.repairSrReviewBlankTab(), 40);
-      window.setTimeout(() => this.repairSrReviewBlankTab(), 260);
+      window.setTimeout(() => this.repairSrReviewBlankTab(this.srReviewObservedActiveLeaf), 40);
+      window.setTimeout(() => this.repairSrReviewBlankTab(this.srReviewObservedActiveLeaf), 260);
     }));
     this.registerEvent(this.app.workspace.on("layout-change", () => {
       this.patchSrReviewQueueCommand();
       if (layoutTimer) window.clearTimeout(layoutTimer);
       layoutTimer = window.setTimeout(() => {
         layoutTimer = 0;
-        this.repairSrReviewBlankTab();
+        this.repairSrReviewBlankTab(this.srReviewObservedActiveLeaf);
       }, 90);
     }));
   }
@@ -6353,9 +6307,8 @@ export default class CancipPlugin extends Plugin {
     }
   }
 
-  private repairSrReviewBlankTab(): boolean {
+  private repairSrReviewBlankTab(activeLeaf: WorkspaceLeaf | null): boolean {
     if (Date.now() > this.srReviewBlankTabRestoreUntil) return false;
-    const activeLeaf = this.app.workspace.getLeaf(false);
     if (!activeLeaf || activeLeaf.view?.getViewType?.() !== "empty") return false;
     const leaves = [
       ...this.app.workspace.getLeavesOfType(SR_CARD_REVIEW_VIEW_TYPE),
