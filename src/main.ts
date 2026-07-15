@@ -2312,10 +2312,13 @@ const AUTOMATION_SCHEMA_VERSION = 1;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
 const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v6";
 const VAULT_CURATION_NEW_FILE_STATE_PATH = `${AUTOMATION_DIR}/vault-curation-new-files.json`;
-const DEPRECATED_VAULT_CURATION_AUTOMATION_IDS = new Set([
+const MEMORY_DREAM_AUTOMATION_ID = "auto-cancip-memory-dream";
+const MEMORY_DREAM_PROMPT_MARKER = "Workflow Optimizer v2";
+const DEPRECATED_AUTOMATION_IDS = new Set([
   "auto-vault-content-beautify",
   "auto-vault-auto-tags",
-  "auto-vault-file-summaries"
+  "auto-vault-file-summaries",
+  "auto-import-capability-pack"
 ]);
 const VAULT_DAILY_REPORT_AUTOMATION_ID = "auto-vault-daily-maintenance-report";
 const VAULT_DAILY_REPORT_PROMPT_MARKER = "Vault Daily Checkup v1";
@@ -2489,6 +2492,10 @@ const EN = {
   tokenUsageFinal: "tokens in {input} / out {output} / total {total}{estimated}",
   tokenUsageEstimated: " estimated",
   processRecord: "Process record",
+  processSent: "Sent to model",
+  processReceived: "Received from model",
+  processRuntime: "Runtime information",
+  processOther: "Other details",
   finalConclusionFallback: "{summary}",
   finalAnswerFormatPrompt: "For implementation/change/tool tasks, do not write a \"Final answer\" heading and do not write elapsed time, token counts, or character counts; Cancip appends those programmatically. Lead with the result. Include only facts that exist: concise completed actions, actually changed files, actual verification, a concrete blocker, or a newly stored rule. Omit every empty, none, not-applicable, unchanged, unread, or hypothetical section; do not list files that were only read. Do not explain reasoning or process unless the user asked. If more tool work is possible, continue with one cancip-action instead of closing. Add one to three hidden model-written choices only when they are genuinely useful. Keep tool details folded; never expose raw action JSON.",
   emptyApiReply: "The API returned an empty response.",
@@ -3238,6 +3245,10 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     tokenUsageFinal: "tokens 发送 {input} / 接收 {output} / 合计 {total}{estimated}",
     tokenUsageEstimated: " 估算",
     processRecord: "过程记录",
+    processSent: "发给模型",
+    processReceived: "模型返回",
+    processRuntime: "运行信息",
+    processOther: "其他详情",
     finalConclusionFallback: "{summary}",
     finalAnswerFormatPrompt: "实现、改动、工具类最终回答不要写“最终结论”标题，也不要写耗时、token 数或字数；Cancip 会程序化追加。开头直接给结果，只写真实存在的干货：已完成动作、实际改动文件、实际验证、具体阻塞或新增规则。任何空项、无、未涉及、未改动、仅读取、假设项都省略；不要列读取文件。用户没要求解释时不解释思路和过程。如果还能继续用工具推进，就继续输出一个 cancip-action，不要提前收尾。推荐按钮只在确有用处时随模型最终回答生成一到三个隐藏选项；正文不显示推荐列表。工具细节留在折叠过程，不暴露原始 action JSON。",
     emptyApiReply: "API 返回了空回复。",
@@ -9596,12 +9607,14 @@ export default class CancipPlugin extends Plugin {
 
     const configSettings = await this.loadCancipConfig();
     if (configSettings) {
-      const combined: Partial<Settings> = { ...nextSettings, ...configSettings };
-      combined.uiButtonRules = mergeUiButtonRules(
-        normalizeUiButtonRules(saved?.uiButtonRules),
-        normalizeUiButtonRules(configSettings.uiButtonRules)
-      );
-      if (!configSettings.apiProfiles && hasLegacyApiProfileFields(configSettings)) {
+      const preferPluginData = await this.shouldPreferPluginDataSettings();
+      const combined: Partial<Settings> = preferPluginData
+        ? { ...configSettings, ...nextSettings }
+        : { ...nextSettings, ...configSettings };
+      combined.uiButtonRules = preferPluginData
+        ? mergeUiButtonRules(normalizeUiButtonRules(configSettings.uiButtonRules), normalizeUiButtonRules(saved?.uiButtonRules))
+        : mergeUiButtonRules(normalizeUiButtonRules(saved?.uiButtonRules), normalizeUiButtonRules(configSettings.uiButtonRules));
+      if (!preferPluginData && !configSettings.apiProfiles && hasLegacyApiProfileFields(configSettings)) {
         delete combined.apiProfiles;
         delete combined.activeApiProfileId;
       }
@@ -9619,6 +9632,16 @@ export default class CancipPlugin extends Plugin {
     this.settings = nextSettings;
     await this.saveData(this.settings);
     await this.writeCancipConfig();
+  }
+
+  private async shouldPreferPluginDataSettings(): Promise<boolean> {
+    const adapter = this.app.vault.adapter;
+    const dataPath = `${this.pluginInstallDir(this.manifest.id)}/data.json`;
+    const [dataStat, configStat] = await Promise.all([
+      adapter.stat(dataPath).catch(() => null),
+      adapter.stat(CANCIP_CONFIG_PATH).catch(() => null)
+    ]);
+    return Boolean(dataStat?.type === "file" && configStat?.type === "file" && dataStat.mtime > configStat.mtime);
   }
 
   private async importNtfySettingsFromInstalledPlugin(settings: Settings): Promise<Settings> {
@@ -14328,12 +14351,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.automationStateReadPromise = null;
   }
 
+  memoryDreamWorkflowPrompt(): string {
+    return buildMemoryDreamPrompt();
+  }
+
   async ensureDefaultDailyAutomations(): Promise<void> {
     try {
       const templates = cancipAutomationTemplates();
       if (!templates.length) return;
       const tasks = await this.loadAutomations();
-      const activeTasks = tasks.filter((task) => !DEPRECATED_VAULT_CURATION_AUTOMATION_IDS.has(task.id));
+      const activeTasks = tasks.filter((task) => !DEPRECATED_AUTOMATION_IDS.has(task.id));
       let migrated = activeTasks.length !== tasks.length;
       const existingIds = new Set(activeTasks.map((task) => task.id));
       const templateById = new Map(templates.map((template) => [template.id, template]));
@@ -14358,6 +14385,22 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             prompt: template.prompt?.trim() || task.prompt,
             command: template.command,
             args: template.args,
+            updatedAt: new Date().toISOString()
+          };
+        }
+        if (template && task.id === MEMORY_DREAM_AUTOMATION_ID && shouldUpgradeMemoryDreamAutomationTask(task, template)) {
+          migrated = true;
+          return {
+            ...task,
+            title: template.title,
+            prompt: template.prompt?.trim() || task.prompt,
+            command: template.command,
+            args: template.args,
+            schedule: template.schedule,
+            enabled: template.enabled,
+            intervalMinutes: template.intervalMinutes ?? task.intervalMinutes,
+            hour: template.hour ?? task.hour,
+            minute: template.minute ?? task.minute,
             updatedAt: new Date().toISOString()
           };
         }
@@ -21852,7 +21895,7 @@ class CancipView extends ItemView {
   }
 
   private async runMemoryDreamCommand(args: Record<string, unknown>): Promise<string> {
-    const days = clampInt(args.days, 1, 1, 14);
+    const days = clampInt(args.days, 1, 1, 30);
     const compactExperience = args.compactExperience !== false;
     const sourcePack = await this.buildMemoryDreamSourcePack(days);
     const summary = this.localMemoryDreamSummary(sourcePack);
@@ -33073,11 +33116,93 @@ class CancipView extends ItemView {
       this.wireDetails(stepDetails, `process-step:${stepInfo.rendered.message.id}`, false);
       stepDetails.createEl("summary", { text: this.t("processDetails") });
       const stepBody = stepDetails.createDiv({ cls: "obcc-process-step-detail-body" });
-      if (stepInfo.detail) this.renderMarkdown(stepBody, stepInfo.detail);
+      if (stepInfo.detail) this.renderStructuredProcessDetail(stepBody, stepInfo.detail, stepInfo.rendered.message.id);
       this.renderHiddenToolJson(stepBody, stepInfo.blocks, stepInfo.rendered.display.hasProcessFold);
       this.renderToolRuns(stepBody, stepInfo.rendered.message);
       this.renderChangedFileRuns(stepBody, stepInfo.rendered.message);
     }
+  }
+
+  private renderStructuredProcessDetail(parent: HTMLElement, detail: string, messageId: string): void {
+    const headingPattern = /^(#{2,3})\s+(.+?)\s*$/gm;
+    const matches = [...detail.matchAll(headingPattern)];
+    if (!matches.length) {
+      this.renderMarkdown(parent, detail);
+      return;
+    }
+    const sections: Array<{ title: string; content: string; group: "sent" | "received" | "runtime" | "other" }> = [];
+    const preamble = detail.slice(0, matches[0].index ?? 0).trim();
+    if (preamble) sections.push({ title: this.t("processOther"), content: preamble, group: "other" });
+    for (let index = 0; index < matches.length; index += 1) {
+      const match = matches[index];
+      const start = (match.index ?? 0) + match[0].length;
+      const end = index + 1 < matches.length ? (matches[index + 1].index ?? detail.length) : detail.length;
+      const title = match[2].trim();
+      const content = detail.slice(start, end).replace(/^\s+|\s+$/g, "");
+      if (!content || /^(?:none|无|暂无)$/i.test(content)) continue;
+      const normalized = title.toLowerCase();
+      const group = /raw sent|\bsent\b|system\s*\/\s*instructions|contexttext|turn prompt|user prompt|inputtext|input sizes/.test(normalized)
+        ? "sent"
+        : /raw received|\breceived\b|parsed extracted|visible answer|reply filter|response(?:text|json)?/.test(normalized)
+          ? "received"
+          : /api profile|token usage|actual api|previous attempt|mode|endpoint|request audit/.test(normalized)
+            ? "runtime"
+            : "other";
+      sections.push({ title, content, group });
+    }
+    if (!sections.length) {
+      this.renderMarkdown(parent, detail);
+      return;
+    }
+    const labels = {
+      sent: this.t("processSent"),
+      received: this.t("processReceived"),
+      runtime: this.t("processRuntime"),
+      other: this.t("processOther")
+    };
+    const container = parent.createDiv({ cls: "obcc-process-detail-sections" });
+    for (const group of ["sent", "received", "runtime", "other"] as const) {
+      const items = sections.filter((section) => section.group === group);
+      if (!items.length) continue;
+      const groupEl = container.createDiv({ cls: `obcc-process-detail-group is-${group}` });
+      groupEl.createDiv({ cls: "obcc-process-detail-group-title", text: labels[group] });
+      for (const [index, section] of items.entries()) {
+        const details = groupEl.createEl("details", { cls: "obcc-process-detail-field" });
+        this.wireDetails(details, `process-field:${messageId}:${group}:${index}`, false);
+        details.createEl("summary", { text: this.localizedProcessFieldTitle(section.title) });
+        const body = details.createDiv({ cls: "obcc-process-detail-field-body" });
+        const pre = body.createEl("pre", { cls: "obcc-process-detail-raw" });
+        pre.createEl("code", { text: section.content });
+      }
+    }
+  }
+
+  private localizedProcessFieldTitle(title: string): string {
+    if (!isChineseLanguage(this.plugin.language())) return title;
+    const normalized = title.trim().toLowerCase();
+    const exact: Array<[RegExp, string]> = [
+      [/^raw sent requestbody$/, "原始发送：实际 API 请求体（仅发送一次）"],
+      [/^raw received responsetext$/, "原始接收：响应文本"],
+      [/^raw received responsejson$/, "原始接收：响应 JSON"],
+      [/^parsed extractedtext$/, "接收解析：提取文本"],
+      [/^visible answer after filtering$/, "接收解析：过滤后的可见回答"],
+      [/^sent system\s*\/\s*instructions$/, "发送拆分：系统指令（审计展示，不会重复发送）"],
+      [/^sent contexttext$/, "发送拆分：上下文（审计展示，不会重复发送）"],
+      [/^sent turn prompt$/, "发送拆分：本轮提示词（审计展示，不会重复发送）"],
+      [/^original user prompt$/, "原始用户输入"],
+      [/^sent actual user inputtext$/, "发送拆分：实际用户输入（审计展示，不会重复发送）"],
+      [/^api profile$/, "API 配置"],
+      [/^token usage$/, "Token 使用量"],
+      [/^model exchange raw contents$/, "模型原始收发内容"],
+      [/^actual api call audit$/, "实际 API 调用审计"],
+      [/^input sizes$/, "发送内容大小"],
+      [/^reply filter$/, "回复过滤统计"],
+      [/^previous attempt\s+(\d+)$/, "此前重试 $1"]
+    ];
+    for (const [pattern, replacement] of exact) {
+      if (pattern.test(normalized)) return normalized.replace(pattern, replacement);
+    }
+    return title;
   }
 
   private renderLiveProcessPlaceholder(): void {
@@ -35509,16 +35634,6 @@ function cancipAutomationTemplates(): AutomationTemplate[] {
       hour: 8
     },
     {
-      id: "auto-import-capability-pack",
-      title: "Import desktop capability pack",
-      description: "Refresh visible AI/Cancip/Memory and AI/Cancip/Skills/Desktop from local memory, skills, and plugin indexes when desktop files are available.",
-      command: "cancip.importCapabilityPack",
-      args: {},
-      schedule: "daily",
-      enabled: true,
-      hour: 7
-    },
-    {
       id: "auto-local-version-daily",
       title: "Daily local version commit",
       description: "Create one lightweight daily local version snapshot under .cancip/versions.",
@@ -35564,16 +35679,14 @@ function cancipAutomationTemplates(): AutomationTemplate[] {
       hour: 22
     },
     {
-      id: "auto-cancip-memory-dream",
+      id: MEMORY_DREAM_AUTOMATION_ID,
       title: "Cancip 零点记忆整理",
-      description: "Distill recent successes, failures, user feedback, experience logs, memory routes, and Skills into DREAM.md and refreshed indexes.",
+      description: "Distill memory, audit repeated manual work from the last 30 days, and standardize only proven recurring workflows as Skills, subagent routes, or automations.",
       prompt: buildMemoryDreamPrompt(),
-      command: "cancip.memoryDream",
-      args: { days: 1, compactExperience: true },
       schedule: "daily",
       enabled: true,
       hour: 0,
-      minute: 0
+      minute: 5
     },
     {
       id: VAULT_CURATION_AUTOMATION_ID,
@@ -35645,12 +35758,35 @@ function buildVaultDailyReportPrompt(hours: number): string {
 
 function buildMemoryDreamPrompt(): string {
   return [
-    "做一次 Cancip 零点记忆整理，让后续任务更省 token、更少重复失败。",
-    "1. 提取近期成功经验：触发条件、操作路径和验证方式。",
-    "2. 提取失败经验：触发条件、根因和下次避坑动作。",
-    "3. 分类到用户偏好、Cancip 项目、插件/命令、Vault 维护、附件/PDF/TTS、UI、GitHub 和 Skill 候选。",
-    "4. 稳定规则保持短小；不保存密钥、token、隐私全文或整段聊天。",
-    "5. 压缩重复低价值经验前先归档，不删除用户笔记。"
+    "内部版本：Cancip Memory Dream + Workflow Optimizer v2。",
+    "目标：先完成记忆整理，再回顾工作记录，识别并标准化真正重复的手动流程，让后续任务更省 token、更少重复失败。",
+    "",
+    "第一阶段：记忆整理。",
+    "1. 先调用 command cancip.memoryDream，参数 days=30、compactExperience=true，整理近期成功、失败、用户反馈、经验和 Skill 索引。",
+    "2. 稳定规则保持短小；不保存密钥、token、隐私全文或整段聊天；压缩低价值经验前先归档，不删除用户笔记。",
+    "",
+    "第二阶段：重复流程审计。",
+    "1. 回顾最近 30 天工作记录；不足 30 天则查看全部可用记录。信息优先级严格为：近期会话 > 记忆记录 > 外部纪事。",
+    "2. 覆盖编码、写作、办公和其他实际工作场景，寻找重复、耗时、易出错的固定手动流程。",
+    "3. 仅保留同时满足四项的候选：重复至少 2 次；步骤固定；标准化后能明显提升效率或降低错误；当前尚未被 Skill、子代理路线、自动化或等效功能覆盖。",
+    "4. 一次性任务、描述模糊、证据不足、仅有偏好规则、已经标准化或需要每次重新判断的任务直接跳过，不为凑数量创建资产。",
+    "",
+    "第三阶段：先列优化清单。",
+    "每项必须写：流程内容、单次时间或耗时级别、出现频率、拟采用形式（Skill/子代理路线/自动化）、标准化原因、重复证据来源。先完成清单，再创建功能。",
+    "",
+    "第四阶段：创建精简实用功能。",
+    "1. Skill：适合有固定输入、步骤、验证标准且需要按需触发的流程；内容保持短、可执行、带验证步骤。",
+    "2. 子代理路线：适合可独立并行、边界清楚、结果可汇总的任务；不要为了形式创建永久空壳，优先沉淀为可委派 Skill/工作流。",
+    "3. 自动化：只适合有明确触发时间/条件、可重复运行、风险边界清楚的流程；不得重复创建同名或同职责任务。",
+    "4. 创建前先查现有 Skills 和自动化，能更新就更新，避免重复资产。高风险、删除、移动、账号、密钥、外部发布或不可逆行为只做候选，不自动启用。",
+    "5. 每个新增或更新资产都要做最小验证：能发现、能触发、字段完整、不会与现有资产重复。",
+    "",
+    "最终复盘顺序：",
+    "1. 优化清单。",
+    "2. 新增/更新资产：名称、类型、路径或任务 ID、解决的问题、验证结果。",
+    "3. 跳过任务：任务名称和跳过原因。",
+    "4. 待补充信息：只有确实缺少会影响落地的信息才列出；没有则省略。",
+    "最终回答中文、结论先行、精简但保留证据；不要只给建议，符合门槛且低风险的资产应实际创建并验证。"
   ].join("\n");
 }
 
@@ -35811,6 +35947,14 @@ function shouldUpgradeVaultDailyReportAutomationTask(task: AutomationTask, templ
   if (task.prompt.includes(VAULT_DAILY_REPORT_PROMPT_MARKER)) return false;
   const text = `${task.title}\n${task.prompt}`;
   return /Vault\s*每日|维护合并日报|maintenance|merge-candidate|每日维护|日报/i.test(text);
+}
+
+function shouldUpgradeMemoryDreamAutomationTask(task: AutomationTask, template: AutomationTemplate): boolean {
+  if (task.id !== MEMORY_DREAM_AUTOMATION_ID) return false;
+  const nextPrompt = template.prompt?.trim() ?? "";
+  if (!nextPrompt || task.prompt.includes(MEMORY_DREAM_PROMPT_MARKER)) return false;
+  return task.command?.trim() === "cancip.memoryDream"
+    || task.prompt.includes("做一次 Cancip 零点记忆整理，让后续任务更省 token、更少重复失败");
 }
 
 function buildTranslateCurrentPagePrompt(input: CurrentPageTranslationCapture, targetLanguage: string): string {

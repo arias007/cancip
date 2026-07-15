@@ -7108,6 +7108,70 @@ body.is-phone .obcc-review-leaf .obcc-review-detail-rail {
   padding-bottom: 2px;
 }
 
+.obcc-process-detail-sections {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.obcc-process-detail-group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.obcc-process-detail-group-title {
+  padding: 2px 0;
+  color: var(--text-accent);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.obcc-process-detail-field {
+  min-width: 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.obcc-process-detail-field > summary {
+  padding: 6px 2px;
+  overflow-wrap: anywhere;
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.obcc-process-detail-field-body {
+  max-height: min(46vh, 420px);
+  padding: 4px 2px 8px;
+  overflow: auto;
+  font-size: 11px;
+}
+
+.obcc-process-detail-raw {
+  width: 100%;
+  max-width: 100%;
+  margin: 0;
+  padding: 7px;
+  overflow: auto;
+  border: 0;
+  background: var(--background-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  font-family: var(--font-monospace);
+  font-size: 10.5px;
+  line-height: 1.45;
+}
+
+.obcc-process-detail-raw code {
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  white-space: inherit;
+  font: inherit;
+}
+
 .obcc-footer.is-viewport-floating {
   position: fixed;
   right: var(--obcc-footer-right, 0px);

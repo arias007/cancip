@@ -1,6 +1,6 @@
 {
   "name": "cancip",
-  "version": "2.9.19",
+  "version": "2.9.20",
   "private": true,
   "main": "main.js",
   "scripts": {
