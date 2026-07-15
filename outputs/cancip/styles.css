@@ -1466,9 +1466,11 @@ body .obcc-view-tts-action {
 
 .obcc-content pre {
   max-width: 100%;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: pre;
+  word-break: normal;
   overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
 .obcc-code-block {
@@ -1544,11 +1546,37 @@ body .obcc-view-tts-action {
   border: 0;
   border-radius: 0;
   background: transparent;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  -webkit-overflow-scrolling: touch;
 }
 
-.obcc-code-block.is-nowrap .obcc-code-pre {
+.obcc-code-pre.is-nowrap,
+.obcc-code-pre.is-nowrap > code {
   white-space: pre;
+  overflow-wrap: normal;
   word-break: normal;
+}
+
+.obcc-code-pre.is-wrapped,
+.obcc-code-pre.is-wrapped > code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.obcc-content .obcc-code-pre > .copy-code-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.obcc-content .obcc-code-pre > .obcc-code-wrap-toggle {
+  right: 30px;
+}
+
+.obcc-content .obcc-code-pre > .obcc-code-wrap-toggle.is-active {
+  color: var(--interactive-accent);
 }
 
 .obcc-code-block.is-collapsed .obcc-code-pre {

@@ -1618,6 +1618,7 @@ type Settings = {
   useVaultSearchByDefault: boolean;
   showAttachmentButton: boolean;
   compactHeader: boolean;
+  codeBlockWrap: boolean;
   forceStatusBarVisible: boolean;
   autoOpenPlanPanel: boolean;
   showLiveTodos: boolean;
@@ -2293,6 +2294,7 @@ const DEFAULT_SETTINGS: Settings = {
   useVaultSearchByDefault: false,
   showAttachmentButton: true,
   compactHeader: true,
+  codeBlockWrap: false,
   forceStatusBarVisible: true,
   autoOpenPlanPanel: true,
   showLiveTodos: true,
@@ -2617,6 +2619,9 @@ const EN = {
   toolActionLowCommitmentPrompt: "The user asked for a concrete implementation/change task, but the previous tool iterations only read/searched/listed and did not materially advance it.\n\nUser task:\n{task}\n\nContinue with a general agent loop: use the last tool result as state, decide whether the user asked for analysis or a state change, then either answer the real question from evidence or output one executable cancip-action that advances the task. For state-change tasks, currentView/read/search/list/status are only context gathering. If activeFile is present, use it as the target: read it when text is missing, then patch/write and verify. Avoid repeating broad reads/searches. If action is impossible, state the exact blocker and missing capability. Do not ask whether to proceed, and do not answer with \"not finished\", \"continue\", or a summary of searches.",
   selfPatchNeedsReload: "This changed Cancip's installed plugin files. The current running plugin will not reliably show the effect until Cancip/Obsidian is reloaded. This is still a real mobile hot patch; desktop tools are only needed later to sync source/build/release.",
   copyMessage: "Copy",
+  copyCode: "Copy code",
+  codeWrapEnable: "Wrap code",
+  codeWrapDisable: "Keep code unwrapped",
   speakMessage: "Read aloud",
   speakSession: "Read session",
   moreMenu: "More",
@@ -3371,6 +3376,9 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     toolActionLowCommitmentPrompt: "用户要求的是明确实现/改动，但前几轮工具只做了读取、搜索或列表，没有实质推进。\n\n用户任务：\n{task}\n\n请按通用 agent 循环继续：把上一步工具结果当作当前状态，先判断用户要的是分析还是改变状态；能回答就基于证据回答真实问题，需要动作就输出一个能推进任务的 cancip-action。对状态改变任务，currentView/read/search/list/status 只是收集上下文；如果 activeFile 存在，就把它当目标，没内容先读，有内容就 patch/write 并验证。不要重复泛搜。如果确实不能动作，只说具体阻塞和缺少的能力。不要问是否继续，不要回答“未完成”“继续让我总结”或搜索结果摘要。",
     selfPatchNeedsReload: "这次改动写到了 Cancip 已安装插件文件。当前正在运行的插件通常不会立刻显示效果，需要重载/重启 Obsidian 才能可靠生效。这仍然是手机端真实热补丁；桌面工具只用于后续同步源码、构建或发布。",
     copyMessage: "复制",
+    copyCode: "复制代码",
+    codeWrapEnable: "开启代码换行",
+    codeWrapDisable: "关闭代码换行",
     speakMessage: "朗读",
     speakSession: "朗读会话",
     moreMenu: "更多",
@@ -35360,11 +35368,83 @@ class CancipView extends ItemView {
 
   private renderMarkdown(parent: HTMLElement, markdown: string): void {
     void MarkdownRenderer.render(this.app, markdown || " ", parent, this.markdownSourcePath(), this)
-      .then(() => this.wireRenderedLinks(parent))
+      .then(() => {
+        this.wireRenderedLinks(parent);
+        this.enhanceRenderedCodeBlocks(parent);
+      })
       .catch((error) => {
         parent.empty();
         parent.createEl("pre", { text: error instanceof Error ? error.message : String(error) });
       });
+  }
+
+  private enhanceRenderedCodeBlocks(parent: HTMLElement): void {
+    const blocks = Array.from(parent.querySelectorAll<HTMLPreElement>("pre"));
+    for (const pre of blocks) {
+      if (pre.hasClass("obcc-code-pre")) continue;
+      const code = pre.querySelector<HTMLElement>(":scope > code");
+      if (!code) continue;
+      const codeText = code.textContent ?? "";
+      const nativeCopy = pre.querySelector<HTMLButtonElement>(":scope > button.copy-code-button");
+      const copyButton = nativeCopy ?? pre.createEl("button", { cls: "copy-code-button", attr: { type: "button" } });
+      copyButton.dataset.cancipNativeCodeCopy = nativeCopy ? "1" : "0";
+      copyButton.setAttr("title", this.t("copyCode"));
+      copyButton.setAttr("aria-label", this.t("copyCode"));
+      if (!nativeCopy) {
+        setIcon(copyButton, "copy");
+        copyButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          void this.copyTextDirect(codeText.trimEnd(), this.t("copyDone"));
+        });
+      }
+
+      const wrapButton = pre.createEl("button", {
+        cls: "copy-code-button obcc-code-wrap-toggle",
+        attr: { type: "button" }
+      });
+      setIcon(wrapButton, "wrap-text");
+      wrapButton.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        this.setCodeBlockWrap(!this.plugin.settings.codeBlockWrap);
+      });
+
+      pre.addClass("obcc-code-pre");
+      this.syncCodeBlockWrapState(pre, this.plugin.settings.codeBlockWrap);
+    }
+  }
+
+  syncRenderedCodeBlockWrap(): void {
+    const enabled = this.plugin.settings.codeBlockWrap;
+    for (const block of Array.from(this.contentEl.querySelectorAll<HTMLElement>("pre.obcc-code-pre"))) {
+      this.syncCodeBlockWrapState(block, enabled);
+    }
+  }
+
+  private syncCodeBlockWrapState(block: HTMLElement, enabled: boolean): void {
+    block.toggleClass("is-nowrap", !enabled);
+    block.toggleClass("is-wrapped", enabled);
+    const button = block.querySelector<HTMLButtonElement>(".obcc-code-wrap-toggle");
+    if (!button) return;
+    button.toggleClass("is-active", enabled);
+    button.setAttr("aria-pressed", enabled ? "true" : "false");
+    const label = this.t(enabled ? "codeWrapDisable" : "codeWrapEnable");
+    button.setAttr("title", label);
+    button.setAttr("aria-label", label);
+  }
+
+  private setCodeBlockWrap(enabled: boolean): void {
+    this.plugin.settings.codeBlockWrap = enabled;
+    for (const type of [VIEW_TYPE, LEGACY_CANCIP_CHAT_VIEW_TYPE]) {
+      for (const leaf of this.app.workspace.getLeavesOfType(type)) {
+        const view = leaf.view as CancipView;
+        view.syncRenderedCodeBlockWrap();
+      }
+    }
+    void this.plugin.saveSettings().catch((error) => {
+      console.warn("Cancip code wrap setting save failed", error);
+    });
   }
 
   private wireRenderedLinks(parent: HTMLElement): void {
@@ -42630,6 +42710,7 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     useVaultSearchByDefault: Boolean(merged.useVaultSearchByDefault),
     showAttachmentButton: typeof merged.showAttachmentButton === "boolean" ? merged.showAttachmentButton : DEFAULT_SETTINGS.showAttachmentButton,
     compactHeader: typeof merged.compactHeader === "boolean" ? merged.compactHeader : DEFAULT_SETTINGS.compactHeader,
+    codeBlockWrap: typeof merged.codeBlockWrap === "boolean" ? merged.codeBlockWrap : DEFAULT_SETTINGS.codeBlockWrap,
     forceStatusBarVisible: typeof merged.forceStatusBarVisible === "boolean" ? merged.forceStatusBarVisible : DEFAULT_SETTINGS.forceStatusBarVisible,
     autoOpenPlanPanel: typeof merged.autoOpenPlanPanel === "boolean" ? merged.autoOpenPlanPanel : DEFAULT_SETTINGS.autoOpenPlanPanel,
     showLiveTodos: typeof merged.showLiveTodos === "boolean" ? merged.showLiveTodos : DEFAULT_SETTINGS.showLiveTodos,
@@ -42721,6 +42802,7 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     useVaultSearchByDefault: settings.useVaultSearchByDefault,
     showAttachmentButton: settings.showAttachmentButton,
     compactHeader: settings.compactHeader,
+    codeBlockWrap: settings.codeBlockWrap,
     forceStatusBarVisible: settings.forceStatusBarVisible,
     autoOpenPlanPanel: settings.autoOpenPlanPanel,
     showLiveTodos: settings.showLiveTodos,
@@ -42823,6 +42905,7 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.useVaultSearchByDefault === "boolean") config.useVaultSearchByDefault = raw.useVaultSearchByDefault;
   if (typeof raw.showAttachmentButton === "boolean") config.showAttachmentButton = raw.showAttachmentButton;
   if (typeof raw.compactHeader === "boolean") config.compactHeader = raw.compactHeader;
+  if (typeof raw.codeBlockWrap === "boolean") config.codeBlockWrap = raw.codeBlockWrap;
   if (typeof raw.forceStatusBarVisible === "boolean") config.forceStatusBarVisible = raw.forceStatusBarVisible;
   if (typeof raw.autoOpenPlanPanel === "boolean") config.autoOpenPlanPanel = raw.autoOpenPlanPanel;
   if (typeof raw.showLiveTodos === "boolean") config.showLiveTodos = raw.showLiveTodos;
@@ -42944,6 +43027,7 @@ const CANCIP_CONFIG_BOOLEAN_KEYS = new Set([
   "useVaultSearchByDefault",
   "showAttachmentButton",
   "compactHeader",
+  "codeBlockWrap",
   "forceStatusBarVisible",
   "autoOpenPlanPanel",
   "showLiveTodos",

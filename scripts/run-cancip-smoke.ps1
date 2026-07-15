@@ -21,7 +21,7 @@ $Script:SkipSmokeSessionRestore = $false
 $Script:SmokeSettingsSnapshotPath = ''
 
 $AllCases = Get-Content -Raw -LiteralPath $CasesPath -Encoding UTF8 | ConvertFrom-Json
-$RunProfile = if ($Case -like '*ui-button*') { 'ui-button' } elseif ($Write) { 'write' } elseif ($Full) { 'full' } else { 'core' }
+$RunProfile = if ($Case -like '*ui-button*' -or $Case -like '*code-block-wrap*') { 'ui-button' } elseif ($Write) { 'write' } elseif ($Full) { 'full' } else { 'core' }
 $DefaultCommandIds = @(
   'command.tools.index',
   'command.memory.read.profile',
@@ -82,6 +82,12 @@ if (Test-Path -LiteralPath $InstalledCancipDataPath) {
 function ConvertTo-CompactJson {
   param([object]$Value)
   $Value | ConvertTo-Json -Compress -Depth 40
+}
+
+function ConvertTo-CancipEvalBootstrap {
+  param([string]$Code)
+  $base64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Code))
+  return "(()=>{const s=atob('$base64');const bytes=Uint8Array.from(s,c=>c.charCodeAt(0));return eval(new TextDecoder().decode(bytes))})()"
 }
 
 function Invoke-CancipEval {
@@ -534,7 +540,7 @@ if (-not $Case -or 'programmatic.tool-action-budget'.Contains($Case)) {
     view.messages=[
       user('执行自动化整理任务'),
       assistant(history),
-      user('继续上一项未完成任务。\n原始任务：执行自动化整理任务\n中断原因：stopped')
+      user(['继续上一项未完成任务。','原始任务：执行自动化整理任务','中断原因：stopped'].join(String.fromCharCode(10)))
     ];
     const resumedCount=view.currentTaskToolRuns().length;
     const resumedBudgetReached=view.currentTaskActionBudgetReached();
@@ -566,7 +572,7 @@ if (-not $Case -or 'programmatic.tool-action-budget'.Contains($Case)) {
   }
 })()
 '@
-    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 20
+    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 20
     foreach ($field in @('resumedBudgetReached','budgetBlocked','duplicateBlocked','batchLimited')) {
       if (-not $item.$field) { throw "tool action budget check failed: $field ($($item | ConvertTo-Json -Compress -Depth 8))" }
     }
@@ -1471,6 +1477,160 @@ if (-not $Case -or 'programmatic.process-record-live-open-final-collapsed'.Conta
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
   } catch {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.process-record-live-open-final-collapsed'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.code-block-wrap-global-persistence') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view??(p&&typeof p.activateView==='function'?await p.activateView():null);
+  if(!p||!v)throw new Error('Cancip view unavailable');
+  if(typeof v.renderMarkdown!=='function'||typeof v.syncRenderedCodeBlockWrap!=='function')throw new Error('code block wrap API unavailable');
+  const oldSetting=p.settings.codeBlockWrap===true;
+  const oldSaveSettings=p.saveSettings;
+  const roots=[];
+  let saveCalls=0;
+  const savedValues=[];
+  p.saveSettings=async function(){saveCalls+=1;savedValues.push(this.settings.codeBlockWrap===true)};
+  const wait=(ms)=>new Promise((resolve)=>setTimeout(resolve,ms));
+  const createRoot=(className)=>{
+    const root=v.contentEl.createDiv({cls:`obcc-content markdown-rendered ${className}`});
+    root.style.position='fixed';
+    root.style.left='-10000px';
+    root.style.top='0';
+    root.style.width='320px';
+    root.style.maxWidth='320px';
+    root.style.contain='layout style paint';
+    roots.push(root);
+    return root;
+  };
+  const fence=String.fromCharCode(96).repeat(3);
+  const nl=String.fromCharCode(10);
+  const codeOne='abcdefghij'.repeat(12);
+  const codeTwo='{"path":"Folder/Long/File.md","enabled":true}';
+  try{
+    p.settings.codeBlockWrap=false;
+    v.syncRenderedCodeBlockWrap();
+    const root=createRoot('obcc-code-wrap-smoke');
+    v.renderMarkdown(root,[fence,codeOne,fence,'',fence+'json',codeTwo,fence].join(nl));
+    await wait(350);
+    const initialBlocks=Array.from(root.querySelectorAll('pre.obcc-code-pre'));
+    const initialButtons=Array.from(root.querySelectorAll('.obcc-code-wrap-toggle'));
+    const nativeCopies=Array.from(root.querySelectorAll('pre.obcc-code-pre > .copy-code-button:not(.obcc-code-wrap-toggle)[data-cancip-native-code-copy="1"]'));
+    const adjacentActions=initialBlocks.every((block)=>{
+      const buttons=Array.from(block.querySelectorAll(':scope > button.copy-code-button'));
+      return buttons.length===2&&buttons[0]?.dataset.cancipNativeCodeCopy==='1'&&buttons[1]?.classList.contains('obcc-code-wrap-toggle');
+    });
+    const initialUnwrapped=initialBlocks.every((block)=>block.classList.contains('is-nowrap')&&!block.classList.contains('is-wrapped'));
+    initialButtons[0]?.click();
+    await wait(80);
+    const wrappedAll=initialBlocks.every((block)=>block.classList.contains('is-wrapped')&&!block.classList.contains('is-nowrap'));
+    const wrappedButtons=initialButtons.every((button)=>button.getAttribute('aria-pressed')==='true'&&button.classList.contains('is-active'));
+    const later=createRoot('obcc-code-wrap-smoke-later');
+    v.renderMarkdown(later,[fence+'text','later inherited block',fence].join(nl));
+    await wait(300);
+    const laterBlock=later.querySelector('pre.obcc-code-pre');
+    const laterButton=later.querySelector('.obcc-code-wrap-toggle');
+    const laterInherited=!!laterBlock?.classList.contains('is-wrapped')&&laterButton?.getAttribute('aria-pressed')==='true';
+    laterButton?.click();
+    await wait(80);
+    const allBlocks=roots.flatMap((item)=>Array.from(item.querySelectorAll('pre.obcc-code-pre')));
+    const disabledAll=allBlocks.every((block)=>block.classList.contains('is-nowrap')&&!block.classList.contains('is-wrapped'));
+    return JSON.stringify({
+      id:'programmatic.code-block-wrap-global-persistence',
+      elapsedMs:Date.now()-t,
+      blockCount:initialBlocks.length,
+      wrapButtonCount:initialButtons.length,
+      nativeCopyCount:nativeCopies.length,
+      adjacentActions,
+      initialUnwrapped,
+      wrappedAll,
+      wrappedButtons,
+      laterInherited,
+      disabledAll,
+      saveCalls,
+      savedValues
+    });
+  } finally {
+    for(const root of roots)root.remove();
+    p.saveSettings=oldSaveSettings;
+    p.settings.codeBlockWrap=oldSetting;
+    v.syncRenderedCodeBlockWrap();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([int]$item.blockCount -ne 2 -or [int]$item.wrapButtonCount -ne 2) { throw "code blocks did not receive one wrap button each: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.nativeCopyCount -ne 2) { throw "native code copy buttons were replaced or lost: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.adjacentActions) { throw "wrap button is not directly beside the copy button: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.initialUnwrapped) { throw "default code blocks are not unwrapped: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.wrappedAll -or -not $item.wrappedButtons) { throw "wrap toggle did not update all existing code blocks: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.laterInherited) { throw "new code block did not inherit the last wrap selection: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.disabledAll) { throw "disabling wrap did not update all code blocks: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.saveCalls -ne 2 -or @($item.savedValues).Count -ne 2 -or -not $item.savedValues[0] -or $item.savedValues[1]) { throw "wrap selection did not use the persistent save path: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; blockCount = $item.blockCount }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.code-block-wrap-global-persistence'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.code-block-wrap-layout') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view;
+  if(!p||!v||typeof v.renderMarkdown!=='function'||typeof v.syncCodeBlockWrapState!=='function')throw new Error('code block layout API unavailable');
+  const root=activeDocument.createElement('div');
+  root.className='obcc-content markdown-rendered obcc-code-wrap-layout-smoke';
+  root.style.position='fixed';
+  root.style.left='-10000px';
+  root.style.top='0';
+  root.style.width='320px';
+  root.style.maxWidth='320px';
+  root.style.contain='layout style paint';
+  activeDocument.body.appendChild(root);
+  try{
+    const fence=String.fromCharCode(96).repeat(3);
+    const nl=String.fromCharCode(10);
+    const line='abcdefghij'.repeat(12);
+    v.renderMarkdown(root,[fence,line,fence].join(nl));
+    await new Promise((resolve)=>setTimeout(resolve,400));
+    const pre=root.querySelector('pre.obcc-code-pre');
+    if(!pre)throw new Error('rendered code block missing');
+    v.syncCodeBlockWrapState(pre,false);
+    const initial={
+      whiteSpace:getComputedStyle(pre).whiteSpace,
+      overflowX:getComputedStyle(pre).overflowX,
+      scrollWidth:pre.scrollWidth,
+      clientWidth:pre.clientWidth
+    };
+    v.syncCodeBlockWrapState(pre,true);
+    await new Promise((resolve)=>requestAnimationFrame(()=>resolve()));
+    const wrapped={
+      whiteSpace:getComputedStyle(pre).whiteSpace,
+      overflowX:getComputedStyle(pre).overflowX,
+      scrollWidth:pre.scrollWidth,
+      clientWidth:pre.clientWidth
+    };
+    return JSON.stringify({id:'programmatic.code-block-wrap-layout',elapsedMs:Date.now()-t,initial,wrapped});
+  } finally {
+    root.remove();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 30
+    if ([string]$item.initial.whiteSpace -ne 'pre' -or [string]$item.initial.overflowX -ne 'auto') { throw "default code layout is not horizontal-scroll mode: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.initial.scrollWidth -le [int]$item.initial.clientWidth) { throw "default code did not produce a horizontal scroll range: $($item | ConvertTo-Json -Compress)" }
+    if ([string]$item.wrapped.whiteSpace -ne 'pre-wrap') { throw "wrapped code did not use pre-wrap: $($item | ConvertTo-Json -Compress)" }
+    if ([int]$item.wrapped.scrollWidth -gt ([int]$item.wrapped.clientWidth + 2)) { throw "wrapped code still overflows horizontally: $($item | ConvertTo-Json -Compress)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; scrollWidth = $item.initial.scrollWidth; clientWidth = $item.initial.clientWidth }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.code-block-wrap-layout'; pass = $false; error = $_.Exception.Message }
   }
 }
 
@@ -2879,9 +3039,10 @@ if (-not $Case -or 'programmatic.prompt-payload-priority-and-experience-skill'.C
     $routing = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
 (()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0].view,runs=window.__payloadSmoke.runs,policy=v.promptPayloadPolicy('modify config and verify'),finalPolicyPrompt=v.modePrompt('modify config and verify'),block=v.taskControlBlockForModel('modify config and verify','modify config and verify'),continued=v.modelPromptForTurn('continue','fix target'),toolSummary=v.toolRunsForPrompt(runs,900,4);return JSON.stringify({includeWorkingState:policy.includeWorkingState,includeHistoryAnchors:policy.includeHistoryAnchors,finalOmitsEmpty:finalPolicyPrompt.includes('\u7a7a\u9879')&&finalPolicyPrompt.includes('\u4ec5\u8bfb\u53d6')&&finalPolicyPrompt.includes('\u4e0d\u89e3\u91ca'),blockLength:block.length,blockHasStatic:/Plan discipline|Need missing details/.test(block),blockHasHeld:block.includes('HELD-MUST-NOT-BE-SENT'),continueHasFullState:/Latest session state|Recent tool results/.test(continued),toolSummaryLength:toolSummary.length})})()
 '@
-    $packing = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
-(()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0].view,memory='## Memory router index\n'+('memory '.repeat(120)),packed=v.packPromptContext([memory,'## Active Skills\n'+('skill instruction '.repeat(100)),'## @context:selected text\n'+('selected '.repeat(100)),memory],700),log=['# Cancip Experience','','## 2026-07-12T00:00:00.000Z · executed','- Step: Workflow: update plugin setting','- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]','- Result: applied and verified','','## 2026-07-12T00:01:00.000Z · executed','- Step: Workflow: update plugin setting','- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]','- Result: applied and verified again'].join('\n'),recipes=v.buildExperienceSkillRecipes(log);return JSON.stringify({packedLength:packed.length,packedHasSkill:packed.includes('Active Skills'),packedHasExplicit:packed.includes('@context:selected text'),memoryCount:(packed.match(/Memory router index/g)||[]).length,recipeCount:recipes.length,recipeHasAction:!!recipes[0]?.content?.includes('"type":"config"')})})()
+    $packingCode = @'
+(()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0].view,nl=String.fromCharCode(10),memory='## Memory router index'+nl+('memory '.repeat(120)),packed=v.packPromptContext([memory,'## Active Skills'+nl+('skill instruction '.repeat(100)),'## @context:selected text'+nl+('selected '.repeat(100)),memory],700),log=['# Cancip Experience','','## 2026-07-12T00:00:00.000Z · executed','- Step: Workflow: update plugin setting','- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]','- Result: applied and verified','','## 2026-07-12T00:01:00.000Z · executed','- Step: Workflow: update plugin setting','- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]','- Result: applied and verified again'].join(nl),recipes=v.buildExperienceSkillRecipes(log);return JSON.stringify({packedLength:packed.length,packedHasSkill:packed.includes('Active Skills'),packedHasExplicit:packed.includes('@context:selected text'),memoryCount:(packed.match(/Memory router index/g)||[]).length,recipeCount:recipes.length,recipeHasAction:!!recipes[0]?.content?.includes('"type":"config"')})})()
 '@
+    $packing = Invoke-CancipEval -TimeoutSeconds 25 -Code (ConvertTo-CancipEvalBootstrap -Code $packingCode)
     $item = [pscustomobject]@{
       id = 'programmatic.prompt-payload-priority-and-experience-skill'
       elapsedMs = [int]((Get-Date) - $started).TotalMilliseconds

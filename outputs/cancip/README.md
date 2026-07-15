@@ -16,6 +16,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Structured command bus actions for Obsidian internal commands, Cancip built-ins, and GitHub CLI-equivalent REST API commands.
 - Native File Explorer pinning: pin/unpin files and folders from the normal context menu, keep mixed pinned siblings above ordinary items, reorder with explicit up/down buttons or drag handles, and persist folder-local order in `.cancip/file-pins.json` without replacing Obsidian's normal unpinned sort or file drag/move behavior.
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
+- Code blocks keep Obsidian's copy action beside a global wrap toggle. Unwrapped horizontal scrolling is the default; one toggle updates every code block and persists for later messages and restarts.
 - Long-term/core memory defaults to visible `AI/Cancip/Memory/` and is included in every model interaction.
 - First-install Vault orientation writes `AI/Cancip/Memory/VAULT_OVERVIEW.md` when missing. It is a shallow programmatic map of top-level folders, file kinds, recent user-facing files, and installed Obsidian plugins, so later turns can pick the right folder/plugin to inspect on demand without sending the whole vault.
 - Full-vault search is not attached by default. Cancip should first use long-term memory and necessary short-term/session context, then decide whether to run `cancip.searchVault` and read only the necessary matched files.
@@ -55,6 +56,10 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Startup and foreground loading follow a warm/cold lifecycle: the visible shell renders first, latest-session restore follows asynchronously, small high-value indexes warm during browser idle time, and startup maintenance yields between tasks so mobile interaction remains responsive.
 - New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic benefit gate classifies each file as curate, skip, or protected before any model call: only concrete high-value defects become candidates; clean, cosmetic-only, or Inbox-only cases are consumed silently; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic rename/restructure. Each candidate carries a defect-derived action allowlist so one formatting issue cannot authorize unrelated tags, links, summaries, or renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
+
+## 2.10.1
+
+- Added a persistent code-block wrap button beside Copy. The default keeps code unwrapped with horizontal touch scrolling; toggling it updates all current and future Cancip code blocks.
 
 ## 2.10.0
 
