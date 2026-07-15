@@ -150,6 +150,9 @@ const AUTOMATION_STATE_CACHE_TTL_MS = 5000;
 const AUTOMATION_RUNNER_IDLE_DISPOSE_MS = 60000;
 const FOREGROUND_LIVE_SESSION_SAVE_MIN_INTERVAL_MS = 1000;
 const BACKGROUND_LIVE_SESSION_SAVE_MIN_INTERVAL_MS = 2000;
+const MAX_TOOL_ACTIONS_PER_BATCH = 8;
+const MAX_TOOL_ACTIONS_PER_TASK = 32;
+const MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK = 24;
 const STARTUP_MAINTENANCE_IDLE_TIMEOUT_MS = 1600;
 const TTS_CAPTURE_MAX_CHARS = 300000;
 const TTS_MAX_PARTS = 50000;
@@ -493,6 +496,9 @@ type SearchHit = {
   title: string;
   excerpt: string;
   score: number;
+  kind?: UniversalSearchDocumentKind;
+  route?: "hard" | "soft";
+  archived?: boolean;
 };
 
 type InstalledPluginInfo = {
@@ -790,6 +796,7 @@ type TodoAction = {
 type AutomationSchedule = "manual" | "hourly" | "daily";
 type AutomationSessionMode = "current" | "new" | "session";
 type AutomationActionOperation = "add" | "update" | "remove" | "list" | "run";
+type AutomationNotifyMode = "inherit" | "always" | "failure" | "never";
 
 type AutomationTask = {
   id: string;
@@ -807,6 +814,10 @@ type AutomationTask = {
   sessionMode: AutomationSessionMode;
   sessionId?: string;
   condition?: string;
+  watchNewFiles: boolean;
+  newFilePattern?: string;
+  newFileDebounceSeconds: number;
+  notifyMode: AutomationNotifyMode;
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
@@ -833,6 +844,10 @@ type AutomationAction = {
   sessionMode?: AutomationSessionMode;
   sessionId?: string;
   condition?: string;
+  watchNewFiles?: boolean;
+  newFilePattern?: string;
+  newFileDebounceSeconds?: number;
+  notifyMode?: AutomationNotifyMode;
 };
 
 type AutomationRunResult = {
@@ -966,6 +981,10 @@ type AutomationTemplate = {
   intervalMinutes?: number;
   hour?: number;
   minute?: number;
+  watchNewFiles?: boolean;
+  newFilePattern?: string;
+  newFileDebounceSeconds?: number;
+  notifyMode?: AutomationNotifyMode;
 };
 
 type ContextChip = {
@@ -1013,6 +1032,16 @@ type FileExplorerViewLike = {
   revealInFolder?: (target: TFile | TFolder) => void | Promise<void>;
   requestSort?: () => void;
   sort?: () => void;
+  getSortedFolderItems?: (folder: TFolder) => FileExplorerItemLike[];
+};
+
+type FileExplorerItemLike = {
+  file?: TAbstractFile;
+};
+
+type FileExplorerSortPatch = {
+  original: (folder: TFolder) => FileExplorerItemLike[];
+  patched: (folder: TFolder) => FileExplorerItemLike[];
 };
 
 type FilePinState = {
@@ -1080,6 +1109,9 @@ type SessionHistoryEntry = {
   unread?: boolean;
   pinned?: boolean;
   archived?: boolean;
+  coldArchived?: boolean;
+  archivedAt?: string;
+  lastOpenedAt?: string;
   manualTitle?: boolean;
   manualOrder?: number;
   parentSessionId?: string;
@@ -1103,7 +1135,59 @@ type SessionTimeline = {
   status?: SessionHistoryEntry["status"];
 };
 
-type SessionHistoryEntryPatch = Partial<Pick<SessionHistoryEntry, "title" | "unread" | "completedNotice" | "pinned" | "archived" | "manualTitle" | "manualOrder" | "updatedAt" | "startedAt" | "completedAt" | "stoppedAt" | "failedAt" | "status" | "parentSessionId" | "parentSessionTitle" | "subagentIds" | "subagentRole" | "subagentGoal" | "subagentProgress">>;
+type SessionHistoryEntryPatch = Partial<Pick<SessionHistoryEntry, "title" | "unread" | "completedNotice" | "pinned" | "archived" | "coldArchived" | "archivedAt" | "lastOpenedAt" | "manualTitle" | "manualOrder" | "updatedAt" | "startedAt" | "completedAt" | "stoppedAt" | "failedAt" | "status" | "parentSessionId" | "parentSessionTitle" | "subagentIds" | "subagentRole" | "subagentGoal" | "subagentProgress">>;
+
+type CancipArchiveKind = "session" | "session-events" | "experience" | "memory";
+
+type CancipArchiveEntry = {
+  id: string;
+  kind: CancipArchiveKind;
+  title: string;
+  path: string;
+  originalPath: string;
+  archivedAt: string;
+  lastUsedAt: string;
+  size: number;
+  hash?: string;
+  session?: SessionHistoryEntry;
+};
+
+type CancipArchiveIndex = {
+  schemaVersion: number;
+  updatedAt: string;
+  lastMaintenanceAt: string;
+  entries: CancipArchiveEntry[];
+};
+
+type UniversalSearchDocumentKind = "note" | "memory" | "session" | "config" | "pdf" | "image" | "office" | "archive" | "file";
+
+type UniversalSearchDocument = {
+  path: string;
+  title: string;
+  kind: UniversalSearchDocumentKind;
+  mtime: number;
+  size: number;
+  indexedAt: string;
+  textChars: number;
+  bloom: string;
+};
+
+type UniversalSearchInventoryItem = Pick<UniversalSearchDocument, "path" | "title" | "kind" | "mtime" | "size">;
+
+type UniversalSearchIndex = {
+  schemaVersion: number;
+  updatedAt: string;
+  complete: boolean;
+  cursor: number;
+  inventoryHash: string;
+  documents: UniversalSearchDocument[];
+};
+
+type UniversalSearchOptions = {
+  includeArchived?: boolean;
+  includeConfigs?: boolean;
+  softQueries?: string[];
+};
 
 type StaleSessionRepair = {
   entry: SessionHistoryEntry;
@@ -2306,9 +2390,33 @@ const SESSION_EVENTS_PATH = `${SESSION_HISTORY_DIR}/events.jsonl`;
 const SESSION_HISTORY_SCHEMA_VERSION = 1;
 const SESSION_HISTORY_LIMIT = 60;
 const SESSION_EVENTS_MAX_BYTES = 1024 * 1024;
+const CANCIP_ARCHIVE_DIR = `${CANCIP_CONFIG_DIR}/archive`;
+const CANCIP_ARCHIVE_SESSIONS_DIR = `${CANCIP_ARCHIVE_DIR}/sessions`;
+const CANCIP_ARCHIVE_EVENTS_DIR = `${CANCIP_ARCHIVE_DIR}/session-events`;
+const CANCIP_ARCHIVE_EXPERIENCE_DIR = `${CANCIP_ARCHIVE_DIR}/experience`;
+const CANCIP_ARCHIVE_INDEX_PATH = `${CANCIP_ARCHIVE_DIR}/index.json`;
+const CANCIP_ARCHIVE_SCHEMA_VERSION = 1;
+const CANCIP_ARCHIVE_AFTER_DAYS = 30;
+const CANCIP_ARCHIVE_AFTER_MS = CANCIP_ARCHIVE_AFTER_DAYS * 24 * 60 * 60 * 1000;
+const CANCIP_ARCHIVE_MAINTENANCE_INTERVAL_MS = 12 * 60 * 60 * 1000;
+const CANCIP_ARCHIVE_SESSION_SCAN_BATCH = 36;
+const CANCIP_ARCHIVE_SESSION_MOVE_BATCH = 12;
+const UNIVERSAL_SEARCH_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/universal-search.json`;
+const UNIVERSAL_SEARCH_SCHEMA_VERSION = 1;
+const UNIVERSAL_SEARCH_BLOOM_BITS = 4096;
+const UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT = 900;
+const UNIVERSAL_SEARCH_MAX_TEXT_CHARS = 120000;
+const UNIVERSAL_SEARCH_MAX_BINARY_INDEX_BYTES = 24 * 1024 * 1024;
+const UNIVERSAL_SEARCH_TEXT_BUILD_BATCH = 24;
+const UNIVERSAL_SEARCH_BINARY_BUILD_BATCH = 2;
+const UNIVERSAL_SEARCH_BACKGROUND_DELAY_MS = 1800;
+const UNIVERSAL_SEARCH_MAX_DOCUMENTS = 12000;
+const UNIVERSAL_SEARCH_MAX_QUERY_CANDIDATES = 180;
 const AUTOMATION_DIR = `${CANCIP_CONFIG_DIR}/automations`;
 const AUTOMATION_STATE_PATH = `${CANCIP_CONFIG_DIR}/automations.json`;
-const AUTOMATION_SCHEMA_VERSION = 1;
+const AUTOMATION_SCHEMA_VERSION = 2;
+const AUTOMATION_NEW_FILE_DEFAULT_DEBOUNCE_SECONDS = 45;
+const AUTOMATION_NEW_FILE_MAX_BATCH = 40;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
 const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v6";
 const VAULT_CURATION_NEW_FILE_STATE_PATH = `${AUTOMATION_DIR}/vault-curation-new-files.json`;
@@ -2644,7 +2752,7 @@ const EN = {
   vaultNoteReviewCancelled: "Review cancelled. The original backup was restored.",
   vaultNoteReviewCorrectionPending: "Review has a correction. Cancip queued it back to AI for revision.",
   vaultNoteReviewApproved: "Review approved.",
-  vaultNoteReviewPrompt: "Vault write permission rule: approval mode queues write/move/delete/config/plugin actions in the visible Approve/Reject box and notifies the user; full access automatically runs implemented tools. AI edits to ordinary visible Vault notes are automatically marked in native Review after execution, with old text backed up for cancel/restore.",
+  vaultNoteReviewPrompt: "Vault write permission rule: approval mode queues write/move/delete/config/plugin actions in the visible Approve/Reject box and notifies the user; full access automatically runs implemented tools. AI edits to visible Vault notes, Cancip config, Obsidian JSON config, and installed plugin main/manifest/styles/data files are automatically marked in native Review after execution, with old text backed up for cancel/restore.",
   gitStatus: "GitHub status",
   gitRepo: "Repository",
   gitBranches: "Branches",
@@ -2659,21 +2767,21 @@ const EN = {
   reviewGatePrompt: "Use the programmatic cancip.reviewGate builder before risky vault organization. Pass concrete paths/proposed items when possible; do not use prompt-only review.",
   noSelection: "No selection to add",
   sendToAI: "Send to Cancip",
-  filePinPin: "Pin file",
-  filePinUnpin: "Unpin file",
+  filePinPin: "Pin file or folder",
+  filePinUnpin: "Unpin file or folder",
   filePinPinned: "Pinned: {path}",
   filePinUnpinned: "Unpinned: {path}",
-  filePinMoveUp: "Move up in pinned files",
-  filePinMoveDown: "Move down in pinned files",
-  filePinSort: "Sort pinned files",
-  filePinSortHandle: "Drag to sort pinned files",
-  filePinSortStarted: "Pinned-file sort mode started",
-  filePinSortNeedsTwo: "Pin at least two files in this folder to sort them",
-  filePinSortDone: "Finish pinned-file sorting",
-  filePinSortCancel: "Cancel pinned-file sorting",
-  filePinSortCancelled: "Pinned-file order restored",
-  filePinOrderSaved: "Pinned-file order saved",
-  filePinNone: "No pinned files",
+  filePinMoveUp: "Move pinned item up",
+  filePinMoveDown: "Move pinned item down",
+  filePinSort: "Sort pinned files and folders",
+  filePinSortHandle: "Drag to sort pinned items",
+  filePinSortStarted: "Pinned-item sort mode started",
+  filePinSortNeedsTwo: "Pin at least two files or folders here to sort them",
+  filePinSortDone: "Finish pinned-item sorting",
+  filePinSortCancel: "Cancel pinned-item sorting",
+  filePinSortCancelled: "Pinned-item order restored",
+  filePinOrderSaved: "Pinned-item order saved",
+  filePinNone: "No pinned files or folders",
   filePinFailed: "File pin operation failed: {reason}",
   editButtonSettings: "Edit button",
   buttonEditTitle: "Button settings",
@@ -3024,6 +3132,10 @@ const EN = {
   automationSessionFixed: "Chosen old chat",
   automationSessionId: "Session ID",
   automationCondition: "Condition",
+  automationWatchNewFiles: "Run when new files appear",
+  automationNewFilePattern: "New-file path pattern",
+  automationNewFileDebounce: "New-file debounce seconds",
+  automationNotifyMode: "Notification policy",
   automationPrompt: "Prompt",
   automationCommand: "Command",
   automationSchedule: "Schedule",
@@ -3397,7 +3509,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     vaultNoteReviewCancelled: "审核已取消，已用原文备份恢复。",
     vaultNoteReviewCorrectionPending: "审核里有指正，Cancip 已排队回传 AI 修改。",
     vaultNoteReviewApproved: "审核已通过。",
-    vaultNoteReviewPrompt: "Vault 写入权限规则：确认模式把写入/移动/删除/配置/插件动作放进可点击确认框并通知用户等待；全权模式自动执行已实现工具。AI 对普通可见 Vault 笔记的改动执行后自动进入原生审核面板并备份原文，取消可恢复。",
+    vaultNoteReviewPrompt: "Vault 写入权限规则：确认模式把写入/移动/删除/配置/插件动作放进可点击确认框并通知用户等待；全权模式自动执行已实现工具。AI 对普通笔记、Cancip 配置、Obsidian JSON 配置及插件 main/manifest/styles/data 文件的改动，执行后都会进入原生审核面板并备份原文，取消可恢复。",
     gitStatus: "GitHub 状态",
     gitRepo: "仓库",
     gitBranches: "分支",
@@ -3412,21 +3524,21 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGatePrompt: "高风险整理前使用程序化 cancip.reviewGate 生成原生审核面板数据；尽量传入具体路径/提案，不要只发提示词。",
     noSelection: "没有可加入的选中文本",
     sendToAI: "发给 Cancip",
-    filePinPin: "置顶文件",
+    filePinPin: "置顶文件或文件夹",
     filePinUnpin: "取消置顶",
     filePinPinned: "已置顶：{path}",
     filePinUnpinned: "已取消置顶：{path}",
-    filePinMoveUp: "在置顶文件中上移",
-    filePinMoveDown: "在置顶文件中下移",
-    filePinSort: "调整置顶文件顺序",
-    filePinSortHandle: "拖动调整置顶顺序",
-    filePinSortStarted: "已进入置顶文件排序",
-    filePinSortNeedsTwo: "当前文件夹至少置顶两个文件后才能排序",
-    filePinSortDone: "完成置顶排序",
-    filePinSortCancel: "取消置顶排序",
-    filePinSortCancelled: "已恢复原置顶顺序",
-    filePinOrderSaved: "置顶文件顺序已保存",
-    filePinNone: "没有置顶文件",
+    filePinMoveUp: "置顶项上移",
+    filePinMoveDown: "置顶项下移",
+    filePinSort: "调整置顶文件与文件夹顺序",
+    filePinSortHandle: "拖动调整置顶项顺序",
+    filePinSortStarted: "已进入置顶项排序",
+    filePinSortNeedsTwo: "当前位置至少置顶两个文件或文件夹后才能排序",
+    filePinSortDone: "完成置顶项排序",
+    filePinSortCancel: "取消置顶项排序",
+    filePinSortCancelled: "已恢复原置顶项顺序",
+    filePinOrderSaved: "置顶项顺序已保存",
+    filePinNone: "没有置顶文件或文件夹",
     filePinFailed: "文件置顶操作失败：{reason}",
     editButtonSettings: "编辑按钮",
     settingsUiButtonManagement: "按钮管理",
@@ -3777,6 +3889,10 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     automationSessionFixed: "指定旧会话",
     automationSessionId: "会话 ID",
     automationCondition: "条件",
+    automationWatchNewFiles: "发现新文件时运行",
+    automationNewFilePattern: "新文件路径规则",
+    automationNewFileDebounce: "新文件合并等待秒数",
+    automationNotifyMode: "通知策略",
     automationPrompt: "提示词",
     automationCommand: "命令",
     automationSchedule: "循环",
@@ -5502,6 +5618,8 @@ export default class CancipPlugin extends Plugin {
   private automationScheduleCleanupRegistered = false;
   private automationStateCache: { at: number; tasks: AutomationTask[] } | null = null;
   private automationStateReadPromise: Promise<AutomationTask[]> | null = null;
+  private automationNewFilePaths = new Map<string, Set<string>>();
+  private automationNewFileTimers = new Map<string, number>();
   private automationRunnerLeaf: WorkspaceLeaf | null = null;
   private automationRunnerCleanupTimer: number | null = null;
   private startupMaintenanceCancel: (() => void) | null = null;
@@ -5574,6 +5692,7 @@ export default class CancipPlugin extends Plugin {
   private filePinApplyTimer: UiButtonRuleTimer | null = null;
   private filePinApplying = false;
   private filePinSortSession: FilePinSortSession | null = null;
+  private fileExplorerSortPatches = new Map<FileExplorerViewLike, FileExplorerSortPatch>();
   private buttonEditLongPressTimer: number | null = null;
   private buttonEditLongPressTarget: HTMLElement | null = null;
   private buttonEditBubbleEl: HTMLButtonElement | null = null;
@@ -5593,6 +5712,15 @@ export default class CancipPlugin extends Plugin {
   private srCommandApiPatchedAddCommand: ((command: ObsidianCommandDefinition) => unknown) | null = null;
   private aiVaultMutationCaptureStack: AiVaultMutationCaptureState[] = [];
   private aiVaultAdapterOriginalMethods = new Map<AiVaultAdapterMethod, AiVaultAdapterFunction>();
+  private universalSearchIndexCache: UniversalSearchIndex | null = null;
+  private universalSearchInventoryCache: UniversalSearchInventoryItem[] | null = null;
+  private universalSearchBuildPromise: Promise<{ indexed: number; total: number; complete: boolean }> | null = null;
+  private universalSearchBuildTimer: number | null = null;
+  private universalSearchBuildRequested = false;
+  private universalSearchBuildGeneration = 0;
+  private universalSearchUnloaded = false;
+  private unloading = false;
+  private recentNotificationSignatures = new Map<string, number>();
   readonly sessionRequests = new Map<string, AbortController>();
   readonly sessionRequestOwners = new Map<string, CancipView>();
 
@@ -5609,6 +5737,10 @@ export default class CancipPlugin extends Plugin {
 
   sessionRequestOwner(sessionId: string): CancipView | null {
     return this.sessionRequestOwners.get(sessionId) ?? null;
+  }
+
+  isUnloading(): boolean {
+    return this.unloading;
   }
 
   async refreshChatViewsForSession(sessionId: string, status = "", sourceView: CancipView | null = null): Promise<void> {
@@ -5655,6 +5787,7 @@ export default class CancipPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("create", (file) => {
       this.captureAiVaultEventMutation("create", file.path);
       this.handleCancipVaultFileChanged(file.path);
+      if (file instanceof TFile) this.queueNewFileAutomations(file.path);
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       this.captureAiVaultEventMutation("modify", file.path);
@@ -5761,7 +5894,6 @@ export default class CancipPlugin extends Plugin {
     }));
 
     this.registerEvent(this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
-      if (!(file instanceof TFile)) return;
       this.addFilePinMenuItems(menu, file);
     }));
 
@@ -5965,16 +6097,21 @@ export default class CancipPlugin extends Plugin {
       this.removeStaleUiButtonSortDom();
       this.installButtonEditLongPress();
       const doc = activeDocument;
-      const applyRulesAfterPointer = () => this.scheduleUiButtonRulesApply(80);
+      const applyRulesAfterPointer = () => {
+        this.scheduleUiButtonRulesApply(80);
+        this.scheduleFilePinsApply(100);
+      };
+      const applyFilePinsAfterKey = () => this.scheduleFilePinsApply(100);
       doc.addEventListener("click", applyRulesAfterPointer, true);
       doc.addEventListener("pointerup", applyRulesAfterPointer, true);
+      doc.addEventListener("keyup", applyFilePinsAfterKey, true);
       this.register(() => {
         doc.removeEventListener("click", applyRulesAfterPointer, true);
         doc.removeEventListener("pointerup", applyRulesAfterPointer, true);
+        doc.removeEventListener("keyup", applyFilePinsAfterKey, true);
       });
       this.installUiButtonRuleObserver();
       this.scheduleUiButtonRulesApply(120);
-      this.installFilePinObserver();
       void this.loadFilePinState().then(() => this.scheduleFilePinsApply(0));
       this.installRightSidebarTabToolbar();
       this.installSrPdfToolbarPatch();
@@ -6362,6 +6499,7 @@ export default class CancipPlugin extends Plugin {
       await sleep(0);
     };
     await run("ensureDefaultDailyAutomations", () => this.ensureDefaultDailyAutomations());
+    await run("resumeInterruptedSessions", () => this.resumeInterruptedSessionsOnStartup());
     this.scheduleAutomations();
     this.scheduleCancipStatePolling();
     this.scheduleBuiltinPrimeTtsWarmup();
@@ -6373,8 +6511,656 @@ export default class CancipPlugin extends Plugin {
     await run("ensureMemoryIndexFiles", () => this.ensureMemoryIndexFiles());
     await run("ensureVaultOverviewMemory", () => this.ensureVaultOverviewMemory());
     await run("ensureBuiltInCurationSkill", () => this.ensureBuiltInCurationSkill());
+    await run("archiveColdCancipData", async () => {
+      await this.archiveColdCancipData(false);
+    });
+    this.scheduleUniversalSearchBuild(1200);
     this.scheduleCodexMemoryAutoImport();
     this.scheduleDailyLocalVersioning();
+  }
+
+  async readCancipArchiveIndex(): Promise<CancipArchiveIndex> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(CANCIP_ARCHIVE_INDEX_PATH))) return await this.recoverCancipArchiveIndex();
+    try {
+      const normalized = normalizeCancipArchiveIndex(JSON.parse(await adapter.read(CANCIP_ARCHIVE_INDEX_PATH)) as unknown);
+      if (!normalized.entries.length && (
+        await adapter.exists(CANCIP_ARCHIVE_SESSIONS_DIR)
+        || await adapter.exists(CANCIP_ARCHIVE_EVENTS_DIR)
+        || await adapter.exists(CANCIP_ARCHIVE_EXPERIENCE_DIR)
+      )) return await this.recoverCancipArchiveIndex();
+      return normalized;
+    } catch (error) {
+      console.warn("Cancip archive index read failed", error);
+      return await this.recoverCancipArchiveIndex();
+    }
+  }
+
+  private async recoverCancipArchiveIndex(): Promise<CancipArchiveIndex> {
+    const adapter = this.app.vault.adapter;
+    const recovered = emptyCancipArchiveIndex();
+    if (!(await adapter.exists(CANCIP_ARCHIVE_DIR))) return recovered;
+    const startedAt = Date.now();
+    const paths = await listVaultTextPaths(adapter, CANCIP_ARCHIVE_DIR, 3500, startedAt, 6000).catch(() => [] as string[]);
+    for (const path of paths) {
+      try {
+        const normalized = normalizePath(path);
+        const stat = await adapter.stat(normalized).catch(() => null);
+        const archivedAt = new Date(Number(stat?.mtime ?? Date.now())).toISOString();
+        if (normalized.startsWith(`${CANCIP_ARCHIVE_SESSIONS_DIR}/`) && normalized.endsWith(".json")) {
+          const raw = await adapter.read(normalized);
+          const session = sessionHistoryEntryFromSnapshot(JSON.parse(raw) as unknown, normalized);
+          if (!session) continue;
+          const lastUsedAt = cancipLatestTimestamp(session.lastOpenedAt, session.updatedAt, session.createdAt) || archivedAt;
+          upsertArchiveEntry(recovered, {
+            id: `session:${session.id}`,
+            kind: "session",
+            title: session.title,
+            path: normalized,
+            originalPath: `${SESSION_HISTORY_DIR}/${reviewFileName(normalized)}`,
+            archivedAt: session.archivedAt || archivedAt,
+            lastUsedAt,
+            size: Number(stat?.size ?? raw.length),
+            session: { ...session, archived: true, coldArchived: true, path: normalized }
+          });
+          continue;
+        }
+        if (normalized.startsWith(`${CANCIP_ARCHIVE_EVENTS_DIR}/`) && normalized.endsWith(".jsonl")) {
+          const month = reviewFileName(normalized).replace(/\.jsonl$/i, "");
+          upsertArchiveEntry(recovered, {
+            id: `session-events:${month}`,
+            kind: "session-events",
+            title: `Session events ${month}`,
+            path: normalized,
+            originalPath: SESSION_EVENTS_PATH,
+            archivedAt,
+            lastUsedAt: `${month}-01T00:00:00.000Z`,
+            size: Number(stat?.size ?? 0)
+          });
+          continue;
+        }
+        if (normalized.startsWith(`${CANCIP_ARCHIVE_EXPERIENCE_DIR}/`) && /\.md$/i.test(normalized)) {
+          const month = reviewFileName(normalized).replace(/\.md$/i, "");
+          upsertArchiveEntry(recovered, {
+            id: `experience:${month}`,
+            kind: "experience",
+            title: `Experience ${month}`,
+            path: normalized,
+            originalPath: EXPERIENCE_LOG_PATH,
+            archivedAt,
+            lastUsedAt: `${month}-01T00:00:00.000Z`,
+            size: Number(stat?.size ?? 0)
+          });
+        }
+      } catch (error) {
+        console.warn(`Cancip archive recovery skipped: ${path}`, error);
+      }
+    }
+    if (recovered.entries.length) {
+      recovered.lastMaintenanceAt = new Date().toISOString();
+      await this.writeCancipArchiveIndex(recovered);
+    }
+    return recovered;
+  }
+
+  private async writeCancipArchiveIndex(index: CancipArchiveIndex): Promise<void> {
+    await ensureFolder(this.app.vault.adapter, CANCIP_ARCHIVE_DIR);
+    const payload: CancipArchiveIndex = {
+      schemaVersion: CANCIP_ARCHIVE_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+      lastMaintenanceAt: index.lastMaintenanceAt,
+      entries: [...index.entries]
+        .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt) || a.path.localeCompare(b.path))
+        .slice(0, 4000)
+    };
+    await this.app.vault.adapter.write(CANCIP_ARCHIVE_INDEX_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+  }
+
+  async coldArchivedSessionEntries(): Promise<SessionHistoryEntry[]> {
+    const index = await this.readCancipArchiveIndex();
+    return index.entries
+      .filter((entry) => entry.kind === "session" && entry.session)
+      .map((entry) => ({
+        ...(entry.session as SessionHistoryEntry),
+        archived: true,
+        coldArchived: true,
+        archivedAt: entry.archivedAt,
+        path: entry.path
+      }))
+      .sort(compareSessionHistoryEntries);
+  }
+
+  async archiveColdCancipData(force: boolean): Promise<{ sessions: number; events: number; experience: number; skipped: boolean }> {
+    const index = await this.readCancipArchiveIndex();
+    const lastRun = Date.parse(index.lastMaintenanceAt || "");
+    if (!force && Number.isFinite(lastRun) && Date.now() - lastRun < CANCIP_ARCHIVE_MAINTENANCE_INTERVAL_MS) {
+      return { sessions: 0, events: 0, experience: 0, skipped: true };
+    }
+    const cutoff = Date.now() - CANCIP_ARCHIVE_AFTER_MS;
+    const sessions = await this.archiveColdSessionFiles(index, cutoff);
+    const events = await this.archiveColdSessionEvents(index, cutoff);
+    const experience = await this.archiveColdExperience(index, cutoff);
+    index.lastMaintenanceAt = new Date().toISOString();
+    await this.writeCancipArchiveIndex(index);
+    this.universalSearchIndexCache = null;
+    this.universalSearchInventoryCache = null;
+    this.scheduleUniversalSearchBuild(100);
+    return { sessions, events, experience, skipped: false };
+  }
+
+  private async archiveColdSessionFiles(index: CancipArchiveIndex, cutoff: number): Promise<number> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(SESSION_HISTORY_DIR))) return 0;
+    const openSessionIds = new Set(
+      this.app.workspace.getLeavesOfType(VIEW_TYPE)
+        .map((leaf) => leaf.view instanceof CancipView ? leaf.view.currentSessionIdForArchive() : "")
+        .filter(Boolean)
+    );
+    const listing = await adapter.list(SESSION_HISTORY_DIR);
+    const files = listing.files
+      .filter((path) => /\/session-[^/]+\.json$/i.test(path) && normalizePath(path) !== normalizePath(SESSION_HISTORY_INDEX_PATH))
+      .sort((a, b) => a.localeCompare(b));
+    const archivedIds = new Set<string>();
+    let count = 0;
+    let inspected = 0;
+    for (const path of files) {
+      if (count >= CANCIP_ARCHIVE_SESSION_MOVE_BATCH || inspected >= CANCIP_ARCHIVE_SESSION_SCAN_BATCH) break;
+      inspected += 1;
+      try {
+        const raw = await adapter.read(path);
+        const parsed = JSON.parse(raw) as unknown;
+        const entry = sessionHistoryEntryFromSnapshot(parsed, path);
+        if (!entry || entry.pinned || entry.status === "running" || this.sessionRequests.has(entry.id) || openSessionIds.has(entry.id)) continue;
+        const lastUsedAt = cancipLatestTimestamp(entry.lastOpenedAt, entry.updatedAt, entry.createdAt);
+        const lastUsedMs = Date.parse(lastUsedAt);
+        if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoff) continue;
+        let archivedAt = new Date().toISOString();
+        const destination = `${CANCIP_ARCHIVE_SESSIONS_DIR}/${archiveMonthFromIso(lastUsedAt)}/${reviewFileName(path)}`;
+        const snapshot = isRecord(parsed) ? { ...parsed } : {};
+        snapshot.archived = true;
+        snapshot.coldArchived = true;
+        snapshot.archivedAt = archivedAt;
+        snapshot.lastOpenedAt = entry.lastOpenedAt || entry.updatedAt;
+        const proposedContent = `${JSON.stringify(snapshot, null, 2)}\n`;
+        const destinationExisted = await adapter.exists(destination);
+        if (!destinationExisted) {
+          await ensureParentFolder(adapter, destination);
+          await adapter.write(destination, proposedContent);
+        }
+        const content = await adapter.read(destination);
+        const verified = JSON.parse(content) as unknown;
+        const verifiedEntry = sessionHistoryEntryFromSnapshot(verified, destination);
+        if (!verifiedEntry || verifiedEntry.id !== entry.id) throw new Error(`archive verification failed for ${entry.id}`);
+        archivedAt = verifiedEntry.archivedAt || archivedAt;
+        const coldEntry: SessionHistoryEntry = {
+          ...entry,
+          archived: true,
+          coldArchived: true,
+          archivedAt,
+          lastOpenedAt: entry.lastOpenedAt || entry.updatedAt,
+          path: destination
+        };
+        const archiveEntry: CancipArchiveEntry = {
+          id: `session:${entry.id}`,
+          kind: "session",
+          title: entry.title,
+          path: destination,
+          originalPath: path,
+          archivedAt,
+          lastUsedAt,
+          size: content.length,
+          hash: await sha256Text(content),
+          session: coldEntry
+        };
+        upsertArchiveEntry(index, archiveEntry);
+        await this.writeCancipArchiveIndex(index);
+        try {
+          await adapter.remove(path);
+        } catch (error) {
+          if (await adapter.exists(path)) {
+            index.entries = index.entries.filter((item) => item.id !== archiveEntry.id);
+            await this.writeCancipArchiveIndex(index);
+            if (!destinationExisted && await adapter.exists(destination)) await adapter.remove(destination);
+            throw error;
+          }
+        }
+        archivedIds.add(entry.id);
+        count += 1;
+      } catch (error) {
+        console.warn(`Cancip session archive skipped: ${path}`, error);
+      }
+      await sleep(0);
+    }
+    if (archivedIds.size && await adapter.exists(SESSION_HISTORY_INDEX_PATH)) {
+      try {
+        const parsed = JSON.parse(await adapter.read(SESSION_HISTORY_INDEX_PATH)) as unknown;
+        const entries = isRecord(parsed) && Array.isArray(parsed.entries)
+          ? parsed.entries
+              .filter(isRecord)
+              .map(normalizeSessionHistoryEntry)
+              .filter((entry): entry is SessionHistoryEntry => entry !== null)
+              .filter((entry) => !archivedIds.has(entry.id))
+          : [];
+        await this.writeSessionHistoryIndexForPlugin(entries);
+      } catch (error) {
+        console.warn("Cancip hot session index prune after archive failed", error);
+      }
+    }
+    return count;
+  }
+
+  private async archiveColdSessionEvents(index: CancipArchiveIndex, cutoff: number): Promise<number> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(SESSION_EVENTS_PATH))) return 0;
+    const raw = await adapter.read(SESSION_EVENTS_PATH);
+    const recent: string[] = [];
+    const oldByMonth = new Map<string, string[]>();
+    for (const line of raw.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        const event = JSON.parse(trimmed) as SessionEvent;
+        const at = typeof event.at === "string" ? event.at : "";
+        const time = Date.parse(at);
+        if (!Number.isFinite(time) || time >= cutoff) {
+          recent.push(trimmed);
+          continue;
+        }
+        const month = archiveMonthFromIso(at);
+        const bucket = oldByMonth.get(month) ?? [];
+        bucket.push(trimmed);
+        oldByMonth.set(month, bucket);
+      } catch {
+        recent.push(trimmed);
+      }
+    }
+    let count = 0;
+    for (const [month, lines] of oldByMonth) {
+      const path = `${CANCIP_ARCHIVE_EVENTS_DIR}/${month}.jsonl`;
+      const existing = await readTextIfExists(adapter, path, "");
+      const mergedLines = uniqueStrings([
+        ...existing.split(/\r?\n/).map((line) => line.trim()).filter(Boolean),
+        ...lines
+      ]);
+      const content = mergedLines.length ? `${mergedLines.join("\n")}\n` : "";
+      await ensureParentFolder(adapter, path);
+      await adapter.write(path, content);
+      const verified = new Set((await adapter.read(path)).split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+      if (!lines.every((line) => verified.has(line))) throw new Error(`session event archive verification failed: ${month}`);
+      upsertArchiveEntry(index, {
+        id: `session-events:${month}`,
+        kind: "session-events",
+        title: `Session events ${month}`,
+        path,
+        originalPath: SESSION_EVENTS_PATH,
+        archivedAt: new Date().toISOString(),
+        lastUsedAt: `${month}-01T00:00:00.000Z`,
+        size: content.length
+      });
+      await this.writeCancipArchiveIndex(index);
+      count += lines.length;
+    }
+    if (count) await adapter.write(SESSION_EVENTS_PATH, recent.length ? `${recent.join("\n")}\n` : "");
+    return count;
+  }
+
+  private async archiveColdExperience(index: CancipArchiveIndex, cutoff: number): Promise<number> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(EXPERIENCE_LOG_PATH))) return 0;
+    const raw = await adapter.read(EXPERIENCE_LOG_PATH);
+    const blocks = raw.split(/\n(?=##\s+\d{4}-\d{2}-\d{2}T)/);
+    const header = blocks[0]?.startsWith("# ") ? blocks.shift() ?? "# Cancip Experience" : "# Cancip Experience";
+    const recent: string[] = [];
+    const oldByMonth = new Map<string, string[]>();
+    for (const block of blocks) {
+      const at = block.match(/^##\s+([^·\n]+)\s*·/m)?.[1]?.trim() ?? "";
+      const time = Date.parse(at);
+      if (!Number.isFinite(time) || time >= cutoff) {
+        recent.push(block.trim());
+        continue;
+      }
+      const month = archiveMonthFromIso(at);
+      const bucket = oldByMonth.get(month) ?? [];
+      bucket.push(block.trim());
+      oldByMonth.set(month, bucket);
+    }
+    const hotTargetChars = Math.floor(EXPERIENCE_LOG_MAX_CHARS * 0.82);
+    let hotChars = `${header.trimEnd()}${recent.length ? `\n\n${recent.join("\n\n")}` : ""}\n`.length;
+    while (hotChars > hotTargetChars && recent.length > 1) {
+      const oldest = recent.shift();
+      if (!oldest) break;
+      const at = oldest.match(/^##\s+([^·\n]+)\s*·/m)?.[1]?.trim() ?? new Date().toISOString();
+      const month = archiveMonthFromIso(at);
+      const bucket = oldByMonth.get(month) ?? [];
+      bucket.push(oldest);
+      oldByMonth.set(month, bucket);
+      hotChars = `${header.trimEnd()}${recent.length ? `\n\n${recent.join("\n\n")}` : ""}\n`.length;
+    }
+    let count = 0;
+    for (const [month, entries] of oldByMonth) {
+      const path = `${CANCIP_ARCHIVE_EXPERIENCE_DIR}/${month}.md`;
+      const existing = await readTextIfExists(adapter, path, "# Cancip Archived Experience\n");
+      const existingHashes = new Set(
+        existing
+          .split(/\n(?=##\s+\d{4}-\d{2}-\d{2}T)/)
+          .map((block) => stableTextHash(block.trim()))
+      );
+      const additions = entries.filter((entry) => !existingHashes.has(stableTextHash(entry.trim())));
+      const content = additions.length ? `${existing.trimEnd()}\n\n${additions.join("\n\n")}\n` : existing;
+      await ensureParentFolder(adapter, path);
+      await adapter.write(path, content);
+      const verified = await adapter.read(path);
+      if (!entries.every((entry) => verified.includes(entry.trim()))) throw new Error(`experience archive verification failed: ${month}`);
+      upsertArchiveEntry(index, {
+        id: `experience:${month}`,
+        kind: "experience",
+        title: `Experience ${month}`,
+        path,
+        originalPath: EXPERIENCE_LOG_PATH,
+        archivedAt: new Date().toISOString(),
+        lastUsedAt: `${month}-01T00:00:00.000Z`,
+        size: content.length
+      });
+      await this.writeCancipArchiveIndex(index);
+      count += entries.length;
+    }
+    if (count) await adapter.write(EXPERIENCE_LOG_PATH, `${header.trimEnd()}${recent.length ? `\n\n${recent.join("\n\n")}` : ""}\n`);
+    return count;
+  }
+
+  async restoreColdSession(sessionId: string): Promise<SessionHistoryEntry> {
+    const index = await this.readCancipArchiveIndex();
+    const archived = index.entries.find((entry) => entry.kind === "session" && (entry.session?.id === sessionId || entry.id === `session:${sessionId}`));
+    if (!archived?.session) throw new Error(`Archived session not found: ${sessionId}`);
+    const adapter = this.app.vault.adapter;
+    const raw = await adapter.read(archived.path);
+    const parsed = JSON.parse(raw) as unknown;
+    if (!isRecord(parsed)) throw new Error(`Archived session is invalid: ${archived.path}`);
+    const restoredAt = new Date().toISOString();
+    parsed.archived = false;
+    parsed.coldArchived = false;
+    parsed.archivedAt = "";
+    parsed.lastOpenedAt = restoredAt;
+    const destination = archived.originalPath || `${SESSION_HISTORY_DIR}/${sessionId}.json`;
+    const content = `${JSON.stringify(parsed, null, 2)}\n`;
+    await ensureParentFolder(adapter, destination);
+    await adapter.write(destination, content);
+    const restored = sessionHistoryEntryFromSnapshot(JSON.parse(await adapter.read(destination)) as unknown, destination);
+    if (!restored || restored.id !== sessionId) throw new Error(`Restored session verification failed: ${sessionId}`);
+    await adapter.remove(archived.path);
+    index.entries = index.entries.filter((entry) => entry !== archived);
+    await this.writeCancipArchiveIndex(index);
+    const hot = await this.readSessionHistoryIndexForPlugin();
+    await this.writeSessionHistoryIndexForPlugin([{
+      ...restored,
+      archived: false,
+      coldArchived: false,
+      archivedAt: "",
+      lastOpenedAt: restoredAt,
+      path: destination
+    }, ...hot.filter((entry) => entry.id !== sessionId)]);
+    this.universalSearchIndexCache = null;
+    this.universalSearchInventoryCache = null;
+    this.scheduleUniversalSearchBuild(100);
+    return { ...restored, archived: false, coldArchived: false, lastOpenedAt: restoredAt, path: destination };
+  }
+
+  private scheduleUniversalSearchBuild(delayMs = 800): void {
+    if (this.universalSearchUnloaded) return;
+    if (this.universalSearchBuildPromise) {
+      this.universalSearchBuildRequested = true;
+      return;
+    }
+    if (this.universalSearchBuildTimer !== null) return;
+    this.universalSearchBuildTimer = window.setTimeout(() => {
+      this.universalSearchBuildTimer = null;
+      void this.rebuildUniversalSearchIndex(false).catch((error) => {
+        console.warn("Cancip universal search background build failed", error);
+      });
+    }, Math.max(50, delayMs));
+  }
+
+  async readUniversalSearchIndex(): Promise<UniversalSearchIndex> {
+    if (this.universalSearchIndexCache) return this.universalSearchIndexCache;
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(UNIVERSAL_SEARCH_INDEX_PATH))) {
+      const empty = emptyUniversalSearchIndex();
+      this.universalSearchIndexCache = empty;
+      return empty;
+    }
+    try {
+      const parsed = normalizeUniversalSearchIndex(JSON.parse(await adapter.read(UNIVERSAL_SEARCH_INDEX_PATH)) as unknown);
+      this.universalSearchIndexCache = parsed;
+      return parsed;
+    } catch (error) {
+      console.warn("Cancip universal search index read failed", error);
+      const empty = emptyUniversalSearchIndex();
+      this.universalSearchIndexCache = empty;
+      return empty;
+    }
+  }
+
+  async rebuildUniversalSearchIndex(full: boolean): Promise<{ indexed: number; total: number; complete: boolean }> {
+    if (this.universalSearchUnloaded) return { indexed: 0, total: 0, complete: false };
+    if (this.universalSearchBuildPromise) return await this.universalSearchBuildPromise;
+    const generation = ++this.universalSearchBuildGeneration;
+    const task = this.rebuildUniversalSearchIndexInternal(full, generation);
+    this.universalSearchBuildPromise = task;
+    let result: { indexed: number; total: number; complete: boolean } | null = null;
+    try {
+      result = await task;
+      return result;
+    } finally {
+      if (this.universalSearchBuildPromise === task) this.universalSearchBuildPromise = null;
+      const rebuildRequested = this.universalSearchBuildRequested;
+      this.universalSearchBuildRequested = false;
+      if (!this.universalSearchUnloaded && (rebuildRequested || (result && !result.complete))) this.scheduleUniversalSearchBuild(UNIVERSAL_SEARCH_BACKGROUND_DELAY_MS);
+    }
+  }
+
+  private async rebuildUniversalSearchIndexInternal(full: boolean, generation: number): Promise<{ indexed: number; total: number; complete: boolean }> {
+    const adapter = this.app.vault.adapter;
+    const inventory = await this.collectUniversalSearchInventory();
+    const previous = await this.readUniversalSearchIndex();
+    const previousByPath = new Map(previous.documents.map((document) => [normalizePath(document.path), document]));
+    const documents: UniversalSearchDocument[] = [];
+    const pending: UniversalSearchInventoryItem[] = [];
+    for (const item of inventory) {
+      const existing = previousByPath.get(normalizePath(item.path));
+      if (existing && existing.mtime === item.mtime && existing.size === item.size && existing.bloom) {
+        documents.push(existing);
+      } else {
+        pending.push(item);
+      }
+    }
+    const firstPending = pending[0];
+    const batchLimit = firstPending && universalSearchBinaryDocumentKind(firstPending.kind)
+      ? UNIVERSAL_SEARCH_BINARY_BUILD_BATCH
+      : UNIVERSAL_SEARCH_TEXT_BUILD_BATCH;
+    const batch = full ? pending : pending.slice(0, batchLimit);
+    for (const [index, item] of batch.entries()) {
+      if (this.universalSearchUnloaded || generation !== this.universalSearchBuildGeneration) {
+        return { indexed: previous.documents.filter((document) => Boolean(document.bloom)).length, total: inventory.length, complete: false };
+      }
+      let text = "";
+      try {
+        text = await this.universalSearchDocumentText(item.path, item.kind, UNIVERSAL_SEARCH_MAX_TEXT_CHARS);
+      } catch (error) {
+        console.warn(`Cancip search index text extraction skipped: ${item.path}`, error);
+      }
+      const safeText = redactSensitiveText(trimContext(text, UNIVERSAL_SEARCH_MAX_TEXT_CHARS));
+      if (this.universalSearchUnloaded || generation !== this.universalSearchBuildGeneration) {
+        return { indexed: previous.documents.filter((document) => Boolean(document.bloom)).length, total: inventory.length, complete: false };
+      }
+      const terms = universalSearchTerms(item.path, item.title, safeText).slice(0, UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT);
+      documents.push({
+        ...item,
+        indexedAt: new Date().toISOString(),
+        textChars: safeText.length,
+        bloom: createUniversalSearchBloom(terms)
+      });
+      if (full || index % 3 === 2) await sleep(0);
+    }
+    const processedPaths = new Set(batch.map((item) => normalizePath(item.path)));
+    for (const item of pending) {
+      if (processedPaths.has(normalizePath(item.path))) continue;
+      const existing = previousByPath.get(normalizePath(item.path));
+      if (existing) documents.push(existing);
+      else documents.push({ ...item, indexedAt: "", textChars: 0, bloom: "" });
+    }
+    const complete = pending.length <= batch.length;
+    const next: UniversalSearchIndex = {
+      schemaVersion: UNIVERSAL_SEARCH_SCHEMA_VERSION,
+      updatedAt: new Date().toISOString(),
+      complete,
+      cursor: complete ? 0 : Math.max(0, previous.cursor + batch.length),
+      inventoryHash: stableTextHash(inventory.map((item) => `${item.path}:${item.mtime}:${item.size}`).join("\n")),
+      documents: documents
+        .sort((a, b) => a.path.localeCompare(b.path))
+        .slice(0, UNIVERSAL_SEARCH_MAX_DOCUMENTS)
+    };
+    if (this.universalSearchUnloaded || generation !== this.universalSearchBuildGeneration) {
+      return { indexed: previous.documents.filter((document) => Boolean(document.bloom)).length, total: inventory.length, complete: false };
+    }
+    await ensureParentFolder(adapter, UNIVERSAL_SEARCH_INDEX_PATH);
+    await adapter.write(UNIVERSAL_SEARCH_INDEX_PATH, `${JSON.stringify(next)}\n`);
+    this.universalSearchIndexCache = next;
+    return { indexed: next.documents.filter((document) => Boolean(document.bloom)).length, total: inventory.length, complete };
+  }
+
+  private async collectUniversalSearchInventory(): Promise<UniversalSearchInventoryItem[]> {
+    if (this.universalSearchInventoryCache) return this.universalSearchInventoryCache;
+    const adapter = this.app.vault.adapter as DataAdapter & { stat?: (path: string) => Promise<{ mtime?: number; size?: number; type?: string } | null> };
+    const byPath = new Map<string, UniversalSearchInventoryItem>();
+    const add = (path: string, mtime: number, size: number) => {
+      const normalized = normalizePath(path);
+      if (!shouldIndexUniversalSearchPath(normalized, this.obsidianConfigDir())) return;
+      byPath.set(normalized, {
+        path: normalized,
+        title: reviewFileName(normalized),
+        kind: universalSearchDocumentKind(normalized, this.settings.memoryFolder),
+        mtime: Number.isFinite(mtime) ? mtime : 0,
+        size: Number.isFinite(size) ? size : 0
+      });
+    };
+    for (const file of this.app.vault.getFiles()) add(file.path, file.stat.mtime, file.stat.size);
+    const startedAt = Date.now();
+    for (const folder of [CANCIP_CONFIG_DIR, this.obsidianConfigDir()]) {
+      const paths = await listVaultTextPaths(adapter, folder, 12000, startedAt, 6000).catch(() => [] as string[]);
+      for (const path of paths) {
+        if (byPath.has(normalizePath(path))) continue;
+        const stat = typeof adapter.stat === "function" ? await adapter.stat(path).catch(() => null) : null;
+        add(path, Number(stat?.mtime ?? 0), Number(stat?.size ?? 0));
+      }
+    }
+    const archive = await this.readCancipArchiveIndex();
+    for (const entry of archive.entries) {
+      if (byPath.has(normalizePath(entry.path))) continue;
+      const stat = typeof adapter.stat === "function" ? await adapter.stat(entry.path).catch(() => null) : null;
+      const archivedAt = Date.parse(entry.archivedAt);
+      add(entry.path, Number(stat?.mtime ?? (Number.isFinite(archivedAt) ? archivedAt : 0)), Number(stat?.size ?? entry.size));
+    }
+    const inventory = [...byPath.values()]
+      .sort((a, b) => universalSearchKindPriority(a.kind) - universalSearchKindPriority(b.kind) || a.path.localeCompare(b.path))
+      .slice(0, UNIVERSAL_SEARCH_MAX_DOCUMENTS);
+    this.universalSearchInventoryCache = inventory;
+    return inventory;
+  }
+
+  async universalSearchDocumentText(path: string, kind?: UniversalSearchDocumentKind, maxChars = 30000): Promise<string> {
+    const normalized = normalizePath(path);
+    const resolvedKind = kind ?? universalSearchDocumentKind(normalized, this.settings.memoryFolder);
+    const adapter = this.app.vault.adapter;
+    if (universalSearchProtectedContentPath(normalized)) {
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      return [
+        `Protected file: ${normalized}`,
+        `Type: ${resolvedKind}`,
+        file instanceof TFile ? `Size: ${formatFileSize(file.stat.size)}` : "",
+        "Content indexing skipped for encrypted/secret-bearing folders; explicit read remains available."
+      ].filter(Boolean).join("\n");
+    }
+    if (resolvedKind === "image") {
+      return await readImageSearchSidecarText(adapter, normalized, maxChars);
+    }
+    if (resolvedKind === "pdf" || resolvedKind === "office" || resolvedKind === "archive") {
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      if (!(file instanceof TFile)) return "";
+      if (file.stat.size > UNIVERSAL_SEARCH_MAX_BINARY_INDEX_BYTES) {
+        return [
+          `File: ${normalized}`,
+          `Type: ${resolvedKind}`,
+          `Size: ${formatFileSize(file.stat.size)}`,
+          `Content indexing skipped above ${formatFileSize(UNIVERSAL_SEARCH_MAX_BINARY_INDEX_BYTES)}; explicit read remains available.`
+        ].join("\n");
+      }
+      const buffer = await adapter.readBinary(normalized);
+      const webFile = new File([buffer], file.name, { type: mimeTypeForPath(normalized), lastModified: file.stat.mtime });
+      const parsed = await parseBinaryAttachment(webFile, maxChars);
+      return parsed.text;
+    }
+    if (!isContextTextPath(normalized)) return "";
+    const raw = await adapter.read(normalized);
+    if (resolvedKind === "session") return searchTextFromSessionSnapshot(raw, maxChars);
+    return trimContext(raw, maxChars);
+  }
+
+  async universalSearchIndexStatus(): Promise<{ indexed: number; total: number; complete: boolean; updatedAt: string; archived: number }> {
+    const index = await this.readUniversalSearchIndex();
+    const archive = await this.readCancipArchiveIndex();
+    return {
+      indexed: index.documents.filter((document) => Boolean(document.bloom)).length,
+      total: index.documents.length,
+      complete: index.complete,
+      updatedAt: index.updatedAt,
+      archived: archive.entries.length
+    };
+  }
+
+  async cancipArchiveStatus(): Promise<{
+    thresholdDays: number;
+    lastMaintenanceAt: string;
+    hotSessions: number;
+    eligibleSessions: number;
+    protectedSessions: number;
+    archivedSessions: number;
+    archivedEvents: number;
+    archivedExperience: number;
+    archivedMemory: number;
+  }> {
+    const [archive, sessions] = await Promise.all([
+      this.readCancipArchiveIndex(),
+      this.readSessionHistoryIndexForPlugin()
+    ]);
+    const cutoff = Date.now() - CANCIP_ARCHIVE_AFTER_MS;
+    const openSessionIds = new Set(
+      this.app.workspace.getLeavesOfType(VIEW_TYPE)
+        .map((leaf) => leaf.view instanceof CancipView ? leaf.view.currentSessionIdForArchive() : "")
+        .filter(Boolean)
+    );
+    let eligibleSessions = 0;
+    let protectedSessions = 0;
+    for (const entry of sessions) {
+      const protectedEntry = Boolean(entry.pinned || entry.status === "running" || this.sessionRequests.has(entry.id) || openSessionIds.has(entry.id));
+      if (protectedEntry) {
+        protectedSessions += 1;
+        continue;
+      }
+      const lastUsed = Date.parse(cancipLatestTimestamp(entry.lastOpenedAt, entry.updatedAt, entry.createdAt));
+      if (Number.isFinite(lastUsed) && lastUsed < cutoff) eligibleSessions += 1;
+    }
+    const count = (kind: CancipArchiveKind): number => archive.entries.filter((entry) => entry.kind === kind).length;
+    return {
+      thresholdDays: CANCIP_ARCHIVE_AFTER_DAYS,
+      lastMaintenanceAt: archive.lastMaintenanceAt,
+      hotSessions: sessions.length,
+      eligibleSessions,
+      protectedSessions,
+      archivedSessions: count("session"),
+      archivedEvents: count("session-events"),
+      archivedExperience: count("experience"),
+      archivedMemory: count("memory")
+    };
   }
 
   private async ensureBuiltInCurationSkill(): Promise<void> {
@@ -6561,17 +7347,29 @@ export default class CancipPlugin extends Plugin {
   }
 
   onunload(): void {
+    this.unloading = true;
+    this.universalSearchUnloaded = true;
+    this.universalSearchBuildGeneration += 1;
+    this.universalSearchBuildRequested = false;
     for (const request of this.sessionRequests.values()) request.abort();
     this.sessionRequests.clear();
     this.sessionRequestOwners.clear();
     this.startupMaintenanceCancel?.();
     this.startupMaintenanceCancel = null;
+    if (this.universalSearchBuildTimer !== null) {
+      window.clearTimeout(this.universalSearchBuildTimer);
+      this.universalSearchBuildTimer = null;
+    }
     if (this.automationRunnerCleanupTimer !== null) {
       window.clearTimeout(this.automationRunnerCleanupTimer);
       this.automationRunnerCleanupTimer = null;
     }
+    for (const timer of this.automationNewFileTimers.values()) window.clearTimeout(timer);
+    this.automationNewFileTimers.clear();
+    this.automationNewFilePaths.clear();
     this.automationRunnerLeaf = null;
     this.stopFilePinSortMode(false);
+    this.restoreNativeFilePinSortPatches();
     this.clearFilePinApplyTimer();
     this.filePinObserverHandle?.disconnect();
     this.filePinObserverHandle = null;
@@ -9837,7 +10635,7 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 - When a write/config/delete/move/execute action is needed, output the action. Confirmation/full-access mode generates the approval UI; the model should not ask "should I proceed" in prose.
 - In confirmation mode, the approval/review card waits for the user. In full access mode, implemented tools may auto-approve.
 - Review approve means apply/accept the pending AI change. Cancel rejects/restores the backed-up original. Correction sends the user's correction back to the model for another pass.
-- AI changes to ordinary visible Vault notes must be review-marked after execution and preserve the old text/version for rollback. Plugin/config/.cancip operational files do not need the same note review gate unless configured.
+- AI changes to visible Vault notes, Cancip config, Obsidian JSON config, and installed plugin main/manifest/styles/data files must be review-marked after execution and preserve the old text/version for rollback. Sessions, indexes, logs, caches, and review packages remain excluded.
 - Cancip should not prematurely say it cannot do a task. It must identify the missing bridge/API/parser or try the available command, Skill, attachment picker, or plugin command first.
 - External files outside the Vault are a capability target through user-selected attachments, share sheet, native adapter, or desktop bridge. Sensitive writes are controlled by confirmation/full-access mode.
 
@@ -9933,7 +10731,7 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 - When a write/config/delete/move/execute action is needed, output the action. Confirmation/full-access mode generates the approval UI; the model should not ask "should I proceed" in prose.
 - Confirmation mode waits for the user's approval/review card. Full access may auto-approve implemented tools.
 - Review approve means apply/accept the pending AI change. Cancel rejects/restores the backed-up original. Correction sends the user's correction back to the model for another pass.
-- AI changes to ordinary visible Vault notes must be review-marked after execution and preserve the old text/version for rollback. Plugin/config/.cancip operational files do not need the same note review gate unless configured.
+- AI changes to visible Vault notes, Cancip config, Obsidian JSON config, and installed plugin main/manifest/styles/data files must be review-marked after execution and preserve the old text/version for rollback. Sessions, indexes, logs, caches, and review packages remain excluded.
 `;
         }
         if (!nextRules.includes("## Attachments and parsers")) {
@@ -12321,7 +13119,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     await this.saveSettings();
   }
 
-  private addFilePinMenuItems(menu: Menu, file: TFile): void {
+  private addFilePinMenuItems(menu: Menu, file: TAbstractFile): void {
     const path = normalizeFilePinPath(file.path);
     const folderPath = vaultPathParent(path);
     const pinnedPaths = this.pinnedFilePaths(folderPath);
@@ -12460,8 +13258,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   async setFilePinned(path: string, pinned: boolean): Promise<FilePinState> {
     const normalized = normalizeFilePinPath(path);
     if (!normalized) throw new Error("file path is required");
-    if (pinned && !(this.app.vault.getAbstractFileByPath(normalized) instanceof TFile)) {
-      throw new Error(`file not found: ${normalized}`);
+    if (pinned && !this.app.vault.getAbstractFileByPath(normalized)) {
+      throw new Error(`file or folder not found: ${normalized}`);
     }
     return await this.mutateFilePinState((state) => {
       removePathFromFilePinFolders(state.folders, normalized);
@@ -12554,17 +13352,65 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return this.uiButtonDocuments();
   }
 
-  private requestNativeFileExplorerSort(): void {
-    for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
-      const view = leaf.view as FileExplorerViewLike;
-      try {
-        if (typeof view.requestSort === "function") view.requestSort();
-        else if (typeof view.sort === "function") view.sort();
-      } catch (error) {
-        this.recordFilePinError("native sort refresh", error);
+  private installNativeFilePinSortPatch(): void {
+    const refresh = () => {
+      const current = new Set<FileExplorerViewLike>();
+      const patchedViews: FileExplorerViewLike[] = [];
+      for (const leaf of this.app.workspace.getLeavesOfType("file-explorer")) {
+        const view = leaf.view as FileExplorerViewLike;
+        current.add(view);
+        if (this.fileExplorerSortPatches.has(view) || typeof view.getSortedFolderItems !== "function") continue;
+        const original = view.getSortedFolderItems;
+        const patched = (folder: TFolder): FileExplorerItemLike[] => {
+          const items = original.call(view, folder);
+          return this.sortNativeFileExplorerItems(folder, items);
+        };
+        view.getSortedFolderItems = patched;
+        this.fileExplorerSortPatches.set(view, { original, patched });
+        patchedViews.push(view);
       }
+      for (const [view, patch] of this.fileExplorerSortPatches) {
+        if (current.has(view)) continue;
+        if (view.getSortedFolderItems === patch.patched) view.getSortedFolderItems = patch.original;
+        this.fileExplorerSortPatches.delete(view);
+      }
+      for (const view of patchedViews) {
+        try {
+          if (typeof view.requestSort === "function") view.requestSort();
+          else if (typeof view.sort === "function") view.sort();
+        } catch (error) {
+          this.recordFilePinError("native sort patch refresh", error);
+        }
+      }
+      if (patchedViews.length) this.scheduleFilePinsApply(80);
+    };
+    refresh();
+    this.registerEvent(this.app.workspace.on("layout-change", refresh));
+    this.register(() => this.restoreNativeFilePinSortPatches());
+  }
+
+  private restoreNativeFilePinSortPatches(): void {
+    for (const [view, patch] of this.fileExplorerSortPatches) {
+      if (view.getSortedFolderItems === patch.patched) view.getSortedFolderItems = patch.original;
     }
-    this.scheduleFilePinsApply(60);
+    this.fileExplorerSortPatches.clear();
+  }
+
+  private sortNativeFileExplorerItems(folder: TFolder, items: FileExplorerItemLike[]): FileExplorerItemLike[] {
+    const folderPath = normalizeFilePinFolderPath(folder.path);
+    const configured = this.filePinSortSession?.folderPath === folderPath
+      ? this.filePinSortSession.draftOrder
+      : this.pinnedFilePaths(folderPath);
+    if (!configured.length || items.length < 2) return items;
+    const byPath = new Map(items.map((item) => [normalizeFilePinPath(item.file?.path ?? ""), item]));
+    const pinned = configured.map((path) => byPath.get(path)).filter((item): item is FileExplorerItemLike => Boolean(item));
+    if (!pinned.length) return items;
+    const pinnedSet = new Set(pinned);
+    return [...pinned, ...items.filter((item) => !pinnedSet.has(item))];
+  }
+
+  private requestNativeFileExplorerSort(): void {
+    this.scheduleFilePinsApply(0);
   }
 
   private clearFilePinApplyTimer(): void {
@@ -12593,15 +13439,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const nodeTouchesFileExplorer = (node: Node): boolean => {
       if (node.nodeType !== 1) return false;
       const element = node as HTMLElement;
-      if (element.matches(".obcc-file-pin-indicator, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-toolbar") || element.closest(".obcc-file-pin-sort-toolbar")) return false;
-      return element.matches(".nav-file, .nav-file-title, .nav-folder, .nav-folder-children, .nav-files-container")
-        || Boolean(element.querySelector(".nav-file-title[data-path], .nav-folder-children"));
+      if (element.matches(".obcc-file-pin-indicator, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-button, .obcc-file-pin-sort-toolbar") || element.closest(".obcc-file-pin-sort-toolbar")) return false;
+      const rows = element.matches(".nav-file-title[data-path], .nav-folder-title[data-path]")
+        ? [element]
+        : Array.from(element.querySelectorAll<HTMLElement>(".nav-file-title[data-path], .nav-folder-title[data-path]"));
+      return rows.some((row) => row.dataset.cancipFilePinSeen !== "true");
     };
     const onMutations = (mutations: MutationRecord[]) => {
       if (this.filePinApplying) return;
       const relevant = mutations.some((mutation) => {
         if (mutation.type === "attributes") return true;
-        return [...Array.from(mutation.addedNodes), ...Array.from(mutation.removedNodes)].some(nodeTouchesFileExplorer);
+        return Array.from(mutation.addedNodes).some(nodeTouchesFileExplorer);
       });
       if (relevant) this.scheduleFilePinsApply(45);
     };
@@ -12660,23 +13508,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private applyFilePinStateToDocument(doc: Document, state: FilePinState): void {
-    const rows = Array.from(doc.querySelectorAll<HTMLElement>(".nav-file-title[data-path]"))
+    const rows = Array.from(doc.querySelectorAll<HTMLElement>(".nav-file-title[data-path], .nav-folder-title[data-path]"))
       .filter((row) => this.isNativeFileExplorerRow(row));
-    const groups = new Map<HTMLElement, HTMLElement[]>();
-    for (const row of rows) {
-      const wrapper = row.parentElement;
-      const container = wrapper?.parentElement;
-      if (!wrapper?.hasClass("nav-file") || !container) continue;
-      const group = groups.get(container) ?? [];
-      group.push(row);
-      groups.set(container, group);
-    }
-    for (const groupRows of groups.values()) this.applyFilePinOrder(groupRows, state);
     for (const row of rows) {
       const path = normalizeFilePinPath(row.dataset.path ?? "");
       const pinned = Boolean(path && (state.folders[vaultPathParent(path)] ?? []).includes(path));
       this.setFilePinRowState(row, path, pinned);
     }
+    this.renderFilePinsPanel(doc, state);
     this.renderFilePinSortToolbar(doc);
   }
 
@@ -12685,36 +13524,93 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return leaf?.dataset.type === "file-explorer" || Boolean(row.closest(".nav-files-container"));
   }
 
-  private applyFilePinOrder(rows: HTMLElement[], state: FilePinState): void {
-    if (rows.length < 2) return;
-    const wrapperByPath = new Map<string, HTMLElement>();
-    for (const row of rows) {
-      const path = normalizeFilePinPath(row.dataset.path ?? "");
-      const wrapper = row.parentElement;
-      if (path && wrapper) wrapperByPath.set(path, wrapper);
+  private applyFilePinOrder(_rows: HTMLElement[], _state: FilePinState): void {
+    // Kept for source/runtime inventory compatibility; the pinned panel owns ordering now.
+  }
+
+  private renderFilePinsPanel(doc: Document, state: FilePinState): void {
+    const entries = Object.entries(state.folders)
+      .map(([folder, paths]) => ({
+        folder,
+        paths: paths.filter((path) => Boolean(this.app.vault.getAbstractFileByPath(path)))
+      }))
+      .filter((entry) => entry.paths.length > 0);
+    const roots = Array.from(doc.querySelectorAll<HTMLElement>(".workspace-leaf-content[data-type='file-explorer']"));
+    for (const root of roots) {
+      let panel = root.querySelector<HTMLElement>(":scope > .obcc-file-pins-panel");
+      if (!entries.length) {
+        panel?.remove();
+        continue;
+      }
+      const nativeList = root.querySelector<HTMLElement>(".nav-files-container");
+      if (!nativeList?.parentElement) continue;
+      if (!panel) {
+        panel = root.createDiv({ cls: "obcc-file-pins-panel" });
+        nativeList.parentElement.insertBefore(panel, nativeList);
+      }
+      panel.empty();
+      const total = entries.reduce((sum, entry) => sum + entry.paths.length, 0);
+      const heading = panel.createDiv({ cls: "obcc-file-pins-heading" });
+      setIcon(heading.createSpan({ cls: "obcc-file-pins-heading-icon" }), "pin");
+      heading.createSpan({ text: `${this.t("pinSession")} (${total})` });
+      for (const entry of entries) {
+        if (entries.length > 1 || entry.folder) {
+          panel.createDiv({ cls: "obcc-file-pins-group", text: entry.folder || "/" });
+        }
+        entry.paths.forEach((path, index) => {
+          const target = this.app.vault.getAbstractFileByPath(path);
+          if (!target) return;
+          const row = panel?.createDiv({ cls: "obcc-file-pin-panel-row", attr: { "data-cancip-file-pin-path": path } });
+          if (!row) return;
+          const open = row.createEl("button", {
+            cls: "obcc-file-pin-panel-open",
+            attr: { type: "button", title: path, "aria-label": path }
+          });
+          setIcon(open.createSpan({ cls: "obcc-file-pin-panel-type" }), target instanceof TFolder ? "folder" : "file");
+          open.createSpan({ cls: "obcc-file-pin-panel-name", text: target.name });
+          open.addEventListener("click", () => void this.openPinnedFileExplorerItem(target));
+          const controls = row.createDiv({ cls: "obcc-file-pin-panel-controls" });
+          const addControl = (icon: string, label: string, disabled: boolean, action: () => void) => {
+            const button = controls.createEl("button", {
+              cls: "clickable-icon",
+              attr: { type: "button", title: label, "aria-label": label, ...(disabled ? { disabled: "true" } : {}) }
+            });
+            setIcon(button, icon);
+            button.addEventListener("click", (event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!disabled) action();
+            });
+          };
+          addControl("chevron-up", this.t("filePinMoveUp"), index === 0, () => {
+            void this.movePinnedFile(path, -1).catch((error) => this.recordFilePinError("panel move up", error, true));
+          });
+          addControl("chevron-down", this.t("filePinMoveDown"), index === entry.paths.length - 1, () => {
+            void this.movePinnedFile(path, 1).catch((error) => this.recordFilePinError("panel move down", error, true));
+          });
+          addControl("pin-off", this.t("filePinUnpin"), false, () => {
+            void this.setFilePinned(path, false)
+              .then(() => new Notice(this.t("filePinUnpinned", { path })))
+              .catch((error) => this.recordFilePinError("panel unpin", error, true));
+          });
+        });
+      }
     }
-    const mountedPaths = [...wrapperByPath.keys()];
-    const folder = vaultPathParent(mountedPaths[0] ?? "");
-    if (mountedPaths.some((path) => vaultPathParent(path) !== folder)) return;
-    const pinned = (state.folders[folder] ?? []).filter((path) => wrapperByPath.has(path));
-    if (!pinned.length) return;
-    const pinnedSet = new Set(pinned);
-    const current = rows.map((row) => normalizeFilePinPath(row.dataset.path ?? "")).filter(Boolean);
-    const desired = [...pinned, ...current.filter((path) => !pinnedSet.has(path))];
-    if (sameStringArray(current, desired)) return;
-    const container = rows[0].parentElement?.parentElement;
-    if (!container) return;
-    const firstUnpinned = current.find((path) => !pinnedSet.has(path));
-    const lastWrapper = wrapperByPath.get(current[current.length - 1] ?? "");
-    const anchor = firstUnpinned ? wrapperByPath.get(firstUnpinned) ?? null : lastWrapper?.nextSibling ?? null;
-    for (const path of pinned) {
-      const wrapper = wrapperByPath.get(path);
-      if (wrapper) container.insertBefore(wrapper, anchor);
+  }
+
+  private async openPinnedFileExplorerItem(target: TAbstractFile): Promise<void> {
+    if (target instanceof TFile) {
+      await this.app.workspace.getLeaf(false).openFile(target);
+      return;
     }
+    if (!(target instanceof TFolder)) return;
+    const view = this.app.workspace.getLeavesOfType("file-explorer")[0]?.view as FileExplorerViewLike | undefined;
+    await view?.revealInFolder?.(target);
   }
 
   private setFilePinRowState(row: HTMLElement, path: string, pinned: boolean): void {
     const wrapper = row.parentElement;
+    row.dataset.cancipFilePinSeen = "true";
     row.toggleClass("is-cancip-file-pinned", pinned);
     wrapper?.toggleClass("is-cancip-file-pinned", pinned);
     if (pinned) {
@@ -12726,16 +13622,36 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
     } else {
       delete row.dataset.cancipFilePinned;
-      row.querySelectorAll(":scope > .obcc-file-pin-indicator, :scope > .obcc-file-pin-sort-handle").forEach((element) => element.remove());
+      row.querySelectorAll(":scope > .obcc-file-pin-indicator, :scope > .obcc-file-pin-sort-handle, :scope > .obcc-file-pin-sort-button").forEach((element) => element.remove());
     }
     const sortable = Boolean(pinned && this.filePinSortSession?.folderPath === vaultPathParent(path));
     row.toggleClass("is-cancip-file-pin-sortable", sortable);
     if (sortable) this.ensureFilePinSortHandle(row, path);
-    else row.querySelectorAll(":scope > .obcc-file-pin-sort-handle").forEach((element) => element.remove());
+    else row.querySelectorAll(":scope > .obcc-file-pin-sort-handle, :scope > .obcc-file-pin-sort-button").forEach((element) => element.remove());
   }
 
   private ensureFilePinSortHandle(row: HTMLElement, path: string): void {
     if (row.querySelector(":scope > .obcc-file-pin-sort-handle")) return;
+    const addNudgeButton = (direction: -1 | 1): void => {
+      const label = this.t(direction < 0 ? "filePinMoveUp" : "filePinMoveDown");
+      const button = row.createEl("button", {
+        cls: `obcc-file-pin-sort-button clickable-icon ${direction < 0 ? "is-up" : "is-down"}`,
+        attr: { type: "button", title: label, "aria-label": label }
+      });
+      setIcon(button, direction < 0 ? "chevron-up" : "chevron-down");
+      button.addEventListener("pointerdown", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (!this.nudgeFilePinSortDraft(path, direction)) return;
+        void this.commitFilePinSortDraft();
+      });
+    };
+    addNudgeButton(-1);
+    addNudgeButton(1);
     const handle = row.createEl("button", {
       cls: "obcc-file-pin-sort-handle clickable-icon",
       attr: {
@@ -12769,7 +13685,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const session = this.filePinSortSession;
       if (!session?.draggingPath || !handle.hasPointerCapture(event.pointerId)) return;
       this.autoScrollFilePinContainer(row, event.clientY);
-      const target = row.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(".nav-file-title[data-cancip-file-pinned='true']");
+      const target = row.ownerDocument.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>(".nav-file-title[data-cancip-file-pinned='true'], .nav-folder-title[data-cancip-file-pinned='true']");
       const targetPath = normalizeFilePinPath(target?.dataset.path ?? "");
       if (targetPath && targetPath !== session.draggingPath && vaultPathParent(targetPath) === session.folderPath) {
         const before = event.clientY < (target?.getBoundingClientRect().top ?? 0) + (target?.getBoundingClientRect().height ?? 0) / 2;
@@ -12836,7 +13752,22 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     next.splice(targetIndex + (before ? 0 : 1), 0, draggingPath);
     if (sameStringArray(next, session.draftOrder)) return;
     session.draftOrder = next;
-    this.scheduleFilePinsApply(0);
+    this.requestNativeFileExplorerSort();
+  }
+
+  private nudgeFilePinSortDraft(path: string, direction: -1 | 1): boolean {
+    const session = this.filePinSortSession;
+    if (!session) return false;
+    const from = session.draftOrder.indexOf(path);
+    if (from < 0) return false;
+    const to = Math.max(0, Math.min(session.draftOrder.length - 1, from + direction));
+    if (to === from) return false;
+    const next = [...session.draftOrder];
+    next.splice(from, 1);
+    next.splice(to, 0, path);
+    session.draftOrder = next;
+    this.requestNativeFileExplorerSort();
+    return true;
   }
 
   private autoScrollFilePinContainer(row: HTMLElement, clientY: number): void {
@@ -12875,7 +13806,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       draggingPath: "",
       cleanup: () => {
         for (const doc of this.filePinDocuments()) {
-          doc.querySelectorAll(".obcc-file-pin-sort-toolbar, .obcc-file-pin-sort-handle").forEach((element) => element.remove());
+          doc.querySelectorAll(".obcc-file-pin-sort-toolbar, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-button").forEach((element) => element.remove());
           doc.querySelectorAll<HTMLElement>(".is-cancip-file-pin-sortable, .is-cancip-file-pin-dragging").forEach((element) => {
             element.removeClass("is-cancip-file-pin-sortable", "is-cancip-file-pin-dragging");
           });
@@ -12942,10 +13873,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private clearFilePinDom(): void {
     for (const doc of this.filePinDocuments()) {
-      doc.querySelectorAll(".obcc-file-pin-indicator, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-toolbar").forEach((element) => element.remove());
-      doc.querySelectorAll<HTMLElement>(".is-cancip-file-pinned, .is-cancip-file-pin-sortable, .is-cancip-file-pin-dragging").forEach((element) => {
-        element.removeClass("is-cancip-file-pinned", "is-cancip-file-pin-sortable", "is-cancip-file-pin-dragging");
+      doc.querySelectorAll(".obcc-file-pin-indicator, .obcc-file-pin-sort-handle, .obcc-file-pin-sort-button, .obcc-file-pin-sort-toolbar, .obcc-file-pins-panel").forEach((element) => element.remove());
+      doc.querySelectorAll<HTMLElement>(".is-cancip-file-pin-container").forEach((element) => element.removeClass("is-cancip-file-pin-container"));
+      doc.querySelectorAll<HTMLElement>("[data-cancip-file-pin-seen], .is-cancip-file-pinned, .is-cancip-file-pin-sortable, .is-cancip-file-pin-dragging, .is-cancip-file-pin-ordered").forEach((element) => {
+        element.removeClass("is-cancip-file-pinned", "is-cancip-file-pin-sortable", "is-cancip-file-pin-dragging", "is-cancip-file-pin-ordered");
+        element.style.removeProperty("--obcc-file-pin-order");
         delete element.dataset.cancipFilePinned;
+        delete element.dataset.cancipFilePinSeen;
       });
     }
   }
@@ -14312,6 +15246,115 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
   }
 
+  private async resumeInterruptedSessionsOnStartup(): Promise<void> {
+    const now = Date.now();
+    const runningEntries = (await this.readSessionHistoryIndexForPlugin())
+      .filter((entry) => {
+        if (entry.eventOnly || entry.archived || entry.coldArchived || entry.status !== "running") return false;
+        if (this.sessionRequests.has(entry.id)) return false;
+        const updated = Date.parse(entry.updatedAt || entry.createdAt);
+        return Number.isFinite(updated) && now - updated <= 24 * 60 * 60 * 1000;
+      })
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+    if (!runningEntries.length) return;
+    const tasks = await this.loadAutomations();
+    const candidates: Array<{ entry: SessionHistoryEntry; automationTaskId: string; notifyMode: AutomationNotifyMode }> = [];
+    const seen = new Set<string>();
+    for (const entry of runningEntries) {
+      const automation = await this.interruptedSessionAutomationInfo(entry, tasks);
+      const key = automation.id ? `automation:${automation.id}` : `session:${entry.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      candidates.push({ entry, automationTaskId: automation.id, notifyMode: automation.notifyMode });
+      if (candidates.length >= 3) break;
+    }
+    if (!candidates.length) return;
+    const view = await this.getAutomationRunnerView();
+    if (!view) return;
+    for (const candidate of candidates) {
+      const { entry } = candidate;
+      if (this.sessionRequests.has(entry.id)) continue;
+      const result = await view.resumeInterruptedSession(entry, candidate.automationTaskId, candidate.notifyMode);
+      if (!result.resumed) continue;
+      if (result.automationTaskId) {
+        const ok = result.status === "completed" || result.status === "idle";
+        await this.markAutomationRun(
+          result.automationTaskId,
+          ok,
+          result.status === "idle" ? `Resumed ${entry.id}; waiting for approval or review` : `Resumed ${entry.id}: ${result.status}`,
+          entry.path
+        );
+      }
+    }
+  }
+
+  private async interruptedSessionAutomationInfo(
+    entry: SessionHistoryEntry,
+    tasks: AutomationTask[]
+  ): Promise<{ id: string; notifyMode: AutomationNotifyMode }> {
+    let snapshot: Record<string, unknown> | null = null;
+    try {
+      snapshot = JSON.parse(await this.app.vault.adapter.read(entry.path)) as Record<string, unknown>;
+    } catch {
+      snapshot = null;
+    }
+    const explicitId = snapshot && typeof snapshot.automationTaskId === "string" ? snapshot.automationTaskId.trim() : "";
+    const explicitTask = explicitId ? tasks.find((task) => task.id === explicitId) : undefined;
+    if (explicitId) {
+      return {
+        id: explicitId,
+        notifyMode: explicitTask?.notifyMode ?? (snapshot && isAutomationNotifyMode(snapshot.automationNotifyMode) ? snapshot.automationNotifyMode : "inherit")
+      };
+    }
+    const firstUser = snapshot && Array.isArray(snapshot.messages)
+      ? snapshot.messages.find((message) => isRecord(message) && message.role === "user")
+      : null;
+    const text = `${entry.title}\n${isRecord(firstUser) && typeof firstUser.content === "string" ? firstUser.content : ""}`;
+    const matched = tasks.find((task) => text.includes(task.title));
+    return matched ? { id: matched.id, notifyMode: matched.notifyMode } : { id: "", notifyMode: "inherit" };
+  }
+
+  private queueNewFileAutomations(rawPath: string): void {
+    if (!this.settings.automationsEnabled) return;
+    if (this.activeAiVaultMutationCapture()) return;
+    const path = normalizePath(rawPath.replace(/\\/g, "/"));
+    if (!path || isAutomationInternalPath(path, this.obsidianConfigDir())) return;
+    void this.loadAutomations().then((tasks) => {
+      for (const task of tasks) {
+        if (!task.enabled || !task.watchNewFiles || !automationNewFilePathMatches(task, path)) continue;
+        const paths = this.automationNewFilePaths.get(task.id) ?? new Set<string>();
+        if (paths.size < AUTOMATION_NEW_FILE_MAX_BATCH) paths.add(path);
+        this.automationNewFilePaths.set(task.id, paths);
+        const existing = this.automationNewFileTimers.get(task.id);
+        if (existing !== undefined) window.clearTimeout(existing);
+        const timer = window.setTimeout(() => {
+          this.automationNewFileTimers.delete(task.id);
+          void this.flushNewFileAutomation(task.id);
+        }, Math.max(1, task.newFileDebounceSeconds) * 1000);
+        this.automationNewFileTimers.set(task.id, timer);
+      }
+    }).catch((error) => console.warn("Cancip new-file automation routing failed", error));
+  }
+
+  private async flushNewFileAutomation(taskId: string): Promise<void> {
+    const paths = [...(this.automationNewFilePaths.get(taskId) ?? [])];
+    if (!paths.length) return;
+    if (this.automationRunningIds.has(taskId)) {
+      const timer = window.setTimeout(() => {
+        this.automationNewFileTimers.delete(taskId);
+        void this.flushNewFileAutomation(taskId);
+      }, 5000);
+      this.automationNewFileTimers.set(taskId, timer);
+      return;
+    }
+    this.automationNewFilePaths.delete(taskId);
+    try {
+      await this.runAutomationById(taskId, { trigger: "new-file", paths });
+    } catch (error) {
+      console.warn("Cancip new-file automation failed", taskId, error);
+    }
+  }
+
   async loadAutomations(force = false): Promise<AutomationTask[]> {
     const cache = this.automationStateCache;
     if (!force && cache && Date.now() - cache.at < AUTOMATION_STATE_CACHE_TTL_MS) return cache.tasks;
@@ -14374,6 +15417,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             prompt: template.prompt?.trim() || task.prompt,
             command: template.command,
             args: template.args,
+            watchNewFiles: template.watchNewFiles ?? task.watchNewFiles,
+            newFilePattern: template.newFilePattern ?? task.newFilePattern,
+            newFileDebounceSeconds: template.newFileDebounceSeconds ?? task.newFileDebounceSeconds,
+            notifyMode: template.notifyMode ?? task.notifyMode,
             updatedAt: new Date().toISOString()
           };
         }
@@ -14426,6 +15473,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           intervalMinutes: template.intervalMinutes,
           hour: template.hour,
           minute: template.minute,
+          watchNewFiles: template.watchNewFiles,
+          newFilePattern: template.newFilePattern,
+          newFileDebounceSeconds: template.newFileDebounceSeconds,
+          notifyMode: template.notifyMode,
           createdAt: now,
           updatedAt: now
         }))
@@ -14465,6 +15516,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       sessionMode: isAutomationSessionMode(action.sessionMode) ? action.sessionMode : existing?.sessionMode ?? "current",
       sessionId: typeof action.sessionId === "string" ? action.sessionId.trim() : existing?.sessionId,
       condition: typeof action.condition === "string" ? action.condition.trim() : existing?.condition,
+      watchNewFiles: typeof action.watchNewFiles === "boolean" ? action.watchNewFiles : existing?.watchNewFiles ?? false,
+      newFilePattern: typeof action.newFilePattern === "string" ? action.newFilePattern.trim() || undefined : existing?.newFilePattern,
+      newFileDebounceSeconds: typeof action.newFileDebounceSeconds === "number" ? action.newFileDebounceSeconds : existing?.newFileDebounceSeconds,
+      notifyMode: isAutomationNotifyMode(action.notifyMode) ? action.notifyMode : existing?.notifyMode ?? "inherit",
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
       lastRunAt: existing?.lastRunAt,
@@ -14706,7 +15761,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private async captureAiVaultPathBefore(state: AiVaultMutationCaptureState, rawPath: string): Promise<void> {
     const path = normalizePath(rawPath.replace(/\\/g, "/"));
-    if (!path || isConfigOrRuntimeVaultPath(path, this.obsidianConfigDir())) return;
+    if (!path || (isConfigOrRuntimeVaultPath(path, this.obsidianConfigDir()) && !isReviewableOperationalPath(path, this.obsidianConfigDir()))) return;
     const adapter = this.app.vault.adapter;
     let stat: Awaited<ReturnType<DataAdapter["stat"]>>;
     try {
@@ -14729,7 +15784,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     state.before.set(path, { path, text, exists: true });
   }
 
-  async runAutomationById(id: string, options: { trigger?: "manual" | "scheduled" } = {}): Promise<AutomationRunResult> {
+  async runAutomationById(id: string, options: { trigger?: "manual" | "scheduled" | "new-file"; paths?: string[] } = {}): Promise<AutomationRunResult> {
     const tasks = await this.loadAutomations();
     const task = tasks.find((item) => item.id === id);
     if (!task) throw new Error(this.t("automationNotFound", { id }));
@@ -14739,6 +15794,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     let capture: AiVaultMutationCaptureHandle | null = null;
     let curationPack = "";
     let curationPaths: string[] = [];
+    const triggerPaths = uniqueStrings((options.paths ?? []).map((path) => normalizePath(path.replace(/\\/g, "/"))).filter(Boolean));
+    const eventContext = triggerPaths.length
+      ? [
+        "Automation event: newly created files.",
+        "Only use these paths as the event scope unless the task explicitly requires a broader read:",
+        ...triggerPaths.map((path) => `- ${path}`)
+      ].join("\n")
+      : "";
+    const executionTask: AutomationTask = triggerPaths.length
+      ? { ...task, args: { ...(task.args ?? {}), trigger: "new-file", paths: triggerPaths, path: triggerPaths[0] } }
+      : task;
     const finishCapture = async (): Promise<void> => {
       if (!capture) return;
       await this.settleAiVaultMutationCapture(capture, 5000, 9000, 300);
@@ -14759,19 +15825,18 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           return { ok: true, text: "" };
         }
       }
-      const targetSessionId = await this.persistForegroundAutomationSession(task);
-      await view.prepareAutomationSession(task, targetSessionId);
+      const targetSessionId = await this.persistForegroundAutomationSession(executionTask);
+      await view.prepareAutomationSession(executionTask, targetSessionId);
       if (options.trigger !== "scheduled") new Notice(this.t("automationStarted", { title: task.title }));
       capture = this.beginAiVaultMutationCapture(`automation:${task.id}:${task.title}`);
       if (task.command) await this.primeAiVaultMutationCaptureReviewScope(capture);
-      const result = task.command
-        ? await view.runAutomationCommand(task)
-        : await view.runAutomationPrompt(task, curationPack);
+      const result = executionTask.command
+        ? await view.runAutomationCommand(executionTask, eventContext)
+        : await view.runAutomationPrompt(executionTask, [curationPack, eventContext].filter(Boolean).join("\n\n---\n\n"));
       await finishCapture();
       if (curationPaths.length) await view.completeVaultCurationNewFiles(curationPaths);
       const resultPath = await this.writeAutomationLog(task, result);
       await this.markAutomationRun(task.id, true, trimContext(result, 600), resultPath);
-      if (options.trigger !== "scheduled") new Notice(this.t("automationDone", { title: task.title }));
       return { ok: true, text: result, path: resultPath };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
@@ -14849,7 +15914,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         const profile = task.apiProfileId ? `, profile:${task.apiProfileId}` : "";
         const model = task.model ? `, model:${task.model}` : ", model:current";
         const condition = task.condition ? `, condition:${trimContext(task.condition, 80)}` : "";
-        return `- ${task.id}: ${task.title} [${status}, ${formatAutomationSchedule(task)}, ${mode}, ${session}${profile}${model}${condition}${last}]`;
+        const fileTrigger = task.watchNewFiles ? `, new-file:${task.newFilePattern || "**/*"}/${task.newFileDebounceSeconds}s` : "";
+        const notify = task.notifyMode !== "inherit" ? `, notify:${task.notifyMode}` : "";
+        return `- ${task.id}: ${task.title} [${status}, ${formatAutomationSchedule(task)}, ${mode}, ${session}${profile}${model}${fileTrigger}${notify}${condition}${last}]`;
       })
       .join("\n");
   }
@@ -14885,6 +15952,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (!settings.obsidianNoticesEnabled) return;
     if (input.kind === "completed" && !settings.obsidianNoticeOnSessionComplete) return;
     if (input.kind !== "completed" && !settings.obsidianNoticeOnUserAttention) return;
+    if (this.notificationRecentlySent(`ob:${input.kind}:${input.sessionId}:${input.summary}`)) return;
 
     const titleKey: Record<ObsidianNoticeKind, I18nKey> = {
       completed: "obNoticeSessionCompleted",
@@ -14895,9 +15963,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const shortId = input.sessionId.replace(/^session-/, "").replace(/Z$/, "").slice(0, 19) || input.sessionId;
     const lines = [
       this.t(titleKey[input.kind]),
-      input.title && input.title !== input.sessionId ? input.title : "",
-      trimContext(redactSensitiveText(input.summary || input.sessionId).replace(/\s+/g, " ").trim(), 650),
-      `${this.t("sessionIdLabel")}: ${shortId}`
+      input.title && input.title !== input.sessionId ? trimContext(input.title, 90) : "",
+      trimContext(redactSensitiveText(input.summary || input.sessionId).trim(), 460),
+      `会话｜${shortId}`
     ].filter(Boolean);
     const notice = new Notice(lines.join("\n"), input.kind === "approval" ? 15000 : 10000);
     const noticeEl = (notice as unknown as { noticeEl?: HTMLElement }).noticeEl;
@@ -14934,17 +16002,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (input.status === "completed" && !settings.ntfyOnSessionComplete) return;
     if (input.status === "failed" && !settings.ntfyOnSessionFail) return;
     if (input.status !== "completed" && input.status !== "failed") return;
+    if (this.notificationRecentlySent(`ntfy:${input.status}:${input.sessionId}:${input.summary}`)) return;
     const topic = settings.ntfyTopic.trim().replace(/^\/+|\/+$/g, "");
     if (!topic) return;
     const base = (settings.ntfyServerUrl.trim() || DEFAULT_SETTINGS.ntfyServerUrl).replace(/\/+$/, "");
     const statusLabel = input.status === "completed" ? this.t("sessionCompleted") : this.t("sessionFailed");
+    const shortId = input.sessionId.replace(/^session-/, "").replace(/Z$/, "").slice(0, 19) || input.sessionId;
     const body = [
-      `${statusLabel}: ${input.title || input.sessionId}`,
-      "",
-      trimContext(input.summary || input.sessionId, 900),
-      "",
-      `${this.t("sessionIdLabel")}: ${input.sessionId}`
-    ].join("\n");
+      input.title && input.title !== input.sessionId ? `会话｜${trimContext(redactSensitiveText(input.title), 90)}` : "",
+      trimContext(redactSensitiveText(input.summary || input.sessionId), 520),
+      `编号｜${shortId}`
+    ].filter(Boolean).join("\n");
     const headers: Record<string, string> = {
       Title: `Cancip ${statusLabel}`,
       Tags: input.status === "completed" ? "white_check_mark" : "warning",
@@ -14967,6 +16035,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       console.warn("Cancip ntfy notification failed", error);
       new Notice(this.t("ntfyFailed", { reason }));
     }
+  }
+
+  private notificationRecentlySent(signature: string, ttlMs = 45000): boolean {
+    const now = Date.now();
+    for (const [key, at] of this.recentNotificationSignatures) {
+      if (now - at > ttlMs) this.recentNotificationSignatures.delete(key);
+    }
+    const normalized = trimContext(redactSensitiveText(signature).replace(/\s+/g, " ").trim(), 900);
+    const previous = this.recentNotificationSignatures.get(normalized) ?? 0;
+    this.recentNotificationSignatures.set(normalized, now);
+    return now - previous <= ttlMs;
   }
 
   private chatLeaves(): WorkspaceLeaf[] {
@@ -15029,6 +16108,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private handleCancipVaultFileChanged(path: string): void {
     const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/"));
+    if (shouldIndexUniversalSearchPath(normalized, this.obsidianConfigDir())) {
+      this.universalSearchIndexCache = null;
+      this.universalSearchInventoryCache = null;
+      this.scheduleUniversalSearchBuild(900);
+    }
     const kinds = cancipVaultSyncKindsForPath(normalized, this.settings);
     if (!kinds.size) return;
     if (kinds.has("automations")) {
@@ -15556,7 +16640,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       ? [...this.sessionRequestOwners.values()].some((owner) => owner === runner)
       : false;
     if (this.automationRunningIds.size || runnerBusy) return false;
+    if (this.automationRunnerCleanupTimer !== null) {
+      window.clearTimeout(this.automationRunnerCleanupTimer);
+      this.automationRunnerCleanupTimer = null;
+    }
     this.automationRunnerLeaf = null;
+    for (const leaf of leaves) leaf.detach();
     return true;
   }
 
@@ -16483,6 +17572,7 @@ class CancipView extends ItemView {
   private resolvedActionPathAliases = new Map<string, string>();
   private vaultAttachmentTextCache = new Map<string, VaultAttachmentParseCacheEntry>();
   private activeAutomationTaskId = "";
+  private activeAutomationNotifyMode: AutomationNotifyMode = "inherit";
   private skillCache: { at: number; skills: CancipSkill[] } | null = null;
   private userPinnedScroll = false;
   private autoFollowMessages = true;
@@ -16521,6 +17611,8 @@ class CancipView extends ItemView {
   private headerMenuLoadId = 0;
   private includeCurrentFileForSession: boolean;
   private resumableTask: ResumableTaskState | null = null;
+  private resumableAutomationTaskId = "";
+  private resumableAutomationNotifyMode: AutomationNotifyMode = "inherit";
   private initialSessionRestoreDone = false;
   private diskSessionRefreshIds = new Set<string>();
   private liveSessionSaveTimer: number | null = null;
@@ -16536,6 +17628,10 @@ class CancipView extends ItemView {
     super(leaf);
     this.includeCurrentFileForSession = plugin.settings.includeCurrentFile;
     this.installRuntimeTestApi();
+  }
+
+  currentSessionIdForArchive(): string {
+    return this.sessionId;
   }
 
   private installRuntimeTestApi(): void {
@@ -16808,6 +17904,29 @@ class CancipView extends ItemView {
     await this.saveCurrentSession();
   }
 
+  async resumeInterruptedSession(
+    entry: SessionHistoryEntry,
+    automationTaskId = "",
+    automationNotifyMode: AutomationNotifyMode = "inherit"
+  ): Promise<{
+    resumed: boolean;
+    status: NonNullable<SessionHistoryEntry["status"]>;
+    automationTaskId: string;
+  }> {
+    if (this.activeRequest) return { resumed: false, status: "running", automationTaskId: "" };
+    const loaded = await this.loadSessionHistoryEntry(entry, { saveCurrent: false, focusInput: false, markRead: false });
+    if (!loaded || !this.resumableTask) {
+      return { resumed: false, status: this.currentSessionStatus, automationTaskId: "" };
+    }
+    if (automationTaskId) {
+      this.resumableAutomationTaskId = automationTaskId;
+      this.resumableAutomationNotifyMode = automationNotifyMode;
+    }
+    const resumedAutomationTaskId = this.resumableAutomationTaskId;
+    await this.resumeLastTask();
+    return { resumed: true, status: this.currentSessionStatus, automationTaskId: resumedAutomationTaskId };
+  }
+
   async onOpen(): Promise<void> {
     this.render();
     if (this.isBackgroundAutomationRunner()) return;
@@ -16876,6 +17995,9 @@ class CancipView extends ItemView {
     this.sessionStoppedAt = "";
     this.sessionFailedAt = "";
     this.activeAutomationTaskId = "";
+    this.activeAutomationNotifyMode = "inherit";
+    this.resumableAutomationTaskId = "";
+    this.resumableAutomationNotifyMode = "inherit";
     this.messages = [];
     this.sessionTitleOverride = "";
     this.parentSessionId = "";
@@ -17525,6 +18647,19 @@ class CancipView extends ItemView {
     this.sendButtonEl = sendButton;
     setIcon(sendButton, "arrow-up");
     rightControls.appendChild(sendButton);
+    let mobilePointerSubmitAt = 0;
+    sendButton.addEventListener("pointerdown", (event) => {
+      if (!Platform.isMobile || (event.pointerType === "mouse" && event.button !== 0)) return;
+      mobilePointerSubmitAt = Date.now();
+      event.preventDefault();
+      event.stopPropagation();
+      void this.submit();
+    });
+    sendButton.addEventListener("click", (event) => {
+      if (!Platform.isMobile || Date.now() - mobilePointerSubmitAt > 800) return;
+      event.preventDefault();
+      event.stopPropagation();
+    });
 
     this.inputEl.addEventListener("input", () => {
       this.resizeInput();
@@ -18811,7 +19946,12 @@ class CancipView extends ItemView {
     const loadingEl = this.headerMenuEl.createDiv({ cls: "obcc-mention-empty", text: this.t("preparingContext") });
     await sleep(0);
     if (loadId !== this.headerMenuLoadId || this.activeHeaderMenu !== "history" || !this.headerMenuEl || this.headerMenuEl.hasClass("is-hidden")) return;
-    const entries = await this.readSessionHistoryIndex({ mergeFiles: false });
+    const [hotEntries, coldEntries] = await Promise.all([
+      this.readSessionHistoryIndex({ force: true, mergeFiles: false }),
+      this.plugin.coldArchivedSessionEntries()
+    ]);
+    const hotIds = new Set(hotEntries.map((entry) => entry.id));
+    const entries = [...hotEntries, ...coldEntries.filter((entry) => !hotIds.has(entry.id))].sort(compareSessionHistoryEntries);
     if (loadId !== this.headerMenuLoadId || this.activeHeaderMenu !== "history" || !this.headerMenuEl || this.headerMenuEl.hasClass("is-hidden")) return;
     loadingEl.remove();
     if (!entries.length) {
@@ -18957,16 +20097,32 @@ class CancipView extends ItemView {
       }
       if (!isChild) {
         this.createHistoryActionButton(actions, entry.pinned ? "pin-off" : "pin", entry.pinned ? this.t("unpinSession") : this.t("pinSession"), () => {
-          void this.updateSessionHistoryEntry(entry.id, { pinned: !entry.pinned });
+          void (async () => {
+            const target = entry.coldArchived ? await this.plugin.restoreColdSession(entry.id) : entry;
+            await this.updateSessionHistoryEntry(target.id, { pinned: !entry.pinned });
+          })();
         });
         this.createHistoryActionButton(actions, "pencil", this.t("renameSession"), () => {
-          void this.renameSessionHistoryEntry(entry);
+          void (async () => {
+            const target = entry.coldArchived ? await this.plugin.restoreColdSession(entry.id) : entry;
+            await this.renameSessionHistoryEntry(target);
+          })();
         });
         this.createHistoryActionButton(actions, entry.archived ? "archive-restore" : "archive", entry.archived ? this.t("unarchiveSession") : this.t("archiveSession"), () => {
-          void this.updateSessionHistoryEntry(entry.id, { archived: !entry.archived });
+          void (async () => {
+            if (entry.coldArchived) {
+              await this.plugin.restoreColdSession(entry.id);
+              await this.openHistoryMenu();
+              return;
+            }
+            await this.updateSessionHistoryEntry(entry.id, { archived: !entry.archived });
+          })();
         });
         this.createHistoryActionButton(actions, "bell", this.t("markSessionUnread"), () => {
-          void this.updateSessionHistoryEntry(entry.id, { unread: true, completedNotice: true });
+          void (async () => {
+            const target = entry.coldArchived ? await this.plugin.restoreColdSession(entry.id) : entry;
+            await this.updateSessionHistoryEntry(target.id, { unread: true, completedNotice: true });
+          })();
         });
       }
       if (!isEditing) {
@@ -19099,7 +20255,7 @@ class CancipView extends ItemView {
 
   private async updateSessionHistoryEntry(id: string, patch: SessionHistoryEntryPatch): Promise<void> {
     try {
-      const index = (await this.readSessionHistoryIndex()).filter((item) => !item.eventOnly);
+      const index = (await this.readSessionHistoryIndex({ force: true })).filter((item) => !item.eventOnly);
       const existing = index.find((entry) => entry.id === id);
       if (!existing) return;
       const next: SessionHistoryEntry = {
@@ -19174,6 +20330,9 @@ class CancipView extends ItemView {
       if (typeof patch.failedAt === "string") snapshot.failedAt = patch.failedAt;
       if (typeof patch.pinned === "boolean") snapshot.pinned = patch.pinned;
       if (typeof patch.archived === "boolean") snapshot.archived = patch.archived;
+      if (typeof patch.coldArchived === "boolean") snapshot.coldArchived = patch.coldArchived;
+      if (typeof patch.archivedAt === "string") snapshot.archivedAt = patch.archivedAt;
+      if (typeof patch.lastOpenedAt === "string") snapshot.lastOpenedAt = patch.lastOpenedAt;
       if (typeof patch.manualOrder === "number" && Number.isFinite(patch.manualOrder)) snapshot.manualOrder = patch.manualOrder;
       if (typeof patch.parentSessionId === "string") snapshot.parentSessionId = patch.parentSessionId;
       if (typeof patch.parentSessionTitle === "string") snapshot.parentSessionTitle = patch.parentSessionTitle;
@@ -20422,6 +21581,8 @@ class CancipView extends ItemView {
         return await this.plugin.openSessionInAdditionalView(entry);
       }
       if (options.saveCurrent !== false) await this.saveCurrentSession();
+      if (entry.coldArchived) entry = await this.plugin.restoreColdSession(entry.id);
+      const lastOpenedAt = new Date().toISOString();
       const raw = await this.app.vault.adapter.read(entry.path);
       const snapshot = JSON.parse(raw) as unknown;
       if (!isRecord(snapshot) || !Array.isArray(snapshot.messages)) throw new Error("Invalid session file");
@@ -20456,6 +21617,8 @@ class CancipView extends ItemView {
       this.mode = normalizeComposerMode(snapshot.mode) ?? normalizeComposerMode(entry.mode) ?? "ask";
       this.taskControl = this.normalizeTaskControlState(snapshot.taskControl);
       this.resumableTask = normalizeResumableTask(snapshot.resumableTask);
+      const snapshotAutomationTaskId = typeof snapshot.automationTaskId === "string" ? snapshot.automationTaskId.trim() : "";
+      const snapshotAutomationNotifyMode = isAutomationNotifyMode(snapshot.automationNotifyMode) ? snapshot.automationNotifyMode : "inherit";
       this.draftContext = Array.isArray(snapshot.draftContext)
         ? snapshot.draftContext
             .filter(isRecord)
@@ -20486,6 +21649,8 @@ class CancipView extends ItemView {
       if (!this.resumableTask && staleRunning) {
         this.resumableTask = this.resumableTaskFromMessages("stopped", "loaded stale running session");
       }
+      this.resumableAutomationTaskId = this.resumableTask ? snapshotAutomationTaskId : "";
+      this.resumableAutomationNotifyMode = this.resumableTask ? snapshotAutomationNotifyMode : "inherit";
       this.hiddenContextKeys.clear();
       this.syncCurrentFileHiddenState();
       this.detailsOpenState.clear();
@@ -20506,9 +21671,11 @@ class CancipView extends ItemView {
         const owner = this.plugin.sessionRequestOwner(entry.id);
         if (owner) void owner.broadcastLiveSessionNow();
       }
-      if (options.markRead !== false) {
-        await this.updateSessionHistoryEntry(entry.id, { unread: false, completedNotice: false, ...(staleRunning ? { status: "stopped" as const } : {}) });
-      }
+      await this.updateSessionHistoryEntry(entry.id, {
+        lastOpenedAt,
+        ...(options.markRead !== false ? { unread: false, completedNotice: false } : {}),
+        ...(staleRunning ? { status: "stopped" as const } : {})
+      });
       if (actuallyRunning && this.ownsSessionRequest(entry.id)) {
         void this.updateCurrentSessionStatus("running", false);
       } else if (loadedStatus === "completed" || loadedStatus === "failed" || loadedStatus === "stopped") {
@@ -20600,8 +21767,18 @@ class CancipView extends ItemView {
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     const latest = entries[0];
     if (!latest) return false;
+    const wasInterrupted = latest.status === "running";
     const loaded = await this.loadSessionHistoryEntry(latest, { saveCurrent: false, focusInput: false, status: this.t("lastSessionRestored") });
-    if (loaded) await this.recordSessionEvent({ kind: "session.open", status: this.currentSessionStatus, detail: `restored ${latest.id}` });
+    if (loaded) {
+      await this.recordSessionEvent({ kind: "session.open", status: this.currentSessionStatus, detail: `restored ${latest.id}` });
+      if (wasInterrupted && !this.activeRequest && this.resumableTask?.reason === "stopped") {
+        await sleep(500);
+        if (this.sessionId === latest.id && !this.activeRequest && this.resumableTask?.reason === "stopped") {
+          void this.recordSessionEvent({ kind: "prompt.protocol_retry", status: "auto-resume", detail: "resuming request interrupted by Obsidian/plugin exit" });
+          void this.resumeLastTask();
+        }
+      }
+    }
     return loaded;
   }
 
@@ -21329,6 +22506,10 @@ class CancipView extends ItemView {
     const resolved = this.resolveTaskGoal(prompt).trim() || this.previousActionableUserPrompt() || prompt.trim();
     if (!resolved || isTrivialChatPrompt(resolved)) return;
     this.resumableTask = { prompt: resolved, reason, at: Date.now() };
+    if (this.activeAutomationTaskId) {
+      this.resumableAutomationTaskId = this.activeAutomationTaskId;
+      this.resumableAutomationNotifyMode = this.activeAutomationNotifyMode;
+    }
     this.setStatus(this.t(reason === "failed" ? "resumableFailed" : "resumableStopped"));
     this.syncRequestControls();
     void this.saveCurrentSession();
@@ -21337,6 +22518,8 @@ class CancipView extends ItemView {
   private clearResumableTask(): void {
     if (!this.resumableTask) return;
     this.resumableTask = null;
+    this.resumableAutomationTaskId = "";
+    this.resumableAutomationNotifyMode = "inherit";
     this.syncRequestControls();
     void this.saveCurrentSession();
   }
@@ -21344,7 +22527,17 @@ class CancipView extends ItemView {
   private async resumeLastTask(): Promise<void> {
     const state = this.resumableTask;
     if (!state) return;
+    const previousAutomationTaskId = this.activeAutomationTaskId;
+    const previousAutomationNotifyMode = this.activeAutomationNotifyMode;
+    const resumeAutomationTaskId = this.resumableAutomationTaskId;
+    const resumeAutomationNotifyMode = this.resumableAutomationNotifyMode;
     this.resumableTask = null;
+    this.resumableAutomationTaskId = "";
+    this.resumableAutomationNotifyMode = "inherit";
+    if (resumeAutomationTaskId) {
+      this.activeAutomationTaskId = resumeAutomationTaskId;
+      this.activeAutomationNotifyMode = resumeAutomationNotifyMode;
+    }
     this.syncRequestControls();
     const prompt = [
       "继续上一项未完成任务。不要重新泛泛总结；根据当前会话工作状态、最近工具结果、失败/停止原因继续。",
@@ -21352,7 +22545,12 @@ class CancipView extends ItemView {
       `中断原因：${state.reason}`,
       "要求：如果还需要动作，输出一个可执行 cancip-action；如果已有足够结果，直接给用户能看懂的最终结论。"
     ].join("\n");
-    await this.sendPromptNow(prompt);
+    try {
+      await this.sendPromptNow(prompt);
+    } finally {
+      this.activeAutomationTaskId = previousAutomationTaskId;
+      this.activeAutomationNotifyMode = previousAutomationNotifyMode;
+    }
   }
 
   private resumableTaskFromMessages(reason: "stopped" | "failed", detail = ""): ResumableTaskState | null {
@@ -21596,6 +22794,7 @@ class CancipView extends ItemView {
     const automationProfile = this.plugin.automationApiProfile(task, task.prompt);
     const previousRequestProfile = this.activeRequestApiProfile;
     const previousAutomationTaskId = this.activeAutomationTaskId;
+    const previousAutomationNotifyMode = this.activeAutomationNotifyMode;
     const prompt = `${this.t("automationTask")}: ${task.title}\n\n${task.prompt}`;
     const userMessage = this.addMessage("user", prompt);
     this.noteTaskControlPrompt(prompt);
@@ -21632,6 +22831,7 @@ class CancipView extends ItemView {
 
     const request = new AbortController();
     this.activeAutomationTaskId = task.id;
+    this.activeAutomationNotifyMode = task.notifyMode;
     this.activeRequest = request;
     this.activeRequestApiProfile = automationProfile;
     this.syncRequestControls();
@@ -21704,6 +22904,7 @@ class CancipView extends ItemView {
       throw error;
     } finally {
       this.activeAutomationTaskId = previousAutomationTaskId;
+      this.activeAutomationNotifyMode = previousAutomationNotifyMode;
       this.activeRequestApiProfile = previousRequestProfile;
       if (this.isCurrentRequest(request)) this.clearRequest(request);
       this.syncRequestControls();
@@ -21718,11 +22919,13 @@ class CancipView extends ItemView {
     return "";
   }
 
-  async runAutomationCommand(task: AutomationTask): Promise<string> {
+  async runAutomationCommand(task: AutomationTask, preparedExtraContext = ""): Promise<string> {
     if (!task.command) throw new Error("automation command is empty");
     const startedAt = Date.now();
     if (this.activeRequest) throw new Error(this.t("todoRequestRunning"));
     const previousRequestProfile = this.activeRequestApiProfile;
+    const previousAutomationTaskId = this.activeAutomationTaskId;
+    const previousAutomationNotifyMode = this.activeAutomationNotifyMode;
     const displayPrompt = task.prompt.trim() || this.automationCommandFallbackPrompt(task);
     const modelPromptInfo = this.plugin.automationModelPromptForTask(task, displayPrompt);
     const automationProfile = this.plugin.automationApiProfile(task, displayPrompt);
@@ -21733,6 +22936,8 @@ class CancipView extends ItemView {
     this.scrollMessagesToBottom(false);
 
     const request = new AbortController();
+    this.activeAutomationTaskId = task.id;
+    this.activeAutomationNotifyMode = task.notifyMode;
     this.activeRequest = request;
     this.activeRequestApiProfile = automationProfile;
     this.syncRequestControls();
@@ -21762,7 +22967,7 @@ class CancipView extends ItemView {
       const baseContext = await this.buildContext(commandContext.prompt);
       const context = {
         ...baseContext,
-        contextText: [baseContext.contextText, commandContext.contextText].filter((part) => part.trim()).join("\n\n---\n\n")
+        contextText: [baseContext.contextText, commandContext.contextText, preparedExtraContext].filter((part) => part.trim()).join("\n\n---\n\n")
       };
       this.updateProgressStep(contextStep, this.t("preparingContext"), this.formatContextAuditDetail(rawPrompt, commandContext.prompt, commandContext.prompt, context));
       userMessage.sources = context.searchHits;
@@ -21817,6 +23022,8 @@ class CancipView extends ItemView {
       await this.finishCurrentSessionStatus("failed", true, request);
       throw error;
     } finally {
+      this.activeAutomationTaskId = previousAutomationTaskId;
+      this.activeAutomationNotifyMode = previousAutomationNotifyMode;
       this.activeRequestApiProfile = previousRequestProfile;
       if (this.isCurrentRequest(request)) this.clearRequest(request);
       this.syncRequestControls();
@@ -22430,8 +23637,13 @@ class CancipView extends ItemView {
     const configDir = this.plugin.obsidianConfigDir();
     const allMarkdownFiles = this.app.vault.getMarkdownFiles();
     const curatableFiles = allMarkdownFiles.filter((file) => isVaultCurationContentFile(file, configDir));
+    const curatableByPath = new Map(curatableFiles.map((file) => [normalizePath(file.path), file]));
+    const eventPaths = Array.isArray(args.paths)
+      ? uniqueStrings(args.paths.filter((path): path is string => typeof path === "string").map((path) => normalizePath(path)))
+      : [];
+    const eventFiles = eventPaths.map((path) => curatableByPath.get(path)).filter((file): file is TFile => Boolean(file));
     const stateResult = await this.refreshVaultCurationNewFileState(curatableFiles);
-    const scannedFiles = stateResult.pending
+    const scannedFiles = [...eventFiles, ...stateResult.pending.filter((file) => !eventPaths.includes(normalizePath(file.path)))]
       .sort((a, b) => a.stat.ctime - b.stat.ctime || a.path.localeCompare(b.path))
       .slice(0, scanLimit);
     const scannedCandidates = await this.vaultCurationCandidateItems(scannedFiles, "new Markdown file not handled by auto-curation yet", curatableFiles);
@@ -22912,6 +24124,9 @@ class CancipView extends ItemView {
       snapshot.completedAt = timeline.completedAt || undefined;
       snapshot.stoppedAt = timeline.stoppedAt || undefined;
       snapshot.failedAt = timeline.failedAt || undefined;
+      snapshot.lastOpenedAt = now.toISOString();
+      snapshot.coldArchived = false;
+      snapshot.archivedAt = "";
       if (typeof previous?.manualOrder === "number") snapshot.manualOrder = previous.manualOrder;
       await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
       await this.upsertSessionHistoryIndex({
@@ -22931,6 +24146,9 @@ class CancipView extends ItemView {
         unread,
         pinned: previous?.pinned ?? false,
         archived: previous?.archived ?? false,
+        coldArchived: false,
+        archivedAt: "",
+        lastOpenedAt: now.toISOString(),
         manualTitle: previous?.manualTitle ?? manualTitle,
         manualOrder: previous?.manualOrder,
         parentSessionId: parentSessionId || previous?.parentSessionId,
@@ -22984,6 +24202,7 @@ class CancipView extends ItemView {
     completedNotice: boolean,
     request: AbortController
   ): Promise<void> {
+    if (this.plugin.isUnloading() && request.signal.aborted) return;
     const requestSessionId = this.requestSessionId(request);
     if (!this.hasRequest(request) && !request.signal.aborted) return;
     if (status === "completed" && (!requestSessionId || requestSessionId === this.sessionId) && this.currentTurnNeedsVisibleFinal() && !this.visibleFinalAssistantForMessages(this.messages)) {
@@ -23002,16 +24221,17 @@ class CancipView extends ItemView {
     }
     if (requestSessionId && requestSessionId !== this.sessionId) {
       const summary = this.sessionNotificationSummary(status);
+      const shouldNotify = this.automationNotificationAllowed(status);
       void this.recordSessionEvent({ kind: "session.status", sessionId: requestSessionId, status, detail: completedNotice ? "completedNotice=true" : "completedNotice=false" });
       await this.saveDetachedSessionStatus(requestSessionId, status, completedNotice);
       await this.plugin.refreshChatViewsForSession(requestSessionId, status, this);
-      void this.plugin.notifyCancipSession({
+      if (shouldNotify) void this.plugin.notifyCancipSession({
         status,
         sessionId: requestSessionId,
         title: requestSessionId,
         summary
       });
-      if (completedNotice && (status === "completed" || status === "failed")) {
+      if (shouldNotify && completedNotice && (status === "completed" || status === "failed")) {
         this.plugin.notifyObsidianAttention({
           kind: status === "completed" ? "completed" : "failed",
           sessionId: requestSessionId,
@@ -23022,19 +24242,20 @@ class CancipView extends ItemView {
       return;
     }
     const summary = this.sessionNotificationSummary(status);
+    const shouldNotify = this.automationNotificationAllowed(status);
     void this.recordSessionEvent({ kind: "session.status", status, detail: completedNotice ? "completedNotice=true" : "completedNotice=false" });
     await this.saveCurrentSession();
     await this.updateCurrentSessionStatus(status, completedNotice);
     await this.plugin.refreshChatViewsForSession(this.sessionId, status, this);
     void this.recordCompletedWorkflowExperience(status);
     this.autoSpeakFinalAnswerIfEnabled(status, completedNotice);
-    void this.plugin.notifyCancipSession({
+    if (shouldNotify) void this.plugin.notifyCancipSession({
       status,
       sessionId: this.sessionId,
       title: this.sessionTitle(),
       summary
     });
-    if (completedNotice && (status === "completed" || status === "failed")) {
+    if (shouldNotify && completedNotice && (status === "completed" || status === "failed")) {
       this.plugin.notifyObsidianAttention({
         kind: status === "completed" ? "completed" : "failed",
         sessionId: this.sessionId,
@@ -23091,10 +24312,17 @@ class CancipView extends ItemView {
       .find((message) => message.role === "assistant" && !prepareMessageDisplay(redactSensitiveText(message.content)).processOnly);
     const user = [...this.messages].reverse().find((message) => message.role === "user");
     const lines = [
-      user ? `${this.t("userQuestion")}：${trimContext(redactSensitiveText(messageOutlineText(user.content) || user.content), 260)}` : "",
-      terminal ? `${status === "failed" ? this.t("sessionFailed") : this.t("sessionCompleted")}：${trimContext(redactSensitiveText(messageOutlineText(terminal.content) || terminal.content), 520)}` : ""
+      user ? `任务｜${trimContext(redactSensitiveText(messageOutlineText(user.content) || user.content).replace(/\s+/g, " "), 160)}` : "",
+      terminal ? `结果｜${trimContext(redactSensitiveText(messageOutlineText(terminal.content) || terminal.content).replace(/\s+/g, " "), 280)}` : `结果｜${this.t(status === "failed" ? "sessionFailed" : "sessionCompleted")}`
     ].filter(Boolean);
     return lines.join("\n");
+  }
+
+  private automationNotificationAllowed(status: NonNullable<SessionHistoryEntry["status"]>): boolean {
+    if (!this.activeAutomationTaskId) return true;
+    if (this.activeAutomationNotifyMode === "never") return false;
+    if (this.activeAutomationNotifyMode === "failure") return status === "failed";
+    return true;
   }
 
   private async startSubagentCommand(args: Record<string, unknown>): Promise<string> {
@@ -23447,7 +24675,9 @@ class CancipView extends ItemView {
   }
 
   private async loadSessionById(sessionId: string): Promise<boolean> {
-    const entry = (await this.readSessionHistoryIndex()).find((item) => item.id === sessionId && !item.eventOnly);
+    const hot = await this.readSessionHistoryIndex();
+    const entry = hot.find((item) => item.id === sessionId && !item.eventOnly)
+      ?? (await this.plugin.coldArchivedSessionEntries()).find((item) => item.id === sessionId);
     if (!entry) return false;
     return await this.loadSessionHistoryEntry(entry);
   }
@@ -23671,6 +24901,9 @@ class CancipView extends ItemView {
         unread: completedNotice && (status === "completed" || status === "failed" || status === "stopped") ? true : existing?.unread ?? false,
         pinned: existing?.pinned ?? false,
         archived: existing?.archived ?? false,
+        coldArchived: false,
+        archivedAt: "",
+        lastOpenedAt: now,
         manualTitle: existing?.manualTitle ?? Boolean(this.sessionTitleOverride),
         manualOrder: existing?.manualOrder,
         parentSessionId: this.parentSessionId || existing?.parentSessionId,
@@ -23693,7 +24926,7 @@ class CancipView extends ItemView {
           status,
           path: existing?.path ?? `${SESSION_HISTORY_DIR}/${this.sessionId}.json`
         },
-        { status, completedNotice, updatedAt: now, startedAt: timeline.startedAt, completedAt: timeline.completedAt, stoppedAt: timeline.stoppedAt, failedAt: timeline.failedAt }
+        { status, completedNotice, updatedAt: now, lastOpenedAt: now, coldArchived: false, archivedAt: "", startedAt: timeline.startedAt, completedAt: timeline.completedAt, stoppedAt: timeline.stoppedAt, failedAt: timeline.failedAt }
       );
       this.syncSessionChrome();
       if (this.activeHeaderMenu === "history" && this.headerMenuEl && !this.headerMenuEl.hasClass("is-hidden")) {
@@ -23966,6 +25199,9 @@ class CancipView extends ItemView {
       stoppedAt: timeline.stoppedAt || undefined,
       failedAt: timeline.failedAt || undefined,
       updatedAt: cancipLatestTimestamp(timeline.updatedAt, exportedAt.toISOString()),
+      lastOpenedAt: exportedAt.toISOString(),
+      coldArchived: false,
+      archivedAt: "",
       exportedAt: exportedAt.toISOString(),
       parentSessionId: this.parentSessionId || undefined,
       parentSessionTitle: this.parentSessionTitle || undefined,
@@ -23986,6 +25222,8 @@ class CancipView extends ItemView {
       },
       taskControl: this.taskControl ? { ...this.taskControl } : null,
       resumableTask: this.resumableTask ? { ...this.resumableTask } : null,
+      automationTaskId: this.activeAutomationTaskId || this.resumableAutomationTaskId || undefined,
+      automationNotifyMode: this.activeAutomationTaskId ? this.activeAutomationNotifyMode : this.resumableAutomationNotifyMode,
       settings: {
         language: this.plugin.settings.language,
         includeCurrentFile: this.plugin.settings.includeCurrentFile,
@@ -24350,7 +25588,20 @@ class CancipView extends ItemView {
 
     if ((settings.useVaultSearchByDefault && shouldAutoSearchForPrompt(prompt)) || this.mode === "search") {
       const hits = await this.safeContextStep(this.t("vaultSearch"), () => this.searchVault(prompt, settings.maxContextFiles), [] as SearchHit[], CONTEXT_STEP_TIMEOUT_MS);
-      searchHits.push(...hits.map((hit) => ({ ...hit, excerpt: "" })));
+      searchHits.push(...hits);
+      if (hits.length) {
+        parts.push(`## ${isChineseLanguage(this.plugin.language()) ? "全局硬搜索结果" : "Universal hard-search results"}\n${formatUniversalSearchContext(hits)}`);
+      }
+      if (this.mode === "search") {
+        const imageHits = hits.filter((hit) => hit.kind === "image" && !hit.archived).slice(0, 2);
+        for (const hit of imageHits) {
+          const file = this.app.vault.getAbstractFileByPath(hit.path);
+          if (!(file instanceof TFile)) continue;
+          const dataUrl = await this.safeContextStep(`image:${file.path}`, () => this.readVaultImageDataUrl(file), "", CONTEXT_STEP_TIMEOUT_MS);
+          if (!dataUrl) continue;
+          images.push({ name: file.name, mimeType: mimeTypeForPath(file.path), dataUrl });
+        }
+      }
     }
 
     return {
@@ -24446,9 +25697,12 @@ class CancipView extends ItemView {
     const base = this.plugin.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     const languagePrompt = this.plugin.responseLanguageInstruction();
     const accessPrompt = this.plugin.settings.accessMode === "full-access" ? this.t("accessPromptFull") : this.t("accessPromptAsk");
+    const routedToolPrompt = policy.includeToolCatalog && !policy.includeToolProtocol
+      ? this.lightweightToolCatalogPrompt()
+      : this.toolPromptForPolicy(policy);
     const toolPrompt = this.plugin.settings.commandBusEnabled
-      ? this.toolPromptForPolicy(policy)
-      : `${this.toolPromptForPolicy(policy)}\n\n${this.t("commandBusDisabledPrompt")}`;
+      ? routedToolPrompt
+      : `${routedToolPrompt}\n\n${this.t("commandBusDisabledPrompt")}`;
     const modeInstruction = this.mode === "search"
       ? this.t("modePromptSearch")
       : this.mode === "edit"
@@ -24457,9 +25711,11 @@ class CancipView extends ItemView {
     const sections = [base, languagePrompt];
     if (policy.includeAccessPrompt) sections.push(accessPrompt, this.t("vaultNoteReviewPrompt"));
     if (policy.includeToolProtocol || policy.includeToolCatalog) sections.push(toolPrompt);
+    if (/(?:自动化|定时|通知|新文件触发|automation|schedule|notification|new.?file)/i.test(prompt)) sections.push(this.automationAgentPolicyPrompt());
     if (policy.intent === "implementation" && (policy.includeAutoSkills || promptNeedsSkillExperienceRoute(prompt))) sections.push(this.skillRoutePolicyPrompt());
     if (policy.includeToolProtocol || (policy.intent === "implementation" && policy.includeWorkingState)) sections.push(this.t("finalAnswerFormatPrompt"));
     sections.push(modeInstruction);
+    if (this.mode === "search") sections.push(this.universalSearchPolicyPrompt());
     if (!policy.includeToolProtocol) {
       sections.push(policy.includeToolCatalog
         ? this.lightweightCapabilityPolicyPrompt(prompt)
@@ -24470,12 +25726,55 @@ class CancipView extends ItemView {
     return sections.filter(Boolean).join("\n\n");
   }
 
+  private universalSearchPolicyPrompt(): string {
+    if (isChineseLanguage(this.plugin.language())) {
+      return [
+        "全局搜索规则：Cancip 已先执行确定性的硬搜索，并把带来源的结果放入上下文。先使用这些结果，不要重复等价查询。",
+        "只有硬结果明显不足时，才调用一次 cancip.searchAll；保留原 query，并在 softQueries 中给出 2-4 个不同的同义词、旧称或语义扩展。",
+        "软搜索只是候选扩展，回答必须引用实际命中的路径和原文片段；不要虚构未命中的内容，也不要为扩展查询额外发起隐藏模型调用。"
+      ].join("\n");
+    }
+    return [
+      "Universal search rule: Cancip already ran deterministic hard search and included source-backed results. Use them first and do not repeat an equivalent query.",
+      "Only when hard results are clearly insufficient, call cancip.searchAll once with the original query plus 2-4 distinct synonyms, former names, or semantic expansions in softQueries.",
+      "Soft search expands candidates only. Cite real matched paths and excerpts, never invent missing content, and do not make a hidden model call solely for query expansion."
+    ].join("\n");
+  }
+
+  private automationAgentPolicyPrompt(): string {
+    if (isChineseLanguage(this.plugin.language())) {
+      return [
+        "自动化字段：schedule 支持 manual/hourly/daily；watchNewFiles=true 可同时监听新文件；newFilePattern 支持逗号分隔 glob（如 **/*.md）；newFileDebounceSeconds 用于合并短时间内的新文件。",
+        "notifyMode 支持 inherit/always/failure/never。默认通知必须短且分为任务、结果；高风险写入仍走批准/审核，不能因自动化绕过。"
+      ].join("\n");
+    }
+    return [
+      "Automation fields: schedule supports manual/hourly/daily; watchNewFiles=true also listens for file creation; newFilePattern accepts comma-separated globs; newFileDebounceSeconds batches bursts.",
+      "notifyMode supports inherit/always/failure/never. Keep notifications brief and structured as task/result; automation never bypasses approval or review for risky writes."
+    ].join("\n");
+  }
+
   private lightweightCapabilityPolicyPrompt(prompt: string): string {
     void prompt;
     return [
       "Capability turn.",
       "Do not guess or ask for files. Use the smallest useful action from the tool index.",
       "If blocked, name the failed and next executable routes."
+    ].join("\n");
+  }
+
+  private lightweightToolCatalogPrompt(): string {
+    if (this.plugin.language().startsWith("zh")) {
+      return [
+        "只读能力查询：需要工具时只输出一个 cancip-action JSON；查到结果后直接回答，不执行写入。",
+        "入口：目标不清 cancip.findTarget，路线不清 cancip.tools.index；文件用 read/search；Skills 用 cancip.skills.list/read；插件用 pluginCapabilities；附件/PDF/Office 用 attachment/externalFiles help。",
+        "其他按需使用 currentView/listCommands、sessionHistory、tts.help、automation.templates/list、github.help。"
+      ].join("\n");
+    }
+    return [
+      "Read-only capability query: when a tool is needed, output one cancip-action JSON block; answer from the result and do not write.",
+      "Routes: unclear target -> cancip.findTarget; unclear route -> cancip.tools.index; files -> read/search; Skills -> cancip.skills.list/read; plugins -> pluginCapabilities; PDF/Office -> attachment/externalFiles help.",
+      "As needed use currentView/listCommands, sessionHistory, tts.help, automation.templates/list, or github.help."
     ].join("\n");
   }
 
@@ -24849,7 +26148,9 @@ class CancipView extends ItemView {
       }
       try {
         const answer = await withTimeout(this.callModel(prompt, context, rawPrompt, profileOverride, onStream), timeoutMs, timeoutMessage);
-        if (answer.trim()) return answer;
+        if (answer.trim()) {
+          return await this.completeTruncatedModelReply(answer, prompt, context, rawPrompt, timeoutMs, profileOverride, onStream);
+        }
         lastError = this.t("emptyApiReply");
         this.recordFailedModelAttemptUsage();
       } catch (error) {
@@ -24870,6 +26171,54 @@ class CancipView extends ItemView {
     const currentAudit = this.modelCallAuditSnapshot(lastError);
     if (currentAudit) this.lastModelCallAudit = { ...currentAudit, previousAttempts: [...(currentAudit.previousAttempts ?? []), ...attempts] };
     throw new Error(lastError || timeoutMessage);
+  }
+
+  private async completeTruncatedModelReply(
+    initialAnswer: string,
+    prompt: string,
+    context: { system: string; contextText: string; images?: ImageAttachmentContext[] },
+    rawPrompt: string,
+    timeoutMs: number,
+    profileOverride?: ApiProfile,
+    onStream?: ModelStreamCallback
+  ): Promise<string> {
+    let combined = initialAnswer;
+    for (let continuation = 1; continuation <= 2; continuation += 1) {
+      const reason = modelReplyTruncationReason(this.lastModelCallAudit?.responseJson, combined);
+      if (!reason) return combined;
+      void this.recordSessionEvent({
+        kind: "prompt.protocol_retry",
+        status: "truncated",
+        detail: `continuation ${continuation}/2: ${reason}`
+      });
+      const continuationPrompt = [
+        "Continue the previous assistant reply from the exact cutoff point.",
+        "Do not restart, repeat completed sections, summarize, or add a new introduction.",
+        "Finish every open sentence/list/Markdown block and include the hidden cancip-choices comment when concrete next actions exist.",
+        `Original task: ${trimContext(rawPrompt.replace(/\s+/g, " "), 1200)}`,
+        "",
+        "Previous partial reply:",
+        trimContext(combined, 16000)
+      ].join("\n");
+      const next = await withTimeout(
+        this.callModel(
+          continuationPrompt,
+          { ...context, images: [] },
+          prompt,
+          profileOverride,
+          onStream
+            ? (progress) => onStream({ text: mergeModelContinuation(combined, progress.text), done: progress.done })
+            : undefined
+        ),
+        timeoutMs,
+        "model continuation timed out"
+      );
+      if (!next.trim()) throw new Error("model continuation returned no text");
+      combined = mergeModelContinuation(combined, next);
+    }
+    const remaining = modelReplyTruncationReason(this.lastModelCallAudit?.responseJson, combined);
+    if (remaining) throw new Error(`model reply remained incomplete after continuation: ${remaining}`);
+    return combined;
   }
 
   private async retryEmptyAssistantReply(
@@ -25945,7 +27294,13 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.tts.voices", "cancip.tts.voices", ["tts", "speech", "voices", "voice", "朗读", "声音", "语音", "音色"], 78),
       commandTarget("command:cancip.externalFiles.help", "cancip.externalFiles.help", ["external", "outside", "filesystem", "bridge", "库外", "外部文件", "跳出库", "文件系统", "桥接"], 80),
         commandTarget("command:cancip.findTarget", "cancip.findTarget", ["find", "target", "weak search", "fuzzy", "command", "file", "folder", "attachment", "目标", "弱搜索", "模糊", "找目标", "找文件", "找命令", "附件"], 88),
-        commandTarget("command:cancip.searchVault", "cancip.searchVault", ["search", "vault", "rag", "find", "搜索", "检索", "查找", "搜库"], 82),
+        commandTarget("command:cancip.searchAll", "cancip.searchAll", ["search", "universal", "all", "hard", "soft", "semantic", "archive", "搜索", "全局搜索", "万物搜索", "硬搜索", "软搜索", "归档"], 90),
+        commandTarget("command:cancip.searchVault", "cancip.searchVault", ["search", "vault", "rag", "find", "搜索", "检索", "查找", "搜库", "兼容"], 82),
+        commandTarget("command:cancip.search.status", "cancip.search.status", ["search", "index", "status", "progress", "搜索", "索引", "状态", "进度"], 84),
+        commandTarget("command:cancip.search.rebuild", "cancip.search.rebuild", ["search", "index", "rebuild", "full", "搜索", "索引", "重建", "完整"], 82),
+        commandTarget("command:cancip.archive.status", "cancip.archive.status", ["archive", "cold", "status", "forget", "归档", "冷归档", "状态", "遗忘"], 86),
+        commandTarget("command:cancip.archive.run", "cancip.archive.run", ["archive", "cold", "run", "maintenance", "归档", "冷归档", "立即执行", "维护"], 82),
+        commandTarget("command:cancip.archive.restore", "cancip.archive.restore", ["archive", "cold", "restore", "session", "归档", "恢复", "会话"], 82),
       commandTarget("command:cancip.rebuildIndex", "cancip.rebuildIndex", ["index", "rebuild", "search", "rag", "索引", "重建", "检索"], 78),
       commandTarget("command:cancip.previewVaultSearch", "cancip.previewVaultSearch", ["search", "preview", "vault", "rag", "搜索", "预览", "检索"], 76),
       commandTarget("command:cancip.localVersionCommit", "cancip.localVersionCommit", ["commit", "version", "snapshot", "local", "git", "提交", "版本", "快照"], 76),
@@ -26192,7 +27547,13 @@ class CancipView extends ItemView {
       "cancip.tts.stop": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.stop\"}]}",
       "cancip.externalFiles.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.externalFiles.help\"}]}",
       "cancip.findTarget": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.findTarget\",\"args\":{\"query\":\"target or command name\",\"limit\":10}}]}",
+      "cancip.searchAll": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.searchAll\",\"args\":{\"query\":\"原始关键词\",\"softQueries\":[\"同义表达\",\"旧称\"],\"includeArchived\":true,\"includeConfigs\":true,\"limit\":8}}]}",
       "cancip.searchVault": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"keyword\",\"limit\":8}}]}",
+      "cancip.search.status": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.search.status\"}]}",
+      "cancip.search.rebuild": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.search.rebuild\",\"args\":{\"full\":true}}]}",
+      "cancip.archive.status": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.archive.status\"}]}",
+      "cancip.archive.run": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.archive.run\"}]}",
+      "cancip.archive.restore": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.archive.restore\",\"args\":{\"sessionId\":\"session-...\"}}]}",
       "cancip.rebuildIndex": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.rebuildIndex\"}]}",
       "cancip.previewVaultSearch": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.previewVaultSearch\"}]}",
       "cancip.localVersionCommit": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.localVersionCommit\"}]}",
@@ -26247,43 +27608,100 @@ class CancipView extends ItemView {
     this.setStatus(this.t("hitCount", { count: hits.length }));
   }
 
-  private async searchVault(query: string, limit: number): Promise<SearchHit[]> {
-    const tokens = tokenize(query);
-    if (!tokens.length) return [];
-    const files = (await this.searchableContextFiles(query, tokens)).slice(0, this.mode === "search" ? VAULT_SEARCH_MAX_SCAN_FILES * 2 : VAULT_SEARCH_MAX_SCAN_FILES);
-    const results: SearchHit[] = [];
+  private async searchVault(query: string, limit: number, options: UniversalSearchOptions = {}): Promise<SearchHit[]> {
+    const normalizedQuery = query.trim();
+    if (!normalizedQuery) return [];
+    let index = await this.plugin.readUniversalSearchIndex();
+    if (!index.documents.length) {
+      await this.plugin.rebuildUniversalSearchIndex(false);
+      index = await this.plugin.readUniversalSearchIndex();
+    }
+    const includeArchived = options.includeArchived !== false;
+    const includeConfigs = options.includeConfigs !== false;
+    const documents = index.documents.filter((document) => {
+      if (!includeArchived && normalizePath(document.path).startsWith(`${CANCIP_ARCHIVE_DIR}/`)) return false;
+      if (!includeConfigs && document.kind === "config") return false;
+      return true;
+    });
     const startedAt = Date.now();
-    for (const file of files) {
-      if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
-      const content = trimContext(await this.readVaultTextFile(file.path), 20000);
-      const score = scoreSearchText(file.path, file.basename, content, tokens);
-      if (score > 0) {
-        results.push({
-          path: file.path,
-          title: file.basename,
-          excerpt: makeExcerpt(content, tokens),
-          score
+    const runQuery = async (routeQuery: string, route: "hard" | "soft"): Promise<SearchHit[]> => {
+      const terms = universalSearchQueryTerms(routeQuery);
+      const scoreTokens = uniqueStrings([...tokenize(routeQuery), ...terms]);
+      const queryLower = routeQuery.normalize("NFKC").toLowerCase().trim();
+      const candidates = documents
+        .map((document) => {
+          const pathText = `${document.title}\n${document.path}`.normalize("NFKC").toLowerCase();
+          const exactPath = Boolean(queryLower) && pathText.includes(queryLower);
+          const pathScore = scoreSearchText(document.path, document.title, "", scoreTokens);
+          const bloomMatches = universalSearchBloomMatchCount(document.bloom, terms);
+          const allBloomTerms = terms.length > 0 && universalSearchBloomMayContain(document.bloom, terms);
+          const rank = (exactPath ? 6000 : 0) + pathScore * 40 + bloomMatches * 18 + (allBloomTerms ? 220 : 0) - universalSearchKindPriority(document.kind);
+          return { document, exactPath, pathScore, bloomMatches, rank };
+        })
+        .filter((candidate) => candidate.exactPath || candidate.pathScore > 0 || candidate.bloomMatches > 0)
+        .sort((a, b) => b.rank - a.rank || a.document.path.length - b.document.path.length || a.document.path.localeCompare(b.document.path))
+        .slice(0, UNIVERSAL_SEARCH_MAX_QUERY_CANDIDATES);
+      const hits: SearchHit[] = [];
+      for (const candidate of candidates) {
+        if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
+        const document = candidate.document;
+        let content = "";
+        if (document.bloom || candidate.pathScore <= 0) {
+          try {
+            content = redactSensitiveText(await this.plugin.universalSearchDocumentText(document.path, document.kind, 30000));
+          } catch {
+            content = "";
+          }
+        }
+        const contentScore = content ? scoreSearchText(document.path, document.title, content, scoreTokens) : 0;
+        if (candidate.pathScore <= 0 && contentScore <= 0) continue;
+        const exactContent = Boolean(queryLower) && content.normalize("NFKC").toLowerCase().includes(queryLower);
+        const archived = normalizePath(document.path).startsWith(`${CANCIP_ARCHIVE_DIR}/`);
+        const routeLabel = universalSearchRouteLabel(route, this.plugin.language());
+        const kindLabel = universalSearchKindLabel(document.kind, this.plugin.language());
+        const archiveLabel = archived ? universalSearchArchiveLabel(this.plugin.language()) : "";
+        const label = `[${[routeLabel, kindLabel, archiveLabel].filter(Boolean).join(" · ")}]`;
+        const sourceExcerpt = content
+          ? makeExcerpt(content, scoreTokens)
+          : `${document.title}\n${document.path}`;
+        hits.push({
+          path: document.path,
+          title: document.title,
+          excerpt: `${label}\n${trimContext(redactSensitiveText(sourceExcerpt), 420)}`,
+          score: candidate.pathScore + contentScore + candidate.bloomMatches * 2 + (candidate.exactPath ? 80 : 0) + (exactContent ? 60 : 0),
+          kind: document.kind,
+          route,
+          archived
         });
+        if (hits.length >= Math.max(limit * 4, 24)) break;
+      }
+      return hits;
+    };
+    const hardHits = await runQuery(normalizedQuery, "hard");
+    const neededHardHits = Math.min(Math.max(1, limit), 4);
+    const softQueries = uniqueStrings(
+      (options.softQueries ?? [])
+        .filter((item): item is string => typeof item === "string")
+        .map((item) => item.trim())
+        .filter((item) => item && item.normalize("NFKC").toLowerCase() !== normalizedQuery.normalize("NFKC").toLowerCase())
+    ).slice(0, 4);
+    const softHits: SearchHit[] = [];
+    if (hardHits.length < neededHardHits) {
+      for (const softQuery of softQueries) {
+        if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
+        softHits.push(...await runQuery(softQuery, "soft"));
       }
     }
-    const pathHits = this.filePathTargetCandidates(query, Math.max(limit, 8))
-      .filter((candidate) => candidate.kind === "file" || candidate.kind === "attachment")
-      .map((candidate): SearchHit => ({
-        path: candidate.path,
-        title: candidate.title,
-        excerpt: candidate.detail || candidate.reason,
-        score: Math.max(1, Math.round(candidate.score / 20))
-      }));
-    const attachmentHits = await this.attachmentContentSearchHits(query, Math.max(limit, 8), startedAt);
-    const seen = new Set<string>();
-    return [...results, ...attachmentHits, ...pathHits]
-      .filter((hit) => {
-        const key = normalizePath(hit.path);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      })
-      .sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path))
+    const byPath = new Map<string, SearchHit>();
+    for (const hit of [...hardHits, ...softHits]) {
+      const key = normalizePath(hit.path);
+      const previous = byPath.get(key);
+      if (!previous || (previous.route === "soft" && hit.route === "hard") || (previous.route === hit.route && hit.score > previous.score)) {
+        byPath.set(key, hit);
+      }
+    }
+    return [...byPath.values()]
+      .sort((a, b) => (a.route === "hard" ? 0 : 1) - (b.route === "hard" ? 0 : 1) || b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path))
       .slice(0, Math.max(1, limit));
   }
 
@@ -26522,17 +27940,17 @@ class CancipView extends ItemView {
       return null;
     }
 
-    const runs = actions.map((action) => this.createToolRun(action));
+    const runs = this.createBudgetedToolRuns(actions);
     if (message) message.toolRuns = runs;
     if (options.readOnlyOnly) {
-      const executable = runs.filter((run) => isReadOnlyAction(run.action));
-      const blocked = runs.filter((run) => !isReadOnlyAction(run.action));
+      const executable = runs.filter((run) => run.status === "pending" && isReadOnlyAction(run.action));
+      const blocked = runs.filter((run) => run.status === "blocked" || (run.status === "pending" && !isReadOnlyAction(run.action)));
       const results: string[] = [];
       for (const run of executable) {
         results.push(await this.executeToolRun(run));
       }
       const blockedAt = new Date().toISOString();
-      for (const run of blocked) {
+      for (const run of blocked.filter((item) => item.status === "pending")) {
         run.status = "blocked";
         run.executedAt = blockedAt;
         run.error = this.t("informationalActionBlocked");
@@ -26559,20 +27977,25 @@ class CancipView extends ItemView {
       return { report: this.formatActionReport(sections), runs, executed: executable.length > 0 };
     }
     if (this.plugin.settings.accessMode !== "full-access") {
-      const executable = runs.filter((run) => isReadOnlyAction(run.action));
-      const pending = runs.filter((run) => !isReadOnlyAction(run.action));
+      const executable = runs.filter((run) => run.status === "pending" && isReadOnlyAction(run.action));
+      const pending = runs.filter((run) => run.status === "pending" && !isReadOnlyAction(run.action));
+      const blocked = runs.filter((run) => run.status === "blocked");
       const results: string[] = [];
       for (const run of executable) {
         results.push(await this.executeToolRun(run));
       }
       if (!pending.length) {
         void this.saveCurrentSession();
-        return { report: this.formatActionReport([{ title: this.t("actionsExecuted", { summary: "" }).trim(), summary: this.toolRunCompactSummary(executable), detail: results.join("\n\n") }]), runs, executed: executable.length > 0 };
+        const sections = this.actionReportSectionsFromRuns(runs, runs.map((run) => run.error ?? run.result ?? ""));
+        return { report: this.formatActionReport(sections), runs, executed: executable.length > 0 };
       }
       const queuedSummary = pending.map((run) => run.summary).join("\n");
       const sections: ActionReportSection[] = [];
       if (results.length) {
         sections.push({ title: this.t("actionsExecuted", { summary: "" }).trim(), summary: this.toolRunCompactSummary(executable), detail: results.join("\n\n") });
+      }
+      if (blocked.length) {
+        sections.push({ title: this.t("toolRunBlocked"), summary: this.toolRunCompactSummary(blocked), detail: blocked.map((run) => run.error ?? "").join("\n\n") });
       }
       sections.push({
         title: this.t("actionsNeedApproval", { summary: "" }).trim(),
@@ -26592,18 +28015,72 @@ class CancipView extends ItemView {
       };
     }
 
-    const executable = runs;
+    const executable = runs.filter((run) => run.status === "pending");
     const results: string[] = [];
-    for (const run of executable) {
+    for (const run of runs) {
+      if (run.status === "blocked") {
+        results.push(run.error ?? this.t("toolRunBlocked"));
+        continue;
+      }
       if (!isReadOnlyAction(run.action)) run.autoApproved = true;
       results.push(await this.executeToolRun(run));
     }
     void this.saveCurrentSession();
     return {
-      report: this.formatActionReport(this.actionReportSectionsFromRuns(executable, results)),
+      report: this.formatActionReport(this.actionReportSectionsFromRuns(runs, results)),
       runs,
       executed: executable.some((run) => run.status === "executed")
     };
+  }
+
+  private createBudgetedToolRuns(actions: CancipAction[]): ToolRun[] {
+    const previous = this.currentTaskToolRuns().filter((run) => run.status !== "rejected" && run.status !== "blocked");
+    const taskLimit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
+    const seen = new Set(previous.map((run) => stableCacheKey(run.action)));
+    const runs: ToolRun[] = [];
+    let accepted = 0;
+    let firstBlocked: { action: CancipAction; reason: string } | null = null;
+    for (const action of actions) {
+      const key = stableCacheKey(action);
+      let reason = "";
+      if (seen.has(key)) reason = "Duplicate action blocked; use the existing result and finish the answer.";
+      else if (accepted >= MAX_TOOL_ACTIONS_PER_BATCH) reason = `Action batch limit reached (${MAX_TOOL_ACTIONS_PER_BATCH}); finish from completed results.`;
+      else if (previous.length + accepted >= taskLimit) reason = `Task action budget reached (${taskLimit}); no more tools may run in this task. Give the final answer now.`;
+      if (reason) {
+        if (!firstBlocked) firstBlocked = { action, reason };
+        continue;
+      }
+      seen.add(key);
+      runs.push(this.createToolRun(action));
+      accepted += 1;
+    }
+    if (firstBlocked) {
+      const blocked = this.createToolRun(firstBlocked.action);
+      blocked.status = "blocked";
+      blocked.executedAt = new Date().toISOString();
+      blocked.error = firstBlocked.reason;
+      runs.push(blocked);
+      void this.recordSessionEvent({ kind: "tool.finish", runId: blocked.id, toolStatus: blocked.status, summary: blocked.summary, detail: blocked.error });
+    }
+    return runs;
+  }
+
+  private currentTaskToolRuns(): ToolRun[] {
+    let start = 0;
+    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+      const message = this.messages[index];
+      if (message.role !== "user") continue;
+      const text = message.content.trim();
+      if (!text || isContinuePrompt(text) || isTrivialChatPrompt(text)) continue;
+      start = index + 1;
+      break;
+    }
+    return uniqueToolRunsById(this.messages.slice(start).flatMap((message) => message.toolRuns ?? []));
+  }
+
+  private currentTaskActionBudgetReached(): boolean {
+    const limit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
+    return this.currentTaskToolRuns().filter((run) => run.status !== "rejected" && run.status !== "blocked").length >= limit;
   }
 
   private formatActionReport(sections: ActionReportSection[]): string {
@@ -26704,12 +28181,15 @@ class CancipView extends ItemView {
     }
     if (action.type !== "command") return "";
     const command = action.command.trim();
-    if (command === "cancip.searchVault") {
+    if (command === "cancip.searchVault" || command === "cancip.searchAll") {
       return stableCacheKey({
         type: "command",
         command,
         query: typeof action.args?.query === "string" ? action.args.query.trim() : "",
-        limit: action.args?.limit ?? ""
+        limit: action.args?.limit ?? "",
+        softQueries: Array.isArray(action.args?.softQueries) ? action.args?.softQueries : [],
+        includeArchived: action.args?.includeArchived !== false,
+        includeConfigs: action.args?.includeConfigs !== false
       });
     }
     if (command === "cancip.installedPlugins") {
@@ -26731,6 +28211,8 @@ class CancipView extends ItemView {
       command === "cancip.tts.voices" ||
       command === "cancip.tts.status" ||
       command === "cancip.externalFiles.help" ||
+      command === "cancip.search.status" ||
+      command === "cancip.archive.status" ||
       command === "cancip.automation.templates" ||
       command === "cancip.automation.list" ||
       command === "obsidian.listCommands"
@@ -27138,10 +28620,8 @@ class CancipView extends ItemView {
         ""
       ].filter(Boolean).join("\n");
       const next = `${existing.trimEnd()}\n\n${entry}`;
-      const trimmed = next.length > EXPERIENCE_LOG_MAX_CHARS
-        ? `# Cancip Experience\n\n${next.slice(-EXPERIENCE_LOG_MAX_CHARS)}`
-        : next;
-      await adapter.write(EXPERIENCE_LOG_PATH, `${trimmed.trimEnd()}\n`);
+      await adapter.write(EXPERIENCE_LOG_PATH, `${next.trimEnd()}\n`);
+      if (next.length > EXPERIENCE_LOG_MAX_CHARS) await this.plugin.archiveColdCancipData(true);
       if (event.status === "executed" || event.status === "failed") this.scheduleExperienceSkillHarvest();
     } catch (error) {
       console.warn("Cancip tool feedback save failed", error);
@@ -27508,6 +28988,7 @@ class CancipView extends ItemView {
     originalPrompt = ""
   ): Promise<ActionHandlingResult | null> {
     if (this.hasPendingToolRuns(previous.runs)) return previous;
+    if (this.currentTaskActionBudgetReached()) return previous;
     const intent = originalPrompt ? classifyPromptIntent(originalPrompt) : "implementation";
     const implementationTask = intent === "implementation";
     const initialNeedsMoreAction = implementationTask && shouldNeedMoreActionForPrompt(originalPrompt, previous.runs);
@@ -27529,6 +29010,7 @@ class CancipView extends ItemView {
 
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
       if (!current || request.signal.aborted || !this.isCurrentRequest(request)) return lastHandled;
+      if (this.currentTaskActionBudgetReached()) return lastHandled;
       const currentNeedsMoreAction = implementationTask && shouldNeedMoreActionForPrompt(originalPrompt, current.runs);
       if (!currentNeedsMoreAction && !this.shouldContinueFromToolRuns(current)) return lastHandled;
       if (currentNeedsMoreAction) {
@@ -27620,6 +29102,8 @@ class CancipView extends ItemView {
       this.addActionReportMessage(current);
       this.renderMessages();
       if (this.hasPendingToolRuns(current.runs)) return current;
+      lastHandled = current;
+      if (this.currentTaskActionBudgetReached()) return lastHandled;
       if (current.runs.length && current.runs.every((run) => run.cached && isReadOnlyAction(run.action))) {
         if (implementationTask && shouldNeedMoreActionForPrompt(originalPrompt, lastHandled.runs)) {
           const forced = await this.forceToolActionForImplementationTask(originalPrompt, continuationContext, request, "low-commitment");
@@ -27638,8 +29122,8 @@ class CancipView extends ItemView {
         }
         return lastHandled;
       }
-      lastHandled = current;
     }
+    if (this.currentTaskActionBudgetReached()) return lastHandled;
     if (originalPrompt && shouldExpectToolActionForPrompt(originalPrompt) && shouldNeedMoreActionForPrompt(originalPrompt, lastHandled.runs)) {
       const activeRead = await this.readActiveFileFromCurrentViewIfUseful(lastHandled, originalPrompt, request);
       if (activeRead) {
@@ -28445,6 +29929,9 @@ class CancipView extends ItemView {
       || command === "cancip.annotate.pdf"
       || command === "cancip.study.review"
       || command === "cancip.rebuildIndex"
+      || command === "cancip.search.rebuild"
+      || command === "cancip.archive.run"
+      || command === "cancip.archive.restore"
       || command === "cancip.localVersionCommit"
       || command === "cancip.importCodexMemory"
       || command === "cancip.importCapabilityPack"
@@ -30405,13 +31892,73 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: this.externalFilesHelp() });
     }
 
-    if (normalized === "cancip.searchVault") {
+    if (normalized === "cancip.searchVault" || normalized === "cancip.searchAll") {
       const query = typeof args.query === "string" ? args.query.trim() : "";
-      if (!query) throw new Error("cancip.searchVault requires args.query");
+      if (!query) throw new Error(`${normalized} requires args.query`);
       const limit = clampInt(args.limit, this.plugin.settings.maxContextFiles, 1, 20);
-      const hits = await this.searchVault(query, limit);
+      const softQueries = Array.isArray(args.softQueries)
+        ? args.softQueries.filter((item): item is string => typeof item === "string")
+        : [];
+      const hits = await this.searchVault(query, limit, {
+        softQueries,
+        includeArchived: args.includeArchived !== false,
+        includeConfigs: args.includeConfigs !== false
+      });
       const result = formatSearchHitsForCommand(hits);
       return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.search.status") {
+      const status = await this.plugin.universalSearchIndexStatus();
+      const result = isChineseLanguage(this.plugin.language())
+        ? `全局搜索索引：${status.indexed}/${status.total}\n完整：${status.complete ? "是" : "否，后台继续构建"}\n更新时间：${status.updatedAt || "尚未完成首批"}\n冷归档条目：${status.archived}`
+        : `Universal search index: ${status.indexed}/${status.total}\nComplete: ${status.complete ? "yes" : "no, background build continues"}\nUpdated: ${status.updatedAt || "first batch pending"}\nCold archive entries: ${status.archived}`;
+      return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.search.rebuild") {
+      const rebuilt = await this.plugin.rebuildUniversalSearchIndex(args.full !== false);
+      const result = `indexed=${rebuilt.indexed}\ntotal=${rebuilt.total}\ncomplete=${rebuilt.complete}`;
+      return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.archive.status") {
+      const status = await this.plugin.cancipArchiveStatus();
+      const result = isChineseLanguage(this.plugin.language())
+        ? [
+            `冷归档阈值：${status.thresholdDays} 天未使用`,
+            `上次维护：${status.lastMaintenanceAt || "尚未运行"}`,
+            `热会话：${status.hotSessions}（当前可归档 ${status.eligibleSessions}，受保护 ${status.protectedSessions}）`,
+            `冷会话：${status.archivedSessions}`,
+            `事件归档月包：${status.archivedEvents}`,
+            `经验归档月包：${status.archivedExperience}`,
+            `记忆冷标记：${status.archivedMemory}`,
+            "说明：固定、运行中、当前打开的会话不会自动归档；用户长期记忆不会因年龄被移动或删除。"
+          ].join("\n")
+        : [
+            `Cold archive threshold: ${status.thresholdDays} unused days`,
+            `Last maintenance: ${status.lastMaintenanceAt || "not run"}`,
+            `Hot sessions: ${status.hotSessions} (eligible ${status.eligibleSessions}, protected ${status.protectedSessions})`,
+            `Cold sessions: ${status.archivedSessions}`,
+            `Event month bundles: ${status.archivedEvents}`,
+            `Experience month bundles: ${status.archivedExperience}`,
+            `Memory cold markers: ${status.archivedMemory}`,
+            "Pinned, running, and currently open sessions are protected; user-authored long-term memory is never moved or deleted by age."
+          ].join("\n");
+      return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.archive.run") {
+      const archived = await this.plugin.archiveColdCancipData(true);
+      const result = `sessions=${archived.sessions}\nevents=${archived.events}\nexperience=${archived.experience}\nskipped=${archived.skipped}`;
+      return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.archive.restore") {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) throw new Error("cancip.archive.restore requires args.sessionId");
+      const restored = await this.plugin.restoreColdSession(sessionId);
+      return this.t("commandExecuted", { command: normalized, result: `${restored.id}\n${restored.title}\n${restored.path}` });
     }
 
     if (normalized === "cancip.findTarget") {
@@ -30469,7 +32016,11 @@ class CancipView extends ItemView {
         enabled: template.enabled,
         intervalMinutes: template.intervalMinutes,
         hour: template.hour,
-        minute: template.minute
+        minute: template.minute,
+        watchNewFiles: template.watchNewFiles,
+        newFilePattern: template.newFilePattern,
+        newFileDebounceSeconds: template.newFileDebounceSeconds,
+        notifyMode: template.notifyMode
       });
       return this.t("commandExecuted", { command: normalized, result: this.t("automationTemplateAdded", { title: task.title }) });
     }
@@ -30490,7 +32041,11 @@ class CancipView extends ItemView {
           enabled: template.enabled,
           intervalMinutes: template.intervalMinutes,
           hour: template.hour,
-          minute: template.minute
+          minute: template.minute,
+          watchNewFiles: template.watchNewFiles,
+          newFilePattern: template.newFilePattern,
+          newFileDebounceSeconds: template.newFileDebounceSeconds,
+          notifyMode: template.notifyMode
         }));
       }
       return this.t("commandExecuted", { command: normalized, result: this.t("automationTemplateAdded", { title: "早晚国内外大事动向" }) + "\n" + this.plugin.formatAutomations(tasks) });
@@ -30511,7 +32066,11 @@ class CancipView extends ItemView {
         enabled: template.enabled,
         intervalMinutes: template.intervalMinutes,
         hour: template.hour,
-        minute: template.minute
+        minute: template.minute,
+        watchNewFiles: template.watchNewFiles,
+        newFilePattern: template.newFilePattern,
+        newFileDebounceSeconds: template.newFileDebounceSeconds,
+        notifyMode: template.notifyMode
       });
       return this.t("commandExecuted", { command: normalized, result: this.t("automationTemplateAdded", { title: task.title }) + "\n" + this.plugin.formatAutomations([task]) });
     }
@@ -30531,7 +32090,11 @@ class CancipView extends ItemView {
         enabled: template.enabled,
         intervalMinutes: template.intervalMinutes,
         hour: template.hour,
-        minute: template.minute
+        minute: template.minute,
+        watchNewFiles: template.watchNewFiles,
+        newFilePattern: template.newFilePattern,
+        newFileDebounceSeconds: template.newFileDebounceSeconds,
+        notifyMode: template.notifyMode
       });
       return this.t("commandExecuted", { command: normalized, result: this.t("automationTemplateAdded", { title: task.title }) + "\n" + this.plugin.formatAutomations([task]) });
     }
@@ -32173,7 +33736,10 @@ class CancipView extends ItemView {
     const explicitPath = typeof args.path === "string" && args.path.trim() ? normalizeActionPath(args.path.trim()) : "";
     const allSessions = args.all === true || sessionId === "*" || sessionId.toLowerCase() === "all";
     if (allSessions) {
-      const entries = (await this.readSessionHistoryIndex()).slice(0, limit);
+      const hot = await this.readSessionHistoryIndex();
+      const hotIds = new Set(hot.map((entry) => entry.id));
+      const cold = (await this.plugin.coldArchivedSessionEntries()).filter((entry) => !hotIds.has(entry.id));
+      const entries = [...hot, ...cold].sort(compareSessionHistoryEntries).slice(0, limit);
       if (!entries.length) return this.t("sessionNoHistory");
       return entries.map((entry, index) => [
         `${index + 1}. ${entry.id} · ${entry.title || this.t("untitledSession")} [${entry.status}]`,
@@ -32188,7 +33754,11 @@ class CancipView extends ItemView {
         entry.archived ? "   archived: true" : ""
       ].filter(Boolean).join("\n")).join("\n");
     }
-    const path = explicitPath || `${SESSION_HISTORY_DIR}/${sessionId}.json`;
+    let path = explicitPath || `${SESSION_HISTORY_DIR}/${sessionId}.json`;
+    if (!explicitPath && sessionId !== this.sessionId && !(await this.app.vault.adapter.exists(path))) {
+      const archived = (await this.plugin.coldArchivedSessionEntries()).find((entry) => entry.id === sessionId);
+      if (archived) path = archived.path;
+    }
     let messages = this.messages;
     if (explicitPath || sessionId !== this.sessionId) {
       if (!(await this.app.vault.adapter.exists(path))) throw new Error(`session not found: ${sessionId}`);
@@ -33112,14 +34682,12 @@ class CancipView extends ItemView {
       stepHead.createSpan({ cls: "obcc-process-step-index", text: String(index + 1) });
       stepHead.createSpan({ cls: "obcc-process-step-title", text: stepInfo.headline });
       if (!stepInfo.hasDetail) continue;
-      const stepDetails = step.createEl("details", { cls: "obcc-process-step-details" });
-      this.wireDetails(stepDetails, `process-step:${stepInfo.rendered.message.id}`, false);
-      stepDetails.createEl("summary", { text: this.t("processDetails") });
+      const stepDetails = step.createDiv({ cls: "obcc-process-step-details" });
       const stepBody = stepDetails.createDiv({ cls: "obcc-process-step-detail-body" });
       if (stepInfo.detail) this.renderStructuredProcessDetail(stepBody, stepInfo.detail, stepInfo.rendered.message.id);
-      this.renderHiddenToolJson(stepBody, stepInfo.blocks, stepInfo.rendered.display.hasProcessFold);
-      this.renderToolRuns(stepBody, stepInfo.rendered.message);
-      this.renderChangedFileRuns(stepBody, stepInfo.rendered.message);
+      this.renderHiddenToolJson(stepBody, stepInfo.blocks, stepInfo.rendered.display.hasProcessFold, true);
+      this.renderToolRuns(stepBody, stepInfo.rendered.message, true);
+      this.renderChangedFileRuns(stepBody, stepInfo.rendered.message, true);
     }
   }
 
@@ -33167,9 +34735,8 @@ class CancipView extends ItemView {
       const groupEl = container.createDiv({ cls: `obcc-process-detail-group is-${group}` });
       groupEl.createDiv({ cls: "obcc-process-detail-group-title", text: labels[group] });
       for (const [index, section] of items.entries()) {
-        const details = groupEl.createEl("details", { cls: "obcc-process-detail-field" });
-        this.wireDetails(details, `process-field:${messageId}:${group}:${index}`, false);
-        details.createEl("summary", { text: this.localizedProcessFieldTitle(section.title) });
+        const details = groupEl.createDiv({ cls: "obcc-process-detail-field", attr: { "data-process-field": `${messageId}:${group}:${index}` } });
+        details.createDiv({ cls: "obcc-process-detail-field-title", text: this.localizedProcessFieldTitle(section.title) });
         const body = details.createDiv({ cls: "obcc-process-detail-field-body" });
         const pre = body.createEl("pre", { cls: "obcc-process-detail-raw" });
         pre.createEl("code", { text: section.content });
@@ -33356,9 +34923,18 @@ class CancipView extends ItemView {
     }
   }
 
-  private renderHiddenToolJson(parent: HTMLElement, blocks: FoldedMessageBlock[], hasProcessFold = false): void {
+  private renderHiddenToolJson(parent: HTMLElement, blocks: FoldedMessageBlock[], hasProcessFold = false, inline = false): void {
     blocks = this.meaningfulProcessBlocks(blocks);
     if (!blocks.length) return;
+    if (inline) {
+      const wrap = parent.createDiv({ cls: "obcc-tool-json is-inline-process-detail" });
+      wrap.createDiv({ cls: "obcc-folded-block-title", text: hasProcessFold ? this.t("processDetails") : this.t("toolJsonDetails") });
+      for (const block of blocks) {
+        wrap.createDiv({ cls: "obcc-folded-block-title", text: block.title });
+        wrap.createEl("pre", { text: trimContext(redactSensitiveText(block.content), PROCESS_DETAIL_MAX_CHARS) });
+      }
+      return;
+    }
     const details = parent.createEl("details", { cls: "obcc-tool-json" });
     const messageId = parent.closest<HTMLElement>("[data-message-id]")?.dataset.messageId ?? "unknown";
     this.wireDetails(details, `tool-json:${messageId}:${blocks.map((block) => block.title).join("|")}`);
@@ -33391,7 +34967,8 @@ class CancipView extends ItemView {
     const choiceContent = [message.choiceSourceText, content].filter(Boolean).join("\n\n");
     if (isModelFailureVisibleText(choiceContent)) return;
     const localChoices = this.choiceOptionsForMessage(choiceContent);
-    const safeChoices = this.mergeChoiceOptions([...(message.choiceOptions ?? []), ...localChoices]);
+    const deterministicChoices = this.deterministicChoiceOptionsForMessage(message, choiceContent);
+    const safeChoices = this.mergeChoiceOptions([...(message.choiceOptions ?? []), ...localChoices, ...deterministicChoices]);
     if (!safeChoices.length) return;
     const wrap = parent.createDiv({ cls: "obcc-choice-cards" });
     for (const choice of safeChoices) {
@@ -33413,6 +34990,28 @@ class CancipView extends ItemView {
   private choiceOptionsForMessage(content: string): ChoiceOption[] {
     const extracted = finalChoiceOptions(content);
     return this.mergeChoiceOptions(extracted);
+  }
+
+  private deterministicChoiceOptionsForMessage(message: ChatMessage, content: string): ChoiceOption[] {
+    const userPrompt = this.lastUserPromptBeforeMessage(message.id);
+    const text = `${userPrompt}\n${stripStructuredChoices(content)}`;
+    const choices: string[] = [];
+    const add = (choice: string): void => {
+      if (!choices.includes(choice)) choices.push(choice);
+    };
+    if (/(需要确认的高风险|高风险动作|等待确认|待审核|approval required|high.?risk)/i.test(text)) {
+      add("打开审核面板");
+      add("查看候选详情");
+      add("暂不执行");
+    } else {
+      if (/(审核面板|review gate|待审核)/i.test(text)) add("打开审核面板");
+      if (/(自动化|定时|新文件触发|automation|schedule)/i.test(text)) add("查看自动化任务");
+      if (/(冷归档|归档状态|archive)/i.test(text)) add("查看归档状态");
+      if (/(万物搜索|全局搜索|搜索索引|search index)/i.test(text)) add("打开全局搜索");
+      if (/(改动文件|文件已修改|changed files|files changed)/i.test(text)) add("查看改动文件");
+      if (/(Cancip|插件).*(安装|更新|修改|构建|版本)|(?:installed|updated|built).*(?:Cancip|plugin)/i.test(text)) add("验证本地插件");
+    }
+    return choiceOptionsFromTexts(choices.slice(0, 3));
   }
 
   private mergeChoiceOptions(choices: ChoiceOption[]): ChoiceOption[] {
@@ -33499,7 +35098,7 @@ class CancipView extends ItemView {
     return sanitizeModelVisibleAnswer(extractResponseText(response.json) || extractNonJsonText(response.text));
   }
 
-  private renderToolRuns(parent: HTMLElement, message: ChatMessage): void {
+  private renderToolRuns(parent: HTMLElement, message: ChatMessage, inlineDetails = false): void {
     if (!message.toolRuns?.length) return;
     const wrap = parent.createDiv({ cls: "obcc-tool-runs" });
     for (const run of message.toolRuns) {
@@ -33541,20 +35140,25 @@ class CancipView extends ItemView {
       }
       const detail = run.result || run.error;
       if (detail) {
-        const details = row.createEl("details", { cls: "obcc-tool-run-details" });
-        this.wireDetails(details, `tool-run:${message.id}:${run.id}`, run.status === "executing");
-        details.createEl("summary", { cls: "obcc-tool-run-result-label", text: this.t("toolRunResult") });
-        this.renderDeferredPre(details, detail, "obcc-tool-run-result", TOOL_RESULT_DETAIL_MAX_CHARS);
+        if (inlineDetails) {
+          row.createDiv({ cls: "obcc-tool-run-result-label", text: this.t("toolRunResult") });
+          row.createEl("pre", { cls: "obcc-tool-run-result", text: trimContext(redactSensitiveText(detail), TOOL_RESULT_DETAIL_MAX_CHARS) });
+        } else {
+          const details = row.createEl("details", { cls: "obcc-tool-run-details" });
+          this.wireDetails(details, `tool-run:${message.id}:${run.id}`, run.status === "executing");
+          details.createEl("summary", { cls: "obcc-tool-run-result-label", text: this.t("toolRunResult") });
+          this.renderDeferredPre(details, detail, "obcc-tool-run-result", TOOL_RESULT_DETAIL_MAX_CHARS);
+        }
       }
-      this.renderToolRunActionDiffPreview(row, run);
-      this.renderToolRunChangedFiles(row, run);
-      if (run.reviewPath) {
-        this.renderToolRunReviewFiles(row, run);
+      if (!inlineDetails) {
+        this.renderToolRunActionDiffPreview(row, run);
+        this.renderToolRunChangedFiles(row, run);
+        if (run.reviewPath) this.renderToolRunReviewFiles(row, run);
       }
     }
   }
 
-  private renderChangedFileRuns(parent: HTMLElement, message: ChatMessage): void {
+  private renderChangedFileRuns(parent: HTMLElement, message: ChatMessage, inline = false): void {
     const runs = uniqueToolRunsById(message.changedFileRuns ?? [])
       .filter((run) => this.isFileChangeAction(run.action) && this.displayChangedPathsForAction(run.action).length > 0);
     if (!runs.length) return;
@@ -33566,9 +35170,11 @@ class CancipView extends ItemView {
       const head = row.createDiv({ cls: "obcc-tool-run-head" });
       head.createSpan({ cls: "obcc-tool-run-status", text: this.toolRunStatusLabelForRun(run) });
       head.createSpan({ cls: "obcc-tool-run-summary", text: run.summary });
-      this.renderToolRunChangedFiles(row, run, true);
-      if (run.reviewPath) {
-        this.renderToolRunReviewFiles(row, run);
+      if (inline) {
+        row.createEl("pre", { cls: "obcc-tool-run-result", text: uniqueStrings(this.displayChangedPathsForAction(run.action)).join("\n") });
+      } else {
+        this.renderToolRunChangedFiles(row, run, true);
+        if (run.reviewPath) this.renderToolRunReviewFiles(row, run);
       }
     }
   }
@@ -34875,6 +36481,46 @@ class CancipSettingTab extends PluginSettingTab {
             await patchTask({ condition: value.trim() || undefined });
           });
       });
+
+    new Setting(card)
+      .setName(this.plugin.t("automationWatchNewFiles"))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(task.watchNewFiles)
+          .onChange(async (value) => {
+            await patchTask({ watchNewFiles: value });
+          });
+      });
+
+    new Setting(card)
+      .setName(this.plugin.t("automationNewFilePattern"))
+      .addText((text) => {
+        text
+          .setPlaceholder("**/*.md")
+          .setValue(task.newFilePattern ?? "")
+          .onChange(async (value) => {
+            await patchTask({ newFilePattern: value.trim() || undefined });
+          });
+      })
+      .addText((text) => {
+        text
+          .setPlaceholder(this.plugin.t("automationNewFileDebounce"))
+          .setValue(String(task.newFileDebounceSeconds))
+          .onChange(async (value) => {
+            await patchTask({ newFileDebounceSeconds: clampInt(value, task.newFileDebounceSeconds, 1, 3600) });
+          });
+      });
+
+    new Setting(card)
+      .setName(this.plugin.t("automationNotifyMode"))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOptions({ inherit: "inherit", always: "always", failure: "failure only", never: "never" })
+          .setValue(task.notifyMode)
+          .onChange(async (value) => {
+            await patchTask({ notifyMode: isAutomationNotifyMode(value) ? value : "inherit" });
+          });
+      });
   }
 
   private displayNotificationSettings(parent: HTMLElement): void {
@@ -35593,6 +37239,7 @@ function normalizeAutomationTask(raw: unknown): AutomationTask | null {
   const intervalMinutes = Number.parseInt(String(raw.intervalMinutes ?? ""), 10);
   const hour = Number.parseInt(String(raw.hour ?? ""), 10);
   const minute = Number.parseInt(String(raw.minute ?? ""), 10);
+  const newFileDebounceSeconds = Number.parseInt(String(raw.newFileDebounceSeconds ?? ""), 10);
   const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString();
   const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt;
   const lastStatus = raw.lastStatus === "ok" || raw.lastStatus === "failed" ? raw.lastStatus : undefined;
@@ -35612,6 +37259,12 @@ function normalizeAutomationTask(raw: unknown): AutomationTask | null {
     sessionMode: isAutomationSessionMode(raw.sessionMode) ? raw.sessionMode : "current",
     sessionId: typeof raw.sessionId === "string" && raw.sessionId.trim() ? raw.sessionId.trim() : undefined,
     condition: typeof raw.condition === "string" && raw.condition.trim() ? raw.condition.trim() : undefined,
+    watchNewFiles: typeof raw.watchNewFiles === "boolean" ? raw.watchNewFiles : false,
+    newFilePattern: typeof raw.newFilePattern === "string" && raw.newFilePattern.trim() ? raw.newFilePattern.trim() : undefined,
+    newFileDebounceSeconds: Number.isFinite(newFileDebounceSeconds)
+      ? Math.max(1, Math.min(3600, newFileDebounceSeconds))
+      : AUTOMATION_NEW_FILE_DEFAULT_DEBOUNCE_SECONDS,
+    notifyMode: isAutomationNotifyMode(raw.notifyMode) ? raw.notifyMode : "inherit",
     createdAt,
     updatedAt,
     lastRunAt: typeof raw.lastRunAt === "string" ? raw.lastRunAt : undefined,
@@ -35695,7 +37348,11 @@ function cancipAutomationTemplates(): AutomationTemplate[] {
       prompt: buildVaultCurationPrompt(),
       schedule: "hourly",
       enabled: true,
-      intervalMinutes: 120
+      intervalMinutes: 120,
+      watchNewFiles: true,
+      newFilePattern: "**/*.md",
+      newFileDebounceSeconds: 60,
+      notifyMode: "always"
     },
     {
       id: "auto-github-status",
@@ -35935,6 +37592,9 @@ function shouldUpgradeVaultCurationAutomationTask(task: AutomationTask, template
   if (task.id !== VAULT_CURATION_AUTOMATION_ID) return false;
   const nextPrompt = template.prompt?.trim() ?? "";
   if (!nextPrompt) return false;
+  if ((template.watchNewFiles && !task.watchNewFiles)
+    || (template.newFilePattern && task.newFilePattern !== template.newFilePattern)
+    || (template.notifyMode && task.notifyMode !== template.notifyMode)) return true;
   if (task.prompt.includes(VAULT_CURATION_AUTOMATION_PROMPT_MARKER)) return false;
   const text = `${task.title}\n${task.prompt}`;
   return /Vault 自动整理|auto-vault-curation|改名、内容整理美化|挂 tag|挂总结|auto-vault-content-beautify|auto-vault-auto-tags|auto-vault-file-summaries/i.test(text);
@@ -36612,6 +38272,338 @@ function stableTextHash(input: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+function emptyCancipArchiveIndex(): CancipArchiveIndex {
+  return {
+    schemaVersion: CANCIP_ARCHIVE_SCHEMA_VERSION,
+    updatedAt: "",
+    lastMaintenanceAt: "",
+    entries: []
+  };
+}
+
+function normalizeCancipArchiveIndex(raw: unknown): CancipArchiveIndex {
+  if (!isRecord(raw)) return emptyCancipArchiveIndex();
+  const byId = new Map<string, CancipArchiveEntry>();
+  const kinds = new Set<CancipArchiveKind>(["session", "session-events", "experience", "memory"]);
+  for (const item of Array.isArray(raw.entries) ? raw.entries : []) {
+    if (!isRecord(item) || typeof item.kind !== "string" || !kinds.has(item.kind as CancipArchiveKind)) continue;
+    const path = typeof item.path === "string" ? normalizePath(item.path) : "";
+    if (!path) continue;
+    const kind = item.kind as CancipArchiveKind;
+    const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : `${kind}:${path}`;
+    const archivedAt = typeof item.archivedAt === "string" ? item.archivedAt : "";
+    const lastUsedAt = typeof item.lastUsedAt === "string" && item.lastUsedAt ? item.lastUsedAt : archivedAt;
+    const sessionRaw = isRecord(item.session) ? { ...item.session, path } : null;
+    const session = sessionRaw ? normalizeSessionHistoryEntry(sessionRaw) ?? undefined : undefined;
+    const entry: CancipArchiveEntry = {
+      id,
+      kind,
+      title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : reviewFileName(path),
+      path,
+      originalPath: typeof item.originalPath === "string" ? normalizePath(item.originalPath) : "",
+      archivedAt,
+      lastUsedAt,
+      size: typeof item.size === "number" && Number.isFinite(item.size) ? Math.max(0, item.size) : 0,
+      hash: typeof item.hash === "string" && item.hash ? item.hash : undefined,
+      session
+    };
+    const previous = byId.get(id);
+    if (!previous || entry.archivedAt.localeCompare(previous.archivedAt) >= 0) byId.set(id, entry);
+  }
+  return {
+    schemaVersion: CANCIP_ARCHIVE_SCHEMA_VERSION,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
+    lastMaintenanceAt: typeof raw.lastMaintenanceAt === "string" ? raw.lastMaintenanceAt : "",
+    entries: [...byId.values()].slice(0, 4000)
+  };
+}
+
+function archiveMonthFromIso(value: string): string {
+  const time = Date.parse(value);
+  const date = Number.isFinite(time) ? new Date(time) : new Date();
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function upsertArchiveEntry(index: CancipArchiveIndex, entry: CancipArchiveEntry): void {
+  const normalized = { ...entry, path: normalizePath(entry.path), originalPath: normalizePath(entry.originalPath) };
+  const position = index.entries.findIndex((item) => item.id === normalized.id || normalizePath(item.path) === normalized.path);
+  if (position >= 0) index.entries[position] = normalized;
+  else index.entries.push(normalized);
+}
+
+function emptyUniversalSearchIndex(): UniversalSearchIndex {
+  return {
+    schemaVersion: UNIVERSAL_SEARCH_SCHEMA_VERSION,
+    updatedAt: "",
+    complete: false,
+    cursor: 0,
+    inventoryHash: "",
+    documents: []
+  };
+}
+
+function normalizeUniversalSearchIndex(raw: unknown): UniversalSearchIndex {
+  if (!isRecord(raw)) return emptyUniversalSearchIndex();
+  const kinds = new Set<UniversalSearchDocumentKind>(["note", "memory", "session", "config", "pdf", "image", "office", "archive", "file"]);
+  const byPath = new Map<string, UniversalSearchDocument>();
+  for (const item of Array.isArray(raw.documents) ? raw.documents : []) {
+    if (!isRecord(item)) continue;
+    const path = typeof item.path === "string" ? normalizePath(item.path) : "";
+    if (!path) continue;
+    const kind = typeof item.kind === "string" && kinds.has(item.kind as UniversalSearchDocumentKind)
+      ? item.kind as UniversalSearchDocumentKind
+      : "file";
+    const document: UniversalSearchDocument = {
+      path,
+      title: typeof item.title === "string" && item.title.trim() ? item.title.trim() : reviewFileName(path),
+      kind,
+      mtime: typeof item.mtime === "number" && Number.isFinite(item.mtime) ? item.mtime : 0,
+      size: typeof item.size === "number" && Number.isFinite(item.size) ? Math.max(0, item.size) : 0,
+      indexedAt: typeof item.indexedAt === "string" ? item.indexedAt : "",
+      textChars: typeof item.textChars === "number" && Number.isFinite(item.textChars) ? Math.max(0, item.textChars) : 0,
+      bloom: typeof item.bloom === "string" ? item.bloom : ""
+    };
+    const previous = byPath.get(path);
+    if (!previous || document.indexedAt.localeCompare(previous.indexedAt) >= 0) byPath.set(path, document);
+  }
+  return {
+    schemaVersion: UNIVERSAL_SEARCH_SCHEMA_VERSION,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
+    complete: raw.complete === true,
+    cursor: typeof raw.cursor === "number" && Number.isFinite(raw.cursor) ? Math.max(0, Math.floor(raw.cursor)) : 0,
+    inventoryHash: typeof raw.inventoryHash === "string" ? raw.inventoryHash : "",
+    documents: [...byPath.values()].slice(0, UNIVERSAL_SEARCH_MAX_DOCUMENTS)
+  };
+}
+
+function shouldIndexUniversalSearchPath(path: string, obsidianConfigDir: string): boolean {
+  const normalized = normalizePath(path).replace(/^\/+/, "");
+  if (!normalized || normalized === UNIVERSAL_SEARCH_INDEX_PATH || normalized === CANCIP_ARCHIVE_INDEX_PATH) return false;
+  const lower = normalized.toLowerCase();
+  if (/(^|\/)(?:\.git|node_modules|\.trash|\.recycle|\.cancip-trash)(\/|$)/i.test(lower)) return false;
+  const configRoot = normalizePath(obsidianConfigDir).replace(/\/+$/, "").toLowerCase();
+  if (configRoot && lower.startsWith(`${configRoot}/cache/`)) return false;
+  return true;
+}
+
+function universalSearchProtectedContentPath(path: string): boolean {
+  const normalized = normalizePath(path).toLowerCase();
+  return /(^|\/)(?:encript|encrypt|encrypted|encryption|加密|密钥|secrets?)(\/|$)/i.test(normalized);
+}
+
+function universalSearchDocumentKind(path: string, memoryFolder: string): UniversalSearchDocumentKind {
+  const normalized = normalizePath(path);
+  const lower = normalized.toLowerCase();
+  const memoryRoots = uniqueStrings([memoryFolder, DEFAULT_MEMORY_FOLDER, LEGACY_DEFAULT_MEMORY_FOLDER, INTERRUPTED_DEFAULT_MEMORY_FOLDER])
+    .map((root) => normalizePath(root).replace(/\/+$/, "").toLowerCase())
+    .filter(Boolean);
+  if (lower.startsWith(`${CANCIP_ARCHIVE_SESSIONS_DIR.toLowerCase()}/`) || lower.startsWith(`${SESSION_HISTORY_DIR.toLowerCase()}/`)) return "session";
+  if (lower === PROJECT_MEMORY_PATH.toLowerCase() || memoryRoots.some((root) => lower === root || lower.startsWith(`${root}/`)) || /(^|\/)memory(?:\/|$)/i.test(lower)) return "memory";
+  if (isPdfPath(normalized)) return "pdf";
+  if (isImagePath(normalized)) return "image";
+  if (/\.(docx|xlsx|pptx)$/i.test(normalized)) return "office";
+  if (/\.(zip|7z|rar|tar|gz|tgz)$/i.test(normalized)) return "archive";
+  if (lower.startsWith(".cancip/") || lower.startsWith(".obsidian/") || /(^|\/)(?:config|settings?)(\/|\.|$)/i.test(lower)) return "config";
+  if (/\.(md|markdown)$/i.test(normalized)) return "note";
+  return "file";
+}
+
+function universalSearchKindPriority(kind: UniversalSearchDocumentKind): number {
+  if (kind === "memory") return 0;
+  if (kind === "session") return 1;
+  if (kind === "note") return 2;
+  if (kind === "config") return 3;
+  if (kind === "pdf") return 4;
+  if (kind === "office") return 5;
+  if (kind === "image") return 6;
+  if (kind === "archive") return 7;
+  return 8;
+}
+
+function universalSearchBinaryDocumentKind(kind: UniversalSearchDocumentKind): boolean {
+  return kind === "pdf" || kind === "office" || kind === "archive";
+}
+
+function universalSearchKindLabel(kind: UniversalSearchDocumentKind, language: Language): string {
+  if (!isChineseLanguage(language)) return kind;
+  const labels: Record<UniversalSearchDocumentKind, string> = {
+    note: "笔记",
+    memory: "记忆",
+    session: "会话",
+    config: "配置",
+    pdf: "PDF",
+    image: "图片",
+    office: "Office 文件",
+    archive: "压缩包",
+    file: "文件"
+  };
+  return labels[kind];
+}
+
+function universalSearchRouteLabel(route: "hard" | "soft", language: Language): string {
+  if (isChineseLanguage(language)) return route === "hard" ? "硬搜索" : "AI 辅助软搜索";
+  return route === "hard" ? "hard search" : "AI-assisted soft search";
+}
+
+function universalSearchArchiveLabel(language: Language): string {
+  return isChineseLanguage(language) ? "冷归档" : "cold archive";
+}
+
+function universalSearchTerms(path: string, title: string, text: string): string[] {
+  const values = [path, title, text]
+    .map((value) => value.normalize("NFKC").toLowerCase())
+    .filter(Boolean);
+  const terms = new Set<string>();
+  const add = (term: string): void => {
+    const normalized = term.trim().replace(/^[/._-]+|[/._-]+$/g, "");
+    if (normalized && normalized.length <= 96) terms.add(normalized);
+  };
+  for (const value of values) {
+    for (const term of tokenize(value)) add(term);
+    for (const part of value.split(/[^a-z0-9_\-\u4e00-\u9fff]+/g)) {
+      if (part.length >= 2) add(part);
+    }
+    for (const match of value.matchAll(/[\u4e00-\u9fff]{2,}/g)) {
+      const sequence = match[0];
+      for (let index = 0; index < sequence.length - 1; index += 1) add(sequence.slice(index, index + 2));
+    }
+  }
+  return [...terms];
+}
+
+function universalSearchHash(term: string, seed: number): number {
+  let hash = (2166136261 ^ seed) >>> 0;
+  for (let index = 0; index < term.length; index += 1) {
+    hash ^= term.charCodeAt(index);
+    hash = Math.imul(hash, 16777619) >>> 0;
+  }
+  hash ^= hash >>> 16;
+  hash = Math.imul(hash, 2246822507) >>> 0;
+  hash ^= hash >>> 13;
+  return hash >>> 0;
+}
+
+function universalSearchBloomPositions(term: string): number[] {
+  const first = universalSearchHash(term, 0x9e3779b9);
+  const second = universalSearchHash(term, 0x85ebca6b) || 0x27d4eb2d;
+  return [first, first + second, first + Math.imul(second, 2)].map((value) => (value >>> 0) % UNIVERSAL_SEARCH_BLOOM_BITS);
+}
+
+function createUniversalSearchBloom(terms: string[]): string {
+  const bytes = new Uint8Array(Math.ceil(UNIVERSAL_SEARCH_BLOOM_BITS / 8));
+  for (const term of uniqueStrings(terms)) {
+    for (const position of universalSearchBloomPositions(term)) bytes[position >>> 3] |= 1 << (position & 7);
+  }
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 1) binary += String.fromCharCode(bytes[index]);
+  return btoa(binary);
+}
+
+function universalSearchBloomMayContain(bloom: string, terms: string[]): boolean {
+  if (!bloom || !terms.length) return false;
+  try {
+    const binary = atob(bloom);
+    if (binary.length * 8 < UNIVERSAL_SEARCH_BLOOM_BITS) return false;
+    return terms.every((term) => universalSearchBloomPositions(term).every((position) => {
+      const byte = binary.charCodeAt(position >>> 3);
+      return (byte & (1 << (position & 7))) !== 0;
+    }));
+  } catch {
+    return false;
+  }
+}
+
+function universalSearchBloomMatchCount(bloom: string, terms: string[]): number {
+  if (!bloom || !terms.length) return 0;
+  try {
+    const binary = atob(bloom);
+    if (binary.length * 8 < UNIVERSAL_SEARCH_BLOOM_BITS) return 0;
+    return terms.reduce((count, term) => count + (universalSearchBloomPositions(term).every((position) => {
+      const byte = binary.charCodeAt(position >>> 3);
+      return (byte & (1 << (position & 7))) !== 0;
+    }) ? 1 : 0), 0);
+  } catch {
+    return 0;
+  }
+}
+
+function universalSearchQueryTerms(query: string): string[] {
+  const normalized = query.normalize("NFKC").toLowerCase();
+  const terms = new Set<string>(tokenize(normalized));
+  for (const word of normalized.match(/[a-z0-9_\-/]{2,}/g) ?? []) terms.add(word);
+  for (const match of normalized.matchAll(/[\u4e00-\u9fff]{2,}/g)) {
+    const sequence = match[0];
+    for (let index = 0; index < sequence.length - 1; index += 1) terms.add(sequence.slice(index, index + 2));
+  }
+  return [...terms].filter((term) => term.length <= 96).slice(0, 32);
+}
+
+async function readImageSearchSidecarText(adapter: DataAdapter, path: string, maxChars: number): Promise<string> {
+  const normalized = normalizePath(path);
+  const withoutExtension = normalized.replace(/\.[^.\/]+$/, "");
+  const candidates = uniqueStrings([
+    `${withoutExtension}.md`,
+    `${withoutExtension}.txt`,
+    `${withoutExtension}.ocr.md`,
+    `${withoutExtension}.ocr.txt`,
+    `${normalized}.md`,
+    `${normalized}.txt`,
+    `${normalized}.ocr.md`,
+    `${normalized}.ocr.txt`
+  ]).filter((candidate) => candidate !== normalized);
+  const chunks = [`Image: ${normalized}`, `File name: ${reviewFileName(normalized)}`];
+  if (/\.svg$/i.test(normalized)) {
+    try {
+      if (await adapter.exists(normalized)) chunks.push(trimContext(await adapter.read(normalized), Math.min(maxChars, 20000)));
+    } catch {
+      // Filename and sidecars remain searchable when SVG text cannot be read.
+    }
+  }
+  for (const candidate of candidates) {
+    if (chunks.join("\n").length >= maxChars) break;
+    try {
+      if (!(await adapter.exists(candidate))) continue;
+      chunks.push(`Sidecar: ${candidate}\n${trimContext(await adapter.read(candidate), maxChars - chunks.join("\n").length)}`);
+    } catch {
+      // One unreadable sidecar must not suppress the other candidates.
+    }
+  }
+  return trimContext(chunks.join("\n\n"), maxChars);
+}
+
+function searchTextFromSessionSnapshot(raw: string, maxChars: number): string {
+  try {
+    const snapshot = JSON.parse(raw) as unknown;
+    if (!isRecord(snapshot)) return trimContext(redactSensitiveText(raw), maxChars);
+    const parts: string[] = [];
+    const add = (label: string, value: unknown): void => {
+      if (typeof value === "string" && value.trim()) parts.push(`${label}: ${value.trim()}`);
+      else if (typeof value === "number" || typeof value === "boolean") parts.push(`${label}: ${String(value)}`);
+    };
+    for (const key of ["sessionId", "title", "status", "mode", "sessionCreatedAt", "startedAt", "updatedAt", "completedAt", "stoppedAt", "failedAt"]) add(key, snapshot[key]);
+    for (const key of ["resumableTask", "taskControl", "manualTodos", "queuedPrompts"]) {
+      const value = snapshot[key];
+      if (value !== undefined) parts.push(`${key}: ${JSON.stringify(value)}`);
+    }
+    const messages = Array.isArray(snapshot.messages) ? snapshot.messages : [];
+    for (const [index, message] of messages.entries()) {
+      if (!isRecord(message)) continue;
+      const role = typeof message.role === "string" ? message.role : "message";
+      add(`${role} ${index + 1}`, message.content);
+      if (Array.isArray(message.sources)) parts.push(`${role} ${index + 1} sources: ${JSON.stringify(message.sources)}`);
+      if (Array.isArray(message.progressSteps)) parts.push(`${role} ${index + 1} process: ${JSON.stringify(message.progressSteps)}`);
+    }
+    const contexts = Array.isArray(snapshot.draftContext) ? snapshot.draftContext : [];
+    for (const context of contexts) {
+      if (!isRecord(context)) continue;
+      parts.push(`context: ${JSON.stringify({ label: context.label, path: context.path, content: context.content })}`);
+    }
+    return trimContext(redactSensitiveText(parts.join("\n\n")), maxChars);
+  } catch {
+    return trimContext(redactSensitiveText(raw), maxChars);
+  }
+}
+
 function shouldRecordToolExperience(event: ToolFeedbackEvent): boolean {
   if (event.status !== "executed") return true;
   const actions = Array.isArray(event.action) ? event.action : event.action ? [event.action] : [];
@@ -37032,9 +39024,12 @@ function isDotFolderVaultPath(path: string): boolean {
 }
 
 function isChangedFileDisplayPath(path: string): boolean {
-  return Boolean(normalizePath(String(path ?? "").replace(/\\/g, "/")).trim())
-    && !isDotFolderVaultPath(path)
-    && !isReviewGateMachineFilePath(path);
+  const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/")).trim();
+  if (!normalized || isReviewGateMachineFilePath(normalized)) return false;
+  if (!isDotFolderVaultPath(normalized)) return true;
+  const lower = normalized.toLowerCase();
+  return lower === CANCIP_CONFIG_PATH.toLowerCase()
+    || /(?:^|\/)(?:\.obsidian|obsidian)\/(?:[^/]+\.json|plugins\/[^/]+\/(?:main\.js|manifest\.json|styles\.css|data\.json))$/i.test(lower);
 }
 
 function reviewItemOpenPaths(item: ReviewGateManifestItem): string[] {
@@ -38975,6 +40970,7 @@ function shouldSuppressToolActionsForPrompt(prompt: string): boolean {
 }
 
 function isContinuePrompt(prompt: string): boolean {
+  if (/^继续上一项未完成任务(?:[。.!！？?]|$)/.test(prompt.trim())) return true;
   const compact = prompt.trim().toLowerCase().replace(/[\s，。！？!?.、~～]+/g, "");
   return /^(继续|继续修|继续做|接着|接着来|接着做|接着修|往下|往下做|下一步|继续吧|继续呀|继续啊|continue|goon|next|proceed|keepgoing)$/.test(compact);
 }
@@ -39422,7 +41418,7 @@ function isVerificationAction(action: CancipAction, writePaths: string[]): boole
   }
   if (action.type !== "command") return false;
   const command = action.command.trim();
-  if (command === "cancip.searchVault" || command === "cancip.previewVaultSearch") return true;
+  if (command === "cancip.searchVault" || command === "cancip.searchAll" || command === "cancip.previewVaultSearch") return true;
   return writePaths.some((target) => target === command);
 }
 
@@ -39466,7 +41462,10 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "cancip.tts.status",
     "cancip.externalFiles.help",
     "cancip.findTarget",
+    "cancip.searchAll",
     "cancip.searchVault",
+    "cancip.search.status",
+    "cancip.archive.status",
     "cancip.previewVaultSearch",
     "cancip.newsBrief",
     "cancip.vaultDailyReport",
@@ -39996,7 +41995,10 @@ function isReadOnlyAction(action: CancipAction): boolean {
     "cancip.tts.seek",
     "cancip.externalFiles.help",
     "cancip.findTarget",
+    "cancip.searchAll",
     "cancip.searchVault",
+    "cancip.search.status",
+    "cancip.archive.status",
     "cancip.previewVaultSearch",
     "cancip.newsBrief",
     "cancip.vaultDailyReport",
@@ -41263,6 +43265,9 @@ function normalizeSessionHistoryEntry(item: Record<string, unknown>): SessionHis
     unread,
     pinned: typeof item.pinned === "boolean" ? item.pinned : false,
     archived: typeof item.archived === "boolean" ? item.archived : false,
+    coldArchived: typeof item.coldArchived === "boolean" ? item.coldArchived : false,
+    archivedAt: typeof item.archivedAt === "string" ? item.archivedAt : undefined,
+    lastOpenedAt: typeof item.lastOpenedAt === "string" ? item.lastOpenedAt : undefined,
     manualTitle: typeof item.manualTitle === "boolean" ? item.manualTitle : false,
     manualOrder: typeof item.manualOrder === "number" && Number.isFinite(item.manualOrder) ? item.manualOrder : undefined,
     parentSessionId: typeof item.parentSessionId === "string" ? item.parentSessionId : undefined,
@@ -41307,6 +43312,9 @@ function sessionHistoryEntryFromSnapshot(raw: unknown, path: string): SessionHis
     unread: typeof raw.unread === "boolean" ? raw.unread : false,
     pinned: typeof raw.pinned === "boolean" ? raw.pinned : false,
     archived: typeof raw.archived === "boolean" ? raw.archived : false,
+    coldArchived: typeof raw.coldArchived === "boolean" ? raw.coldArchived : false,
+    archivedAt: typeof raw.archivedAt === "string" ? raw.archivedAt : undefined,
+    lastOpenedAt: typeof raw.lastOpenedAt === "string" ? raw.lastOpenedAt : undefined,
     manualTitle: typeof raw.manualTitle === "boolean" ? raw.manualTitle : false,
     manualOrder: typeof raw.manualOrder === "number" && Number.isFinite(raw.manualOrder) ? raw.manualOrder : undefined,
     parentSessionId: typeof raw.parentSessionId === "string" ? raw.parentSessionId : undefined,
@@ -41331,6 +43339,9 @@ function mergeSessionHistoryEntry(existing: SessionHistoryEntry | undefined, fro
     title: existing.manualTitle ? existing.title : primary.title || secondary.title,
     pinned: existing.pinned ?? fromFile.pinned,
     archived: existing.archived ?? fromFile.archived,
+    coldArchived: existing.coldArchived ?? fromFile.coldArchived,
+    archivedAt: existing.archivedAt || fromFile.archivedAt,
+    lastOpenedAt: cancipLatestTimestamp(existing.lastOpenedAt, fromFile.lastOpenedAt) || undefined,
     manualTitle: existing.manualTitle ?? fromFile.manualTitle,
     manualOrder: existing.manualOrder ?? fromFile.manualOrder,
     unread: Boolean(existing.unread || fromFile.unread),
@@ -41393,7 +43404,9 @@ function compareSessionHistoryEntries(a: SessionHistoryEntry, b: SessionHistoryE
   if (aManualOrder !== null && bManualOrder !== null && aManualOrder !== bManualOrder) {
     return aManualOrder - bManualOrder;
   }
-  const byUpdatedAt = b.updatedAt.localeCompare(a.updatedAt);
+  const aLastUsedAt = cancipLatestTimestamp(a.lastOpenedAt, a.updatedAt, a.createdAt);
+  const bLastUsedAt = cancipLatestTimestamp(b.lastOpenedAt, b.updatedAt, b.createdAt);
+  const byUpdatedAt = bLastUsedAt.localeCompare(aLastUsedAt);
   if (byUpdatedAt) return byUpdatedAt;
   return b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id);
 }
@@ -41801,6 +43814,10 @@ function redactSensitiveText(input: string): string {
   redacted = redacted.replace(/github_pat_[A-Za-z0-9_]{12,}/g, "github_pat_***REDACTED***");
   redacted = redacted.replace(/AKIA[0-9A-Z]{16}/g, "AKIA***REDACTED***");
   redacted = redacted.replace(/(["']?(?:apiKey|githubToken|token|accessToken|secret|password)["']?\s*:\s*["'])[^"']+(["'])/gi, "$1***REDACTED***$2");
+  redacted = redacted.replace(/(-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)[\s\S]*?(-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----)/gi, "$1\n***REDACTED***\n$2");
+  redacted = redacted.replace(/(\b(?:api[_-]?key|github[_-]?token|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|password|passwd|secret|authorization)\b\s*[:=]\s*["']?)([^\s,"'};]+)/gi, "$1***REDACTED***");
+  redacted = redacted.replace(/(\bBearer\s+)[A-Za-z0-9._~+\/-]{12,}/gi, "$1***REDACTED***");
+  redacted = redacted.replace(/([?&](?:api[_-]?key|token|access[_-]?token|secret|password)=)[^&#\s]+/gi, "$1***REDACTED***");
   return redacted;
 }
 
@@ -44626,7 +46643,15 @@ function parseCancipAction(input: unknown): CancipAction | null {
       minute: typeof input.minute === "number" ? input.minute : Number.isFinite(Number.parseInt(String(input.minute ?? ""), 10)) ? Number.parseInt(String(input.minute), 10) : undefined,
       sessionMode: isAutomationSessionMode(input.sessionMode) ? input.sessionMode : undefined,
       sessionId: typeof input.sessionId === "string" ? input.sessionId : undefined,
-      condition: typeof input.condition === "string" ? input.condition : undefined
+      condition: typeof input.condition === "string" ? input.condition : undefined,
+      watchNewFiles: typeof input.watchNewFiles === "boolean" ? input.watchNewFiles : undefined,
+      newFilePattern: typeof input.newFilePattern === "string" ? input.newFilePattern : undefined,
+      newFileDebounceSeconds: typeof input.newFileDebounceSeconds === "number"
+        ? input.newFileDebounceSeconds
+        : Number.isFinite(Number.parseInt(String(input.newFileDebounceSeconds ?? ""), 10))
+          ? Number.parseInt(String(input.newFileDebounceSeconds), 10)
+          : undefined,
+      notifyMode: isAutomationNotifyMode(input.notifyMode) ? input.notifyMode : undefined
     };
   }
 
@@ -44721,6 +46746,38 @@ function isAutomationSchedule(value: unknown): value is AutomationSchedule {
   return value === "manual" || value === "hourly" || value === "daily";
 }
 
+function isAutomationNotifyMode(value: unknown): value is AutomationNotifyMode {
+  return value === "inherit" || value === "always" || value === "failure" || value === "never";
+}
+
+function isAutomationInternalPath(path: string, obsidianConfigDir: string): boolean {
+  const normalized = normalizePath(path.replace(/\\/g, "/").replace(/^\/+/, ""));
+  return isPathInVaultFolder(normalized, CANCIP_CONFIG_DIR)
+    || isPathInVaultFolder(normalized, obsidianConfigDir)
+    || isPathInVaultFolder(normalized, ".trash");
+}
+
+function automationNewFilePathMatches(task: AutomationTask, path: string): boolean {
+  const patterns = (task.newFilePattern || "**/*")
+    .split(/[\n,;；]+/)
+    .map((item) => item.trim().replace(/\\/g, "/").replace(/^\/+/, ""))
+    .filter(Boolean);
+  return patterns.some((pattern) => automationGlobMatches(pattern, path));
+}
+
+function automationGlobMatches(pattern: string, path: string): boolean {
+  const tokenized = pattern
+    .replace(/\*\*/g, "\u0000")
+    .replace(/\*/g, "\u0001")
+    .replace(/\?/g, "\u0002");
+  const source = escapeRegExp(tokenized)
+    .replace(/\u0000\//g, "(?:.*/)?")
+    .replace(/\u0000/g, ".*")
+    .replace(/\u0001/g, "[^/]*")
+    .replace(/\u0002/g, "[^/]");
+  return new RegExp(`^${source}$`, "i").test(normalizePath(path.replace(/\\/g, "/")));
+}
+
 function isAutomationSessionMode(value: unknown): value is AutomationSessionMode {
   return value === "current" || value === "new" || value === "session";
 }
@@ -44792,12 +46849,30 @@ function compactVaultPathForMatch(path: string): string {
 
 function isReviewableVaultContentPath(rawPath: string, obsidianConfigDir: string): boolean {
   const normalized = normalizeActionPath(rawPath);
+  if (isReviewableOperationalPath(normalized, obsidianConfigDir)) return true;
   if (isConfigOrRuntimeVaultPath(normalized, obsidianConfigDir)) return false;
   const name = normalized.split("/").filter(Boolean).pop() ?? "";
   if (!name) return false;
   const dot = name.lastIndexOf(".");
   if (dot < 1) return true;
   return REVIEWABLE_VAULT_EDIT_EXTENSIONS.has(name.slice(dot + 1).toLowerCase());
+}
+
+function isReviewableOperationalPath(rawPath: string, obsidianConfigDir: string): boolean {
+  const normalized = normalizeActionPath(rawPath);
+  if (!normalized || isReviewGateMachineFilePath(normalized)) return false;
+  const lower = normalized.toLowerCase();
+  if (lower === CANCIP_CONFIG_PATH.toLowerCase()) return true;
+  const configDir = normalizePath(obsidianConfigDir).toLowerCase();
+  if (!configDir || !isPathInFolder(lower, configDir)) return false;
+  const relative = lower.slice(configDir.length).replace(/^\/+/, "");
+  if (!relative) return false;
+  if (!relative.includes("/")) return /\.json$/i.test(relative);
+  const pluginPrefix = "plugins/";
+  if (!relative.startsWith(pluginPrefix)) return false;
+  const parts = relative.slice(pluginPrefix.length).split("/").filter(Boolean);
+  if (parts.length !== 2) return false;
+  return /^(?:main\.js|manifest\.json|styles\.css|data\.json)$/i.test(parts[1] ?? "");
 }
 
 function isConfigOrRuntimeVaultPath(path: string, obsidianConfigDir: string): boolean {
@@ -46322,6 +48397,15 @@ function formatSearchHitsForCommand(hits: SearchHit[]): string {
     .join("\n\n");
 }
 
+function formatUniversalSearchContext(hits: SearchHit[]): string {
+  return hits
+    .map((hit, index) => {
+      const excerpt = trimContext(redactSensitiveText(hit.excerpt), 440).trim();
+      return `${index + 1}. ${hit.path}${excerpt ? `\n${excerpt}` : ""}`;
+    })
+    .join("\n\n");
+}
+
 function formatTargetCandidatesForCommand(candidates: TargetCandidate[], query: string): string {
   if (!candidates.length) {
     return [
@@ -46514,6 +48598,62 @@ function extractResponseText(json: unknown): string {
 function extractResponseId(json: unknown): string {
   if (!isRecord(json)) return "";
   return typeof json.id === "string" ? json.id : "";
+}
+
+function modelReplyTruncationReason(json: unknown, text: string): string {
+  const records: Record<string, unknown>[] = [];
+  const collect = (value: unknown): void => {
+    if (!isRecord(value) || records.includes(value)) return;
+    records.push(value);
+    for (const key of ["response", "incomplete_details", "details"]) collect(value[key]);
+    if (Array.isArray(value.choices)) {
+      for (const choice of value.choices) collect(choice);
+    }
+  };
+  collect(json);
+  for (const record of records) {
+    const status = typeof record.status === "string" ? record.status.toLowerCase() : "";
+    const type = typeof record.type === "string" ? record.type.toLowerCase() : "";
+    const finishReason = typeof record.finish_reason === "string" ? record.finish_reason.toLowerCase() : "";
+    const stopReason = typeof record.stop_reason === "string" ? record.stop_reason.toLowerCase() : "";
+    const reason = typeof record.reason === "string" ? record.reason.toLowerCase() : "";
+    if (status === "incomplete" || type.includes("response.incomplete")) return reason || status || type;
+    if (/length|max[_-]?(?:output[_-]?)?tokens?|token[_-]?limit/.test(`${finishReason} ${stopReason} ${reason}`)) {
+      return finishReason || stopReason || reason;
+    }
+  }
+  return looksStronglyTruncatedModelText(text) ? "unfinished text structure" : "";
+}
+
+function looksStronglyTruncatedModelText(raw: string): boolean {
+  const text = stripStructuredChoices(removeCancipActionBlocks(raw)).trim();
+  if (text.length < 8) return false;
+  const fences = text.match(/^\s*`{3,}/gm) ?? [];
+  if (fences.length % 2 === 1) return true;
+  const boldMarkers = text.match(/\*\*/g) ?? [];
+  if (boldMarkers.length % 2 === 1) return true;
+  const tail = text.slice(-500);
+  const opens = (tail.match(/[（(【\[]/g) ?? []).length;
+  const closes = (tail.match(/[）)】\]]/g) ?? []).length;
+  const lastLine = tail.split(/\r?\n/).filter((line) => line.trim()).pop()?.trim() ?? "";
+  if (opens > closes && !/[。！？.!?；;：:]$/.test(lastLine)) return true;
+  if (/^(?:#{1,6}\s+|\*\*\s*)?\d+[.)、]\s*[^。！？.!?；;：:]{0,80}$/.test(lastLine) && !/\*\*$/.test(lastLine)) return true;
+  return /(?:建议是|包括|如下|例如|分别是|以及|或者|并且|因此需要|下一步是|the following|including|such as|because|and|or)\s*[:：,，、-]?$/i.test(lastLine);
+}
+
+function mergeModelContinuation(base: string, continuation: string): string {
+  const left = base.trimEnd();
+  const right = continuation.trimStart();
+  if (!left) return right;
+  if (!right) return left;
+  if (right.startsWith(left)) return right;
+  if (left.endsWith(right)) return left;
+  const maxOverlap = Math.min(600, left.length, right.length);
+  for (let size = maxOverlap; size >= 12; size -= 1) {
+    if (left.slice(-size) === right.slice(0, size)) return `${left}${right.slice(size)}`;
+  }
+  const separator = /\s$/.test(base) || /^\s/.test(continuation) ? "" : "\n";
+  return `${left}${separator}${right}`;
 }
 
 function extractNonJsonText(text: string): string {

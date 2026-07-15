@@ -461,95 +461,119 @@ if (-not $Case -or 'programmatic.vault-state-sync-classifier'.Contains($Case)) {
 
 if (-not $Case -or 'programmatic.native-file-pins'.Contains($Case)) {
   try {
+    $started = Get-Date
+    $setup = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
+(async()=>{const p=app.plugins.plugins.cancip;if(!p||typeof p.setFilePinned!=='function')throw new Error('native file pin API missing');await app.commands.executeCommandById('file-explorer:open');await new Promise(r=>setTimeout(r,220));const visual=s=>Array.from(activeDocument.querySelectorAll(s)).filter(el=>el.getBoundingClientRect().height>0).sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top);const parent=path=>path.includes('/')?path.slice(0,path.lastIndexOf('/')):'';const original=JSON.parse(JSON.stringify(await p.loadFilePinState(true)));const before=visual('.nav-file-title[data-path]').map(el=>el.dataset.path).filter(Boolean);const rootPins=original.folders['']||[];const rootFolder=visual('.nav-folder-title[data-path]').map(el=>el.dataset.path).find(path=>path&&!path.includes('/')&&!rootPins.includes(path));const mixedGroups=new Map;for(const row of visual('.nav-file-title[data-path],.nav-folder-title[data-path]')){const path=row.dataset.path,container=row.parentElement?.parentElement;if(!path||!container)continue;const items=mixedGroups.get(container)||[];items.push({path,type:row.matches('.nav-folder-title')?'folder':'file'});mixedGroups.set(container,items)}const mixed=[...mixedGroups.values()].find(items=>items.some(item=>item.type==='file')&&items.some(item=>item.type==='folder'));const files={};for(const path of before)(files[parent(path)]??=[]).push(path);const selected=Object.entries(files).find(([,paths])=>paths.length>=2);if(!rootFolder||!mixed||!selected)throw new Error('insufficient mounted file explorer rows');const plan={rootFolder,mixedFile:mixed.find(item=>item.type==='file').path,mixedFolder:mixed.find(item=>item.type==='folder').path,mixedParent:parent(mixed.find(item=>item.type==='file').path),folder:selected[0],first:selected[1][0],second:selected[1][1],before};window.__cancipPinSmoke={original,plan};return JSON.stringify({id:'programmatic.native-file-pins-setup',plan})})()
+'@
+    $folderResult = Invoke-CancipEval -TimeoutSeconds 35 -Code @'
+(async()=>{const p=app.plugins.plugins.cancip,{rootFolder}=window.__cancipPinSmoke.plan;await p.setFilePinned(rootFolder,true);await new Promise(r=>setTimeout(r,180));const row=Array.from(activeDocument.querySelectorAll('.nav-folder-title[data-path]')).find(el=>el.dataset.path===rootFolder);const pinned=Object.values((await p.loadFilePinState(true)).folders).flat().includes(rootFolder)&&!!row?.querySelector('.obcc-file-pin-indicator');await p.setFilePinned(rootFolder,false);await new Promise(r=>setTimeout(r,180));const unpinned=!Object.values((await p.loadFilePinState(true)).folders).flat().includes(rootFolder)&&!row?.querySelector('.obcc-file-pin-indicator');return JSON.stringify({folderPinSupported:pinned&&unpinned})})()
+'@
+    $mixedResult = Invoke-CancipEval -TimeoutSeconds 40 -Code @'
+(async()=>{const p=app.plugins.plugins.cancip,{mixedFile,mixedFolder,mixedParent}=window.__cancipPinSmoke.plan;await p.setFilePinned(mixedFolder,true);await p.setFilePinned(mixedFile,true);await p.setPinnedFileOrder(mixedParent,[mixedFile,mixedFolder]);p.scheduleFilePinsApply(0);await new Promise(r=>setTimeout(r,220));const parent=path=>path.includes('/')?path.slice(0,path.lastIndexOf('/')):'';const panel=Array.from(activeDocument.querySelectorAll('.obcc-file-pin-panel-row[data-cancip-file-pin-path]')).map(el=>el.dataset.cancipFilePinPath).filter(path=>parent(path)===mixedParent);const mixedOrderApplied=panel[0]===mixedFile&&panel[1]===mixedFolder;await p.setFilePinned(mixedFile,false);await p.setFilePinned(mixedFolder,false);return JSON.stringify({mixedOrderApplied,panel})})()
+'@
+    $fileResult = Invoke-CancipEval -TimeoutSeconds 55 -Code @'
+(async()=>{const p=app.plugins.plugins.cancip,{folder,first,second,before}=window.__cancipPinSmoke.plan;const mounted=()=>Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).filter(el=>el.getBoundingClientRect().height>0).sort((a,b)=>a.getBoundingClientRect().top-b.getBoundingClientRect().top).map(el=>el.dataset.path).filter(Boolean);await p.setFilePinned(first,true);await p.setFilePinned(first,false);await new Promise(r=>setTimeout(r,180));const unpinRestoresNative=before.join('|')===mounted().join('|');await p.setFilePinned(first,true);await p.setFilePinned(second,true);await p.setPinnedFileOrder(folder,[second,first]);await p.movePinnedFile(first,-1);const up=(await p.loadFilePinState(true)).folders[folder]||[];await p.movePinnedFile(first,1);const down=(await p.loadFilePinState(true)).folders[folder]||[];p.scheduleFilePinsApply(0);await new Promise(r=>setTimeout(r,220));const state=await p.loadFilePinState(true),pinned=state.folders[folder]||[];const parent=path=>path.includes('/')?path.slice(0,path.lastIndexOf('/')):'';const panel=Array.from(activeDocument.querySelectorAll('.obcc-file-pin-panel-row[data-cancip-file-pin-path]')).map(el=>el.dataset.cancipFilePinPath).filter(path=>parent(path)===folder);const row=Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).find(el=>el.dataset.path===first);const view=app.workspace.getLeavesOfType('cancip-view')[0]?.view;return JSON.stringify({folder,stateOrder:pinned.slice(0,6),orderApplied:pinned.filter(path=>panel.includes(path)).join('|')===panel.join('|'),normalOrderPreserved:before.filter(path=>!pinned.includes(path)).join('|')===mounted().filter(path=>!pinned.includes(path)).join('|'),unpinRestoresNative,nativeDraggable:row?.getAttribute('draggable')==='true',indicator:!!row?.querySelector('.obcc-file-pin-indicator'),moveButtonsRoundTrip:up[0]===first&&up[1]===second&&down[0]===second&&down[1]===first,writeNeedsApproval:!!view?.isWriteLikeAction({type:'command',command:'obsidian.files.pin',args:{path:first}})})})()
+'@
+    $migrationResult = Invoke-CancipEval -TimeoutSeconds 45 -Code @'
+(async()=>{const p=app.plugins.plugins.cancip,{folder,first}=window.__cancipPinSmoke.plan;const state=await p.loadFilePinState(true),index=(state.folders[folder]||[]).indexOf(first),extension=first.includes('.')?first.slice(first.lastIndexOf('.')):'',renamed=folder+'/__cancip-pin-rename-smoke'+extension;await p.migrateRenamedFilePins(first,renamed);const renameKeepsIndex=((await p.loadFilePinState(true)).folders[folder]||[]).indexOf(renamed)===index;const movedFolder=folder+'/__cancip-pin-move-smoke',moved=movedFolder+'/'+renamed.split('/').pop();await p.migrateRenamedFilePins(renamed,moved);const movedPresent=((await p.loadFilePinState(true)).folders[movedFolder]||[]).includes(moved);await p.removeDeletedFilePins(movedFolder);const deleteClears=!Object.values((await p.loadFilePinState(true)).folders).flat().includes(moved);return JSON.stringify({renameKeepsIndex,movedPresent,deleteClears})})()
+'@
+    $checks = @{
+      folderPinSupported = [bool]$folderResult.folderPinSupported
+      mixedOrderApplied = [bool]$mixedResult.mixedOrderApplied
+      orderApplied = [bool]$fileResult.orderApplied
+      normalOrderPreserved = [bool]$fileResult.normalOrderPreserved
+      unpinRestoresNative = [bool]$fileResult.unpinRestoresNative
+      nativeDraggable = [bool]$fileResult.nativeDraggable
+      indicator = [bool]$fileResult.indicator
+      moveButtonsRoundTrip = [bool]$fileResult.moveButtonsRoundTrip
+      writeNeedsApproval = [bool]$fileResult.writeNeedsApproval
+      renameKeepsIndex = [bool]$migrationResult.renameKeepsIndex
+      movedPresent = [bool]$migrationResult.movedPresent
+      deleteClears = [bool]$migrationResult.deleteClears
+    }
+    foreach ($field in $checks.Keys) {
+      if (-not $checks[$field]) { throw "native file pin check failed: $field" }
+    }
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.native-file-pins'; pass = $true; elapsedMs = [int]((Get-Date) - $started).TotalMilliseconds; folder = $fileResult.folder; stateOrder = $fileResult.stateOrder }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.native-file-pins'; pass = $false; error = $_.Exception.Message }
+  } finally {
+    try {
+      $null = Invoke-CancipEval -TimeoutSeconds 35 -Code @'
+(async()=>{const p=app.plugins.plugins.cancip,original=window.__cancipPinSmoke?.original;if(original)await p.saveFilePinState(original);await p.loadFilePinState(true);p.stopFilePinSortMode(false);p.scheduleFilePinsApply(0);delete window.__cancipPinSmoke;return JSON.stringify({restored:true})})()
+'@
+    } catch {
+      Write-Host "File pin smoke cleanup warning: $($_.Exception.Message)"
+    }
+  }
+}
+
+if (-not $Case -or 'programmatic.tool-action-budget'.Contains($Case)) {
+  try {
     $code = @'
 (async()=>{
   const t=Date.now();
   const p=app.plugins.plugins.cancip;
-  if(!p||typeof p.setFilePinned!=='function')throw new Error('native file pin API missing');
-  await app.commands.executeCommandById('file-explorer:open');
-  await new Promise(resolve=>setTimeout(resolve,180));
-  const original=JSON.parse(JSON.stringify(await p.loadFilePinState(true)));
-  const mountedPaths=()=>Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).map(el=>String(el.dataset.path||'')).filter(Boolean);
+  const view=await p.activateView();
+  const originalMessages=view.messages;
+  const originalAutomationTaskId=view.activeAutomationTaskId;
+  const run=(index,action)=>({
+    id:'budget-smoke-'+index,
+    action,
+    summary:'budget smoke '+index,
+    status:'executed',
+    createdAt:new Date().toISOString(),
+    executedAt:new Date().toISOString(),
+    result:'ok'
+  });
+  const user=content=>({id:crypto.randomUUID(),role:'user',content,createdAt:Date.now()});
+  const assistant=toolRuns=>({id:crypto.randomUUID(),role:'assistant',content:'',createdAt:Date.now(),toolRuns});
   try{
-    const before=mountedPaths();
-    const groups={};
-    for(const path of before){
-      const index=path.lastIndexOf('/');
-      const folder=index>=0?path.slice(0,index):'';
-      (groups[folder]??=[]).push(path);
-    }
-    const selected=Object.entries(groups).find(([,paths])=>paths.length>=2);
-    if(!selected)throw new Error('no mounted sibling files for native pin smoke');
-    const folder=selected[0];
-    const first=selected[1][0];
-    const second=selected[1][1];
-    await p.setFilePinned(first,true);
-    await new Promise(resolve=>setTimeout(resolve,180));
-    await p.setFilePinned(first,false);
-    await new Promise(resolve=>setTimeout(resolve,260));
-    const unpinRestoresNative=before.join('|')===mountedPaths().join('|');
-    await p.setFilePinned(first,true);
-    await p.setFilePinned(second,true);
-    await p.setPinnedFileOrder(folder,[second,first]);
-    p.scheduleFilePinsApply(0);
-    await new Promise(resolve=>setTimeout(resolve,220));
-    const state=await p.loadFilePinState(true);
-    const after=mountedPaths();
-    const pinned=state.folders[folder]||[];
-    const mountedPinned=pinned.filter(path=>after.includes(path));
-    const domPinned=after.filter(path=>pinned.includes(path));
-    const normalBefore=before.filter(path=>!pinned.includes(path));
-    const normalAfter=after.filter(path=>!pinned.includes(path));
-    const firstRow=Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).find(el=>el.dataset.path===first);
-    const nativeDraggable=firstRow?.getAttribute('draggable')==='true';
-    const indicator=!!firstRow?.querySelector('.obcc-file-pin-indicator');
-    const view=await p.activateView();
-    const writeNeedsApproval=view.isWriteLikeAction({type:'command',command:'obsidian.files.pin',args:{path:first}});
-    const extension=first.includes('.')?first.slice(first.lastIndexOf('.')):'';
-    const renamed=folder+'/__cancip-pin-rename-smoke'+extension;
-    const originalIndex=pinned.indexOf(first);
-    await p.migrateRenamedFilePins(first,renamed);
-    const renamedState=await p.loadFilePinState(true);
-    const renameKeepsIndex=(renamedState.folders[folder]||[]).indexOf(renamed)===originalIndex;
-    const movedFolder=folder+'/__cancip-pin-move-smoke';
-    const moved=movedFolder+'/'+renamed.split('/').pop();
-    await p.migrateRenamedFilePins(renamed,moved);
-    const movedState=await p.loadFilePinState(true);
-    const movedPresent=(movedState.folders[movedFolder]||[]).includes(moved);
-    await p.removeDeletedFilePins(movedFolder);
-    const deletedState=await p.loadFilePinState(true);
-    const deleteClears=!Object.values(deletedState.folders).flat().includes(moved);
+    view.activeAutomationTaskId='auto-budget-smoke';
+    const history=Array.from({length:24},(_,index)=>run(index,{type:'read',path:`AI/budget-${index}.md`}));
+    view.messages=[
+      user('执行自动化整理任务'),
+      assistant(history),
+      user('继续上一项未完成任务。\n原始任务：执行自动化整理任务\n中断原因：stopped')
+    ];
+    const resumedCount=view.currentTaskToolRuns().length;
+    const resumedBudgetReached=view.currentTaskActionBudgetReached();
+    const overBudget=view.createBudgetedToolRuns([{type:'read',path:'AI/after-budget.md'}]);
+    const budgetBlocked=overBudget.length===1&&overBudget[0].status==='blocked'&&/budget reached/i.test(overBudget[0].error||'');
+
+    view.activeAutomationTaskId='';
+    const duplicateAction={type:'read',path:'AI/duplicate-budget.md'};
+    view.messages=[user('检查重复动作'),assistant([run(100,duplicateAction)])];
+    const duplicate=view.createBudgetedToolRuns([duplicateAction]);
+    const duplicateBlocked=duplicate.length===1&&duplicate[0].status==='blocked'&&/duplicate action/i.test(duplicate[0].error||'');
+
+    view.messages=[user('检查动作批次限制')];
+    const batch=view.createBudgetedToolRuns(Array.from({length:9},(_,index)=>({type:'read',path:`AI/batch-${index}.md`})));
+    const batchLimited=batch.filter(item=>item.status==='pending').length===8
+      && batch.filter(item=>item.status==='blocked').length===1;
     return JSON.stringify({
-      id:'programmatic.native-file-pins',
+      id:'programmatic.tool-action-budget',
       elapsedMs:Date.now()-t,
-      folder,
-      stateOrder:pinned.slice(0,6),
-      domOrder:domPinned.slice(0,6),
-      orderApplied:mountedPinned.join('|')===domPinned.join('|'),
-      normalOrderPreserved:normalBefore.join('|')===normalAfter.join('|'),
-      unpinRestoresNative,
-      nativeDraggable,
-      indicator,
-      writeNeedsApproval,
-      renameKeepsIndex,
-      movedPresent,
-      deleteClears
+      resumedCount,
+      resumedBudgetReached,
+      budgetBlocked,
+      duplicateBlocked,
+      batchLimited
     });
   } finally {
-    await p.saveFilePinState(original);
-    await p.loadFilePinState(true);
-    p.stopFilePinSortMode(false);
-    p.scheduleFilePinsApply(0);
+    view.messages=originalMessages;
+    view.activeAutomationTaskId=originalAutomationTaskId;
   }
 })()
 '@
-    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
-    foreach ($field in @('orderApplied','normalOrderPreserved','unpinRestoresNative','nativeDraggable','indicator','writeNeedsApproval','renameKeepsIndex','movedPresent','deleteClears')) {
-      if (-not $item.$field) { throw "native file pin check failed: $field ($($item | ConvertTo-Json -Compress -Depth 8))" }
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 20
+    foreach ($field in @('resumedBudgetReached','budgetBlocked','duplicateBlocked','batchLimited')) {
+      if (-not $item.$field) { throw "tool action budget check failed: $field ($($item | ConvertTo-Json -Compress -Depth 8))" }
     }
-    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; folder = $item.folder; stateOrder = $item.stateOrder }
+    if ([int]$item.resumedCount -ne 24) { throw "resumedCount expected 24 got $($item.resumedCount)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; resumedCount = $item.resumedCount }
   } catch {
-    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.native-file-pins'; pass = $false; error = $_.Exception.Message }
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.tool-action-budget'; pass = $false; error = $_.Exception.Message }
   }
 }
 
@@ -2848,82 +2872,34 @@ if (-not $Case -or 'programmatic.task-control-continue-reset'.Contains($Case)) {
 
 if (-not $Case -or 'programmatic.prompt-payload-priority-and-experience-skill'.Contains($Case)) {
   try {
-    $code = @'
-(()=>{
-  const t=Date.now();
-  const p=app.plugins.plugins.cancip;
-  const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view;
-  if(!p||!v)throw new Error('Cancip view unavailable');
-  const old={messages:v.messages,manualTodos:v.manualTodos,queuedPrompts:v.queuedPrompts,taskControl:v.taskControl};
-  try{
-    const now=new Date().toISOString();
-    const runs=Array.from({length:4},(_,i)=>({id:'payload-run-'+i,action:{type:'read',path:'Folder/File'+i+'.md'},summary:'read file '+i,status:'executed',createdAt:now,result:'x'.repeat(1800)}));
-    v.messages=[
-      {id:'payload-user',role:'user',content:'previous user request',createdAt:Date.now()-3000},
-      {id:'payload-answer',role:'assistant',content:'previous useful answer',createdAt:Date.now()-2000},
-      {id:'payload-tools',role:'assistant',content:'<!-- cancip-process-message -->',createdAt:Date.now()-1000,toolRuns:runs}
-    ];
-    v.manualTodos=[
-      {id:'p1',text:'inspect target',done:true,sendToModel:true,source:'programmatic',createdAt:now},
-      {id:'p2',text:'apply and verify',done:false,sendToModel:true,source:'programmatic',createdAt:now}
-    ];
-    v.queuedPrompts=[
-      {id:'send',prompt:'queued correction',createdAt:Date.now(),held:false},
-      {id:'held',prompt:'HELD-MUST-NOT-BE-SENT',createdAt:Date.now(),held:true}
-    ];
-    v.taskControl={originalPrompt:'fix target',taskGoal:'fix target',startedAt:now,updatedAt:now};
-    const policy=v.promptPayloadPolicy('modify config and verify');
-    const finalPolicyPrompt=v.modePrompt('modify config and verify');
-    const block=v.taskControlBlockForModel('modify config and verify','modify config and verify');
-    const continued=v.modelPromptForTurn('continue','fix target');
-    const toolSummary=v.toolRunsForPrompt(runs,900,4);
-    const memory='## Memory router index\n'+('memory '.repeat(120));
-    const packed=v.packPromptContext([
-      memory,
-      '## Active Skills\n'+('skill instruction '.repeat(100)),
-      '## @context:selected text\n'+('selected '.repeat(100)),
-      memory
-    ],700);
-    const log=[
-      '# Cancip Experience',
-      '',
-      '## 2026-07-12T00:00:00.000Z '+String.fromCharCode(183)+' executed',
-      '- Step: Workflow: update plugin setting',
-      '- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]',
-      '- Result: applied and verified',
-      '',
-      '## 2026-07-12T00:01:00.000Z '+String.fromCharCode(183)+' executed',
-      '- Step: Workflow: update plugin setting',
-      '- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]',
-      '- Result: applied and verified again'
-    ].join('\n');
-    const recipes=v.buildExperienceSkillRecipes(log);
-    return JSON.stringify({
-      id:'programmatic.prompt-payload-priority-and-experience-skill',
-      elapsedMs:Date.now()-t,
-      includeWorkingState:policy.includeWorkingState,
-      includeHistoryAnchors:policy.includeHistoryAnchors,
-      finalOmitsEmpty:finalPolicyPrompt.includes('\u7a7a\u9879')&&finalPolicyPrompt.includes('\u4ec5\u8bfb\u53d6')&&finalPolicyPrompt.includes('\u4e0d\u89e3\u91ca'),
-      blockLength:block.length,
-      blockHasStatic:/Plan discipline|Need missing details/.test(block),
-      blockHasHeld:block.includes('HELD-MUST-NOT-BE-SENT'),
-      continueHasFullState:/Latest session state|Recent tool results/.test(continued),
-      toolSummaryLength:toolSummary.length,
-      packedLength:packed.length,
-      packedHasSkill:packed.includes('Active Skills'),
-      packedHasExplicit:packed.includes('@context:selected text'),
-      memoryCount:(packed.match(/Memory router index/g)||[]).length,
-      recipeCount:recipes.length,
-      recipeHasAction:!!recipes[0]?.content?.includes('"type":"config"')
-    });
-  } finally {
-    v.messages=old.messages;v.manualTodos=old.manualTodos;v.queuedPrompts=old.queuedPrompts;v.taskControl=old.taskControl;
-    if(typeof v.renderMessages==='function')v.renderMessages();
-    if(typeof v.renderQueueStatus==='function')v.renderQueueStatus();
-  }
-})()
+    $started = Get-Date
+    $null = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
+(()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view;if(!v)throw new Error('Cancip view unavailable');const now=new Date().toISOString(),runs=Array.from({length:4},(_,i)=>({id:'payload-run-'+i,action:{type:'read',path:'Folder/File'+i+'.md'},summary:'read file '+i,status:'executed',createdAt:now,result:'x'.repeat(1800)}));window.__payloadSmoke={old:{messages:v.messages,manualTodos:v.manualTodos,queuedPrompts:v.queuedPrompts,taskControl:v.taskControl},runs};v.messages=[{id:'payload-user',role:'user',content:'previous user request',createdAt:Date.now()-3000},{id:'payload-answer',role:'assistant',content:'previous useful answer',createdAt:Date.now()-2000},{id:'payload-tools',role:'assistant',content:'<!-- cancip-process-message -->',createdAt:Date.now()-1000,toolRuns:runs}];v.manualTodos=[{id:'p1',text:'inspect target',done:true,sendToModel:true,source:'programmatic',createdAt:now},{id:'p2',text:'apply and verify',done:false,sendToModel:true,source:'programmatic',createdAt:now}];v.queuedPrompts=[{id:'send',prompt:'queued correction',createdAt:Date.now(),held:false},{id:'held',prompt:'HELD-MUST-NOT-BE-SENT',createdAt:Date.now(),held:true}];v.taskControl={originalPrompt:'fix target',taskGoal:'fix target',startedAt:now,updatedAt:now};return JSON.stringify({ready:true})})()
 '@
-    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    $routing = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
+(()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0].view,runs=window.__payloadSmoke.runs,policy=v.promptPayloadPolicy('modify config and verify'),finalPolicyPrompt=v.modePrompt('modify config and verify'),block=v.taskControlBlockForModel('modify config and verify','modify config and verify'),continued=v.modelPromptForTurn('continue','fix target'),toolSummary=v.toolRunsForPrompt(runs,900,4);return JSON.stringify({includeWorkingState:policy.includeWorkingState,includeHistoryAnchors:policy.includeHistoryAnchors,finalOmitsEmpty:finalPolicyPrompt.includes('\u7a7a\u9879')&&finalPolicyPrompt.includes('\u4ec5\u8bfb\u53d6')&&finalPolicyPrompt.includes('\u4e0d\u89e3\u91ca'),blockLength:block.length,blockHasStatic:/Plan discipline|Need missing details/.test(block),blockHasHeld:block.includes('HELD-MUST-NOT-BE-SENT'),continueHasFullState:/Latest session state|Recent tool results/.test(continued),toolSummaryLength:toolSummary.length})})()
+'@
+    $packing = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
+(()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0].view,memory='## Memory router index\n'+('memory '.repeat(120)),packed=v.packPromptContext([memory,'## Active Skills\n'+('skill instruction '.repeat(100)),'## @context:selected text\n'+('selected '.repeat(100)),memory],700),log=['# Cancip Experience','','## 2026-07-12T00:00:00.000Z · executed','- Step: Workflow: update plugin setting','- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]','- Result: applied and verified','','## 2026-07-12T00:01:00.000Z · executed','- Step: Workflow: update plugin setting','- Action: [{"type":"config","path":".cancip/config.json","set":{"enabled":true}}]','- Result: applied and verified again'].join('\n'),recipes=v.buildExperienceSkillRecipes(log);return JSON.stringify({packedLength:packed.length,packedHasSkill:packed.includes('Active Skills'),packedHasExplicit:packed.includes('@context:selected text'),memoryCount:(packed.match(/Memory router index/g)||[]).length,recipeCount:recipes.length,recipeHasAction:!!recipes[0]?.content?.includes('"type":"config"')})})()
+'@
+    $item = [pscustomobject]@{
+      id = 'programmatic.prompt-payload-priority-and-experience-skill'
+      elapsedMs = [int]((Get-Date) - $started).TotalMilliseconds
+      includeWorkingState = $routing.includeWorkingState
+      includeHistoryAnchors = $routing.includeHistoryAnchors
+      finalOmitsEmpty = $routing.finalOmitsEmpty
+      blockLength = $routing.blockLength
+      blockHasStatic = $routing.blockHasStatic
+      blockHasHeld = $routing.blockHasHeld
+      continueHasFullState = $routing.continueHasFullState
+      toolSummaryLength = $routing.toolSummaryLength
+      packedLength = $packing.packedLength
+      packedHasSkill = $packing.packedHasSkill
+      packedHasExplicit = $packing.packedHasExplicit
+      memoryCount = $packing.memoryCount
+      recipeCount = $packing.recipeCount
+      recipeHasAction = $packing.recipeHasAction
+    }
     if (-not $item.includeWorkingState -or $item.includeHistoryAnchors) { throw "working state/history routing duplicated context: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.finalOmitsEmpty) { throw "final answer prompt does not omit empty/read-only/explanation sections: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.blockLength -gt 1400 -or $item.blockHasStatic -or $item.blockHasHeld) { throw "task state still contains repeated/static/held content: $($item | ConvertTo-Json -Compress)" }
@@ -2934,6 +2910,14 @@ if (-not $Case -or 'programmatic.prompt-payload-priority-and-experience-skill'.C
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; packedLength = $item.packedLength; toolSummaryLength = $item.toolSummaryLength }
   } catch {
     Add-CaseResult 'programmaticCases' @{ id = 'programmatic.prompt-payload-priority-and-experience-skill'; pass = $false; error = $_.Exception.Message }
+  } finally {
+    try {
+      $null = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
+(()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view,o=window.__payloadSmoke?.old;if(v&&o){v.messages=o.messages;v.manualTodos=o.manualTodos;v.queuedPrompts=o.queuedPrompts;v.taskControl=o.taskControl;v.renderMessages();v.renderQueueStatus()}delete window.__payloadSmoke;return JSON.stringify({restored:true})})()
+'@
+    } catch {
+      Write-Host "Prompt payload smoke cleanup warning: $($_.Exception.Message)"
+    }
   }
 }
 

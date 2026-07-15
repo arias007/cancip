@@ -7727,8 +7727,96 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
   min-height: 0;
 }
 
-/* Native File Explorer pinning keeps Obsidian's normal rows and adds only scoped controls. */
-.nav-file-title.is-cancip-file-pinned > .obcc-file-pin-indicator {
+/* Native File Explorer pinning keeps Obsidian's virtual tree untouched. */
+.obcc-file-pins-panel {
+  flex: 0 0 auto;
+  max-height: min(34vh, 320px);
+  margin: 0 8px 6px;
+  padding: 5px 0 6px;
+  border-block: 1px solid var(--background-modifier-border);
+  overflow: auto;
+}
+
+.obcc-file-pins-heading,
+.obcc-file-pins-group,
+.obcc-file-pin-panel-row,
+.obcc-file-pin-panel-open,
+.obcc-file-pin-panel-controls {
+  display: flex;
+  align-items: center;
+}
+
+.obcc-file-pins-heading {
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 6px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-semibold);
+}
+
+.obcc-file-pins-heading-icon,
+.obcc-file-pin-panel-type {
+  display: inline-flex;
+  flex: 0 0 14px;
+}
+
+.obcc-file-pins-heading-icon > svg,
+.obcc-file-pin-panel-type > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-file-pins-group {
+  min-height: 22px;
+  padding: 2px 6px 0;
+  color: var(--text-faint);
+  font-size: var(--font-ui-smaller);
+  overflow-wrap: anywhere;
+}
+
+.obcc-file-pin-panel-row {
+  min-height: 30px;
+  padding-inline: 2px;
+}
+
+.obcc-file-pin-panel-open {
+  flex: 1 1 auto;
+  min-width: 0;
+  gap: 6px;
+  height: 28px;
+  padding: 0 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-normal);
+  box-shadow: none;
+  text-align: start;
+}
+
+.obcc-file-pin-panel-open:hover {
+  background: var(--background-modifier-hover);
+}
+
+.obcc-file-pin-panel-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-file-pin-panel-controls {
+  flex: 0 0 auto;
+  gap: 1px;
+}
+
+.obcc-file-pin-panel-controls > .clickable-icon {
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+}
+
+.nav-file-title.is-cancip-file-pinned > .obcc-file-pin-indicator,
+.nav-folder-title.is-cancip-file-pinned > .obcc-file-pin-indicator {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -7746,7 +7834,10 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
   height: 12px;
 }
 
-.nav-file-title > .obcc-file-pin-sort-handle {
+.nav-file-title > .obcc-file-pin-sort-handle,
+.nav-folder-title > .obcc-file-pin-sort-handle,
+.nav-file-title > .obcc-file-pin-sort-button,
+.nav-folder-title > .obcc-file-pin-sort-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -7765,14 +7856,32 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
   touch-action: none;
 }
 
+.nav-file-title > .obcc-file-pin-sort-button,
+.nav-folder-title > .obcc-file-pin-sort-button {
+  flex-basis: 22px;
+  width: 22px;
+  min-width: 22px;
+  cursor: pointer;
+  touch-action: manipulation;
+}
+
+.nav-file-title > .obcc-file-pin-sort-button:hover,
+.nav-folder-title > .obcc-file-pin-sort-button:hover {
+  color: var(--text-accent);
+  background: var(--background-modifier-hover);
+}
+
 .nav-file-title > .obcc-file-pin-sort-handle:active,
-.nav-file-title.is-cancip-file-pin-dragging > .obcc-file-pin-sort-handle {
+.nav-folder-title > .obcc-file-pin-sort-handle:active,
+.nav-file-title.is-cancip-file-pin-dragging > .obcc-file-pin-sort-handle,
+.nav-folder-title.is-cancip-file-pin-dragging > .obcc-file-pin-sort-handle {
   cursor: grabbing;
   color: var(--text-accent);
   background: var(--background-modifier-hover);
 }
 
-.nav-file-title.is-cancip-file-pin-dragging {
+.nav-file-title.is-cancip-file-pin-dragging,
+.nav-folder-title.is-cancip-file-pin-dragging {
   background: var(--background-modifier-hover);
   outline: 1px solid var(--interactive-accent);
   outline-offset: -1px;

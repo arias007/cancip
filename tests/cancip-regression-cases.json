@@ -152,6 +152,17 @@
       }
     },
     {
+      "id": "automation.new-file-notify.route",
+      "prompt": "创建一个新 Markdown 文件出现后 60 秒批量运行并只在失败时通知我的自动化",
+      "expect": {
+        "intent": "implementation",
+        "maxModePromptChars": 4200,
+        "policyTrue": [
+          "includeToolCatalog"
+        ]
+      }
+    },
+    {
       "id": "session.history.route",
       "prompt": "分析 session-2026-07-04T13-28-56Z 这次为什么没完成",
       "expect": {
@@ -550,6 +561,26 @@
       "expect": {
         "containsAny": ["external", "库外", "文件", "bridge", "附件"],
         "maxMs": 3000
+      }
+    },
+    {
+      "id": "command.search.status",
+      "command": "cancip.search.status",
+      "args": {},
+      "expect": {
+        "containsAny": ["全局搜索索引", "Universal search index"],
+        "contains": ["/"],
+        "maxMs": 5000
+      }
+    },
+    {
+      "id": "command.archive.status",
+      "command": "cancip.archive.status",
+      "args": {},
+      "expect": {
+        "containsAny": ["冷归档阈值", "Cold archive threshold"],
+        "contains": ["30"],
+        "maxMs": 5000
       }
     },
     {
