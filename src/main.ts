@@ -90,6 +90,7 @@ type ConfigBackupIndex = {
   entries: Record<string, ConfigBackupEntry>;
 };
 const CANCIP_REVIEW_VIEW_TYPE = "cancip-review-view";
+const CANCIP_DOCUMENT_VIEW_TYPE = "cancip-document-workbench-view";
 const CANCIP_AUTOMATION_RUNNER_VIEW_TYPE = "cancip-automation-runner-view";
 const LEGACY_CANCIP_CHAT_VIEW_TYPE = "cancip-chat";
 const SR_CARD_REVIEW_VIEW_TYPE = "spaced-repetition-tab-view";
@@ -620,6 +621,44 @@ type AttachmentReadResult = {
 type ParsedAttachmentResult = {
   kind: string;
   text: string;
+  warnings: string[];
+};
+
+type DocumentWorkbenchMode = "preview" | "markdown" | "edit";
+type DocumentPreviewKind = "markdown" | "html" | "pdf" | "image" | "audio" | "video";
+type DocumentFormatKind =
+  | "markdown"
+  | "text"
+  | "json"
+  | "csv"
+  | "html"
+  | "mhtml"
+  | "pdf"
+  | "docx"
+  | "xlsx"
+  | "pptx"
+  | "image"
+  | "audio"
+  | "video"
+  | "archive"
+  | "binary";
+
+type DocumentWorkbenchState = {
+  filePath: string;
+  mode: DocumentWorkbenchMode;
+};
+
+type DocumentSnapshot = {
+  file: TFile;
+  sourceMtime: number;
+  sourceSize: number;
+  kind: DocumentFormatKind;
+  previewKind: DocumentPreviewKind;
+  mimeType: string;
+  sourceText: string;
+  markdown: string;
+  previewHtml: string;
+  editableSource: boolean;
   warnings: string[];
 };
 
@@ -2712,6 +2751,31 @@ const EN = {
   autocompletePrompt: "Completion guidance",
   autocompletePromptPlaceholder: "For example: shorter, action-oriented",
   autocompleteNoSuggestion: "No useful completion yet",
+  documentWorkbench: "Document workbench",
+  documentOpenWorkbench: "Open in document workbench",
+  documentOpenAsMarkdown: "Open as Markdown",
+  documentOpenActive: "Open active file in document workbench",
+  documentOpenActiveAsMarkdown: "Open active file as Markdown",
+  documentPreview: "Preview",
+  documentMarkdown: "Markdown",
+  documentEdit: "Edit",
+  documentReload: "Reload source",
+  documentSave: "Save source",
+  documentSaveDraft: "Save Markdown copy",
+  documentCopyMarkdown: "Copy Markdown",
+  documentExportMarkdown: "Export Markdown",
+  documentExportHtml: "Export HTML",
+  documentSaved: "Saved: {path}",
+  documentConverted: "Converted: {path}",
+  documentCopied: "Markdown copied",
+  documentLoadFailed: "Document failed to load: {reason}",
+  documentNoActiveFile: "No active file",
+  documentSourceProtected: "The original binary file is protected. Edits are saved as a Markdown copy.",
+  documentLargeFile: "Large file: semantic conversion was limited for performance.",
+  documentUnsupportedBinary: "No safe text converter is available for this binary format. File metadata and an Obsidian embed are shown instead.",
+  documentOriginalFormat: "Original format",
+  documentFileSize: "Size",
+  documentModified: "Modified",
   speakMessage: "Read aloud",
   speakSession: "Read session",
   moreMenu: "More",
@@ -3486,6 +3550,31 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     autocompletePrompt: "补全提示",
     autocompletePromptPlaceholder: "例如：更短、偏行动建议",
     autocompleteNoSuggestion: "暂时没有合适补全",
+    documentWorkbench: "文档工作台",
+    documentOpenWorkbench: "在文档工作台打开",
+    documentOpenAsMarkdown: "以 Markdown 打开",
+    documentOpenActive: "在文档工作台打开当前文件",
+    documentOpenActiveAsMarkdown: "把当前文件按 Markdown 打开",
+    documentPreview: "预览",
+    documentMarkdown: "Markdown",
+    documentEdit: "编辑",
+    documentReload: "重新读取原文件",
+    documentSave: "保存原文件",
+    documentSaveDraft: "保存 Markdown 转换稿",
+    documentCopyMarkdown: "复制 Markdown",
+    documentExportMarkdown: "导出 Markdown",
+    documentExportHtml: "导出 HTML",
+    documentSaved: "已保存：{path}",
+    documentConverted: "已转换：{path}",
+    documentCopied: "已复制 Markdown",
+    documentLoadFailed: "文档读取失败：{reason}",
+    documentNoActiveFile: "当前没有文件",
+    documentSourceProtected: "原二进制文件受保护，编辑结果会另存为 Markdown 转换稿。",
+    documentLargeFile: "文件较大，已限制语义转换范围以保证性能。",
+    documentUnsupportedBinary: "这个二进制格式没有安全的文本转换器，当前显示文件信息和 Obsidian 嵌入。",
+    documentOriginalFormat: "原始格式",
+    documentFileSize: "大小",
+    documentModified: "修改时间",
     speakMessage: "朗读",
     speakSession: "朗读会话",
     moreMenu: "更多",
@@ -5837,6 +5926,7 @@ export default class CancipPlugin extends Plugin {
   private aiVaultAdapterOriginalMethods = new Map<AiVaultAdapterMethod, AiVaultAdapterFunction>();
   private universalSearchIndexCache: UniversalSearchIndex | null = null;
   private universalSearchInventoryCache: UniversalSearchInventoryItem[] | null = null;
+  private documentSnapshotCache = new Map<string, DocumentSnapshot>();
   private universalSearchBuildPromise: Promise<{ indexed: number; total: number; complete: boolean }> | null = null;
   private universalSearchBuildTimer: number | null = null;
   private universalSearchBuildRequested = false;
@@ -5897,6 +5987,7 @@ export default class CancipPlugin extends Plugin {
     this.registerView(LEGACY_CANCIP_CHAT_VIEW_TYPE, (leaf) => new CancipView(leaf, this, LEGACY_CANCIP_CHAT_VIEW_TYPE));
     this.registerView(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE, (leaf) => new CancipView(leaf, this, CANCIP_AUTOMATION_RUNNER_VIEW_TYPE));
     this.registerView(CANCIP_REVIEW_VIEW_TYPE, (leaf) => new CancipReviewLeafView(leaf, this));
+    this.registerView(CANCIP_DOCUMENT_VIEW_TYPE, (leaf) => new CancipDocumentWorkbenchView(leaf, this));
     this.installAiVaultMutationCaptureBridge();
     void this.ensureVisibleDataFolders();
     void recordCancipSessionEvent(this.app.vault.adapter, {
@@ -5909,6 +6000,7 @@ export default class CancipPlugin extends Plugin {
     });
     this.registerEvent(this.app.vault.on("create", (file) => {
       this.captureAiVaultEventMutation("create", file.path);
+      this.invalidateDocumentSnapshot(file.path);
       this.handleCancipVaultFileChanged(file.path);
       if (file instanceof TFile) {
         this.queueNewFileAutomations(file.path);
@@ -5917,15 +6009,19 @@ export default class CancipPlugin extends Plugin {
     }));
     this.registerEvent(this.app.vault.on("modify", (file) => {
       this.captureAiVaultEventMutation("modify", file.path);
+      this.invalidateDocumentSnapshot(file.path);
       this.handleCancipVaultFileChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.captureAiVaultEventMutation("delete", file.path);
+      this.invalidateDocumentSnapshot(file.path);
       void this.removeDeletedFilePins(file.path).catch((error) => this.recordFilePinError("delete migration", error));
       this.handleCancipVaultFileChanged(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       this.captureAiVaultEventMutation("rename", file.path, oldPath);
+      this.invalidateDocumentSnapshot(oldPath);
+      this.invalidateDocumentSnapshot(file.path);
       void this.migrateRenamedFilePins(oldPath, file.path).catch((error) => this.recordFilePinError("rename migration", error));
       this.handleCancipVaultFileChanged(oldPath);
       this.handleCancipVaultFileChanged(file.path);
@@ -5961,6 +6057,28 @@ export default class CancipPlugin extends Plugin {
       editorCheckCallback: (checking, editor, view) => {
         if (!this.settings.personalizedDiaryEnabled || !view.file || !isPersonalizedDiaryPath(view.file.path)) return false;
         if (!checking) this.insertPersonalizedDiary(editor, view.file.path);
+        return true;
+      }
+    });
+
+    this.addCommand({
+      id: "open-active-document-workbench",
+      name: this.t("documentOpenActive"),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        if (!checking) void this.activateDocumentWorkbench(file, "preview");
+        return true;
+      }
+    });
+
+    this.addCommand({
+      id: "open-active-file-as-markdown",
+      name: this.t("documentOpenActiveAsMarkdown"),
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!file) return false;
+        if (!checking) void this.activateDocumentWorkbench(file, "markdown");
         return true;
       }
     });
@@ -6013,6 +6131,26 @@ export default class CancipPlugin extends Plugin {
           .onClick(async () => {
             const chatView = await this.activateView();
             await chatView?.addFileOrFolderContext(file);
+          });
+      });
+    }));
+
+    this.registerEvent(this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
+      if (!(file instanceof TFile)) return;
+      menu.addItem((item) => {
+        item
+          .setTitle(this.t("documentOpenWorkbench"))
+          .setIcon("panels-top-left")
+          .onClick(() => {
+            void this.activateDocumentWorkbench(file, "preview");
+          });
+      });
+      menu.addItem((item) => {
+        item
+          .setTitle(this.t("documentOpenAsMarkdown"))
+          .setIcon("file-text")
+          .onClick(() => {
+            void this.activateDocumentWorkbench(file, "markdown");
           });
       });
     }));
@@ -17188,6 +17326,107 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (view) await view.newChat({ force: true });
   }
 
+  async activateDocumentWorkbench(fileOrPath: TFile | string, mode: DocumentWorkbenchMode = "preview"): Promise<CancipDocumentWorkbenchView | null> {
+    const file = typeof fileOrPath === "string" ? this.app.vault.getAbstractFileByPath(normalizePath(fileOrPath)) : fileOrPath;
+    if (!(file instanceof TFile)) {
+      new Notice(this.t("documentNoActiveFile"));
+      return null;
+    }
+    let leaf = this.app.workspace.getLeavesOfType(CANCIP_DOCUMENT_VIEW_TYPE)
+      .find((candidate) => candidate.view instanceof CancipDocumentWorkbenchView && candidate.view.matchesFile(file.path));
+    if (!leaf) {
+      leaf = this.app.workspace.getLeaf("tab");
+      await leaf.setViewState({
+        type: CANCIP_DOCUMENT_VIEW_TYPE,
+        active: true,
+        state: { filePath: file.path, mode } satisfies DocumentWorkbenchState
+      });
+    }
+    if (!(leaf.view instanceof CancipDocumentWorkbenchView)) return null;
+    await leaf.view.openFile(file, mode);
+    await this.app.workspace.revealLeaf(leaf);
+    const workspaceWithFocus = this.app.workspace as unknown as {
+      setActiveLeaf?: (target: WorkspaceLeaf, params?: { focus?: boolean } | boolean) => void;
+    };
+    workspaceWithFocus.setActiveLeaf?.(leaf, { focus: true });
+    return leaf.view;
+  }
+
+  async loadDocumentSnapshot(fileOrPath: TFile | string): Promise<DocumentSnapshot> {
+    const file = typeof fileOrPath === "string" ? this.app.vault.getAbstractFileByPath(normalizePath(fileOrPath)) : fileOrPath;
+    if (!(file instanceof TFile)) throw new Error(`File not found: ${typeof fileOrPath === "string" ? fileOrPath : fileOrPath.path}`);
+    const key = `${file.path}:${file.stat.mtime}:${file.stat.size}`;
+    const cached = this.documentSnapshotCache.get(key);
+    if (cached) return cached;
+    const snapshot = await buildDocumentSnapshot(this.app, file);
+    this.invalidateDocumentSnapshot(file.path);
+    this.documentSnapshotCache.set(key, snapshot);
+    while (this.documentSnapshotCache.size > 12) {
+      const oldest = this.documentSnapshotCache.keys().next().value as string | undefined;
+      if (!oldest) break;
+      this.documentSnapshotCache.delete(oldest);
+    }
+    return snapshot;
+  }
+
+  private invalidateDocumentSnapshot(path: string): void {
+    const prefix = `${normalizePath(path)}:`;
+    for (const key of this.documentSnapshotCache.keys()) {
+      if (key.startsWith(prefix)) this.documentSnapshotCache.delete(key);
+    }
+  }
+
+  async saveDocumentTextSource(file: TFile, text: string): Promise<void> {
+    if (!isDocumentSourceEditable(file)) throw new Error(this.t("documentSourceProtected"));
+    await this.app.vault.modify(file, text);
+    const verified = await this.app.vault.read(file);
+    if (verified !== text) throw new Error(`Document save verification failed: ${file.path}`);
+  }
+
+  async exportDocumentConversion(file: TFile, markdown: string, format: "md" | "html"): Promise<string> {
+    const extension = format === "md" ? "md" : "html";
+    const path = this.availableDocumentConversionPath(file, extension);
+    const content = format === "md"
+      ? ensureTrailingNewline(markdown.trim())
+      : await this.renderDocumentStandaloneHtml(file, markdown);
+    const created = await this.app.vault.create(path, content);
+    const verified = await this.app.vault.read(created);
+    if (verified !== content) throw new Error(`Document conversion verification failed: ${path}`);
+    return path;
+  }
+
+  async convertDocumentPath(path: string, format: "md" | "html" = "md"): Promise<string> {
+    const file = this.app.vault.getAbstractFileByPath(normalizePath(path));
+    if (!(file instanceof TFile)) throw new Error(`File not found: ${path}`);
+    const snapshot = await this.loadDocumentSnapshot(file);
+    return await this.exportDocumentConversion(file, snapshot.markdown, format);
+  }
+
+  private availableDocumentConversionPath(file: TFile, extension: "md" | "html"): string {
+    const folder = vaultPathParent(file.path);
+    const sameExtension = file.extension.toLowerCase() === extension;
+    const stem = sameExtension ? `${file.basename}.converted` : file.basename;
+    for (let index = 0; index < 1000; index += 1) {
+      const suffix = index ? `-${index + 1}` : "";
+      const candidate = normalizePath(`${folder ? `${folder}/` : ""}${stem}${suffix}.${extension}`);
+      if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
+    }
+    throw new Error(`No available conversion path for ${file.path}`);
+  }
+
+  private async renderDocumentStandaloneHtml(file: TFile, markdown: string): Promise<string> {
+    const doc = this.app.workspace.containerEl.ownerDocument;
+    const host = doc.createElement("div");
+    const component = new MarkdownScratchComponent();
+    component.load();
+    try {
+      await MarkdownRenderer.render(this.app, markdown, host, file.path, component);
+    } finally {
+      component.unload();
+    }
+    return `<!doctype html>\n<html lang="${escapeHtmlAttribute(this.language())}">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width,initial-scale=1">\n<title>${escapeHtml(file.basename)}</title>\n<style>body{max-width:920px;margin:0 auto;padding:24px;font:16px/1.65 system-ui,sans-serif;color:#222}img,video{max-width:100%;height:auto}table{border-collapse:collapse;display:block;overflow:auto}th,td{border:1px solid #bbb;padding:6px 10px;text-align:left}pre{overflow:auto;padding:12px;background:#f5f5f5}blockquote{border-left:3px solid #888;margin-left:0;padding-left:14px;color:#555}@media(max-width:640px){body{padding:14px;font-size:15px}}</style>\n</head>\n<body>\n${host.innerHTML}\n</body>\n</html>\n`;
+  }
+
   private async ensureCancipLeaf(active: boolean): Promise<WorkspaceLeaf | null> {
     let leaf: WorkspaceLeaf | null = this.chatLeaves().find((candidate) => candidate.view instanceof CancipView)
       ?? this.chatLeaves()[0];
@@ -17219,6 +17458,293 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     view.enqueueReviewCorrectionPrompt(input.item, input.note, input.reviewFolder);
   }
 
+}
+
+class CancipDocumentWorkbenchView extends ItemView {
+  private filePath = "";
+  private mode: DocumentWorkbenchMode = "preview";
+  private snapshot: DocumentSnapshot | null = null;
+  private editBuffer = "";
+  private dirty = false;
+  private loadGeneration = 0;
+
+  constructor(
+    leaf: WorkspaceLeaf,
+    private plugin: CancipPlugin
+  ) {
+    super(leaf);
+  }
+
+  getViewType(): string {
+    return CANCIP_DOCUMENT_VIEW_TYPE;
+  }
+
+  getDisplayText(): string {
+    return this.snapshot?.file.name || this.filePath.split("/").pop() || this.plugin.t("documentWorkbench");
+  }
+
+  getIcon(): string {
+    return "panels-top-left";
+  }
+
+  getState(): DocumentWorkbenchState {
+    return { filePath: this.filePath, mode: this.mode };
+  }
+
+  async setState(state: unknown): Promise<void> {
+    const value = isRecord(state) ? state : {};
+    const path = typeof value.filePath === "string" ? normalizePath(value.filePath) : "";
+    const mode = isDocumentWorkbenchMode(value.mode) ? value.mode : "preview";
+    this.filePath = path;
+    this.mode = mode;
+    if (this.contentEl.isConnected) await this.loadAndRender();
+  }
+
+  async onOpen(): Promise<void> {
+    await this.loadAndRender();
+  }
+
+  async onClose(): Promise<void> {
+    this.loadGeneration += 1;
+    this.contentEl.empty();
+  }
+
+  matchesFile(path: string): boolean {
+    return normalizePath(path) === this.filePath;
+  }
+
+  async openFile(file: TFile, mode: DocumentWorkbenchMode = "preview"): Promise<void> {
+    const changed = this.filePath !== file.path;
+    this.filePath = file.path;
+    this.mode = mode;
+    if (changed || !this.snapshot || this.snapshot.sourceMtime !== file.stat.mtime || this.snapshot.sourceSize !== file.stat.size) {
+      await this.loadAndRender();
+      return;
+    }
+    await this.render();
+  }
+
+  private async loadAndRender(): Promise<void> {
+    const generation = ++this.loadGeneration;
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("obcc-document-workbench");
+    root.createDiv({ cls: "obcc-document-loading", text: `${this.plugin.t("documentWorkbench")}...` });
+    if (!this.filePath) {
+      root.empty();
+      root.createDiv({ cls: "obcc-document-empty", text: this.plugin.t("documentNoActiveFile") });
+      return;
+    }
+    try {
+      const snapshot = await this.plugin.loadDocumentSnapshot(this.filePath);
+      if (generation !== this.loadGeneration) return;
+      this.snapshot = snapshot;
+      this.editBuffer = snapshot.editableSource ? snapshot.sourceText : snapshot.markdown;
+      this.dirty = false;
+      await this.render();
+    } catch (error) {
+      if (generation !== this.loadGeneration) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      root.empty();
+      root.createDiv({ cls: "obcc-document-error", text: this.plugin.t("documentLoadFailed", { reason }) });
+    }
+  }
+
+  private async render(): Promise<void> {
+    const snapshot = this.snapshot;
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("obcc-document-workbench");
+    root.setAttr("lang", this.plugin.language());
+    root.setAttr("dir", this.plugin.textDirection());
+    if (!snapshot) {
+      root.createDiv({ cls: "obcc-document-empty", text: this.plugin.t("documentNoActiveFile") });
+      return;
+    }
+
+    const shell = root.createDiv({ cls: "obcc-document-shell" });
+    const header = shell.createDiv({ cls: "obcc-document-header" });
+    const identity = header.createDiv({ cls: "obcc-document-identity" });
+    identity.createDiv({ cls: "obcc-document-title", text: snapshot.file.name });
+    identity.createDiv({ cls: "obcc-document-path", text: snapshot.file.path });
+
+    const toolbar = header.createDiv({ cls: "obcc-document-toolbar" });
+    const modes = toolbar.createDiv({ cls: "obcc-document-modes", attr: { role: "tablist" } });
+    this.addModeButton(modes, "preview", this.plugin.t("documentPreview"));
+    this.addModeButton(modes, "markdown", this.plugin.t("documentMarkdown"));
+    this.addModeButton(modes, "edit", this.plugin.t("documentEdit"));
+
+    const actions = toolbar.createDiv({ cls: "obcc-document-actions" });
+    if (this.mode === "edit") {
+      const saveButton = this.addIconButton(actions, "save", snapshot.editableSource ? this.plugin.t("documentSave") : this.plugin.t("documentSaveDraft"), () => {
+        void this.saveEditBuffer();
+      }, !this.dirty);
+      saveButton.addClass("is-save");
+    }
+    this.addIconButton(actions, "copy", this.plugin.t("documentCopyMarkdown"), () => {
+      void this.copyMarkdown();
+    });
+    this.addIconButton(actions, "file-down", this.plugin.t("documentExportMarkdown"), () => {
+      void this.exportConversion("md");
+    });
+    this.addIconButton(actions, "file-code-2", this.plugin.t("documentExportHtml"), () => {
+      void this.exportConversion("html");
+    });
+    this.addIconButton(actions, "refresh-cw", this.plugin.t("documentReload"), () => {
+      void this.loadAndRender();
+    });
+
+    const meta = shell.createDiv({ cls: "obcc-document-meta" });
+    meta.createSpan({ text: `${this.plugin.t("documentOriginalFormat")}: ${snapshot.kind.toUpperCase()}` });
+    meta.createSpan({ text: `${this.plugin.t("documentFileSize")}: ${formatFileSize(snapshot.file.stat.size)}` });
+    meta.createSpan({ text: `${this.plugin.t("documentModified")}: ${new Date(snapshot.file.stat.mtime).toLocaleString()}` });
+    if (!snapshot.editableSource && this.mode === "edit") {
+      meta.createSpan({ cls: "is-warning", text: this.plugin.t("documentSourceProtected") });
+    }
+    for (const warning of snapshot.warnings.slice(0, 3)) meta.createSpan({ cls: "is-warning", text: warning });
+
+    const body = shell.createDiv({ cls: `obcc-document-body is-${this.mode}` });
+    if (this.mode === "edit") {
+      this.renderEditor(body);
+    } else if (this.mode === "markdown") {
+      body.createEl("pre", { cls: "obcc-document-markdown-source", text: this.currentMarkdown() });
+    } else {
+      await this.renderPreview(body);
+    }
+  }
+
+  private addModeButton(parent: HTMLElement, mode: DocumentWorkbenchMode, label: string): void {
+    const button = parent.createEl("button", {
+      cls: `obcc-document-mode${this.mode === mode ? " is-active" : ""}`,
+      text: label,
+      attr: {
+        type: "button",
+        role: "tab",
+        "aria-selected": String(this.mode === mode),
+        "data-short-label": mode === "markdown" ? "MD" : label.slice(0, 1)
+      }
+    });
+    button.addEventListener("click", () => {
+      this.mode = mode;
+      void this.render();
+    });
+  }
+
+  private addIconButton(parent: HTMLElement, icon: string, label: string, action: () => void, disabled = false): HTMLButtonElement {
+    const button = parent.createEl("button", {
+      cls: "clickable-icon obcc-document-action",
+      attr: { type: "button", "aria-label": label, title: label }
+    });
+    setIcon(button, icon);
+    button.disabled = disabled;
+    button.addEventListener("click", action);
+    return button;
+  }
+
+  private renderEditor(parent: HTMLElement): void {
+    const textarea = parent.createEl("textarea", {
+      cls: "obcc-document-editor",
+      attr: {
+        spellcheck: "false",
+        "aria-label": this.snapshot?.editableSource ? this.plugin.t("documentSave") : this.plugin.t("documentSaveDraft")
+      }
+    });
+    textarea.value = this.editBuffer;
+    textarea.addEventListener("input", () => {
+      this.editBuffer = textarea.value;
+      this.dirty = true;
+      const save = this.contentEl.querySelector<HTMLButtonElement>(".obcc-document-action.is-save");
+      if (save) save.disabled = false;
+    });
+  }
+
+  private async renderPreview(parent: HTMLElement): Promise<void> {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    if (this.dirty) {
+      await MarkdownRenderer.render(this.app, this.currentMarkdown(), parent, snapshot.file.path, this);
+      return;
+    }
+    const resourcePath = this.app.vault.getResourcePath(snapshot.file);
+    if (snapshot.previewKind === "html") {
+      const iframe = parent.createEl("iframe", {
+        cls: "obcc-document-html-preview",
+        attr: { title: snapshot.file.name, sandbox: "" }
+      });
+      iframe.srcdoc = snapshot.previewHtml;
+      return;
+    }
+    if (snapshot.previewKind === "pdf") {
+      parent.createEl("iframe", { cls: "obcc-document-native-preview", attr: { src: resourcePath, title: snapshot.file.name } });
+      return;
+    }
+    if (snapshot.previewKind === "image") {
+      parent.createEl("img", { cls: "obcc-document-image-preview", attr: { src: resourcePath, alt: snapshot.file.basename } });
+      return;
+    }
+    if (snapshot.previewKind === "audio") {
+      parent.createEl("audio", { cls: "obcc-document-media-preview", attr: { src: resourcePath, controls: "true", preload: "metadata" } });
+      return;
+    }
+    if (snapshot.previewKind === "video") {
+      parent.createEl("video", { cls: "obcc-document-media-preview", attr: { src: resourcePath, controls: "true", preload: "metadata" } });
+      return;
+    }
+    await MarkdownRenderer.render(this.app, this.currentMarkdown(), parent, snapshot.file.path, this);
+  }
+
+  private currentMarkdown(): string {
+    const snapshot = this.snapshot;
+    if (!snapshot) return "";
+    if (!this.dirty) return snapshot.markdown;
+    return snapshot.editableSource
+      ? markdownFromDocumentText(snapshot.file, this.editBuffer, snapshot.kind)
+      : this.editBuffer;
+  }
+
+  private async saveEditBuffer(): Promise<void> {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    try {
+      if (snapshot.editableSource) {
+        await this.plugin.saveDocumentTextSource(snapshot.file, this.editBuffer);
+        new Notice(this.plugin.t("documentSaved", { path: snapshot.file.path }));
+        await this.loadAndRender();
+        return;
+      }
+      const path = await this.plugin.exportDocumentConversion(snapshot.file, this.editBuffer, "md");
+      this.dirty = false;
+      new Notice(this.plugin.t("documentConverted", { path }));
+      await this.render();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.plugin.t("documentLoadFailed", { reason }));
+    }
+  }
+
+  private async copyMarkdown(): Promise<void> {
+    try {
+      const clipboard = this.contentEl.ownerDocument.defaultView?.navigator.clipboard;
+      if (!clipboard) throw new Error("Clipboard unavailable");
+      await clipboard.writeText(this.currentMarkdown());
+      new Notice(this.plugin.t("documentCopied"));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.plugin.t("copyFailed", { reason }));
+    }
+  }
+
+  private async exportConversion(format: "md" | "html"): Promise<void> {
+    const snapshot = this.snapshot;
+    if (!snapshot) return;
+    try {
+      const path = await this.plugin.exportDocumentConversion(snapshot.file, this.currentMarkdown(), format);
+      new Notice(this.plugin.t("documentConverted", { path }));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.plugin.t("documentLoadFailed", { reason }));
+    }
+  }
 }
 
 class CancipReviewLeafView extends ItemView {
@@ -19307,6 +19833,7 @@ class CancipView extends ItemView {
     let nativeKeyboardVisible = false;
     let nativeKeyboardHeight = 0;
     let keyboardWasVisible = false;
+    let previousMessageFooterClearance = 0;
     let disposed = false;
     let footerLayoutFallbackTimer: number | null = null;
     const nativeListenerHandles: Array<{ remove: () => void | Promise<void> }> = [];
@@ -19343,10 +19870,18 @@ class CancipView extends ItemView {
         const footerBottom = Math.max(rootBottomInset, keyboardOverlay);
         const footerHeightPx = Math.max(48, Math.ceil(footer.getBoundingClientRect().height));
         const messageOcclusion = keyboardVisible ? keyboardOverlay : 0;
+        const footerTop = current.layoutHeight - footerBottom - footerHeightPx;
+        const messagesStyle = viewWindow.getComputedStyle(this.messagesEl);
+        const messageBottomPadding = Number.parseFloat(messagesStyle.paddingBottom) || 0;
+        const messageGap = Number.parseFloat(messagesStyle.rowGap || messagesStyle.gap) || 0;
+        const messageFooterClearance = keyboardVisible
+          ? Math.max(0, Math.ceil(this.messagesEl.getBoundingClientRect().bottom - footerTop - messageBottomPadding - messageGap + 2))
+          : 0;
         root.toggleClass("has-visual-keyboard", keyboardVisible);
         root.setCssProps({
           "--obcc-keyboard-inset": "0px",
           "--obcc-keyboard-occlusion": `${messageOcclusion}px`,
+          "--obcc-message-footer-clearance": `${messageFooterClearance}px`,
           "--obcc-footer-viewport-bottom": `${footerBottom}px`,
           "--obcc-footer-left": footerFloating ? `${Math.max(0, Math.floor(rootRect.left))}px` : "0px",
           "--obcc-footer-right": footerFloating ? `${Math.max(0, Math.floor(layoutWidth - rootRect.right))}px` : "0px"
@@ -19360,10 +19895,12 @@ class CancipView extends ItemView {
         root.setCssProps({ "--obcc-footer-height": footerHeight });
         this.syncOverlayGeometry(root, footerHeight);
         this.placeMentionPopup();
-        if (keyboardVisible && !keyboardWasVisible && !this.userPinnedScroll) {
+        const clearanceIncreased = messageFooterClearance > previousMessageFooterClearance + 1;
+        if (keyboardVisible && !this.userPinnedScroll && (!keyboardWasVisible || clearanceIncreased)) {
           viewWindow.setTimeout(() => this.scrollMessagesToBottom(false), 0);
         }
         keyboardWasVisible = keyboardVisible;
+        previousMessageFooterClearance = messageFooterClearance;
       };
       this.footerLayoutFrame = viewWindow.requestAnimationFrame(apply);
       footerLayoutFallbackTimer = viewWindow.setTimeout(apply, 80);
@@ -19432,7 +19969,7 @@ class CancipView extends ItemView {
       sync();
       viewWindow.setTimeout(sync, 80);
       viewWindow.setTimeout(sync, 220);
-      viewWindow.setTimeout(sync, 420);
+      viewWindow.setTimeout(sync, 300);
     };
     const handleBlur = () => {
       inputFocused = false;
@@ -19469,6 +20006,7 @@ class CancipView extends ItemView {
       root.setCssProps({
         "--obcc-keyboard-inset": "0px",
         "--obcc-keyboard-occlusion": "0px",
+        "--obcc-message-footer-clearance": "0px",
         "--obcc-footer-viewport-bottom": "0px",
         "--obcc-footer-left": "0px",
         "--obcc-footer-right": "0px"
@@ -20314,7 +20852,9 @@ class CancipView extends ItemView {
     const width = Math.max(120, Math.min(inputRect.width, viewportRight - margin - left));
     const spaceAbove = Math.max(0, inputRect.top - viewportTop - gap - margin);
     const spaceBelow = Math.max(0, viewportBottom - inputRect.bottom - gap - margin);
-    const maxHeight = Math.max(72, Math.min(238, Math.max(spaceAbove, spaceBelow)));
+    const keyboardVisible = this.contentEl.hasClass("has-visual-keyboard");
+    const availableHeight = keyboardVisible ? spaceAbove : Math.max(spaceAbove, spaceBelow);
+    const maxHeight = Math.max(keyboardVisible ? 48 : 72, Math.min(238, availableHeight));
     this.mentionEl.setCssStyles({
       left: `${Math.floor(left)}px`,
       right: "auto",
@@ -20326,7 +20866,7 @@ class CancipView extends ItemView {
       visibility: "hidden"
     });
     const popupHeight = Math.min(maxHeight, Math.max(1, this.mentionEl.getBoundingClientRect().height));
-    const placeAbove = spaceAbove >= Math.min(96, popupHeight) || spaceAbove >= spaceBelow;
+    const placeAbove = keyboardVisible || spaceAbove >= Math.min(96, popupHeight) || spaceAbove >= spaceBelow;
     const idealTop = placeAbove ? inputRect.top - gap - popupHeight : inputRect.bottom + gap;
     const top = Math.max(viewportTop + margin, Math.min(idealTop, viewportBottom - margin - popupHeight));
     this.mentionEl.setCssStyles({ top: `${Math.floor(top)}px`, visibility: "visible" });
@@ -27677,7 +28217,7 @@ class CancipView extends ItemView {
         "- Obsidian UI/按钮/标签页/标签/命令/JS：先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.ui.buttons、obsidian.tabs、obsidian.tags 检查；执行后用 cancip.outcome.verify 对照视图/DOM/文件/插件/工作区预期验收，结构证据不足才 capture 截活动视图；命令名不确定先 resolveCommand，明确后按需 execute/click/input/apply rules；需要 app/workspace/vault/plugin API 时先查 obsidian.js.help/probe，再用 obsidian.eval/js.eval，经访问模式批准后执行。",
         "- 插件/未知能力/新插件/Skills/MCP：插件功能词或插件名先用 cancip.pluginCapabilities 或 cancip.pluginRoute 查命令、运行时 API、按钮/UI、data.json 和插件文件入口；明确命令或公开 API 后用 cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch 执行；笔记/PDF 高亮涂鸦优先 cancip.annotate.help/note/pdf，间隔重复优先 cancip.study.help/review；API 用法不明再 web.search/fetch。Skills/MCP 用 cancip.skills.list/read/refresh 和 .cancip/mcp.json/.cancip/plugins 索引。",
         "- 记忆/经验/自我优化：用户要求记住、沉淀规则、复用成功经验或让 Cancip 优化自己时，先读 CANCIP_INDEX/RULES、cancip.experience.list 或相关 Skill；需要写入时按访问模式修改 AI/Cancip/Memory 或 .cancip/experience，成功重复流程可 cancip.experience.harvest 生成经验 Skill。",
-        "- 附件/PDF/Office/图片/库外文件：先查 cancip.attachment.help 和 cancip.externalFiles.help，再走解析器、附件、分享表、Skill、原生桥或桌面桥路线。",
+        "- 附件/PDF/Office/图片/库外文件：库内文件优先用 cancip.documents.help/open/convert 统一预览、按 Markdown 打开和转换；附件解析查 cancip.attachment.help，库外访问查 cancip.externalFiles.help。",
         "- 外部知识/互联网：需要当前资料、插件文档、未知 API/命令用法时，用 web.search 找入口，用 web.fetch 抓取具体页面；再回到本地工具执行。",
         "- TTS/朗读：先查 cancip.tts.help，再用 probe/voices/status/speak/readActive/pause/resume/seek/stop/installLocal。",
         "- GitHub：先查 github.help，再用 github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin。",
@@ -27696,7 +28236,7 @@ class CancipView extends ItemView {
       "- Obsidian UI/buttons/tabs/tags/commands/JS: inspect with currentView/dom.snapshot/listCommands/resolveCommand/ui.buttons/tabs/tags; after execution use cancip.outcome.verify for view/DOM/file/plugin/workspace expectations and capture only when structured evidence is insufficient. Resolve fuzzy commands before execute/click/input/apply rules. Use obsidian.js.help/probe then obsidian.eval/js.eval for API gaps.",
       "- Plugins/unknown capabilities/new plugins/Skills/MCP: for plugin feature words or plugin names, call cancip.pluginCapabilities or cancip.pluginRoute to inspect commands, runtime API, buttons/UI, data.json, and plugin file entry points; after a command/API is clear use cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch; use cancip.annotate.help/note/pdf for note/PDF highlight/doodle and cancip.study.help/review for spaced repetition; use web.search/fetch only when API usage is unclear. Use cancip.skills.list/read/refresh and .cancip/mcp.json/.cancip/plugins indexes for Skills/MCP.",
       "- Memory/experience/self-optimization: when the user asks to remember, preserve rules, reuse successful workflows, or improve Cancip itself, read CANCIP_INDEX/RULES, cancip.experience.list, or relevant Skills first; when writing is needed, use the access-mode route for AI/Cancip/Memory or .cancip/experience, and call cancip.experience.harvest after repeatable success.",
-      "- Attachments/PDF/Office/images/external files: use cancip.attachment.help and cancip.externalFiles.help, then the available parser, attachment, share-sheet, Skill, native, or desktop bridge route.",
+      "- Attachments/PDF/Office/images/external files: for Vault files use cancip.documents.help/open/convert for preview, Markdown opening, and conversion; use cancip.attachment.help for attachment parsing and cancip.externalFiles.help for outside-Vault access.",
       "- External knowledge/web: when current docs, plugin docs, unknown APIs, or command usage are needed, use web.search to find entry points and web.fetch to read concrete pages; then return to local tools.",
       "- TTS/read aloud: use cancip.tts.help first, then probe/voices/status/speak/readActive/pause/resume/seek/stop/installLocal as needed.",
       "- GitHub: use github.help first, then github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin.",
@@ -28300,6 +28840,9 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.experience.list", "cancip.experience.list", ["experience", "recipe", "workflow", "history", "self optimize", "经验", "配方", "流程", "成功记录", "复盘", "自我优化"], 80),
       commandTarget("command:cancip.experience.harvest", "cancip.experience.harvest", ["experience", "skill", "recipe", "harvest", "workflow", "self optimize", "经验", "沉淀", "收割", "技能", "流程", "复盘", "自我优化"], 84),
       commandTarget("command:cancip.attachment.help", "cancip.attachment.help", ["attachment", "file", "pdf", "excel", "parser", "parse", "附件", "手机文件", "导入", "解析", "pdf", "excel"], 82),
+      commandTarget("command:cancip.documents.help", "cancip.documents.help", ["document", "office", "preview", "convert", "markdown", "文档", "办公文件", "预览", "转换", "按markdown打开"], 88),
+      commandTarget("command:cancip.documents.open", "cancip.documents.open", ["document", "file", "open", "preview", "markdown", "edit", "文档", "文件", "打开", "预览", "编辑"], 90),
+      commandTarget("command:cancip.documents.convert", "cancip.documents.convert", ["document", "file", "convert", "markdown", "html", "docx", "xlsx", "pptx", "pdf", "文档", "转换", "转markdown"], 90),
       commandTarget("command:cancip.tts.help", "cancip.tts.help", ["tts", "speech", "speak", "read aloud", "朗读", "语音", "无障碍", "读出来"], 80),
       commandTarget("command:cancip.tts.probe", "cancip.tts.probe", ["tts", "speech", "probe", "test", "android", "朗读", "语音", "探测", "测试", "安卓"], 82),
       commandTarget("command:cancip.tts.installLocal", "cancip.tts.installLocal", ["tts", "speech", "install", "download", "prime", "local", "朗读", "语音", "安装", "下载", "本地包", "依赖"], 83),
@@ -28559,6 +29102,9 @@ class CancipView extends ItemView {
       "cancip.experience.list": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.experience.list\",\"args\":{\"query\":\"当前任务\"}}]}",
       "cancip.experience.harvest": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.experience.harvest\"}]}",
       "cancip.attachment.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.attachment.help\"}]}",
+      "cancip.documents.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.help\"}]}",
+      "cancip.documents.open": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.open\",\"args\":{\"path\":\"资料/文件.docx\",\"mode\":\"preview\"}}]}",
+      "cancip.documents.convert": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.convert\",\"args\":{\"path\":\"资料/文件.docx\",\"format\":\"md\"}}]}",
       "cancip.tts.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.help\"}]}",
       "cancip.tts.probe": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.probe\"}]}",
       "cancip.tts.voices": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.voices\"}]}",
@@ -29231,6 +29777,7 @@ class CancipView extends ItemView {
       command === "cancip.subagents.list" ||
       command === "cancip.subagents.status" ||
       command === "cancip.attachment.help" ||
+      command === "cancip.documents.help" ||
       command === "cancip.tts.help" ||
       command === "cancip.tts.probe" ||
       command === "cancip.tts.voices" ||
@@ -31000,6 +31547,7 @@ class CancipView extends ItemView {
       || command === "cancip.localVersionCommit"
       || command === "cancip.importCodexMemory"
       || command === "cancip.importCapabilityPack"
+      || command === "cancip.documents.convert"
       || command === "cancip.tts.installLocal"
       || command === "cancip.automation.add"
       || command === "cancip.automation.update"
@@ -31020,6 +31568,7 @@ class CancipView extends ItemView {
     const command = action.command.trim();
     return command === "cancip.tts.readActive"
       || command === "cancip.translateCurrentPage"
+      || command === "cancip.documents.open"
       || command === "cancip.tts.speak"
       || command === "cancip.tts.pause"
       || command === "cancip.tts.resume"
@@ -32924,6 +33473,37 @@ class CancipView extends ItemView {
 
     if (normalized === "cancip.attachment.help") {
       return this.t("commandExecuted", { command: normalized, result: this.attachmentParserHelp() });
+    }
+
+    if (normalized === "cancip.documents.help") {
+      const result = [
+        "Universal document workbench:",
+        "- cancip.documents.open args: path, mode=preview|markdown|edit",
+        "- cancip.documents.convert args: path, format=md|html",
+        "- Text/HTML/MHTML can be edited and verified in place.",
+        "- PDF/Office/media/binary originals are protected; edits export to Markdown/HTML.",
+        "- DOCX preserves headings, text emphasis and tables; XLSX preserves sheets/cell positions; PPTX preserves slides and notes."
+      ].join("\n");
+      return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.documents.open") {
+      const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+      const path = normalizePath(typeof args.path === "string" ? args.path : activePath);
+      const mode = isDocumentWorkbenchMode(args.mode) ? args.mode : "preview";
+      if (!path) throw new Error("cancip.documents.open requires args.path or an active file");
+      const view = await this.plugin.activateDocumentWorkbench(path, mode);
+      if (!view) throw new Error(`Document workbench could not open: ${path}`);
+      return this.t("commandExecuted", { command: normalized, result: `${path}\nmode=${mode}` });
+    }
+
+    if (normalized === "cancip.documents.convert") {
+      const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+      const path = normalizePath(typeof args.path === "string" ? args.path : activePath);
+      const format = String(args.format ?? "md").toLowerCase() === "html" ? "html" : "md";
+      if (!path) throw new Error("cancip.documents.convert requires args.path or an active file");
+      const outputPath = await this.plugin.convertDocumentPath(path, format);
+      return this.t("commandExecuted", { command: normalized, result: outputPath });
     }
 
     if (normalized === "cancip.tts.help") {
@@ -43400,6 +43980,7 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "cancip.experience.list",
     "cancip.experience.harvest",
     "cancip.attachment.help",
+    "cancip.documents.help",
     "cancip.tts.help",
     "cancip.tts.probe",
     "cancip.tts.voices",
@@ -43946,6 +44527,7 @@ function isReadOnlyAction(action: CancipAction): boolean {
     "cancip.skills.refresh",
     "cancip.experience.list",
     "cancip.attachment.help",
+    "cancip.documents.help",
     "cancip.tts.help",
     "cancip.tts.probe",
     "cancip.tts.voices",
@@ -49787,6 +50369,652 @@ async function parseBinaryAttachment(file: File, maxChars: number): Promise<Pars
     warnings.push(error instanceof Error ? error.message : String(error));
   }
   return { kind: type || "binary", text: "", warnings };
+}
+
+const DOCUMENT_PARSE_MAX_BYTES = 48 * 1024 * 1024;
+const DOCUMENT_MARKDOWN_MAX_CHARS = 900000;
+const DOCUMENT_TEXT_EXTENSIONS = new Set([
+  "md", "markdown", "txt", "log", "json", "jsonl", "ndjson", "csv", "tsv", "yaml", "yml", "toml", "xml",
+  "html", "htm", "hltm", "mhtml", "mht", "mhtl", "css", "scss", "sass", "less", "js", "jsx", "ts", "tsx", "mjs", "cjs",
+  "py", "rb", "go", "rs", "java", "kt", "kts", "c", "cc", "cpp", "h", "hpp", "cs", "php", "sh", "bash",
+  "zsh", "ps1", "bat", "cmd", "sql", "ini", "conf", "cfg", "env", "gitignore", "dockerfile", "svg", "base", "canvas"
+]);
+const DOCUMENT_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "webp", "gif", "bmp", "svg", "avif", "heic", "heif"]);
+const DOCUMENT_AUDIO_EXTENSIONS = new Set(["mp3", "m4a", "aac", "wav", "ogg", "oga", "flac", "opus"]);
+const DOCUMENT_VIDEO_EXTENSIONS = new Set(["mp4", "m4v", "webm", "mov", "ogv", "mkv"]);
+
+function isDocumentWorkbenchMode(value: unknown): value is DocumentWorkbenchMode {
+  return value === "preview" || value === "markdown" || value === "edit";
+}
+
+function isDocumentSourceEditable(file: TFile): boolean {
+  return DOCUMENT_TEXT_EXTENSIONS.has(file.extension.toLowerCase()) || DOCUMENT_TEXT_EXTENSIONS.has(file.name.toLowerCase());
+}
+
+function documentFormatKind(file: TFile): DocumentFormatKind {
+  const extension = file.extension.toLowerCase();
+  if (extension === "md" || extension === "markdown") return "markdown";
+  if (extension === "json" || extension === "jsonl" || extension === "ndjson" || extension === "canvas" || extension === "base") return "json";
+  if (extension === "csv" || extension === "tsv") return "csv";
+  if (extension === "html" || extension === "htm" || extension === "hltm") return "html";
+  if (extension === "mhtml" || extension === "mht" || extension === "mhtl") return "mhtml";
+  if (extension === "pdf") return "pdf";
+  if (extension === "docx") return "docx";
+  if (extension === "xlsx") return "xlsx";
+  if (extension === "pptx") return "pptx";
+  if (DOCUMENT_IMAGE_EXTENSIONS.has(extension)) return "image";
+  if (DOCUMENT_AUDIO_EXTENSIONS.has(extension)) return "audio";
+  if (DOCUMENT_VIDEO_EXTENSIONS.has(extension)) return "video";
+  if (DOCUMENT_TEXT_EXTENSIONS.has(extension) || DOCUMENT_TEXT_EXTENSIONS.has(file.name.toLowerCase())) return "text";
+  if (["zip", "epub", "odt", "ods", "odp"].includes(extension)) return "archive";
+  return "binary";
+}
+
+async function buildDocumentSnapshot(app: App, file: TFile): Promise<DocumentSnapshot> {
+  const kind = documentFormatKind(file);
+  const mimeType = mimeTypeForPath(file.path);
+  const warnings: string[] = [];
+  const editableSource = isDocumentSourceEditable(file);
+  if (editableSource) {
+    const sourceText = await app.vault.read(file);
+    if (file.stat.size > 4 * 1024 * 1024) warnings.push(I18N.zh?.documentLargeFile || EN.documentLargeFile);
+    const mhtmlHtml = kind === "mhtml" ? extractMhtmlHtml(sourceText, warnings) : "";
+    const previewHtml = kind === "html" || kind === "mhtml"
+      ? isolatedHtmlPreview(kind === "mhtml" ? mhtmlHtml : sourceText)
+      : "";
+    return {
+      file,
+      sourceMtime: file.stat.mtime,
+      sourceSize: file.stat.size,
+      kind,
+      previewKind: kind === "html" || kind === "mhtml" ? "html" : kind === "image" ? "image" : "markdown",
+      mimeType,
+      sourceText,
+      markdown: trimContext(kind === "image" ? documentEmbedMarkdown(file, kind, mimeType) : markdownFromDocumentText(file, sourceText, kind), DOCUMENT_MARKDOWN_MAX_CHARS),
+      previewHtml,
+      editableSource,
+      warnings
+    };
+  }
+
+  if (kind === "image" || kind === "audio" || kind === "video") {
+    return {
+      file,
+      sourceMtime: file.stat.mtime,
+      sourceSize: file.stat.size,
+      kind,
+      previewKind: kind,
+      mimeType,
+      sourceText: "",
+      markdown: documentEmbedMarkdown(file, kind, mimeType),
+      previewHtml: "",
+      editableSource: false,
+      warnings
+    };
+  }
+
+  if (file.stat.size > DOCUMENT_PARSE_MAX_BYTES) {
+    warnings.push(I18N.zh?.documentLargeFile || EN.documentLargeFile);
+    return {
+      file,
+      sourceMtime: file.stat.mtime,
+      sourceSize: file.stat.size,
+      kind,
+      previewKind: kind === "pdf" ? "pdf" : "markdown",
+      mimeType,
+      sourceText: "",
+      markdown: documentEmbedMarkdown(file, kind, mimeType),
+      previewHtml: "",
+      editableSource: false,
+      warnings
+    };
+  }
+
+  const buffer = await app.vault.readBinary(file);
+  const bytes = new Uint8Array(buffer);
+  let markdown = "";
+  if (kind === "pdf") {
+    const slice = bytes.subarray(0, Math.min(bytes.byteLength, 8 * 1024 * 1024));
+    const extracted = extractPdfTextFromBytes(slice, file.name, DOCUMENT_MARKDOWN_MAX_CHARS - 1000, warnings);
+    markdown = `${documentEmbedMarkdown(file, kind, mimeType)}${extracted ? `\n\n## 提取文字\n\n${extracted}` : ""}`;
+  } else if (kind === "docx" || kind === "xlsx" || kind === "pptx" || kind === "archive") {
+    const entries = readZipEntries(bytes, warnings);
+    if (!entries.length) {
+      warnings.push("ZIP central directory was not found.");
+      markdown = documentEmbedMarkdown(file, kind, mimeType);
+    } else if (kind === "docx") {
+      markdown = await extractDocxMarkdown(entries, bytes, file, warnings);
+    } else if (kind === "xlsx") {
+      markdown = await extractXlsxMarkdown(entries, bytes, file, warnings);
+    } else if (kind === "pptx") {
+      markdown = await extractPptxMarkdown(entries, bytes, file, warnings);
+    } else {
+      const text = await extractZipText(entries, bytes, DOCUMENT_MARKDOWN_MAX_CHARS - 1000, warnings);
+      markdown = `${documentMetadataMarkdown(file, kind, mimeType)}${text ? `\n\n${text}` : "\n\n![[" + file.path + "]]"}`;
+    }
+  } else {
+    warnings.push(I18N.zh?.documentUnsupportedBinary || EN.documentUnsupportedBinary);
+    markdown = documentEmbedMarkdown(file, kind, mimeType);
+  }
+
+  return {
+    file,
+    sourceMtime: file.stat.mtime,
+    sourceSize: file.stat.size,
+    kind,
+    previewKind: kind === "pdf" ? "pdf" : "markdown",
+    mimeType,
+    sourceText: "",
+    markdown: trimContext(markdown, DOCUMENT_MARKDOWN_MAX_CHARS),
+    previewHtml: "",
+    editableSource: false,
+    warnings: uniqueStrings(warnings)
+  };
+}
+
+function markdownFromDocumentText(file: TFile, sourceText: string, kind = documentFormatKind(file)): string {
+  if (kind === "markdown") return sourceText;
+  if (kind === "html") return htmlToMarkdown(sourceText, file.basename);
+  if (kind === "mhtml") return htmlToMarkdown(extractMhtmlHtml(sourceText, []), file.basename);
+  if (kind === "csv") return delimitedTextToMarkdown(sourceText, file.extension.toLowerCase() === "tsv" ? "\t" : ",", file.basename);
+  if (kind === "json") {
+    let formatted = sourceText;
+    try {
+      formatted = JSON.stringify(JSON.parse(sourceText), null, 2);
+    } catch {
+      // Keep JSONL and partially edited JSON readable without blocking the editor.
+    }
+    return `# ${file.basename}\n\n\`\`\`json\n${formatted.trim()}\n\`\`\``;
+  }
+  const extension = file.extension.toLowerCase();
+  if (extension === "txt" || extension === "log" || !extension) return `# ${file.basename}\n\n${sourceText.trim()}`;
+  return `# ${file.basename}\n\n\`\`\`${documentCodeLanguage(extension)}\n${sourceText.trim()}\n\`\`\``;
+}
+
+function documentEmbedMarkdown(file: TFile, kind: DocumentFormatKind, mimeType: string): string {
+  return `${documentMetadataMarkdown(file, kind, mimeType)}\n\n![[${file.path}]]`;
+}
+
+function documentMetadataMarkdown(file: TFile, kind: DocumentFormatKind, mimeType: string): string {
+  const modified = new Date(file.stat.mtime).toISOString();
+  return [
+    `# ${escapeMarkdownText(file.basename)}`,
+    "",
+    `- **文件**：[[${file.path}]]`,
+    `- **格式**：${kind.toUpperCase()}${mimeType ? ` (${mimeType})` : ""}`,
+    `- **大小**：${formatFileSize(file.stat.size)}`,
+    `- **修改**：${modified}`
+  ].join("\n");
+}
+
+function documentCodeLanguage(extension: string): string {
+  const aliases: Record<string, string> = {
+    yml: "yaml", htm: "html", mjs: "javascript", cjs: "javascript", js: "javascript", jsx: "jsx", ts: "typescript",
+    tsx: "tsx", py: "python", rb: "ruby", sh: "bash", zsh: "bash", ps1: "powershell", bat: "batch", cmd: "batch"
+  };
+  return aliases[extension] ?? extension.replace(/[^a-z0-9_+-]/gi, "");
+}
+
+function delimitedTextToMarkdown(source: string, delimiter: string, title: string): string {
+  const rows = parseDelimitedRows(source, delimiter).slice(0, 500);
+  if (!rows.length) return `# ${escapeMarkdownText(title)}`;
+  const width = Math.min(80, Math.max(...rows.map((row) => row.length)));
+  const normalized = rows.map((row) => Array.from({ length: width }, (_unused, index) => row[index] ?? ""));
+  const header = normalized[0].map((cell, index) => cell.trim() || spreadsheetColumnName(index));
+  const body = normalized.slice(1);
+  return `# ${escapeMarkdownText(title)}\n\n${markdownTable(header, body)}`;
+}
+
+function parseDelimitedRows(source: string, delimiter: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (char === '"') {
+      if (quoted && source[index + 1] === '"') {
+        value += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === delimiter && !quoted) {
+      row.push(value);
+      value = "";
+    } else if ((char === "\n" || char === "\r") && !quoted) {
+      if (char === "\r" && source[index + 1] === "\n") index += 1;
+      row.push(value);
+      if (row.some((cell) => cell.length)) rows.push(row);
+      row = [];
+      value = "";
+    } else {
+      value += char;
+    }
+  }
+  row.push(value);
+  if (row.some((cell) => cell.length)) rows.push(row);
+  return rows;
+}
+
+function markdownTable(header: string[], rows: string[][]): string {
+  const safeHeader = header.map(markdownTableCell);
+  const lines = [
+    `| ${safeHeader.join(" | ")} |`,
+    `| ${safeHeader.map(() => "---").join(" | ")} |`
+  ];
+  for (const row of rows) {
+    lines.push(`| ${safeHeader.map((_unused, index) => markdownTableCell(row[index] ?? "")).join(" | ")} |`);
+  }
+  return lines.join("\n");
+}
+
+function markdownTableCell(value: string): string {
+  return normalizeExtractedText(String(value)).replace(/\|/g, "\\|").replace(/\r?\n/g, "<br>");
+}
+
+function spreadsheetColumnName(index: number): string {
+  let value = index + 1;
+  let name = "";
+  while (value > 0) {
+    value -= 1;
+    name = String.fromCharCode(65 + value % 26) + name;
+    value = Math.floor(value / 26);
+  }
+  return name;
+}
+
+function spreadsheetColumnIndex(reference: string): number {
+  const letters = reference.match(/^[A-Z]+/i)?.[0]?.toUpperCase() ?? "A";
+  let value = 0;
+  for (const letter of letters) value = value * 26 + letter.charCodeAt(0) - 64;
+  return Math.max(0, value - 1);
+}
+
+function isolatedHtmlPreview(source: string): string {
+  const parsed = new DOMParser().parseFromString(source || "<p></p>", "text/html");
+  parsed.querySelectorAll("script,noscript,base,object,embed,applet").forEach((node) => node.remove());
+  parsed.querySelectorAll("*").forEach((element) => {
+    for (const attribute of Array.from(element.attributes)) {
+      if (/^on/i.test(attribute.name)) element.removeAttribute(attribute.name);
+      if ((attribute.name === "href" || attribute.name === "src" || attribute.name === "poster") && /^\s*(?:https?:|file:|javascript:)/i.test(attribute.value)) {
+        element.removeAttribute(attribute.name);
+      }
+    }
+  });
+  const direction = parsed.documentElement.getAttribute("dir") || "auto";
+  return `<!doctype html><html dir="${escapeHtmlAttribute(direction)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data: blob:; media-src data: blob:; style-src 'unsafe-inline'"><style>html{color-scheme:light dark}body{margin:0;padding:18px;font:16px/1.6 system-ui,sans-serif;color:CanvasText;background:Canvas}img,video{max-width:100%;height:auto}table{border-collapse:collapse;display:block;overflow:auto}th,td{border:1px solid GrayText;padding:5px 9px}pre{overflow:auto;white-space:pre-wrap}</style>${parsed.head.innerHTML}</head><body>${parsed.body.innerHTML}</body></html>`;
+}
+
+function htmlToMarkdown(source: string, fallbackTitle: string): string {
+  const parsed = new DOMParser().parseFromString(source || "", "text/html");
+  parsed.querySelectorAll("script,style,noscript,svg,canvas,form,button,input,textarea,select").forEach((node) => node.remove());
+  const title = normalizeExtractedText(parsed.querySelector("title")?.textContent || fallbackTitle);
+  const blocks = Array.from(parsed.body.childNodes).map((node) => htmlNodeToMarkdown(node, 0)).filter(Boolean).join("\n\n");
+  const normalized = normalizeMarkdownDocument(blocks);
+  return normalized.startsWith("# ") ? normalized : `# ${escapeMarkdownText(title || fallbackTitle)}${normalized ? `\n\n${normalized}` : ""}`;
+}
+
+function htmlNodeToMarkdown(node: Node, listDepth: number): string {
+  if (node.nodeType === Node.TEXT_NODE) return (node.textContent ?? "").replace(/\s+/g, " ");
+  if (!(node instanceof Element)) return "";
+  const tag = node.tagName.toLowerCase();
+  if (/^h[1-6]$/.test(tag)) return `${"#".repeat(Number(tag.slice(1)))} ${inlineHtmlChildren(node, listDepth).trim()}`;
+  if (tag === "p" || tag === "div" || tag === "section" || tag === "article" || tag === "header" || tag === "footer") {
+    return inlineHtmlChildren(node, listDepth).trim();
+  }
+  if (tag === "br") return "\n";
+  if (tag === "hr") return "---";
+  if (tag === "strong" || tag === "b") return `**${inlineHtmlChildren(node, listDepth).trim()}**`;
+  if (tag === "em" || tag === "i") return `*${inlineHtmlChildren(node, listDepth).trim()}*`;
+  if (tag === "del" || tag === "s") return `~~${inlineHtmlChildren(node, listDepth).trim()}~~`;
+  if (tag === "code" && node.parentElement?.tagName.toLowerCase() !== "pre") return `\`${(node.textContent ?? "").replace(/`/g, "\\`")}\``;
+  if (tag === "pre") return `\`\`\`\n${(node.textContent ?? "").trim()}\n\`\`\``;
+  if (tag === "blockquote") return inlineHtmlChildren(node, listDepth).trim().split(/\r?\n/).map((line) => `> ${line}`).join("\n");
+  if (tag === "a") {
+    const text = inlineHtmlChildren(node, listDepth).trim() || node.getAttribute("href") || "link";
+    const href = node.getAttribute("href") || "";
+    return href && !/^javascript:/i.test(href) ? `[${text}](${href})` : text;
+  }
+  if (tag === "img") {
+    const alt = node.getAttribute("alt") || "image";
+    const src = node.getAttribute("src") || "";
+    return src && !/^javascript:/i.test(src) ? `![${alt}](${src})` : alt;
+  }
+  if (tag === "ul" || tag === "ol") {
+    const ordered = tag === "ol";
+    return Array.from(node.children).filter((child) => child.tagName.toLowerCase() === "li").map((child, index) => {
+      const prefix = ordered ? `${index + 1}.` : "-";
+      const text = inlineHtmlChildren(child, listDepth + 1).trim().replace(/\n{2,}/g, "\n");
+      return `${"  ".repeat(listDepth)}${prefix} ${text}`;
+    }).join("\n");
+  }
+  if (tag === "table") return htmlTableToMarkdown(node);
+  return inlineHtmlChildren(node, listDepth).trim();
+}
+
+function inlineHtmlChildren(element: Element, listDepth: number): string {
+  return Array.from(element.childNodes).map((child) => htmlNodeToMarkdown(child, listDepth)).join("");
+}
+
+function htmlTableToMarkdown(table: Element): string {
+  const rows = Array.from(table.querySelectorAll("tr")).map((row) => Array.from(row.querySelectorAll(":scope > th, :scope > td")).map((cell) => normalizeExtractedText(cell.textContent ?? "")));
+  if (!rows.length) return "";
+  const width = Math.max(...rows.map((row) => row.length));
+  const normalized = rows.map((row) => Array.from({ length: width }, (_unused, index) => row[index] ?? ""));
+  return markdownTable(normalized[0], normalized.slice(1));
+}
+
+function normalizeMarkdownDocument(source: string): string {
+  return source
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function extractMhtmlHtml(source: string, warnings: string[]): string {
+  const headerEnd = source.search(/\r?\n\r?\n/);
+  const topHeaders = parseMimeHeaders(headerEnd >= 0 ? source.slice(0, headerEnd) : source);
+  const boundaryMatch = topHeaders["content-type"]?.match(/boundary\s*=\s*(?:"([^"]+)"|([^;\s]+))/i);
+  const boundary = boundaryMatch?.[1] || boundaryMatch?.[2] || "";
+  if (!boundary) {
+    warnings.push("MHTML boundary was not found; using the visible HTML body only.");
+    const htmlIndex = source.search(/<(?:!doctype\s+html|html|body)\b/i);
+    return htmlIndex >= 0 ? source.slice(htmlIndex) : source;
+  }
+  const assets = new Map<string, string>();
+  let html = "";
+  for (const rawPart of source.split(`--${boundary}`)) {
+    const split = rawPart.search(/\r?\n\r?\n/);
+    if (split < 0) continue;
+    const headers = parseMimeHeaders(rawPart.slice(0, split));
+    const body = rawPart.slice(split).replace(/^\r?\n\r?\n/, "").replace(/\r?\n$/, "");
+    const contentType = headers["content-type"] || "text/plain";
+    const encoding = headers["content-transfer-encoding"] || "";
+    const location = headers["content-location"] || "";
+    const contentId = (headers["content-id"] || "").replace(/[<>]/g, "");
+    if (/text\/html/i.test(contentType) && !html) {
+      html = decodeMimeTextBody(body, encoding, contentType);
+      continue;
+    }
+    if (/^(?:image|audio|video)\//i.test(contentType)) {
+      const mime = contentType.split(";")[0].trim();
+      const base64 = encoding.toLowerCase().includes("base64")
+        ? body.replace(/\s+/g, "")
+        : bytesToBase64(quotedPrintableBytes(body));
+      const dataUrl = `data:${mime};base64,${base64}`;
+      if (location) assets.set(location, dataUrl);
+      if (contentId) assets.set(`cid:${contentId}`, dataUrl);
+    }
+  }
+  if (!html) {
+    warnings.push("MHTML did not contain a text/html part.");
+    return "";
+  }
+  for (const [sourceUrl, dataUrl] of assets) html = html.split(sourceUrl).join(dataUrl);
+  return html;
+}
+
+function parseMimeHeaders(source: string): Record<string, string> {
+  const unfolded = source.replace(/\r?\n[ \t]+/g, " ");
+  const headers: Record<string, string> = {};
+  for (const line of unfolded.split(/\r?\n/)) {
+    const separator = line.indexOf(":");
+    if (separator <= 0) continue;
+    headers[line.slice(0, separator).trim().toLowerCase()] = line.slice(separator + 1).trim();
+  }
+  return headers;
+}
+
+function decodeMimeTextBody(body: string, encoding: string, contentType: string): string {
+  const charset = contentType.match(/charset\s*=\s*(?:"([^"]+)"|([^;\s]+))/i)?.slice(1).find(Boolean) || "utf-8";
+  try {
+    if (/base64/i.test(encoding)) return new TextDecoder(charset).decode(base64ToBytes(body.replace(/\s+/g, "")));
+    if (/quoted-printable/i.test(encoding)) return new TextDecoder(charset).decode(quotedPrintableBytes(body));
+  } catch {
+    // Fall through to the raw body when a WebView lacks the declared charset.
+  }
+  return body;
+}
+
+function quotedPrintableBytes(source: string): Uint8Array {
+  const unfolded = source.replace(/=\r?\n/g, "");
+  const bytes: number[] = [];
+  for (let index = 0; index < unfolded.length; index += 1) {
+    if (unfolded[index] === "=" && /^[0-9a-f]{2}$/i.test(unfolded.slice(index + 1, index + 3))) {
+      bytes.push(parseInt(unfolded.slice(index + 1, index + 3), 16));
+      index += 2;
+    } else {
+      const encoded = new TextEncoder().encode(unfolded[index]);
+      bytes.push(...encoded);
+    }
+  }
+  return new Uint8Array(bytes);
+}
+
+function base64ToBytes(source: string): Uint8Array {
+  const binary = atob(source);
+  return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunk) binary += String.fromCharCode(...bytes.subarray(index, index + chunk));
+  return btoa(binary);
+}
+
+async function extractDocxMarkdown(entries: ZipEntry[], bytes: Uint8Array, file: TFile, warnings: string[]): Promise<string> {
+  const documentEntry = entries.find((entry) => entry.name === "word/document.xml");
+  if (!documentEntry) return documentEmbedMarkdown(file, "docx", mimeTypeForPath(file.path));
+  const xml = await extractZipEntryText(documentEntry, bytes, warnings);
+  const parsed = parseOfficeXml(xml, warnings, documentEntry.name);
+  const body = firstDescendantByLocalName(parsed, "body");
+  const blocks: string[] = [];
+  for (const child of Array.from(body?.children ?? [])) {
+    if (child.localName === "p") {
+      const paragraph = docxParagraphMarkdown(child);
+      if (paragraph) blocks.push(paragraph);
+    } else if (child.localName === "tbl") {
+      const table = docxTableMarkdown(child);
+      if (table) blocks.push(table);
+    }
+  }
+  const supplements: string[] = [];
+  for (const entry of entries.filter((candidate) => /^word\/(?:header|footer|footnotes|endnotes)\d*\.xml$/i.test(candidate.name))) {
+    const content = extractXmlTextRuns(await extractZipEntryText(entry, bytes, warnings));
+    if (content) supplements.push(`### ${officePartLabel(entry.name)}\n\n${content}`);
+  }
+  return trimContext(`# ${escapeMarkdownText(file.basename)}\n\n${blocks.join("\n\n")}${supplements.length ? `\n\n## 附加内容\n\n${supplements.join("\n\n")}` : ""}`, DOCUMENT_MARKDOWN_MAX_CHARS);
+}
+
+function docxParagraphMarkdown(paragraph: Element): string {
+  const runs = descendantsByLocalName(paragraph, "r");
+  let text = runs.map((run) => {
+    let value = descendantsByLocalName(run, "t").map((node) => node.textContent ?? "").join("");
+    if (descendantsByLocalName(run, "tab").length) value += "\t";
+    if (descendantsByLocalName(run, "br").length) value += "\n";
+    if (!value) return "";
+    const properties = firstDescendantByLocalName(run, "rPr");
+    if (properties && firstDescendantByLocalName(properties, "b")) value = `**${value}**`;
+    if (properties && firstDescendantByLocalName(properties, "i")) value = `*${value}*`;
+    if (properties && firstDescendantByLocalName(properties, "strike")) value = `~~${value}~~`;
+    return value;
+  }).join("");
+  text = normalizeExtractedText(text || descendantsByLocalName(paragraph, "t").map((node) => node.textContent ?? "").join(""));
+  if (!text) return "";
+  const style = firstDescendantByLocalName(paragraph, "pStyle");
+  const styleName = officeAttribute(style, "val");
+  const heading = styleName.match(/(?:heading|标题)\s*([1-6])/i)?.[1];
+  if (heading) return `${"#".repeat(Number(heading) + 1)} ${text}`;
+  if (/title|标题/i.test(styleName)) return `## ${text}`;
+  if (firstDescendantByLocalName(paragraph, "numPr")) return `- ${text}`;
+  return text;
+}
+
+function docxTableMarkdown(table: Element): string {
+  const rows = childElementsByLocalName(table, "tr").map((row) => childElementsByLocalName(row, "tc").map((cell) => {
+    return childElementsByLocalName(cell, "p").map(docxParagraphMarkdown).filter(Boolean).join("<br>").replace(/^[-#]+\s*/, "");
+  }));
+  if (!rows.length) return "";
+  const width = Math.max(...rows.map((row) => row.length));
+  const normalized = rows.map((row) => Array.from({ length: width }, (_unused, index) => row[index] ?? ""));
+  const header = normalized[0].map((cell, index) => cell || spreadsheetColumnName(index));
+  return markdownTable(header, normalized.slice(1));
+}
+
+async function extractPptxMarkdown(entries: ZipEntry[], bytes: Uint8Array, file: TFile, warnings: string[]): Promise<string> {
+  const slideEntries = entries.filter((entry) => /^ppt\/slides\/slide\d+\.xml$/i.test(entry.name)).sort((a, b) => naturalNameNumber(a.name) - naturalNameNumber(b.name));
+  const blocks = [`# ${escapeMarkdownText(file.basename)}`];
+  for (const entry of slideEntries) {
+    const parsed = parseOfficeXml(await extractZipEntryText(entry, bytes, warnings), warnings, entry.name);
+    const slideNumber = naturalNameNumber(entry.name);
+    const shapes = descendantsByLocalName(parsed, "sp");
+    const titleShape = shapes.find((shape) => {
+      const placeholder = firstDescendantByLocalName(shape, "ph");
+      return /^(?:title|ctrTitle)$/i.test(officeAttribute(placeholder, "type"));
+    });
+    const title = titleShape ? officeShapeText(titleShape)[0] : "";
+    const lines: string[] = [];
+    for (const shape of shapes) {
+      if (shape === titleShape) continue;
+      lines.push(...officeShapeText(shape));
+    }
+    blocks.push(`## 幻灯片 ${slideNumber}${title ? `：${title}` : ""}${lines.length ? `\n\n${lines.map((line) => `- ${line}`).join("\n")}` : ""}`);
+    const notesEntry = entries.find((candidate) => candidate.name === `ppt/notesSlides/notesSlide${slideNumber}.xml`);
+    if (notesEntry) {
+      const notes = extractXmlTextRuns(await extractZipEntryText(notesEntry, bytes, warnings));
+      if (notes) blocks.push(`> 备注：${notes}`);
+    }
+  }
+  return trimContext(blocks.join("\n\n"), DOCUMENT_MARKDOWN_MAX_CHARS);
+}
+
+function officeShapeText(shape: Element): string[] {
+  return descendantsByLocalName(shape, "p").map((paragraph) => normalizeExtractedText(descendantsByLocalName(paragraph, "t").map((text) => text.textContent ?? "").join(""))).filter(Boolean);
+}
+
+async function extractXlsxMarkdown(entries: ZipEntry[], bytes: Uint8Array, file: TFile, warnings: string[]): Promise<string> {
+  const sharedStrings = await readXlsxSharedStrings(entries, bytes, warnings);
+  const descriptors = await readXlsxSheetDescriptors(entries, bytes, warnings);
+  const fallbackEntries = entries.filter((entry) => /^xl\/worksheets\/sheet\d+\.xml$/i.test(entry.name)).sort((a, b) => naturalNameNumber(a.name) - naturalNameNumber(b.name));
+  const sheets = descriptors.length ? descriptors : fallbackEntries.map((entry, index) => ({ name: `Sheet ${index + 1}`, path: entry.name }));
+  const blocks = [`# ${escapeMarkdownText(file.basename)}`];
+  for (const sheet of sheets) {
+    const entry = entries.find((candidate) => candidate.name === sheet.path);
+    if (!entry) continue;
+    const xml = await extractZipEntryText(entry, bytes, warnings);
+    const rows = extractXlsxGrid(xml, sharedStrings, 300, 80);
+    if (!rows.length) continue;
+    const width = Math.max(...rows.map((row) => row.length));
+    const normalized = rows.map((row) => Array.from({ length: width }, (_unused, index) => row[index] ?? ""));
+    const header = normalized[0].map((cell, index) => cell || spreadsheetColumnName(index));
+    blocks.push(`## ${escapeMarkdownText(sheet.name)}\n\n${markdownTable(header, normalized.slice(1))}`);
+  }
+  return trimContext(blocks.join("\n\n"), DOCUMENT_MARKDOWN_MAX_CHARS);
+}
+
+async function readXlsxSheetDescriptors(entries: ZipEntry[], bytes: Uint8Array, warnings: string[]): Promise<Array<{ name: string; path: string }>> {
+  const workbook = entries.find((entry) => entry.name === "xl/workbook.xml");
+  const relations = entries.find((entry) => entry.name === "xl/_rels/workbook.xml.rels");
+  if (!workbook || !relations) return [];
+  const workbookXml = await extractZipEntryText(workbook, bytes, warnings);
+  const relationsXml = await extractZipEntryText(relations, bytes, warnings);
+  const relationPaths = new Map<string, string>();
+  for (const match of relationsXml.matchAll(/<Relationship\b([^>]*)\/?\s*>/gi)) {
+    const id = match[1].match(/\bId="([^"]+)"/i)?.[1] ?? "";
+    const target = match[1].match(/\bTarget="([^"]+)"/i)?.[1] ?? "";
+    if (!id || !target) continue;
+    const path = normalizePath(target.startsWith("/") ? target.slice(1) : `xl/${target.replace(/^\.\//, "")}`);
+    relationPaths.set(id, path);
+  }
+  const output: Array<{ name: string; path: string }> = [];
+  for (const match of workbookXml.matchAll(/<sheet\b([^>]*)\/?\s*>/gi)) {
+    const name = decodeXmlEntities(match[1].match(/\bname="([^"]+)"/i)?.[1] ?? "");
+    const relationId = match[1].match(/\br:id="([^"]+)"/i)?.[1] ?? "";
+    const path = relationPaths.get(relationId) ?? "";
+    if (name && path) output.push({ name, path });
+  }
+  return output;
+}
+
+function extractXlsxGrid(xml: string, sharedStrings: string[], maxRows: number, maxColumns: number): string[][] {
+  const rows: string[][] = [];
+  for (const rowMatch of xml.matchAll(/<row\b[\s\S]*?<\/row>/gi)) {
+    const row: string[] = [];
+    for (const cellMatch of rowMatch[0].matchAll(/<c\b([^>]*)>([\s\S]*?)<\/c>/gi)) {
+      const attrs = cellMatch[1];
+      const body = cellMatch[2];
+      const column = Math.min(maxColumns - 1, spreadsheetColumnIndex(attrs.match(/\br="([A-Z]+\d+)"/i)?.[1] ?? "A1"));
+      const type = attrs.match(/\bt="([^"]+)"/i)?.[1] ?? "";
+      const inline = body.match(/<is\b[\s\S]*?<\/is>/i)?.[0] ?? "";
+      const formula = decodeXmlEntities(body.match(/<f[^>]*>([\s\S]*?)<\/f>/i)?.[1] ?? "");
+      const rawValue = decodeXmlEntities(body.match(/<v[^>]*>([\s\S]*?)<\/v>/i)?.[1] ?? "");
+      let value = rawValue;
+      if (type === "s") value = sharedStrings[Number(rawValue)] ?? rawValue;
+      else if (type === "inlineStr") value = extractXmlTextRuns(inline);
+      else if (type === "b") value = rawValue === "1" ? "TRUE" : "FALSE";
+      if (!value && formula) value = `=${formula}`;
+      while (row.length <= column) row.push("");
+      row[column] = normalizeExtractedText(value);
+    }
+    if (row.some(Boolean)) rows.push(row.slice(0, maxColumns));
+    if (rows.length >= maxRows) break;
+  }
+  return rows;
+}
+
+function parseOfficeXml(xml: string, warnings: string[], name: string): XMLDocument {
+  const parsed = new DOMParser().parseFromString(xml, "application/xml");
+  const error = parsed.querySelector("parsererror")?.textContent?.trim();
+  if (error) warnings.push(`${name}: XML parse warning`);
+  return parsed;
+}
+
+function descendantsByLocalName(parent: ParentNode, localName: string): Element[] {
+  const withNamespaces = "getElementsByTagNameNS" in parent
+    ? Array.from((parent as Document | Element).getElementsByTagNameNS("*", localName))
+    : [];
+  if (withNamespaces.length) return withNamespaces;
+  return Array.from(parent.querySelectorAll("*")).filter((element) => element.localName === localName);
+}
+
+function firstDescendantByLocalName(parent: ParentNode | null, localName: string): Element | null {
+  return parent ? descendantsByLocalName(parent, localName)[0] ?? null : null;
+}
+
+function childElementsByLocalName(parent: Element, localName: string): Element[] {
+  return Array.from(parent.children).filter((element) => element.localName === localName);
+}
+
+function officeAttribute(element: Element | null, localName: string): string {
+  if (!element) return "";
+  return Array.from(element.attributes).find((attribute) => attribute.localName === localName)?.value ?? "";
+}
+
+function officePartLabel(path: string): string {
+  if (/header/i.test(path)) return "页眉";
+  if (/footer/i.test(path)) return "页脚";
+  if (/footnotes/i.test(path)) return "脚注";
+  if (/endnotes/i.test(path)) return "尾注";
+  return path;
+}
+
+function escapeMarkdownText(value: string): string {
+  return value.replace(/([\\`*_{}\[\]()#+.!|>-])/g, "\\$1");
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value).replace(/`/g, "&#96;");
+}
+
+function ensureTrailingNewline(value: string): string {
+  return value.endsWith("\n") ? value : `${value}\n`;
 }
 
 async function extractPdfText(file: File, maxChars: number, warnings: string[]): Promise<string> {

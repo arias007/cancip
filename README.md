@@ -16,6 +16,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Outcome verification closes the execution loop inside Obsidian: `cancip.outcome.observe/verify` compare the active view, DOM/layout, file readback, plugin state, and workspace leaves with explicit expectations; `capture` adds active-region PNG evidence only when structured checks are insufficient, and `exportPdf` uses an installed exporter for PDF evidence. Failed checks trigger bounded difference-only correction, while reports and screenshots stay under `.cancip/evidence/` with direct review links and no persisted Base64 payloads.
 - Structured command bus actions for Obsidian internal commands, Cancip built-ins, and GitHub CLI-equivalent REST API commands.
 - Native File Explorer pinning: pin/unpin files and folders from the normal context menu, keep mixed pinned siblings above ordinary items, reorder with explicit up/down buttons or drag handles, and persist folder-local order in `.cancip/file-pins.json` without replacing Obsidian's normal unpinned sort or file drag/move behavior.
+- Universal document workbench: every Vault file can be opened as a Markdown representation from the native file menu. Text, HTML/MHTML, CSV, JSON, PDF, DOCX, XLSX, PPTX, media, ZIP-based documents, and unknown binaries receive format-aware previews; editable text formats save with readback verification, while binary originals remain protected and edited conversions export as Markdown or standalone HTML.
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
 - Cancip chat and rendered Markdown note code blocks keep Obsidian's copy action beside one global wrap toggle. Unwrapped horizontal scrolling is the default; one toggle updates current and future chat/note code blocks and persists across restarts.
 - Long-term/core memory defaults to visible `AI/Cancip/Memory/` and is included in every model interaction.
@@ -57,6 +58,14 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Startup and foreground loading follow a warm/cold lifecycle: the visible shell renders first, latest-session restore follows asynchronously, small high-value indexes warm during browser idle time, and startup maintenance yields between tasks so mobile interaction remains responsive.
 - New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic benefit gate classifies each file as curate, skip, or protected before any model call: only concrete high-value defects become candidates; clean, cosmetic-only, or Inbox-only cases are consumed silently; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic rename/restructure. Each candidate carries a defect-derived action allowlist so one formatting issue cannot authorize unrelated tags, links, summaries, or renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
+
+## 2.14.0
+
+- Added a single mobile-safe document workbench with Preview, Markdown, and Edit modes. Every Vault file now has `Open in document workbench` and `Open as Markdown` actions in the normal file menu.
+- Added semantic DOCX conversion with headings, emphasis, tables, headers/footers and notes; XLSX conversion preserves sheet names and cell column positions; PPTX conversion keeps slide boundaries, titles, text, and speaker notes.
+- Added isolated HTML/MHTML preview, MHTML embedded-media decoding, quoted CSV/TSV tables, native PDF/media preview, ZIP-based document extraction, and safe metadata/embed fallback for unsupported binaries.
+- Text-family files can be edited in place with readback verification. Office, PDF, media, archive, and unknown binary originals are never rewritten; edited output is saved as a new Markdown or standalone HTML conversion.
+- Added `cancip.documents.help/open/convert` command-bus routes and fixed the release workflow to publish normal numeric tags while keeping release assets limited to `main.js`, `manifest.json`, and `styles.css`.
 
 ## 2.13.0
 

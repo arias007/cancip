@@ -67,7 +67,8 @@ $DefaultCommandIds = @(
   'command.annotate.pdf.status',
   'command.study.help',
   'command.automation.templates',
-  'command.attachment.help'
+  'command.attachment.help',
+  'command.documents.help'
 )
 
 $Report = [ordered]@{
@@ -582,7 +583,7 @@ if (-not $Case -or 'programmatic.native-file-pins'.Contains($Case)) {
 (async()=>{const p=app.plugins.plugins.cancip,{folder,first,second}=window.__cancipPinSmoke.plan,explorer=app.workspace.getLeavesOfType('file-explorer')[0]?.view,folderNode=folder?app.vault.getAbstractFileByPath(folder):app.vault.getRoot(),nativeOrder=()=>Array.from(explorer?.getSortedFolderItems?.(folderNode)||[]).map(item=>item.file?.path).filter(Boolean);const before=nativeOrder();await p.setFilePinned(first,true);await p.setFilePinned(first,false);await new Promise(r=>setTimeout(r,260));const unpinRestoresNative=before.join('|')===nativeOrder().join('|');await p.setFilePinned(first,true);await p.setFilePinned(second,true);await p.setPinnedFileOrder(folder,[second,first]);await new Promise(r=>setTimeout(r,260));const nativePinned=nativeOrder();await p.movePinnedFile(first,-1);const up=(await p.loadFilePinState(true)).folders[folder]||[];await p.movePinnedFile(first,1);const down=(await p.loadFilePinState(true)).folders[folder]||[];await new Promise(r=>setTimeout(r,260));const state=await p.loadFilePinState(true),pinned=state.folders[folder]||[],normalOrderPreserved=before.filter(path=>!pinned.includes(path)).join('|')===nativeOrder().filter(path=>!pinned.includes(path)).join('|');await explorer?.revealInFolder?.(app.vault.getAbstractFileByPath(first));p.scheduleFilePinsApply(0);await new Promise(r=>setTimeout(r,220));const row=Array.from(activeDocument.querySelectorAll('.nav-file-title[data-path]')).find(el=>el.dataset.path===first&&el.getBoundingClientRect().height>0),controls=row?.querySelector('.obcc-file-pin-row-controls'),view=app.workspace.getLeavesOfType('cancip-view')[0]?.view,emptyLeavesStable=app.workspace.getLeavesOfType('empty').length===window.__cancipPinSmoke.emptyLeavesBefore;return JSON.stringify({folder,stateOrder:pinned.slice(0,6),orderApplied:nativePinned[0]===second&&nativePinned[1]===first,normalOrderPreserved,unpinRestoresNative,indicator:!!controls?.querySelector('.obcc-file-pin-indicator'),rowControls:!!controls?.querySelector('.is-up')&&!!controls?.querySelector('.is-down')&&!!controls?.querySelector('.is-unpin'),moveButtonsRoundTrip:up[0]===first&&up[1]===second&&down[0]===second&&down[1]===first,writeNeedsApproval:!!view?.isWriteLikeAction({type:'command',command:'obsidian.files.pin',args:{path:first}}),emptyLeavesStable})})()
 '@
     $migrationResult = Invoke-CancipEval -TimeoutSeconds 45 -Code @'
-(async()=>{const p=app.plugins.plugins.cancip,{folder,first}=window.__cancipPinSmoke.plan;const state=await p.loadFilePinState(true),index=(state.folders[folder]||[]).indexOf(first),extension=first.includes('.')?first.slice(first.lastIndexOf('.')):'',renamed=folder+'/__cancip-pin-rename-smoke'+extension;await p.migrateRenamedFilePins(first,renamed);const renameKeepsIndex=((await p.loadFilePinState(true)).folders[folder]||[]).indexOf(renamed)===index;const movedFolder=folder+'/__cancip-pin-move-smoke',moved=movedFolder+'/'+renamed.split('/').pop();await p.migrateRenamedFilePins(renamed,moved);const movedPresent=((await p.loadFilePinState(true)).folders[movedFolder]||[]).includes(moved);await p.removeDeletedFilePins(movedFolder);const deleteClears=!Object.values((await p.loadFilePinState(true)).folders).flat().includes(moved);return JSON.stringify({renameKeepsIndex,movedPresent,deleteClears})})()
+(async()=>{const p=app.plugins.plugins.cancip,{folder,first}=window.__cancipPinSmoke.plan;const state=await p.loadFilePinState(true),index=(state.folders[folder]||[]).indexOf(first),extension=first.includes('.')?first.slice(first.lastIndexOf('.')):'',prefix=folder?folder+'/':'',renamed=prefix+'__cancip-pin-rename-smoke'+extension;await p.migrateRenamedFilePins(first,renamed);const renameKeepsIndex=((await p.loadFilePinState(true)).folders[folder]||[]).indexOf(renamed)===index;const movedFolder=prefix+'__cancip-pin-move-smoke',moved=movedFolder+'/'+renamed.split('/').pop();await p.migrateRenamedFilePins(renamed,moved);const movedPresent=((await p.loadFilePinState(true)).folders[movedFolder]||[]).includes(moved);await p.removeDeletedFilePins(movedFolder);const deleteClears=!Object.values((await p.loadFilePinState(true)).folders).flat().includes(moved);return JSON.stringify({renameKeepsIndex,movedPresent,deleteClears})})()
 '@
     $checks = @{
       folderPinSupported = [bool]$folderResult.folderPinSupported
@@ -627,7 +628,56 @@ if (Should-RunProgrammaticCase 'programmatic.personalization-autocomplete') {
 (()=>{const p=app.plugins.plugins.cancip,v=app.workspace.getLeavesOfType('cancip-view')[0]?.view,input=v.inputEl,Win=input.ownerDocument.defaultView,old={enabled:p.settings.composerAutocompleteEnabled,value:input.value,start:input.selectionStart,end:input.selectionEnd,local:v.localAutocompleteCandidates,suggestion:v.autocompleteSuggestion,prefix:v.autocompletePrefix};try{p.settings.composerAutocompleteEnabled=true;v.localAutocompleteCandidates=()=>['继续优化Cancip并核对结果'];const before=v.footerEl.getBoundingClientRect().height;input.value='继续优';input.setSelectionRange(3,3);input.dispatchEvent(new Win.Event('input',{bubbles:true}));const suffix=v.autocompleteSuggestion,ghost=v.inputGhostSuffixEl?.textContent||'',after=v.footerEl.getBoundingClientRect().height;input.dispatchEvent(new Win.KeyboardEvent('keydown',{key:'Tab',bubbles:true,cancelable:true}));return JSON.stringify({localGhost:suffix==='化Cancip并核对结果'&&ghost===suffix,tabApplied:input.value==='继续优化Cancip并核对结果'&&input.selectionStart===input.value.length,footerStable:Math.abs(after-before)<1})}finally{v.autocompleteRequestId++;if(v.autocompleteTimer!==null)Win.clearTimeout(v.autocompleteTimer);v.autocompleteTimer=null;p.settings.composerAutocompleteEnabled=old.enabled;v.localAutocompleteCandidates=old.local;input.value=old.value;input.setSelectionRange(old.start,old.end);v.autocompleteSuggestion=old.suggestion;v.autocompletePrefix=old.prefix;v.resizeInput();v.renderAutocompleteSuggestion()}})()
 '@
     $async = Invoke-CancipEval -TimeoutSeconds 15 -Code @'
-(async()=>{const p=app.plugins.plugins.cancip,v=app.workspace.getLeavesOfType('cancip-view')[0]?.view,input=v.inputEl,Win=input.ownerDocument.defaultView,wait=ms=>new Promise(r=>setTimeout(r,ms)),old={enabled:p.settings.composerAutocompleteEnabled,value:input.value,start:input.selectionStart,end:input.selectionEnd,call:v.callLightweightModel,messages:v.messages,local:v.localAutocompleteCandidates,suggestion:v.autocompleteSuggestion,prefix:v.autocompletePrefix,modelBusy:v.autocompleteModelBusy,lastModelAt:v.autocompleteLastModelAt};let calls=0;try{p.settings.composerAutocompleteEnabled=true;v.messages=[];v.callLightweightModel=async text=>{calls++;if(text.includes('第一段输入')){await wait(140);return '旧补全'}await wait(20);return '新补全'};input.value='第一段输入';input.setSelectionRange(input.value.length,input.value.length);v.scheduleAutocomplete({force:true});await wait(8);input.value='第二段输入';input.setSelectionRange(input.value.length,input.value.length);v.scheduleAutocomplete({force:true});await wait(320);const staleSuppressed=v.autocompleteSuggestion==='新补全'&&calls===2;v.localAutocompleteCandidates=()=>['继续优化Cancip'];input.dispatchEvent(Win.CompositionEvent?new Win.CompositionEvent('compositionstart',{bubbles:true}):new Win.Event('compositionstart',{bubbles:true}));input.value='继续优';input.setSelectionRange(3,3);input.dispatchEvent(new Win.Event('input',{bubbles:true}));const compositionSuppressed=!v.autocompleteSuggestion;input.dispatchEvent(Win.CompositionEvent?new Win.CompositionEvent('compositionend',{bubbles:true}):new Win.Event('compositionend',{bubbles:true}));return JSON.stringify({staleSuppressed,compositionSuppressed,compositionRestored:v.autocompleteSuggestion==='化Cancip'})}finally{v.autocompleteRequestId++;if(v.autocompleteTimer!==null)Win.clearTimeout(v.autocompleteTimer);v.autocompleteTimer=null;p.settings.composerAutocompleteEnabled=old.enabled;v.callLightweightModel=old.call;v.messages=old.messages;v.localAutocompleteCandidates=old.local;v.autocompleteModelBusy=old.modelBusy;v.autocompleteLastModelAt=old.lastModelAt;input.value=old.value;input.setSelectionRange(old.start,old.end);v.autocompleteSuggestion=old.suggestion;v.autocompletePrefix=old.prefix;v.resizeInput();v.renderAutocompleteSuggestion()}})()
+(async()=>{
+  const p=app.plugins.plugins.cancip,v=app.workspace.getLeavesOfType('cancip-view')[0]?.view,input=v.inputEl,Win=input.ownerDocument.defaultView,wait=ms=>new Promise(r=>setTimeout(r,ms));
+  const old={enabled:p.settings.composerAutocompleteEnabled,value:input.value,start:input.selectionStart,end:input.selectionEnd,call:v.callLightweightModel,messages:v.messages,local:v.localAutocompleteCandidates,suggestion:v.autocompleteSuggestion,prefix:v.autocompletePrefix,modelBusy:v.autocompleteModelBusy,lastModelAt:v.autocompleteLastModelAt,activeRequest:v.activeRequest,activeMenu:v.activeMenu,isComposing:v.autocompleteIsComposing};
+  let calls=0;
+  try{
+    if(v.autocompleteTimer!==null)Win.clearTimeout(v.autocompleteTimer);
+    v.autocompleteTimer=null;
+    v.autocompleteRequestId++;
+    v.autocompleteModelBusy=false;
+    v.autocompleteLastModelAt=0;
+    v.activeRequest=null;
+    v.activeMenu=null;
+    v.autocompleteIsComposing=false;
+    p.settings.composerAutocompleteEnabled=true;
+    v.messages=[];
+    v.localAutocompleteCandidates=()=>[];
+    v.callLightweightModel=async text=>{calls++;if(text.includes('第一段输入')){await wait(140);return '旧补全'}await wait(20);return '新补全'};
+    input.value='第一段输入';input.setSelectionRange(input.value.length,input.value.length);v.scheduleAutocomplete({force:true});
+    const firstCallDeadline=Date.now()+500;
+    while(calls<1&&Date.now()<firstCallDeadline)await wait(10);
+    if(calls<1)throw new Error('first autocomplete request did not start');
+    input.value='第二段输入';input.setSelectionRange(input.value.length,input.value.length);v.scheduleAutocomplete({force:true});
+    const resultDeadline=Date.now()+3200;
+    while(v.autocompleteSuggestion!=='新补全'&&Date.now()<resultDeadline)await wait(40);
+    const staleSuggestion=v.autocompleteSuggestion;
+    const staleSuppressed=staleSuggestion==='新补全'&&calls>=2;
+    v.localAutocompleteCandidates=()=>['继续优化Cancip'];
+    input.dispatchEvent(Win.CompositionEvent?new Win.CompositionEvent('compositionstart',{bubbles:true}):new Win.Event('compositionstart',{bubbles:true}));
+    input.value='继续优';input.setSelectionRange(3,3);input.dispatchEvent(new Win.Event('input',{bubbles:true}));
+    const compositionSuppressed=!v.autocompleteSuggestion;
+    input.dispatchEvent(Win.CompositionEvent?new Win.CompositionEvent('compositionend',{bubbles:true}):new Win.Event('compositionend',{bubbles:true}));
+    return JSON.stringify({staleSuppressed,compositionSuppressed,compositionRestored:v.autocompleteSuggestion==='化Cancip',calls,suggestion:staleSuggestion});
+  }finally{
+    v.autocompleteRequestId++;
+    if(v.autocompleteTimer!==null)Win.clearTimeout(v.autocompleteTimer);
+    v.autocompleteTimer=null;
+    p.settings.composerAutocompleteEnabled=old.enabled;
+    v.callLightweightModel=old.call;
+    v.messages=old.messages;
+    v.localAutocompleteCandidates=old.local;
+    v.autocompleteModelBusy=old.modelBusy;
+    v.autocompleteLastModelAt=old.lastModelAt;
+    v.activeRequest=old.activeRequest;
+    v.activeMenu=old.activeMenu;
+    v.autocompleteIsComposing=old.isComposing;
+    input.value=old.value;input.setSelectionRange(old.start,old.end);
+    v.autocompleteSuggestion=old.suggestion;v.autocompletePrefix=old.prefix;
+    v.resizeInput();v.renderAutocompleteSuggestion();
+  }
+})()
 '@
     $longPress = Invoke-CancipEval -TimeoutSeconds 15 -Code @'
 (async()=>{const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view,Win=v.inputEl.ownerDocument.defaultView,wait=ms=>new Promise(r=>setTimeout(r,ms)),button=v.autocompleteApplyButtonEl,PointerCtor=Win.PointerEvent||Win.MouseEvent;try{button.dispatchEvent(new PointerCtor('pointerdown',{bubbles:true,button:0,pointerType:'touch'}));await wait(560);button.dispatchEvent(new PointerCtor('pointerup',{bubbles:true,button:0,pointerType:'touch'}));const popup=v.autocompletePopoverEl,text=popup?.textContent||'';return JSON.stringify({longPressSettings:!!popup&&!!popup.querySelector('input[type="checkbox"]')&&!!popup.querySelector('.obcc-autocomplete-prompt-row input')&&text.includes('换一个补全')})}finally{v.closeAutocompletePopover?.()}})()
@@ -642,6 +692,8 @@ if (Should-RunProgrammaticCase 'programmatic.personalization-autocomplete') {
       tabApplied = $local.tabApplied
       footerStable = $local.footerStable
       staleSuppressed = $async.staleSuppressed
+      asyncCalls = $async.calls
+      asyncSuggestion = $async.suggestion
       compositionSuppressed = $async.compositionSuppressed
       compositionRestored = $async.compositionRestored
       longPressSettings = $longPress.longPressSettings
@@ -1799,11 +1851,18 @@ if (Should-RunProgrammaticCase 'programmatic.code-block-wrap-global-persistence'
 if (Should-RunProgrammaticCase 'programmatic.note-code-block-wrap-global-persistence') {
   try {
     $setupCode = @'
-(()=>{
+(async()=>{
   const t=Date.now();
   const p=app.plugins.plugins.cancip;
   if(!p||typeof p.enhanceNoteCodeBlocks!=='function'||typeof p.syncAllCodeBlockWrap!=='function')throw new Error('note code wrap API unavailable');
-  const surface=activeDocument.querySelector('.workspace-leaf-content[data-type="markdown"] .markdown-preview-view, .workspace-leaf-content[data-type="markdown"] .markdown-source-view');
+  let oldActiveLeaf=null;
+  app.workspace.iterateAllLeaves((leaf)=>{if(!oldActiveLeaf&&leaf.containerEl?.closest?.('.workspace-leaf')?.classList.contains('mod-active'))oldActiveLeaf=leaf});
+  const markdownLeaf=app.workspace.getLeavesOfType('markdown')[0];
+  if(!markdownLeaf)throw new Error('mounted Markdown leaf unavailable');
+  await app.workspace.revealLeaf(markdownLeaf);
+  await new Promise((resolve)=>setTimeout(resolve,80));
+  const surfaces=Array.from(activeDocument.querySelectorAll('.workspace-leaf-content[data-type="markdown"] .markdown-preview-view, .workspace-leaf-content[data-type="markdown"] .markdown-source-view'));
+  const surface=surfaces.find((candidate)=>{const rect=candidate.getBoundingClientRect(),style=getComputedStyle(candidate);return rect.width>0&&rect.height>0&&style.display!=='none'&&style.visibility!=='hidden'})||surfaces[0];
   if(!surface)throw new Error('mounted Markdown note surface unavailable');
   const oldSetting=p.settings.codeBlockWrap===true;
   const oldSaveSettings=p.saveSettings;
@@ -1835,7 +1894,7 @@ if (Should-RunProgrammaticCase 'programmatic.note-code-block-wrap-global-persist
   const copyRect=copy.getBoundingClientRect(),wrapRect=wrap?.getBoundingClientRect(),preRect=pre.getBoundingClientRect();
   const actionsDoNotOverlap=!!wrapRect&&(copyRect.right<=wrapRect.left||wrapRect.right<=copyRect.left||copyRect.bottom<=wrapRect.top||wrapRect.bottom<=copyRect.top);
   const actionsInside=!!wrapRect&&copyRect.left>=preRect.left&&copyRect.right<=preRect.right&&wrapRect.left>=preRect.left&&wrapRect.right<=preRect.right;
-  window.__noteCodeWrapSmoke={t,p,host,pre,copy,wrap,oldSetting,oldSaveSettings,savedValues,roots:[host]};
+  window.__noteCodeWrapSmoke={t,p,host,pre,copy,wrap,oldSetting,oldSaveSettings,savedValues,roots:[host],oldActiveLeaf};
   return JSON.stringify({
     nativePreserved:copy.isConnected&&copy.parentElement===pre,
     adjacent:buttons.length===2&&buttons[0]===copy&&buttons[1]===wrap,
@@ -1951,7 +2010,7 @@ if (Should-RunProgrammaticCase 'programmatic.note-code-block-wrap-global-persist
   } finally {
     try {
       $null = Invoke-CancipEval -TimeoutSeconds 25 -Code @'
-(()=>{const s=window.__noteCodeWrapSmoke;if(!s)return JSON.stringify({clean:true});for(const root of s.roots||[])root.remove();s.p.saveSettings=s.oldSaveSettings;s.p.settings.codeBlockWrap=s.oldSetting;s.p.syncAllCodeBlockWrap();delete window.__noteCodeWrapSmoke;return JSON.stringify({clean:true})})()
+(async()=>{const s=window.__noteCodeWrapSmoke;if(!s)return JSON.stringify({clean:true});for(const root of s.roots||[])root.remove();s.p.saveSettings=s.oldSaveSettings;s.p.settings.codeBlockWrap=s.oldSetting;s.p.syncAllCodeBlockWrap();if(s.oldActiveLeaf)await app.workspace.revealLeaf(s.oldActiveLeaf);delete window.__noteCodeWrapSmoke;return JSON.stringify({clean:true})})()
 '@
     } catch {
       Write-Host "Note code wrap smoke cleanup warning: $($_.Exception.Message)"
@@ -3989,6 +4048,107 @@ if ($Write -and (-not $Case -or 'programmatic.ai-vault-command-review'.Contains(
   }
 }
 
+if ($Write -and (Should-RunProgrammaticCase 'programmatic.document-workbench-write')) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now(),p=app.plugins.plugins.cancip,root='Cancip验收-临时/document-workbench',sourcePath=`${root}/source.html`;
+  if(!p||typeof p.saveDocumentTextSource!=='function'||typeof p.exportDocumentConversion!=='function')throw new Error('document write API unavailable');
+  const created=[];
+  try{
+    if(!(await app.vault.adapter.exists(root)))await app.vault.createFolder(root);
+    let source=app.vault.getFileByPath(sourcePath);
+    if(source)await app.vault.delete(source,true);
+    source=await app.vault.create(sourcePath,'<!doctype html><html><body><h1>Alpha</h1><p>One</p></body></html>');
+    created.push(sourcePath);
+    const snapshot=await p.loadDocumentSnapshot(source);
+    await p.saveDocumentTextSource(source,'<!doctype html><html><body><h1>Beta</h1><p>Two</p></body></html>');
+    const sourceReadback=await app.vault.read(source);
+    const mdPath=await p.exportDocumentConversion(source,'# Converted\n\n- verified','md');
+    const htmlPath=await p.exportDocumentConversion(source,'# Converted\n\n- verified','html');
+    created.push(mdPath,htmlPath);
+    const md=await app.vault.read(app.vault.getFileByPath(mdPath));
+    const html=await app.vault.read(app.vault.getFileByPath(htmlPath));
+    return JSON.stringify({id:'programmatic.document-workbench-write',elapsedMs:Date.now()-t,editable:snapshot.editableSource,kind:snapshot.kind,sourceVerified:sourceReadback.includes('<h1>Beta</h1>'),mdVerified:md.includes('# Converted')&&md.includes('verified'),htmlVerified:/<!doctype html>/i.test(html)&&html.includes('Converted')&&html.includes('verified'),paths:created.length});
+  } finally {
+    for(const path of created.reverse()){const file=app.vault.getFileByPath(path);if(file)await app.vault.delete(file,true);}
+    const folder=app.vault.getFolderByPath(root);if(folder&&!folder.children.length)await app.vault.delete(folder,true);
+    const parent=app.vault.getFolderByPath('Cancip验收-临时');if(parent&&!parent.children.length)await app.vault.delete(parent,true);
+  }
+})().catch((error)=>JSON.stringify({id:'programmatic.document-workbench-write',evalError:error instanceof Error?error.message:String(error),stack:error instanceof Error?error.stack:''}))
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 90
+    if ([string]$item.evalError) { throw "document write eval failed: $($item.evalError)`n$($item.stack)" }
+    if (-not $item.editable -or [string]$item.kind -ne 'html' -or -not $item.sourceVerified -or -not $item.mdVerified -or -not $item.htmlVerified -or [int]$item.paths -ne 3) {
+      throw "document save/conversion verification failed: $($item | ConvertTo-Json -Compress -Depth 8)"
+    }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; paths = $item.paths }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.document-workbench-write'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.document-workbench') {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p||typeof p.loadDocumentSnapshot!=='function'||typeof p.activateDocumentWorkbench!=='function')throw new Error('document workbench API unavailable');
+  const files=app.vault.getFiles();
+  const safe=(ext)=>{
+    const matches=files.filter((file)=>file.extension.toLowerCase()===ext);
+    const preferred=matches.filter((file)=>!file.path.toLowerCase().includes('/encript/'));
+    return (preferred.length?preferred:matches).sort((a,b)=>a.stat.size-b.stat.size)[0]||null;
+  };
+  const expected={md:'markdown',html:'html',docx:'docx',xlsx:'xlsx',pdf:'pdf'};
+  const samples=[];
+  for(const [ext,kind] of Object.entries(expected)){
+    const file=safe(ext);
+    if(!file)continue;
+    const snapshot=await p.loadDocumentSnapshot(file);
+    samples.push({ext,kind:snapshot.kind,markdownLength:snapshot.markdown.length,editableSource:snapshot.editableSource,previewKind:snapshot.previewKind,warnings:snapshot.warnings.length,expectedKind:kind});
+  }
+  const markdownFile=safe('md');
+  if(!markdownFile)throw new Error('no Markdown fixture in Vault');
+  const beforeLeaves=app.workspace.getLeavesOfType('cancip-document-workbench-view').length;
+  let view=null;
+  try{
+    view=await p.activateDocumentWorkbench(markdownFile,'markdown');
+    await new Promise((resolve)=>setTimeout(resolve,120));
+    if(!view)throw new Error('workbench view did not open');
+    const afterFirst=app.workspace.getLeavesOfType('cancip-document-workbench-view').length;
+    const same=await p.activateDocumentWorkbench(markdownFile,'preview');
+    await new Promise((resolve)=>setTimeout(resolve,80));
+    const afterSecond=app.workspace.getLeavesOfType('cancip-document-workbench-view').length;
+    const root=view.contentEl;
+    const buttons=Array.from(root.querySelectorAll('.obcc-document-mode,.obcc-document-action')).filter((button)=>button.getBoundingClientRect().width>0);
+    const rects=buttons.map((button)=>{const r=button.getBoundingClientRect();return {left:r.left,right:r.right,top:r.top,bottom:r.bottom,width:r.width,height:r.height}});
+    let overlaps=0;
+    for(let i=0;i<rects.length;i+=1)for(let j=i+1;j<rects.length;j+=1){const a=rects[i],b=rects[j];if(Math.min(a.right,b.right)-Math.max(a.left,b.left)>1&&Math.min(a.bottom,b.bottom)-Math.max(a.top,b.top)>1)overlaps+=1;}
+    const rootRect=root.getBoundingClientRect();
+    const outOfBounds=rects.filter((r)=>r.left<rootRect.left-1||r.right>rootRect.right+1).length;
+    return JSON.stringify({id:'programmatic.document-workbench',elapsedMs:Date.now()-t,samples,beforeLeaves,afterFirst,afterSecond,reused:same===view,buttons:buttons.length,overlaps,outOfBounds,viewType:view.getViewType(),mode:view.getState?.().mode});
+  } finally {
+    const leaf=app.workspace.getLeavesOfType('cancip-document-workbench-view').find((candidate)=>candidate.view===view);
+    leaf?.detach();
+  }
+})().catch((error)=>JSON.stringify({id:'programmatic.document-workbench',evalError:error instanceof Error?error.message:String(error),stack:error instanceof Error?error.stack:''}))
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 90
+    if ([string]$item.evalError) { throw "document workbench eval failed: $($item.evalError)`n$($item.stack)" }
+    if ([string]$item.viewType -ne 'cancip-document-workbench-view' -or -not $item.reused -or [int]$item.afterSecond -ne [int]$item.afterFirst) { throw "document workbench did not reuse its file leaf: $($item | ConvertTo-Json -Compress -Depth 10)" }
+    if ([int]$item.overlaps -ne 0 -or [int]$item.outOfBounds -ne 0 -or [int]$item.buttons -lt 6) { throw "document workbench controls overlap or overflow: $($item | ConvertTo-Json -Compress -Depth 10)" }
+    foreach ($sample in @($item.samples)) {
+      if ([string]$sample.kind -ne [string]$sample.expectedKind -or [int]$sample.markdownLength -le 0) { throw "document conversion failed for $($sample.ext): $($sample | ConvertTo-Json -Compress)" }
+      if (@('docx','xlsx','pdf') -contains [string]$sample.ext -and $sample.editableSource) { throw "binary source became directly editable: $($sample | ConvertTo-Json -Compress)" }
+    }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; samples = @($item.samples).Count; buttons = $item.buttons }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.document-workbench'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (Should-RunProgrammaticCase 'programmatic.mobile.layout-bounds') {
   try {
     $code = @'
@@ -4054,7 +4214,12 @@ if (Should-RunProgrammaticCase 'programmatic.mobile.keyboard-composer-scroll') {
     v.inputEl.value='@';
     v.inputEl.setSelectionRange(1,1);
     v.inputEl.dispatchEvent(new win.Event('input',{bubbles:true}));
-    await new Promise((resolve)=>setTimeout(resolve,320));
+    const mentionDeadline=Date.now()+2500;
+    while(Date.now()<mentionDeadline){
+      const candidate=doc.querySelector('.obcc-mention-popover:not(.is-hidden)');
+      if(candidate?.getBoundingClientRect().height>0)break;
+      await new Promise((resolve)=>setTimeout(resolve,80));
+    }
     v.messagesEl.scrollTop=v.messagesEl.scrollHeight;
     await new Promise((resolve)=>setTimeout(resolve,80));
     const footerRect=v.footerEl.getBoundingClientRect();
@@ -4062,8 +4227,10 @@ if (Should-RunProgrammaticCase 'programmatic.mobile.keyboard-composer-scroll') {
     const sentinelRect=sentinel.getBoundingClientRect();
     const mention=doc.querySelector('.obcc-mention-popover:not(.is-hidden)');
     const mentionRect=mention?.getBoundingClientRect()||null;
+    const messagesRect=v.messagesEl.getBoundingClientRect();
     const footerBottom=Math.max(0,Math.round(win.innerHeight-footerRect.bottom));
     const messageOcclusion=Math.round(parseFloat(getComputedStyle(root).getPropertyValue('--obcc-keyboard-occlusion'))||0);
+    const messageClearance=Math.round(parseFloat(getComputedStyle(root).getPropertyValue('--obcc-message-footer-clearance'))||0);
     const lifted=root.classList.contains('has-visual-keyboard')&&v.footerEl.classList.contains('is-viewport-floating');
     const lastVisible=sentinelRect.bottom<=footerRect.top+2;
     const mentionVisible=!!mentionRect&&mentionRect.height>0&&mentionRect.bottom<=inputRect.top+2&&mentionRect.top>=-1;
@@ -4073,7 +4240,9 @@ if (Should-RunProgrammaticCase 'programmatic.mobile.keyboard-composer-scroll') {
     return JSON.stringify({
       id:'programmatic.mobile.keyboard-composer-scroll',elapsedMs:Date.now()-t,lifted,lastVisible,mentionVisible,
       footerBottom,messageOcclusion,footerTop:footerRect.top,inputTop:inputRect.top,sentinelBottom:sentinelRect.bottom,
-      mentionBottom:mentionRect?.bottom??0,restored:!root.classList.contains('has-visual-keyboard')&&!v.footerEl.classList.contains('is-viewport-floating')
+      mentionBottom:mentionRect?.bottom??0,messageClearance,messagesBottom:messagesRect.bottom,
+      messageScrollTop:v.messagesEl.scrollTop,messageScrollMax:v.messagesEl.scrollHeight-v.messagesEl.clientHeight,
+      restored:!root.classList.contains('has-visual-keyboard')&&!v.footerEl.classList.contains('is-viewport-floating')
     });
   } finally {
     v.inputEl.value=oldValue;
@@ -4082,9 +4251,10 @@ if (Should-RunProgrammaticCase 'programmatic.mobile.keyboard-composer-scroll') {
     win.dispatchEvent(new win.CustomEvent('keyboardDidHide'));
     v.inputEl.blur();
   }
-})()
+})().catch((error)=>JSON.stringify({id:'programmatic.mobile.keyboard-composer-scroll',evalError:error instanceof Error?error.message:String(error),stack:error instanceof Error?error.stack:''}))
 '@
     $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 45
+    if ([string]$item.evalError) { throw "mobile keyboard eval failed: $($item.evalError)`n$($item.stack)" }
     if (-not $item.lifted -or [int]$item.footerBottom -lt 295) { throw "composer did not lift above native keyboard: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.lastVisible) { throw "last chat record remains behind keyboard/composer: $($item | ConvertTo-Json -Compress)" }
     if (-not $item.mentionVisible) { throw "mention popover did not follow the lifted composer: $($item | ConvertTo-Json -Compress)" }

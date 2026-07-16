@@ -691,6 +691,15 @@
       }
     },
     {
+      "id": "command.documents.help",
+      "command": "cancip.documents.help",
+      "args": {},
+      "expect": {
+        "contains": ["cancip.documents.open", "cancip.documents.convert", "DOCX", "XLSX", "PPTX"],
+        "maxMs": 3000
+      }
+    },
+    {
       "id": "command.externalFiles.help",
       "command": "cancip.externalFiles.help",
       "args": {},
