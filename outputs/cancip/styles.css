@@ -618,6 +618,10 @@ body .view-content.obcc-review-leaf {
   margin-bottom: 6px;
 }
 
+.obcc-empty strong:only-child {
+  margin-bottom: 0;
+}
+
 .obcc-empty p,
 .obcc-empty-small {
   margin: 0;
@@ -1586,13 +1590,27 @@ body .obcc-view-tts-action {
 }
 
 .obcc-code-pre > .copy-code-button {
-  display: inline-flex;
+  position: absolute;
+  top: 6px !important;
+  right: auto !important;
+  left: auto !important;
+  inset-inline-end: 6px !important;
+  display: inline-flex !important;
   align-items: center;
   justify-content: center;
+  width: 26px !important;
+  min-width: 26px !important;
+  height: 26px !important;
+  min-height: 26px !important;
+  padding: 4px;
+  box-sizing: border-box;
+  z-index: 2;
 }
 
 .obcc-code-pre > .obcc-code-wrap-toggle {
-  right: 30px;
+  right: auto !important;
+  left: auto !important;
+  inset-inline-end: 38px !important;
 }
 
 .obcc-code-pre > .obcc-code-wrap-toggle.is-active {
@@ -3757,14 +3775,24 @@ body .obcc-view-tts-action {
   opacity: 0.35;
 }
 
+.obcc-input-shell {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
 .obcc-input {
+  position: relative;
+  z-index: 2;
   display: block;
   width: 100%;
   max-width: 100%;
   min-width: 0;
   min-height: 28px;
   max-height: 150px;
-  padding: 3px 38px 2px 6px;
+  padding-block: 3px 2px;
+  padding-inline: 6px 38px;
   border: 0;
   background: transparent;
   color: var(--text-normal);
@@ -3774,6 +3802,175 @@ body .obcc-view-tts-action {
   line-height: 1.25;
   overflow-y: hidden;
   overscroll-behavior: none;
+}
+
+.obcc-autocomplete-ghost {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  min-height: 28px;
+  padding-block: 3px 2px;
+  padding-inline: 6px 38px;
+  overflow: hidden;
+  color: transparent;
+  font-size: 14px;
+  line-height: 1.25;
+  opacity: 0;
+  pointer-events: none;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.obcc-autocomplete-ghost.has-suggestion {
+  opacity: 1;
+}
+
+.obcc-autocomplete-ghost-content {
+  display: block;
+  min-height: 100%;
+  transform: translateY(0);
+  will-change: transform;
+}
+
+.obcc-autocomplete-prefix {
+  visibility: hidden;
+}
+
+.obcc-autocomplete-suffix {
+  color: var(--text-faint);
+}
+
+.obcc-autocomplete-apply {
+  position: absolute;
+  z-index: 3;
+  top: 2px;
+  right: auto;
+  left: auto;
+  inset-inline-end: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  min-width: 26px;
+  height: 26px;
+  min-height: 26px;
+  margin: 0;
+  padding: 5px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  box-shadow: none;
+  opacity: 0.46;
+}
+
+.obcc-autocomplete-apply:hover,
+.obcc-autocomplete-apply:focus-visible,
+.obcc-autocomplete-apply.has-suggestion {
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+  opacity: 1;
+}
+
+.obcc-autocomplete-apply > svg {
+  width: 15px;
+  height: 15px;
+}
+
+.obcc-autocomplete-popover {
+  position: fixed;
+  z-index: 2147483002;
+  display: grid;
+  gap: 8px;
+  width: min(300px, calc(100vw - 12px));
+  max-width: calc(100vw - 12px);
+  padding: 9px;
+  overflow: auto;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 8px;
+  background: var(--background-primary);
+  box-shadow: 0 10px 28px rgb(0 0 0 / 20%);
+  color: var(--text-normal);
+}
+
+.obcc-autocomplete-popover-head,
+.obcc-autocomplete-toggle-row,
+.obcc-autocomplete-regenerate {
+  display: flex;
+  align-items: center;
+}
+
+.obcc-autocomplete-popover-head {
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 26px;
+  font-size: 12px;
+}
+
+.obcc-autocomplete-popover-head > .clickable-icon {
+  flex: 0 0 26px;
+  width: 26px;
+  height: 26px;
+  padding: 5px;
+}
+
+.obcc-autocomplete-toggle-row {
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 28px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.obcc-autocomplete-toggle-row > input {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+.obcc-autocomplete-regenerate {
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-secondary);
+  color: var(--text-normal);
+  font-size: 12px;
+}
+
+.obcc-autocomplete-regenerate:disabled {
+  opacity: 0.45;
+}
+
+.obcc-autocomplete-regenerate-icon {
+  display: inline-flex;
+}
+
+.obcc-autocomplete-regenerate-icon > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-autocomplete-prompt-row {
+  display: grid;
+  gap: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.obcc-autocomplete-prompt-row > input {
+  width: 100%;
+  min-width: 0;
+  height: 30px;
+  padding: 4px 7px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  font-size: 12px;
 }
 
 .obcc-input::placeholder {
@@ -7775,94 +7972,6 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
   min-height: 0;
 }
 
-/* Native File Explorer pinning keeps Obsidian's virtual tree untouched. */
-.obcc-file-pins-panel {
-  flex: 0 0 auto;
-  max-height: min(34vh, 320px);
-  margin: 0 8px 6px;
-  padding: 5px 0 6px;
-  border-block: 1px solid var(--background-modifier-border);
-  overflow: auto;
-}
-
-.obcc-file-pins-heading,
-.obcc-file-pins-group,
-.obcc-file-pin-panel-row,
-.obcc-file-pin-panel-open,
-.obcc-file-pin-panel-controls {
-  display: flex;
-  align-items: center;
-}
-
-.obcc-file-pins-heading {
-  gap: 6px;
-  min-height: 28px;
-  padding: 0 6px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-small);
-  font-weight: var(--font-semibold);
-}
-
-.obcc-file-pins-heading-icon,
-.obcc-file-pin-panel-type {
-  display: inline-flex;
-  flex: 0 0 14px;
-}
-
-.obcc-file-pins-heading-icon > svg,
-.obcc-file-pin-panel-type > svg {
-  width: 14px;
-  height: 14px;
-}
-
-.obcc-file-pins-group {
-  min-height: 22px;
-  padding: 2px 6px 0;
-  color: var(--text-faint);
-  font-size: var(--font-ui-smaller);
-  overflow-wrap: anywhere;
-}
-
-.obcc-file-pin-panel-row {
-  min-height: 30px;
-  padding-inline: 2px;
-}
-
-.obcc-file-pin-panel-open {
-  flex: 1 1 auto;
-  min-width: 0;
-  gap: 6px;
-  height: 28px;
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: var(--text-normal);
-  box-shadow: none;
-  text-align: start;
-}
-
-.obcc-file-pin-panel-open:hover {
-  background: var(--background-modifier-hover);
-}
-
-.obcc-file-pin-panel-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.obcc-file-pin-panel-controls {
-  flex: 0 0 auto;
-  gap: 1px;
-}
-
-.obcc-file-pin-panel-controls > .clickable-icon {
-  width: 26px;
-  height: 26px;
-  padding: 5px;
-}
-
 .nav-file-title.is-cancip-file-pinned > .obcc-file-pin-indicator,
 .nav-folder-title.is-cancip-file-pinned > .obcc-file-pin-indicator {
   display: inline-flex;
@@ -7878,6 +7987,50 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-rail-info,
 }
 
 .obcc-file-pin-indicator > svg {
+  width: 12px;
+  height: 12px;
+}
+
+.nav-file-title.is-cancip-file-pinned > .obcc-file-pin-row-controls,
+.nav-folder-title.is-cancip-file-pinned > .obcc-file-pin-row-controls {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0;
+  margin-inline-start: auto;
+}
+
+.obcc-file-pin-row-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  min-width: 20px;
+  height: 22px;
+  min-height: 22px;
+  padding: 3px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.obcc-file-pin-row-button:hover:not(:disabled),
+.obcc-file-pin-row-button:focus-visible {
+  background: var(--background-modifier-hover);
+  color: var(--text-accent);
+}
+
+.obcc-file-pin-row-button:disabled {
+  opacity: 0.25;
+}
+
+.obcc-file-pin-row-button.obcc-file-pin-indicator {
+  color: var(--interactive-accent);
+  pointer-events: auto;
+}
+
+.obcc-file-pin-row-button > svg {
   width: 12px;
   height: 12px;
 }

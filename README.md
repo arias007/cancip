@@ -58,6 +58,13 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic benefit gate classifies each file as curate, skip, or protected before any model call: only concrete high-value defects become candidates; clean, cosmetic-only, or Inbox-only cases are consumed silently; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic rename/restructure. Each candidate carries a defect-derived action allowlist so one formatting issue cannot authorize unrelated tags, links, summaries, or renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
 
+## 2.13.0
+
+- Native File Explorer pinning now keeps files and folders mixed at the top of their original folder, with inline up/down/unpin controls and no separate pinned-items panel.
+- New chats use a short background-precomputed greeting from the current time, recent files, compact memory, and recent session signals; date-based notes expose an enabled-by-default personalized diary action.
+- The composer now offers quiet gray context completion from local candidates first and a compact model fallback only after an idle delay. Tab or the inline check applies it, while long-press opens enable, regenerate, and guidance controls.
+- Chat and Markdown-note code blocks reserve fixed non-overlapping 26px slots for Copy and Wrap across narrow and desktop layouts.
+
 ## 2.12.0
 
 - Added structured post-action verification for active view/file text, DOM selectors and geometry, file contents/JSON paths, plugin versions, workspace leaf counts, layout stability, and overflow.
