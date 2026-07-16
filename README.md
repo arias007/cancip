@@ -13,6 +13,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - `cancip-action` JSON tool blocks for validated vault-relative actions, including read/write/append/patch/mkdir/rename/copy.
 - Agent-style tool runs: approval mode queues action blocks under the assistant message with Run/Reject controls, while Full access executes and records results.
 - Tool result continuation loop: after tools finish, Cancip can feed results back into the model and continue for a bounded number of iterations, closer to local agent runs.
+- Outcome verification closes the execution loop inside Obsidian: `cancip.outcome.observe/verify` compare the active view, DOM/layout, file readback, plugin state, and workspace leaves with explicit expectations; `capture` adds active-region PNG evidence only when structured checks are insufficient, and `exportPdf` uses an installed exporter for PDF evidence. Failed checks trigger bounded difference-only correction, while reports and screenshots stay under `.cancip/evidence/` with direct review links and no persisted Base64 payloads.
 - Structured command bus actions for Obsidian internal commands, Cancip built-ins, and GitHub CLI-equivalent REST API commands.
 - Native File Explorer pinning: pin/unpin files and folders from the normal context menu, keep mixed pinned siblings above ordinary items, reorder with explicit up/down buttons or drag handles, and persist folder-local order in `.cancip/file-pins.json` without replacing Obsidian's normal unpinned sort or file drag/move behavior.
 - Obsidian-native Markdown rendering for chat messages, including Obsidian-supported HTML.
@@ -56,6 +57,13 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Startup and foreground loading follow a warm/cold lifecycle: the visible shell renders first, latest-session restore follows asynchronously, small high-value indexes warm during browser idle time, and startup maintenance yields between tasks so mobile interaction remains responsive.
 - New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic benefit gate classifies each file as curate, skip, or protected before any model call: only concrete high-value defects become candidates; clean, cosmetic-only, or Inbox-only cases are consumed silently; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic rename/restructure. Each candidate carries a defect-derived action allowlist so one formatting issue cannot authorize unrelated tags, links, summaries, or renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
+
+## 2.12.0
+
+- Added structured post-action verification for active view/file text, DOM selectors and geometry, file contents/JSON paths, plugin versions, workspace leaf counts, layout stability, and overflow.
+- Added active-region PNG evidence with non-blank pixel checks, optional one-image model review, local JSON reports, and visible evidence links in tool runs. Screenshot Base64 remains memory-only and is never stored in session JSON.
+- Failed verification now continues with the same loop id and incremented attempt for measured, minimal correction only. The loop stops at its declared limit and hands the saved evidence to the user instead of retrying indefinitely.
+- Added installed-exporter PDF verification and a real Obsidian regression fixture covering pass/fail/attempt-limit behavior, PNG integrity and pixels, report schema, evidence UI, image handoff, and cleanup.
 
 ## 2.11.1
 

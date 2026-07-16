@@ -24,6 +24,7 @@ import {
   TFolder,
   WorkspaceLeaf
 } from "obsidian";
+import html2canvas from "html2canvas";
 import { DEFAULT_SYSTEM_PROMPT, LEGACY_SYSTEM_PROMPT, PLUGIN_NAME, VIEW_TYPE } from "./constants";
 import {
   buildObReviewGatePackage,
@@ -1315,6 +1316,50 @@ type ObsidianCommandSnapshot = {
   statusText: string;
 };
 
+type OutcomeCheckResult = {
+  id: string;
+  pass: boolean;
+  expected: unknown;
+  actual: unknown;
+  detail: string;
+};
+
+type OutcomePngEvidence = {
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  changedPixelRatio: number;
+  dataUrl?: string;
+};
+
+type OutcomeVerificationReport = {
+  schemaVersion: 1;
+  loopId: string;
+  attempt: number;
+  maxAttempts: number;
+  createdAt: string;
+  status: "passed" | "failed";
+  scope: string;
+  activeFile: string;
+  viewType: string;
+  displayText: string;
+  visibleTextHash: string;
+  visibleTextExcerpt: string;
+  workspace: {
+    leaves: number;
+    blankLeaves: number;
+    cancipLeaves: number;
+    viewTypeCounts: Record<string, number>;
+  };
+  checks: OutcomeCheckResult[];
+  evidence: {
+    reportPath: string;
+    png?: Omit<OutcomePngEvidence, "dataUrl">;
+    reviewPath?: string;
+  };
+};
+
 type ToolRunStatus = "pending" | "executing" | "executed" | "blocked" | "failed" | "rejected";
 type ReviewGateDecision = "approved" | "correction" | "cancelled";
 type ReviewGateTerminalDecision = ReviewGateDecision | "rejected";
@@ -1336,6 +1381,7 @@ type ToolRun = {
   autoApproved?: boolean;
   automationTaskId?: string;
   lineDeltas?: ToolRunLineDelta[];
+  evidencePaths?: string[];
 };
 
 type AiVaultMutationKind = "write" | "append" | "process" | "rename" | "move" | "copy" | "delete";
@@ -2367,6 +2413,9 @@ const CANCIP_CONFIG_BACKUP_INDEX_PATH = `${CANCIP_CONFIG_BACKUP_DIR}/index.json`
 const CANCIP_CONFIG_BACKUP_SCHEMA_VERSION = 1;
 const CANCIP_CONFIG_BACKUP_MAX_RECORDS_PER_PATH = 60;
 const CANCIP_MACHINE_INDEX_DIR = `${CANCIP_CONFIG_DIR}/index`;
+const CANCIP_OUTCOME_EVIDENCE_DIR = `${CANCIP_CONFIG_DIR}/evidence`;
+const CANCIP_OUTCOME_EVIDENCE_SCHEMA_VERSION = 1;
+const CANCIP_OUTCOME_MAX_SCREENSHOT_PIXELS = 6_000_000;
 const CANCIP_SKILLS_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/skills-index.json`;
 const CANCIP_SKILLS_INDEX_SCHEMA_VERSION = 1;
 const CANCIP_GENERATED_SKILLS_DIR = `${CANCIP_CONFIG_DIR}/skills/generated`;
@@ -2718,6 +2767,8 @@ const EN = {
   reviewGateChangedFiles: "Changed files",
   toolRunChangedFiles: "Changed files",
   toolRunOpenFile: "Open file",
+  toolRunEvidence: "Verification evidence",
+  toolRunOpenEvidence: "Open evidence",
   toolRunAutoApproved: "Auto-approved",
   reviewGateOpenReview: "Open review",
   reviewGateLoadingFiles: "Loading changed files...",
@@ -3478,6 +3529,8 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGateChangedFiles: "变化文件",
     toolRunChangedFiles: "改动文件",
     toolRunOpenFile: "打开文件",
+    toolRunEvidence: "验收证据",
+    toolRunOpenEvidence: "打开证据",
     toolRunAutoApproved: "已自动批准",
     reviewGateOpenReview: "进入对比指正",
     reviewGateLoadingFiles: "正在读取变化文件...",
@@ -17765,6 +17818,7 @@ class CancipView extends ItemView {
   private detailsOpenState = new Map<string, boolean>();
   private liveProcessRecordActive = false;
   private readOnlyActionCache = new Map<string, ReadOnlyActionCacheEntry>();
+  private outcomeEvidenceImagesByRunId = new Map<string, ImageAttachmentContext[]>();
   private resolvedActionPathAliases = new Map<string, string>();
   private vaultAttachmentTextCache = new Map<string, VaultAttachmentParseCacheEntry>();
   private activeAutomationTaskId = "";
@@ -18159,6 +18213,7 @@ class CancipView extends ItemView {
     this.footerResizeCleanup?.();
     this.foregroundWarmupCancel?.();
     this.foregroundWarmupCancel = null;
+    this.outcomeEvidenceImagesByRunId.clear();
     this.programmaticScrollReleaseTimer = null;
     this.experienceHarvestTimer = null;
     this.footerLayoutFrame = null;
@@ -26885,7 +26940,7 @@ class CancipView extends ItemView {
       return [
         "紧凑路由：判读/写/执行；目标不清 findTarget，路线不清 tools.index/help。",
         "- 读：read/search/list/status/currentView/sessionHistory；PDF/Office 可 read 抽文本；足够就答。",
-        "- 改：最小读取 -> patch/write/config/move/delete/command -> 验证；权限由 UI 处理。",
+        "- 改：最小读取 -> patch/write/config/move/delete/command -> cancip.outcome.verify 验收；只修差异并有限重试，权限由 UI 处理。",
         "- 能力：Skills/经验/插件/OB命令/附件/TTS/GitHub/自动化/web 先 list/help；插件走 pluginCapabilities/pluginRoute/pluginAction；批注/复习走 annotate/study help。",
         "- 子 agent：长任务可 subagents.start/list/status/stop/open；子会话折叠在父历史。",
         "- 记忆/经验：按需读 CANCIP_INDEX/RULES、.cancip/experience 或 Skill；记住/沉淀走写入/harvest，不全量发送。"
@@ -26894,7 +26949,7 @@ class CancipView extends ItemView {
     return [
       "Compact route: decide read/write/execute; unclear target -> findTarget, unclear route -> tools.index/help.",
       "- Read: read/search/list/status/currentView/sessionHistory; read extracts PDF/Office text; answer when enough.",
-      "- Change: focused read -> patch/write/config/move/delete/command -> verify; UI handles access.",
+      "- Change: focused read -> patch/write/config/move/delete/command -> cancip.outcome.verify; correct measured differences with bounded retries; UI handles access.",
       "- Capabilities: list/help Skills/experience/plugins/OB commands/attachments/TTS/GitHub/automation/web; plugins start with pluginCapabilities/pluginRoute; new plugins use pluginAction; annotation/study start with annotate/study help.",
       "- Subagents: use subagents.start/list/status/stop/open for long split work.",
       "- Memory/experience: read CANCIP_INDEX/RULES, .cancip/experience, or Skills only as needed; for remember/harvest requests, perform the write/harvest route."
@@ -26909,7 +26964,7 @@ class CancipView extends ItemView {
         "- 读取/列出/解释/状态：目标不明先用 cancip.findTarget 找候选；再用 read、cancip.searchVault、obsidian.resolveCommand/currentView、cancip.sessionHistory 或只读命令；根据结果回答。",
         "- 编辑/新建/修复/配置/大文件：先读最小相关片段，再用 patch/write/append/config；大内容用 chunks；最后读回验证。",
         "- 移动/重命名/复制/删除：用文件动作；delete 默认进系统回收站或 Cancip 回收目录，只有用户明确永久删除才用 permanent:true。",
-        "- Obsidian UI/按钮/标签页/标签/命令/JS：先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.ui.buttons、obsidian.tabs、obsidian.tags 检查；命令名不确定先 resolveCommand，明确后按需 execute/click/input/apply rules；需要 app/workspace/vault/plugin API 时先查 obsidian.js.help/probe，再用 obsidian.eval/js.eval，经访问模式批准后执行。",
+        "- Obsidian UI/按钮/标签页/标签/命令/JS：先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.ui.buttons、obsidian.tabs、obsidian.tags 检查；执行后用 cancip.outcome.verify 对照视图/DOM/文件/插件/工作区预期验收，结构证据不足才 capture 截活动视图；命令名不确定先 resolveCommand，明确后按需 execute/click/input/apply rules；需要 app/workspace/vault/plugin API 时先查 obsidian.js.help/probe，再用 obsidian.eval/js.eval，经访问模式批准后执行。",
         "- 插件/未知能力/新插件/Skills/MCP：插件功能词或插件名先用 cancip.pluginCapabilities 或 cancip.pluginRoute 查命令、运行时 API、按钮/UI、data.json 和插件文件入口；明确命令或公开 API 后用 cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch 执行；笔记/PDF 高亮涂鸦优先 cancip.annotate.help/note/pdf，间隔重复优先 cancip.study.help/review；API 用法不明再 web.search/fetch。Skills/MCP 用 cancip.skills.list/read/refresh 和 .cancip/mcp.json/.cancip/plugins 索引。",
         "- 记忆/经验/自我优化：用户要求记住、沉淀规则、复用成功经验或让 Cancip 优化自己时，先读 CANCIP_INDEX/RULES、cancip.experience.list 或相关 Skill；需要写入时按访问模式修改 AI/Cancip/Memory 或 .cancip/experience，成功重复流程可 cancip.experience.harvest 生成经验 Skill。",
         "- 附件/PDF/Office/图片/库外文件：先查 cancip.attachment.help 和 cancip.externalFiles.help，再走解析器、附件、分享表、Skill、原生桥或桌面桥路线。",
@@ -26918,7 +26973,7 @@ class CancipView extends ItemView {
         "- GitHub：先查 github.help，再用 github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin。",
         "- 自动化/新闻/Vault/记忆维护：用 cancip.automation.templates/list/add/update/addTemplate/run/remove、cancip.newsBrief、cancip.vaultDailyReport、cancip.memoryDream。",
         "- 子 agent/并行拆分：需要分头查资料、长任务拆段或后台试探时，用 cancip.subagents.start；用 list/status 查进度，用 stop 停止，用 open 跳转子会话。",
-        "- 审核/历史/自修复：AI 改普通笔记会自动标记审核并备份原文；手动审核数据用 cancip.reviewGate/list；历史上下文用 cancip.sessionEvents/sessionHistory；手机端自改 Cancip 时，源码构建不可用就先改已安装插件文件热补丁。",
+        "- 审核/结果/历史/自修复：AI 改普通笔记会自动标记审核并备份原文；执行后用 cancip.outcome.observe/verify/capture 获取状态和视觉证据，只针对失败差异有限校正，达到上限就停止并交审核；PDF 证据走 cancip.outcome.exportPdf；手动审核数据用 cancip.reviewGate/list；历史上下文用 sessionEvents/sessionHistory。",
         "如果目标或命令不明确，先运行 cancip.findTarget；如果路线不明显，运行 cancip.tools.index；如果动作格式不清楚，再运行 cancip.tools.help。不要把全库泛搜当默认发现步骤；外部知识不足时可 web.search/web.fetch。"
       ].join("\n");
     }
@@ -26928,7 +26983,7 @@ class CancipView extends ItemView {
       "- Read/list/explain/status: if target is unclear, call cancip.findTarget for candidates; then use read, cancip.searchVault, obsidian.resolveCommand/currentView, cancip.sessionHistory, or read-only commands; answer from results.",
       "- Edit/create/fix/config/large files: inspect the smallest relevant snippet, then patch/write/append/config with chunks when large, then verify by reading state back.",
       "- Move/rename/copy/delete: use file actions; delete uses trash/Cancip trash unless permanent:true is explicitly requested.",
-      "- Obsidian UI/buttons/tabs/tags/commands/JS: use obsidian.currentView, obsidian.dom.snapshot, obsidian.listCommands/resolveCommand, obsidian.ui.buttons, obsidian.tabs, obsidian.tags; resolve fuzzy command names before execute/click/input/apply rules. Use obsidian.js.help/probe first, then obsidian.eval/js.eval for app/workspace/vault/plugin API access through access-mode approval.",
+      "- Obsidian UI/buttons/tabs/tags/commands/JS: inspect with currentView/dom.snapshot/listCommands/resolveCommand/ui.buttons/tabs/tags; after execution use cancip.outcome.verify for view/DOM/file/plugin/workspace expectations and capture only when structured evidence is insufficient. Resolve fuzzy commands before execute/click/input/apply rules. Use obsidian.js.help/probe then obsidian.eval/js.eval for API gaps.",
       "- Plugins/unknown capabilities/new plugins/Skills/MCP: for plugin feature words or plugin names, call cancip.pluginCapabilities or cancip.pluginRoute to inspect commands, runtime API, buttons/UI, data.json, and plugin file entry points; after a command/API is clear use cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch; use cancip.annotate.help/note/pdf for note/PDF highlight/doodle and cancip.study.help/review for spaced repetition; use web.search/fetch only when API usage is unclear. Use cancip.skills.list/read/refresh and .cancip/mcp.json/.cancip/plugins indexes for Skills/MCP.",
       "- Memory/experience/self-optimization: when the user asks to remember, preserve rules, reuse successful workflows, or improve Cancip itself, read CANCIP_INDEX/RULES, cancip.experience.list, or relevant Skills first; when writing is needed, use the access-mode route for AI/Cancip/Memory or .cancip/experience, and call cancip.experience.harvest after repeatable success.",
       "- Attachments/PDF/Office/images/external files: use cancip.attachment.help and cancip.externalFiles.help, then the available parser, attachment, share-sheet, Skill, native, or desktop bridge route.",
@@ -26937,7 +26992,7 @@ class CancipView extends ItemView {
       "- GitHub: use github.help first, then github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin.",
       "- Automation/news/vault/memory maintenance: use cancip.automation.templates/list/add/update/addTemplate/run/remove, cancip.newsBrief, cancip.vaultDailyReport, and cancip.memoryDream.",
       "- Subagents/parallel delegation: use cancip.subagents.start for split research, long-task chunks, or background probes; list/status for progress, stop to cancel, open to jump to a child session.",
-      "- Review/history/self-repair: AI edits to ordinary notes are automatically review-marked with old-text backup; use cancip.reviewGate/list for manual review data, cancip.sessionEvents/sessionHistory for prior context, and installed Cancip plugin files as the mobile hot-patch surface when source build is unavailable.",
+      "- Review/outcome/history/self-repair: AI note edits are review-marked with rollback. Use cancip.outcome.observe/verify/capture after execution, correct only failed differences within the attempt limit, and stop with evidence for review when the limit is reached; use cancip.outcome.exportPdf for installed-exporter PDF evidence. Use reviewGate/list and sessionEvents/sessionHistory for review/history.",
       "If the target or command is unclear, run cancip.findTarget first; if no route is obvious, run cancip.tools.index; if the action format is unclear, run cancip.tools.help. Do not do a broad vault search as the default discovery step; use web.search/web.fetch when external knowledge is the missing piece."
     ].join("\n");
   }
@@ -26948,16 +27003,16 @@ class CancipView extends ItemView {
         "动作格式：输出一个 ```cancip-action JSON 块。",
         "动作：read/search/write/append/patch/config/todo/automation/mkdir/rename/move/copy/delete/command；目标按当前问题生成。",
         "精确：read 用 query/行号/aroundLine/maxChars；大写入 chunks；patch 失败先读片段再换锚点。",
-        "路线例：目标不明先 cancip.findTarget；Vault 用 read/search/write/patch；OB 命令 listCommands/resolveCommand -> execute；插件先 pluginCapabilities/pluginRoute，新插件执行用 pluginAction；OB JS 先 obsidian.js.help/probe 再 obsidian.eval；批注/复习用 cancip.annotate.* / cancip.study.*；例子查 cancip.tools.help。",
-        "入口：cancip.findTarget、cancip.tools.index/help、obsidian.*、obsidian.js.help/probe、obsidian.eval/js.eval、cancip.pluginCapabilities/pluginRoute/pluginAction、cancip.annotate.*、cancip.study.*、skills、sessionHistory、subagents、reviewGate、attachment/tts/automation、github.*、web。"
+        "路线例：目标不明先 cancip.findTarget；Vault 用 read/search/write/patch；OB 命令 listCommands/resolveCommand -> execute；执行结果用 cancip.outcome.verify，必要时 capture/exportPdf；插件先 pluginCapabilities/pluginRoute，新插件执行用 pluginAction；例子查 cancip.tools.help。",
+        "入口：cancip.findTarget、cancip.tools.index/help、obsidian.*、cancip.outcome.observe/verify/capture/exportPdf、obsidian.js.help/probe、cancip.pluginCapabilities/pluginRoute/pluginAction、skills、sessionHistory、subagents、reviewGate、attachment/tts/automation、github.*、web。"
       ].join("\n");
     }
     return [
       "Tool format: output exactly one ```cancip-action JSON block.",
       "Actions: read/search/write/append/patch/config/todo/automation/mkdir/rename/move/copy/delete/command; generate real targets.",
       "Focus: read uses query/lines/aroundLine/maxChars; large writes use chunks; after patch miss, read snippet and change anchor.",
-      "Routes: unclear targets start with cancip.findTarget; Vault read/search/write/patch; OB listCommands/resolveCommand -> execute; plugin discovery/action through pluginCapabilities/pluginRoute/pluginAction; OB JS uses obsidian.js.help/probe then obsidian.eval/js.eval; annotation/study use cancip.annotate.* / cancip.study.*; full examples in cancip.tools.help.",
-      "Hubs: cancip.findTarget, cancip.tools.index/help, obsidian.*, obsidian.js.help/probe, obsidian.eval/js.eval, pluginCapabilities/pluginRoute/pluginAction, cancip.annotate.*, cancip.study.*, skills, sessionHistory, subagents, reviewGate, attachment/tts/automation, github.*, web."
+      "Routes: unclear targets start with cancip.findTarget; Vault read/search/write/patch; OB listCommands/resolveCommand -> execute -> cancip.outcome.verify, with capture/exportPdf only when needed; plugin discovery/action through pluginCapabilities/pluginRoute/pluginAction; full examples in cancip.tools.help.",
+      "Hubs: cancip.findTarget, cancip.tools.index/help, obsidian.*, cancip.outcome.observe/verify/capture/exportPdf, obsidian.js.help/probe, pluginCapabilities/pluginRoute/pluginAction, skills, sessionHistory, subagents, reviewGate, attachment/tts/automation, github.*, web."
     ].join("\n");
   }
 
@@ -27438,6 +27493,7 @@ class CancipView extends ItemView {
       action("action:search", this.t("modeSearch"), this.t("mentionMode"), ["search", "find", "rag", "index", "vault", "搜", "搜索", "检索", "查找", "索引"], 94),
       action("action:plan", this.t("modePlan"), this.t("mentionAction"), ["plan", "todo", "steps", "roadmap", "计划", "规划", "步骤", "方案"], 92),
       action("action:review-gate", this.t("reviewGate"), this.t("mentionAction"), ["review", "gate", "audit", "approve", "ob", "审核", "审查", "批准", "整理门", "审核门"], 91),
+      action("action:outcome-verification", "Outcome verification", this.t("mentionAction"), ["verify", "outcome", "effect", "evidence", "screenshot", "结果", "效果", "验收", "自检", "校正", "截图", "证据"], 93),
       action("action:plan-todos", "Plan todos", this.t("mentionAction"), ["plan", "todo", "task", "status", "计划", "待办", "任务", "状态"], 90),
       action("action:edit", this.t("modeEdit"), this.t("mentionMode"), ["edit", "patch", "rewrite", "change", "修改", "改写", "补丁", "编辑"], 92),
       action("action:add-current-file", this.t("addCurrentFile"), this.t("mentionAction"), ["current", "file", "note", "active", "当前", "当前文件", "当前笔记", "上下文"], 88),
@@ -27481,6 +27537,10 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.currentView", "obsidian.currentView", ["current", "view", "active", "page", "selection", "当前", "页面", "活动页", "当前页面", "选区"], 86),
       commandTarget("command:cancip.translateCurrentPage", "cancip.translateCurrentPage", ["translate", "translation", "language", "current page", "active page", "selection", "翻译", "译文", "语言", "当前页面", "当前页", "选区"], 86),
       commandTarget("command:obsidian.dom.snapshot", "obsidian.dom.snapshot", ["dom", "snapshot", "buttons", "screen", "ui", "当前界面", "按钮", "截图", "页面元素", "界面"], 84),
+      commandTarget("command:cancip.outcome.observe", "cancip.outcome.observe", ["observe", "state", "result", "effect", "观察", "状态", "结果", "效果"], 89),
+      commandTarget("command:cancip.outcome.verify", "cancip.outcome.verify", ["verify", "outcome", "expectation", "correct", "验收", "核对", "预期", "校正", "自检"], 92),
+      commandTarget("command:cancip.outcome.capture", "cancip.outcome.capture", ["capture", "screenshot", "png", "evidence", "截图", "图片", "证据", "界面"], 88),
+      commandTarget("command:cancip.outcome.exportPdf", "cancip.outcome.exportPdf", ["export", "pdf", "verify", "evidence", "导出", "pdf", "验收", "证据"], 86),
       commandTarget("command:obsidian.dom.click", "obsidian.dom.click", ["dom", "click", "tap", "button", "ui", "点击", "按钮", "模拟点击", "点按"], 80),
       commandTarget("command:obsidian.dom.input", "obsidian.dom.input", ["dom", "input", "type", "textarea", "ui", "输入", "模拟输入", "文本框"], 80),
       commandTarget("command:obsidian.js.help", "obsidian.js.help", ["eval", "javascript", "js", "help", "method", "app", "workspace", "vault", "plugin", "api", "ob api", "脚本", "js命令", "方法", "插件api", "工作区", "库对象"], 88),
@@ -27684,6 +27744,7 @@ class CancipView extends ItemView {
           "action:search": "用户提及 Cancip 功能：Search 模式。优先检索 Vault，先列出相关路径，再回答。",
           "action:plan": "用户提及 Cancip 功能：计划功能。输出可执行计划、风险和需要确认的动作，不要声称已执行。",
           "action:review-gate": "用户提及 OB Review Gate 审核门。必须用 command cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；不要只输出提示词，不要引导外部 HTML。可传 paths/items/maxFiles/output。",
+          "action:outcome-verification": "用户要求 Cancip 替他把任务做到可审核状态。执行后用 cancip.outcome.verify 对照预期检查活动视图、DOM、文件读回、插件和工作区；结构化证据不足时再用 cancip.outcome.capture 或 visualReview:true 截取活动视图。失败时只修正差异并有限重试，达到上限就保留证据并停止。PDF 用 cancip.outcome.exportPdf 走已安装导出插件后再验收。",
           "action:plan-todos": "用户提及功能：结构化计划待办。可以用 cancip-action 的 todo 动作维护 Plan 面板，例如 {\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用修改\"}]}，也支持 add/update/remove/list/clear。",
           "action:edit": "用户提及 Cancip 功能：Edit 模式。给出可复制修改建议；写入 Vault 前必须遵守访问模式。",
           "action:add-current-file": "用户提及功能：把当前活动笔记作为上下文。",
@@ -27706,6 +27767,7 @@ class CancipView extends ItemView {
           "action:search": "Mentioned Cancip function: Search mode. Search the Vault first, list related paths, then answer.",
           "action:plan": "Mentioned Cancip function: Plan panel. Produce an executable plan, risks, and actions needing confirmation.",
           "action:review-gate": "Mentioned OB Review Gate. Use command cancip.reviewGate to programmatically build native Cancip review-panel data; do not output prompt-only review or external HTML instructions. Args can include paths/items/maxFiles/output.",
+          "action:outcome-verification": "Finish work to a reviewable state. After execution call cancip.outcome.verify for active view, DOM, file readback, plugin, and workspace expectations. Capture the active view only when structured evidence is insufficient, correct only the measured difference, retry within the declared limit, then preserve evidence and stop. Use cancip.outcome.exportPdf through the installed exporter when PDF evidence is needed.",
           "action:plan-todos": "Mentioned function: structured plan todos. Use cancip-action todo actions to maintain the Plan panel, for example {\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply changes\"}]}. Supported ops: add/update/remove/list/clear.",
           "action:edit": "Mentioned Cancip function: Edit mode. Provide copyable edits; obey the access mode before Vault writes.",
           "action:add-current-file": "Mentioned function: include the current active note as context.",
@@ -27734,6 +27796,10 @@ class CancipView extends ItemView {
       "obsidian.execute": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.execute\",\"args\":{\"id\":\"command-id-or-command-name\"}}]}",
       "obsidian.currentView": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.currentView\",\"args\":{\"includeText\":true,\"maxChars\":3000}}]}",
       "obsidian.dom.snapshot": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.snapshot\",\"args\":{\"scope\":\"active\",\"limit\":40}}]}",
+      "cancip.outcome.observe": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.outcome.observe\",\"args\":{\"scope\":\"active\",\"loopId\":\"task-result\"}}]}",
+      "cancip.outcome.verify": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.outcome.verify\",\"args\":{\"loopId\":\"task-result\",\"attempt\":1,\"maxAttempts\":3,\"scope\":\"active\",\"expected\":{\"maxBlankLeaves\":0,\"selectors\":[{\"selector\":\".target\",\"visible\":true,\"withinViewport\":true}]},\"evidence\":\"auto\"}}]}",
+      "cancip.outcome.capture": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.outcome.capture\",\"args\":{\"scope\":\"active\",\"visualReview\":true,\"loopId\":\"visual-result\"}}]}",
+      "cancip.outcome.exportPdf": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.outcome.exportPdf\",\"args\":{\"query\":\"Mobile PDF Exporter 导出当前笔记为预览版 PDF\",\"expected\":{\"maxBlankLeaves\":0}}}]}",
       "obsidian.dom.click": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.click\",\"args\":{\"scope\":\"active\",\"selector\":\"button[aria-label='Run']\",\"index\":0}}]}",
       "obsidian.dom.input": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.dom.input\",\"args\":{\"scope\":\"active\",\"selector\":\"textarea\",\"index\":0,\"text\":\"输入内容\"}}]}",
       "obsidian.js.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.js.help\"}]}",
@@ -28646,7 +28712,7 @@ class CancipView extends ItemView {
           await this.plugin.primeAiVaultMutationCaptureReviewScope(mutationCapture);
         }
       }
-      const result = cachedResult ?? await this.executeAction(run.action, run.automationTaskId);
+      const result = cachedResult ?? await this.executeAction(run.action, run.automationTaskId, run);
       const reviewItems = await finishMutationCapture();
       if (reviewItems.length) run.reviewRequired = true;
       run.cached = cachedResult !== null;
@@ -29316,7 +29382,12 @@ class CancipView extends ItemView {
       }
       this.setStatus(this.t("toolContinueStatus"));
       let continueStep: ChatMessage | null = null;
-      let continuationContext: { system: string; contextText: string } = { system: this.modePrompt(originalPrompt), contextText: context.contextText };
+      const outcomeImages = this.takeOutcomeEvidenceImages(current.runs);
+      let continuationContext: { system: string; contextText: string; images?: ImageAttachmentContext[] } = {
+        system: this.modePrompt(originalPrompt),
+        contextText: context.contextText,
+        images: outcomeImages
+      };
       try {
         const experience = await this.safeContextStep(this.t("taskExperience"), () => this.readTaskExperience(originalPrompt), "", CONTEXT_STEP_TIMEOUT_MS);
         continuationContext = {
@@ -29324,7 +29395,8 @@ class CancipView extends ItemView {
           contextText: [
             trimContext(context.contextText, implementationTask ? MODEL_CONTEXT_CONTINUATION_MAX_CHARS : MODEL_CONTEXT_INFORMATIONAL_MAX_CHARS),
             experience ? `## ${this.t("taskExperience")}\n${experience}` : ""
-          ].filter(Boolean).join("\n\n---\n\n")
+          ].filter(Boolean).join("\n\n---\n\n"),
+          images: outcomeImages
         };
         const prompt = this.t("toolContinuationPrompt", {
           summary: `${this.conversationForToolContinuation(implementationTask ? 4 : undefined, implementationTask ? 260 : undefined)}\n\n${this.toolRunsForPrompt(current.runs, implementationTask ? 2400 : 1000, implementationTask ? 4 : 4)}`.trim()
@@ -31259,11 +31331,11 @@ class CancipView extends ItemView {
       : `Skipped cosmetic-only curation for ${path}.`;
   }
 
-  private async executeAction(action: CancipAction, automationTaskId = ""): Promise<string> {
+  private async executeAction(action: CancipAction, automationTaskId = "", run?: ToolRun): Promise<string> {
     const gated = await this.curationAutomationActionGate(action, automationTaskId);
     if (gated) return gated;
     if (action.type === "command") {
-      return await this.executeCommandAction(action.command, action.args ?? {});
+      return await this.executeCommandAction(action.command, action.args ?? {}, run);
     }
 
     if (action.type === "todo") {
@@ -31843,7 +31915,7 @@ class CancipView extends ItemView {
     }
   }
 
-  private async executeCommandAction(command: string, args: Record<string, unknown>): Promise<string> {
+  private async executeCommandAction(command: string, args: Record<string, unknown>, run?: ToolRun): Promise<string> {
     const normalized = command.trim();
     if (!normalized) throw new Error(this.t("commandUnknown", { command }));
     if (!this.plugin.settings.commandBusEnabled) {
@@ -31871,6 +31943,30 @@ class CancipView extends ItemView {
 
     if (normalized === "obsidian.dom.snapshot") {
       return this.t("commandExecuted", { command: normalized, result: this.domSnapshotSummary(args) });
+    }
+
+    if (normalized === "cancip.outcome.observe") {
+      return this.t("commandExecuted", { command: normalized, result: await this.outcomeVerifyCommand({ ...args, expected: {} }, run, false) });
+    }
+
+    if (normalized === "cancip.outcome.verify") {
+      return this.t("commandExecuted", { command: normalized, result: await this.outcomeVerifyCommand(args, run, true) });
+    }
+
+    if (normalized === "cancip.outcome.capture") {
+      return this.t("commandExecuted", {
+        command: normalized,
+        result: await this.outcomeVerifyCommand({
+          ...args,
+          evidence: "png",
+          captureAlways: true,
+          expected: isRecord(args.expected) ? args.expected : {}
+        }, run, false)
+      });
+    }
+
+    if (normalized === "cancip.outcome.exportPdf") {
+      return this.t("commandExecuted", { command: normalized, result: await this.outcomeExportPdfCommand(args, run) });
     }
 
     if (normalized === "obsidian.dom.click") {
@@ -33749,6 +33845,513 @@ class CancipView extends ItemView {
     }).join("\n");
   }
 
+  private async outcomeVerifyCommand(args: Record<string, unknown>, run?: ToolRun, requireExpectations = true): Promise<string> {
+    const expected = isRecord(args.expected) ? args.expected : {};
+    if (requireExpectations && !Object.keys(expected).length) {
+      throw new Error("cancip.outcome.verify requires args.expected");
+    }
+    const attempt = clampInt(args.attempt, 1, 1, 8);
+    const maxAttempts = clampInt(args.maxAttempts, 3, 1, 8);
+    const rawLoopId = typeof args.loopId === "string" && args.loopId.trim() ? args.loopId.trim() : `outcome-${Date.now()}`;
+    const loopId = safeVaultFileName(rawLoopId).replace(/\.md$/i, "").slice(0, 80);
+    const scope = typeof args.scope === "string" ? args.scope.trim() : "active";
+    let root = this.outcomeRootElement({ ...args, scope });
+    const initialSignature = this.outcomeDomSignature(root);
+    const stableMs = expected.stable === true || args.stableMs !== undefined
+      ? clampInt(args.stableMs, 250, 50, 2500)
+      : 0;
+    if (stableMs) {
+      await sleep(stableMs);
+      root = this.outcomeRootElement({ ...args, scope });
+    }
+    const finalSignature = this.outcomeDomSignature(root);
+    const leaf = this.outcomeActiveWorkspaceLeaf();
+    const view = leaf?.view as unknown as { getViewType?: () => string; getDisplayText?: () => string };
+    const activeFile = this.app.workspace.getActiveFile()?.path ?? "";
+    const viewType = view?.getViewType?.() ?? "";
+    const displayText = view?.getDisplayText?.() ?? "";
+    const visibleText = (root.innerText || root.textContent || "").replace(/\s+/g, " ").trim();
+    const viewTypeCounts: Record<string, number> = {};
+    let leafCount = 0;
+    this.app.workspace.iterateAllLeaves((item) => {
+      leafCount += 1;
+      const type = item.view?.getViewType?.() ?? "";
+      viewTypeCounts[type] = (viewTypeCounts[type] ?? 0) + 1;
+    });
+    const workspace = {
+      leaves: leafCount,
+      blankLeaves: this.app.workspace.getLeavesOfType("empty").length,
+      cancipLeaves: this.app.workspace.getLeavesOfType(VIEW_TYPE).length,
+      viewTypeCounts
+    };
+    const checks = await this.outcomeExpectationChecks(expected, root, {
+      activeFile,
+      viewType,
+      displayText,
+      visibleText,
+      workspace,
+      stable: !stableMs || initialSignature === finalSignature
+    });
+
+    const day = localDateKey(new Date());
+    const sessionFolder = safeVaultFileName(this.sessionId || "session").replace(/\.md$/i, "").slice(0, 100);
+    const folder = normalizePath(`${CANCIP_OUTCOME_EVIDENCE_DIR}/${day}/${sessionFolder}`);
+    await ensureFolder(this.app.vault.adapter, folder);
+    const stem = `${loopId}-${String(attempt).padStart(2, "0")}`;
+    const reportPath = normalizePath(`${folder}/${stem}.json`);
+    const evidenceMode = typeof args.evidence === "string" ? args.evidence.toLowerCase() : "auto";
+    const hasUiFailure = checks.some((item) => !item.pass && /^(view|workspace|selector|layout|stable)/.test(item.id));
+    const shouldCapture = evidenceMode === "png" || Boolean(args.captureAlways) || (evidenceMode === "auto" && hasUiFailure);
+    let png: OutcomePngEvidence | undefined;
+    if (shouldCapture) {
+      try {
+        png = await this.captureOutcomePng(root, normalizePath(`${folder}/${stem}.png`), args);
+        if (png.bytes < 256 || png.changedPixelRatio <= 0.0005) {
+          checks.push({
+            id: "visual.nonBlank",
+            pass: false,
+            expected: "non-blank PNG evidence",
+            actual: { bytes: png.bytes, changedPixelRatio: png.changedPixelRatio },
+            detail: "captured image is blank or does not contain enough visual variation"
+          });
+        }
+      } catch (error) {
+        checks.push({
+          id: "visual-capture",
+          pass: false,
+          expected: "PNG evidence",
+          actual: "capture failed",
+          detail: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    const status = checks.every((item) => item.pass) ? "passed" : "failed";
+    const pngRecord = png ? {
+      path: png.path,
+      width: png.width,
+      height: png.height,
+      bytes: png.bytes,
+      changedPixelRatio: png.changedPixelRatio
+    } : undefined;
+    const reviewPath = typeof args.reviewPath === "string" && args.reviewPath.trim() ? normalizePath(args.reviewPath) : undefined;
+    const report: OutcomeVerificationReport = {
+      schemaVersion: CANCIP_OUTCOME_EVIDENCE_SCHEMA_VERSION,
+      loopId,
+      attempt,
+      maxAttempts,
+      createdAt: new Date().toISOString(),
+      status,
+      scope,
+      activeFile,
+      viewType,
+      displayText,
+      visibleTextHash: stableTextHash(visibleText),
+      visibleTextExcerpt: trimContext(visibleText, 1200),
+      workspace,
+      checks,
+      evidence: {
+        reportPath,
+        ...(pngRecord ? { png: pngRecord } : {}),
+        ...(reviewPath ? { reviewPath } : {})
+      }
+    };
+    await this.app.vault.adapter.write(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+    if (run) {
+      run.evidencePaths = [reportPath, ...(png ? [png.path] : [])];
+      if (png?.dataUrl && args.visualReview === true) {
+        this.outcomeEvidenceImagesByRunId.set(run.id, [{ name: png.path, mimeType: "image/png", dataUrl: png.dataUrl }]);
+        if (this.outcomeEvidenceImagesByRunId.size > 6) {
+          const first = this.outcomeEvidenceImagesByRunId.keys().next().value as string | undefined;
+          if (first) this.outcomeEvidenceImagesByRunId.delete(first);
+        }
+      }
+    }
+    return this.formatOutcomeVerification(report);
+  }
+
+  private outcomeRootElement(args: Record<string, unknown>): HTMLElement {
+    const base = this.domActionRoot(args);
+    const root = base.nodeType === 9 ? (base as Document).body : base as HTMLElement;
+    const selector = typeof args.rootSelector === "string" ? args.rootSelector.trim() : "";
+    if (!selector) return root;
+    const selected = root.querySelector<HTMLElement>(selector);
+    if (!selected) throw new Error(`Outcome root not found: ${selector}`);
+    return selected;
+  }
+
+  private outcomeDomSignature(root: HTMLElement): string {
+    const rect = root.getBoundingClientRect();
+    return stableTextHash([
+      root.childElementCount,
+      root.scrollWidth,
+      root.scrollHeight,
+      Math.round(rect.width),
+      Math.round(rect.height),
+      trimContext((root.innerText || root.textContent || "").replace(/\s+/g, " ").trim(), 3000)
+    ].join("|"));
+  }
+
+  private async outcomeExpectationChecks(
+    expected: Record<string, unknown>,
+    root: HTMLElement,
+    observed: {
+      activeFile: string;
+      viewType: string;
+      displayText: string;
+      visibleText: string;
+      workspace: OutcomeVerificationReport["workspace"];
+      stable: boolean;
+    }
+  ): Promise<OutcomeCheckResult[]> {
+    const checks: OutcomeCheckResult[] = [];
+    const add = (id: string, pass: boolean, wanted: unknown, actual: unknown, detail: string) => {
+      checks.push({ id, pass, expected: wanted, actual, detail });
+    };
+    const strings = (value: unknown): string[] => Array.isArray(value)
+      ? value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+      : typeof value === "string" && value.trim() ? [value] : [];
+    if (typeof expected.viewType === "string") {
+      add("view.type", observed.viewType === expected.viewType, expected.viewType, observed.viewType, "active view type");
+    }
+    if (typeof expected.displayText === "string") {
+      add("view.title", observed.displayText.includes(expected.displayText), expected.displayText, observed.displayText, "active view title contains expected text");
+    }
+    if (typeof expected.activeFile === "string") {
+      const wanted = normalizePath(expected.activeFile);
+      add("view.activeFile", normalizePath(observed.activeFile) === wanted, wanted, observed.activeFile, "active file path");
+    }
+    for (const token of strings(expected.visibleTextContains)) {
+      add(`view.text.contains:${token}`, observed.visibleText.includes(token), token, observed.visibleText.includes(token), "visible text contains token");
+    }
+    for (const token of strings(expected.visibleTextNotContains)) {
+      add(`view.text.notContains:${token}`, !observed.visibleText.includes(token), `not ${token}`, observed.visibleText.includes(token), "visible text excludes token");
+    }
+    if (typeof expected.maxBlankLeaves === "number") {
+      add("workspace.maxBlankLeaves", observed.workspace.blankLeaves <= expected.maxBlankLeaves, expected.maxBlankLeaves, observed.workspace.blankLeaves, "blank leaf upper bound");
+    }
+    if (typeof expected.blankLeaves === "number") {
+      add("workspace.blankLeaves", observed.workspace.blankLeaves === expected.blankLeaves, expected.blankLeaves, observed.workspace.blankLeaves, "blank leaf count");
+    }
+    if (typeof expected.cancipLeaves === "number") {
+      add("workspace.cancipLeaves", observed.workspace.cancipLeaves === expected.cancipLeaves, expected.cancipLeaves, observed.workspace.cancipLeaves, "Cancip leaf count");
+    }
+    if (typeof expected.leaves === "number") {
+      add("workspace.leaves", observed.workspace.leaves === expected.leaves, expected.leaves, observed.workspace.leaves, "workspace leaf count");
+    }
+    if (isRecord(expected.viewTypeCounts)) {
+      for (const [type, rawCount] of Object.entries(expected.viewTypeCounts)) {
+        if (typeof rawCount !== "number") continue;
+        const actual = this.app.workspace.getLeavesOfType(type).length;
+        add(`workspace.viewType:${type}`, actual === rawCount, rawCount, actual, `leaf count for ${type}`);
+      }
+    }
+    if (expected.stable === true) {
+      add("stable.dom", observed.stable, true, observed.stable, "DOM/text/layout signature remained stable during settle window");
+    }
+    if (expected.noHorizontalOverflow === true) {
+      const overflow = Math.max(0, root.scrollWidth - root.clientWidth);
+      add("layout.noHorizontalOverflow", overflow <= 2, 0, overflow, "root horizontal overflow pixels");
+    }
+    const selectorChecks = Array.isArray(expected.selectors) ? expected.selectors.filter(isRecord) : [];
+    for (let index = 0; index < selectorChecks.length; index += 1) {
+      const item = selectorChecks[index];
+      const selector = typeof item.selector === "string" ? item.selector.trim() : "";
+      if (!selector) continue;
+      const id = typeof item.id === "string" && item.id.trim() ? item.id.trim() : String(index + 1);
+      const itemRoot = typeof item.scope === "string" && item.scope.trim()
+        ? this.domActionRoot({ scope: item.scope })
+        : root;
+      const elements = Array.from(itemRoot.querySelectorAll<HTMLElement>(selector));
+      const visible = elements.filter((element) => outcomeElementVisible(element));
+      const text = elements.map((element) => (element.innerText || element.textContent || "").replace(/\s+/g, " ").trim()).join(" ");
+      const failures: string[] = [];
+      if (typeof item.count === "number" && elements.length !== item.count) failures.push(`count ${elements.length} != ${item.count}`);
+      if (typeof item.minCount === "number" && elements.length < item.minCount) failures.push(`count ${elements.length} < ${item.minCount}`);
+      if (typeof item.maxCount === "number" && elements.length > item.maxCount) failures.push(`count ${elements.length} > ${item.maxCount}`);
+      if (item.visible === true && visible.length === 0) failures.push("no visible element");
+      if (item.visible === false && visible.length > 0) failures.push(`${visible.length} element(s) still visible`);
+      for (const token of strings(item.textContains)) if (!text.includes(token)) failures.push(`missing text ${token}`);
+      for (const token of strings(item.textNotContains)) if (text.includes(token)) failures.push(`unexpected text ${token}`);
+      if (item.withinViewport === true && visible.some((element) => !outcomeElementWithinViewport(element))) failures.push("visible element outside viewport");
+      if (typeof item.noOverlapWith === "string" && item.noOverlapWith.trim()) {
+        const others = Array.from(itemRoot.querySelectorAll<HTMLElement>(item.noOverlapWith));
+        if (visible.some((element) => others.some((other) => element !== other && outcomeElementsOverlap(element, other)))) failures.push(`overlaps ${item.noOverlapWith}`);
+      }
+      add(`selector.${id}`, failures.length === 0, item, {
+        count: elements.length,
+        visible: visible.length,
+        text: trimContext(text, 300),
+        rects: visible.slice(0, 5).map((element) => outcomeElementRect(element))
+      }, failures.join("; ") || "selector expectation passed");
+    }
+    const fileChecks = Array.isArray(expected.files) ? expected.files.filter(isRecord) : [];
+    for (let index = 0; index < fileChecks.length; index += 1) {
+      const item = fileChecks[index];
+      const path = typeof item.path === "string" ? normalizeActionPath(item.path) : "";
+      if (!path) continue;
+      const exists = await this.app.vault.adapter.exists(path);
+      const failures: string[] = [];
+      if (typeof item.exists === "boolean" && exists !== item.exists) failures.push(`exists=${exists}`);
+      let size = 0;
+      let content = "";
+      if (exists) {
+        const stat = await this.app.vault.adapter.stat(path).catch(() => null);
+        size = Number(stat?.size ?? 0);
+        const needsText = strings(item.contains).length > 0 || strings(item.notContains).length > 0 || typeof item.jsonPath === "string";
+        if (needsText && stat?.type === "file") content = await this.app.vault.adapter.read(path);
+        if (typeof item.minBytes === "number" && size < item.minBytes) failures.push(`size ${size} < ${item.minBytes}`);
+        if (typeof item.maxBytes === "number" && size > item.maxBytes) failures.push(`size ${size} > ${item.maxBytes}`);
+        for (const token of strings(item.contains)) if (!content.includes(token)) failures.push(`missing text ${token}`);
+        for (const token of strings(item.notContains)) if (content.includes(token)) failures.push(`unexpected text ${token}`);
+        if (typeof item.jsonPath === "string") {
+          try {
+            const actual = outcomeJsonPathValue(JSON.parse(content), item.jsonPath);
+            if (!outcomeValuesEqual(actual, item.equals)) failures.push(`json ${item.jsonPath} differs`);
+          } catch (error) {
+            failures.push(`JSON check failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+      add(`file.${index + 1}:${path}`, failures.length === 0, item, { exists, size }, failures.join("; ") || "file expectation passed");
+    }
+    const pluginChecks = Array.isArray(expected.plugins) ? expected.plugins.filter(isRecord) : [];
+    const pluginRuntime = (this.app as App & { plugins?: { plugins?: Record<string, unknown>; manifests?: Record<string, { version?: string }> } }).plugins;
+    for (let index = 0; index < pluginChecks.length; index += 1) {
+      const item = pluginChecks[index];
+      const id = typeof item.id === "string" ? item.id.trim() : "";
+      if (!id) continue;
+      const enabled = Boolean(pluginRuntime?.plugins?.[id]);
+      const version = pluginRuntime?.manifests?.[id]?.version ?? "";
+      const failures: string[] = [];
+      if (typeof item.enabled === "boolean" && enabled !== item.enabled) failures.push(`enabled=${enabled}`);
+      if (typeof item.version === "string" && version !== item.version) failures.push(`version=${version}`);
+      add(`plugin.${index + 1}:${id}`, failures.length === 0, item, { enabled, version }, failures.join("; ") || "plugin expectation passed");
+    }
+    return checks;
+  }
+
+  private async createOutcomeCaptureSurface(root: HTMLElement, width: number, height: number): Promise<{ root: HTMLElement; dispose: () => void }> {
+    const sourceDocument = root.ownerDocument;
+    const sourceWindow = sourceDocument.defaultView;
+    if (!sourceWindow) throw new Error("active document has no window");
+    const frame = sourceDocument.createElement("iframe");
+    frame.setAttribute("aria-hidden", "true");
+    frame.setAttribute("title", "");
+    frame.style.cssText = `position:fixed;left:-100000px;top:0;width:${width}px;height:${height}px;border:0;pointer-events:none;opacity:0;z-index:-1;`;
+    sourceDocument.body.appendChild(frame);
+    const targetDocument = frame.contentDocument;
+    if (!targetDocument) {
+      frame.remove();
+      throw new Error("could not create isolated capture document");
+    }
+    targetDocument.documentElement.style.cssText = `width:${width}px;height:${height}px;margin:0;padding:0;overflow:hidden;`;
+    targetDocument.body.style.cssText = `width:${width}px;height:${height}px;margin:0;padding:0;overflow:hidden;`;
+    const targetRoot = root.cloneNode(true) as HTMLElement;
+    targetDocument.body.appendChild(targetRoot);
+
+    const colorCanvas = sourceDocument.createElement("canvas");
+    colorCanvas.width = 1;
+    colorCanvas.height = 1;
+    const colorContext = colorCanvas.getContext("2d", { willReadFrequently: true });
+    const normalizeModernColors = (value: string): string => value.replace(/\b(?:color|oklab|oklch|lab|lch)\([^()]*\)/gi, (color) => {
+      if (!colorContext) return color;
+      try {
+        colorContext.clearRect(0, 0, 1, 1);
+        colorContext.fillStyle = "rgba(1, 2, 3, 0.5)";
+        colorContext.fillStyle = color;
+        colorContext.fillRect(0, 0, 1, 1);
+        const pixel = colorContext.getImageData(0, 0, 1, 1).data;
+        return `rgba(${pixel[0]}, ${pixel[1]}, ${pixel[2]}, ${Number((pixel[3] / 255).toFixed(4))})`;
+      } catch {
+        return color;
+      }
+    });
+
+    const sourceElements = [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))];
+    const targetElements = [targetRoot, ...Array.from(targetRoot.querySelectorAll<HTMLElement>("*"))];
+    const sourceIndexes = new Map<HTMLElement, number>(sourceElements.map((element, index) => [element, index]));
+    const keep = new Set<number>([0]);
+    const clip = root.getBoundingClientRect();
+    for (let index = 1; index < sourceElements.length; index += 1) {
+      const rect = sourceElements[index].getBoundingClientRect();
+      const intersects = rect.width > 0 && rect.height > 0
+        && Math.min(rect.right, clip.right) > Math.max(rect.left, clip.left)
+        && Math.min(rect.bottom, clip.bottom) > Math.max(rect.top, clip.top);
+      if (!intersects) continue;
+      let current: HTMLElement | null = sourceElements[index];
+      while (current && root.contains(current)) {
+        const currentIndex = sourceIndexes.get(current);
+        if (currentIndex !== undefined) keep.add(currentIndex);
+        if (current === root) break;
+        current = current.parentElement;
+      }
+    }
+    for (let index = targetElements.length - 1; index >= 1; index -= 1) {
+      if (!keep.has(index)) targetElements[index].remove();
+    }
+    for (const index of keep) {
+      const source = sourceElements[index];
+      const target = targetElements[index];
+      if (!source || !target || !target.isConnected) continue;
+      const computed = sourceWindow.getComputedStyle(source);
+      target.style.cssText = "";
+      for (const property of Array.from(computed)) {
+        target.style.setProperty(property, normalizeModernColors(computed.getPropertyValue(property)), computed.getPropertyPriority(property));
+      }
+      target.style.setProperty("animation", "none", "important");
+      target.style.setProperty("transition", "none", "important");
+      target.style.setProperty("caret-color", "transparent", "important");
+      if (source.tagName === "INPUT" && target.tagName === "INPUT") (target as HTMLInputElement).value = (source as HTMLInputElement).value;
+      if (source.tagName === "TEXTAREA" && target.tagName === "TEXTAREA") (target as HTMLTextAreaElement).value = (source as HTMLTextAreaElement).value;
+      if (source.tagName === "SELECT" && target.tagName === "SELECT") (target as HTMLSelectElement).selectedIndex = (source as HTMLSelectElement).selectedIndex;
+      if (source.tagName === "DETAILS" && target.tagName === "DETAILS") (target as HTMLDetailsElement).open = (source as HTMLDetailsElement).open;
+      if (source.tagName === "CANVAS" && target.tagName === "CANVAS") {
+        const sourceCanvas = source as HTMLCanvasElement;
+        const targetCanvas = target as HTMLCanvasElement;
+        targetCanvas.width = sourceCanvas.width;
+        targetCanvas.height = sourceCanvas.height;
+        try {
+          targetCanvas.getContext("2d")?.drawImage(sourceCanvas, 0, 0);
+        } catch {
+          // A tainted source canvas remains represented by its styled capture surface.
+        }
+      }
+      target.scrollLeft = source.scrollLeft;
+      target.scrollTop = source.scrollTop;
+    }
+    targetRoot.style.setProperty("position", "relative", "important");
+    targetRoot.style.setProperty("inset", "auto", "important");
+    targetRoot.style.setProperty("left", "0", "important");
+    targetRoot.style.setProperty("top", "0", "important");
+    targetRoot.style.setProperty("margin", "0", "important");
+    targetRoot.style.setProperty("transform", "none", "important");
+    targetRoot.style.setProperty("width", `${width}px`, "important");
+    targetRoot.style.setProperty("height", `${height}px`, "important");
+    await sleep(0);
+    return { root: targetRoot, dispose: () => frame.remove() };
+  }
+
+  private async captureOutcomePng(root: HTMLElement, path: string, args: Record<string, unknown>): Promise<OutcomePngEvidence> {
+    const rect = root.getBoundingClientRect();
+    const width = Math.max(1, Math.min(Math.round(rect.width || root.clientWidth), clampInt(args.maxWidth, 1440, 240, 2400)));
+    const height = Math.max(1, Math.min(Math.round(rect.height || root.clientHeight), clampInt(args.maxHeight, 2200, 240, 3600)));
+    const requestedScale = clampNumber(args.scale, Platform.isMobile ? 1 : 1.25, 0.5, 2);
+    const pixelScale = Math.sqrt(CANCIP_OUTCOME_MAX_SCREENSHOT_PIXELS / Math.max(1, width * height));
+    const scale = Math.max(0.5, Math.min(requestedScale, pixelScale));
+    const background = root.ownerDocument.defaultView?.getComputedStyle(root).backgroundColor;
+    const surface = await this.createOutcomeCaptureSurface(root, width, height);
+    let canvas: HTMLCanvasElement;
+    try {
+      canvas = await withTimeout(html2canvas(surface.root, {
+        backgroundColor: background && background !== "rgba(0, 0, 0, 0)" ? background : null,
+        logging: false,
+        useCORS: true,
+        allowTaint: false,
+        removeContainer: true,
+        scale,
+        width,
+        height,
+        windowWidth: width,
+        windowHeight: height,
+        imageTimeout: 3000
+      }), clampInt(args.captureTimeoutMs, 15000, 3000, 60000), "PNG capture timed out");
+    } finally {
+      surface.dispose();
+    }
+    if (canvas.width <= 1 || canvas.height <= 1) throw new Error("captured canvas is empty");
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => value ? resolve(value) : reject(new Error("PNG encoding returned empty data")), "image/png", 0.92);
+    });
+    const buffer = await blob.arrayBuffer();
+    await this.app.vault.adapter.writeBinary(path, buffer);
+    const changedPixelRatio = outcomeCanvasChangedPixelRatio(canvas);
+    return {
+      path,
+      width: canvas.width,
+      height: canvas.height,
+      bytes: buffer.byteLength,
+      changedPixelRatio,
+      ...(args.visualReview === true && buffer.byteLength <= 3 * 1024 * 1024
+        ? { dataUrl: arrayBufferToDataUrl(buffer, "image/png") }
+        : {})
+    };
+  }
+
+  private formatOutcomeVerification(report: OutcomeVerificationReport): string {
+    const failed = report.checks.filter((item) => !item.pass);
+    const passed = report.checks.length - failed.length;
+    const zh = isChineseLanguage(this.plugin.language());
+    const lines = zh
+      ? [
+          `结果验收：${report.status === "passed" ? "通过" : "未通过"}`,
+          `轮次：${report.attempt}/${report.maxAttempts}`,
+          `当前：${report.viewType || "未知视图"}${report.activeFile ? ` · ${report.activeFile}` : ""}`,
+          `检查：${passed} 通过 / ${failed.length} 失败`
+        ]
+      : [
+          `Outcome verification: ${report.status}`,
+          `Attempt: ${report.attempt}/${report.maxAttempts}`,
+          `Current: ${report.viewType || "unknown view"}${report.activeFile ? ` · ${report.activeFile}` : ""}`,
+          `Checks: ${passed} passed / ${failed.length} failed`
+        ];
+    if (failed.length) {
+      lines.push(zh ? "差异：" : "Differences:");
+      for (const item of failed.slice(0, 10)) lines.push(`- ${item.id}: ${item.detail}`);
+    }
+    lines.push(`${zh ? "证据" : "Evidence"}: ${report.evidence.reportPath}`);
+    if (report.evidence.png) {
+      lines.push(`${zh ? "截图" : "Screenshot"}: ${report.evidence.png.path} (${report.evidence.png.width}x${report.evidence.png.height}, ${report.evidence.png.bytes} bytes)`);
+    }
+    if (report.evidence.reviewPath) lines.push(`${zh ? "关联审核" : "Linked review"}: ${report.evidence.reviewPath}`);
+    if (report.status === "failed") {
+      lines.push(report.attempt < report.maxAttempts
+        ? (zh ? `下一步：只针对上述差异做最小修正，再用相同 loopId、attempt=${report.attempt + 1} 重新验收；不要重复已经失败的同一路线。` : `Next: correct only these differences, then verify again with the same loopId and attempt=${report.attempt + 1}; do not repeat the failed route unchanged.`)
+        : (zh ? "已达到修正次数上限：停止自动重试，保留证据并交给用户审核。" : "Correction limit reached: stop automatic retries, preserve evidence, and hand off for user review."));
+    }
+    return lines.join("\n");
+  }
+
+  private takeOutcomeEvidenceImages(runs: ToolRun[]): ImageAttachmentContext[] {
+    const images: ImageAttachmentContext[] = [];
+    for (const run of runs) {
+      const current = this.outcomeEvidenceImagesByRunId.get(run.id) ?? [];
+      images.push(...current);
+      this.outcomeEvidenceImagesByRunId.delete(run.id);
+    }
+    return images.slice(-1);
+  }
+
+  private async outcomeExportPdfCommand(args: Record<string, unknown>, run?: ToolRun): Promise<string> {
+    const request = typeof args.id === "string" && args.id.trim()
+      ? args.id.trim()
+      : typeof args.query === "string" && args.query.trim()
+        ? args.query.trim()
+        : "Mobile PDF Exporter 导出当前笔记为预览版 PDF";
+    const resolution = this.resolveObsidianCommand(request);
+    if (args.dryRun === true) return this.formatObsidianCommandResolution(resolution, false);
+    if (!this.plugin.settings.executeObsidianCommands) {
+      throw new Error(this.t("commandBlocked", { reason: this.t("settingsExecuteObsidianCommands") }));
+    }
+    if (!resolution.command || resolution.ambiguous) {
+      throw new Error(this.formatObsidianCommandResolution(resolution, false));
+    }
+    const beforePath = this.app.workspace.getActiveFile()?.path ?? "";
+    const executed = await this.executeResolvedObsidianCommand(resolution);
+    await sleep(clampInt(args.settleMs, 700, 100, 5000));
+    const suppliedExpected = isRecord(args.expected) ? args.expected : {};
+    const verification = await this.outcomeVerifyCommand({
+      ...args,
+      loopId: typeof args.loopId === "string" ? args.loopId : `pdf-export-${Date.now()}`,
+      evidence: typeof args.evidence === "string" ? args.evidence : "auto",
+      expected: {
+        activeFile: beforePath,
+        maxBlankLeaves: 0,
+        ...suppliedExpected
+      }
+    }, run, true);
+    return `${executed}\n\n${verification}`;
+  }
+
   private domClick(args: Record<string, unknown>): string {
     const result = this.domTarget(args);
     result.element.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
@@ -33781,10 +34384,37 @@ class CancipView extends ItemView {
     const scope = typeof args.scope === "string" ? args.scope.trim() : "";
     if (scope === "cancip") return this.containerEl;
     if (scope === "active") {
-      const container = (this.plugin.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl;
+      const container = (this.outcomeActiveWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl;
       if (container) return container;
     }
     return this.containerEl.ownerDocument;
+  }
+
+  private outcomeActiveWorkspaceLeaf(): WorkspaceLeaf | null {
+    const activeFile = this.app.workspace.getActiveFile();
+    const current = this.app.workspace.getLeaf(false);
+    const candidates: WorkspaceLeaf[] = [];
+    const allLeaves: WorkspaceLeaf[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => allLeaves.push(leaf));
+    if (activeFile) {
+      for (const leaf of allLeaves) {
+        const file = (leaf.view as unknown as { file?: TFile }).file;
+        if (file instanceof TFile && file.path === activeFile.path) candidates.push(leaf);
+      }
+    }
+    const visible = (leaf: WorkspaceLeaf | null | undefined): leaf is WorkspaceLeaf => {
+      const container = (leaf?.view as unknown as { containerEl?: HTMLElement } | undefined)?.containerEl;
+      if (!container?.isConnected) return false;
+      const rect = container.getBoundingClientRect();
+      return rect.width > 1 && rect.height > 1;
+    };
+    if (current && candidates.includes(current) && visible(current)) return current;
+    const visibleMatch = candidates.find(visible);
+    if (visibleMatch) return visibleMatch;
+    if (current && current.view?.getViewType?.() !== VIEW_TYPE && visible(current)) return current;
+    const anyVisible = allLeaves.find(visible);
+    if (anyVisible) return anyVisible;
+    return candidates[0] ?? current ?? null;
   }
 
   private domTarget(args: Record<string, unknown>): DomActionResult & { element: HTMLElement } {
@@ -35469,6 +36099,7 @@ class CancipView extends ItemView {
       if (!inlineDetails) {
         this.renderToolRunActionDiffPreview(row, run);
         this.renderToolRunChangedFiles(row, run);
+        this.renderToolRunEvidencePaths(row, run);
         if (run.reviewPath) this.renderToolRunReviewFiles(row, run);
       }
     }
@@ -35530,6 +36161,29 @@ class CancipView extends ItemView {
           if (run.reviewPath) this.openReviewGateItem(run.reviewPath, path);
         });
       }
+    }
+  }
+
+  private renderToolRunEvidencePaths(parent: HTMLElement, run: ToolRun): void {
+    const paths = uniqueStrings((run.evidencePaths ?? []).map((path) => normalizePath(path)).filter(Boolean));
+    if (!paths.length) return;
+    const details = parent.createEl("details", { cls: "obcc-tool-run-review-files obcc-tool-run-evidence" });
+    details.createEl("summary", { cls: "obcc-tool-run-review-summary", text: this.t("toolRunEvidence") });
+    const body = details.createDiv({ cls: "obcc-tool-run-review-body" });
+    for (const path of paths) {
+      const row = body.createDiv({ cls: "obcc-tool-run-review-file" });
+      const text = row.createDiv({ cls: "obcc-tool-run-review-file-text" });
+      text.createDiv({ cls: "obcc-tool-run-review-file-name", text: reviewFileName(path) });
+      text.createDiv({ cls: "obcc-tool-run-review-file-path", text: path });
+      const actions = row.createDiv({ cls: "obcc-tool-run-review-actions" });
+      const openButton = actions.createEl("button", {
+        cls: "obcc-tool-run-review-button",
+        attr: { type: "button", title: this.t("toolRunOpenEvidence"), "aria-label": this.t("toolRunOpenEvidence") }
+      });
+      setIcon(openButton, /\.png$/i.test(path) ? "image" : "file-json");
+      openButton.addEventListener("click", () => {
+        void this.openVaultPathSafely(path);
+      });
     }
   }
 
@@ -37385,6 +38039,85 @@ function localDateKey(date: Date): string {
 
 function safeVaultFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]+/g, "_").replace(/\0/g, "").slice(0, 120) || "memory.md";
+}
+
+function outcomeElementRect(element: HTMLElement): { left: number; top: number; right: number; bottom: number; width: number; height: number } {
+  const rect = element.getBoundingClientRect();
+  return {
+    left: Math.round(rect.left),
+    top: Math.round(rect.top),
+    right: Math.round(rect.right),
+    bottom: Math.round(rect.bottom),
+    width: Math.round(rect.width),
+    height: Math.round(rect.height)
+  };
+}
+
+function outcomeElementVisible(element: HTMLElement): boolean {
+  const win = element.ownerDocument.defaultView;
+  const rect = element.getBoundingClientRect();
+  if (!win || rect.width <= 0 || rect.height <= 0) return false;
+  const style = win.getComputedStyle(element);
+  if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01) return false;
+  return rect.right > 0 && rect.bottom > 0 && rect.left < win.innerWidth && rect.top < win.innerHeight;
+}
+
+function outcomeElementWithinViewport(element: HTMLElement): boolean {
+  const win = element.ownerDocument.defaultView;
+  if (!win) return false;
+  const rect = element.getBoundingClientRect();
+  return rect.left >= -1 && rect.top >= -1 && rect.right <= win.innerWidth + 1 && rect.bottom <= win.innerHeight + 1;
+}
+
+function outcomeElementsOverlap(first: HTMLElement, second: HTMLElement): boolean {
+  if (!outcomeElementVisible(first) || !outcomeElementVisible(second)) return false;
+  const a = first.getBoundingClientRect();
+  const b = second.getBoundingClientRect();
+  return Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
+    && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1;
+}
+
+function outcomeJsonPathValue(value: unknown, path: string): unknown {
+  const parts = path.replace(/\[(\d+)\]/g, ".$1").split(".").map((item) => item.trim()).filter(Boolean);
+  let current = value;
+  for (const part of parts) {
+    if (Array.isArray(current) && /^\d+$/.test(part)) {
+      current = current[Number(part)];
+    } else if (isRecord(current)) {
+      current = current[part];
+    } else {
+      return undefined;
+    }
+  }
+  return current;
+}
+
+function outcomeValuesEqual(first: unknown, second: unknown): boolean {
+  return JSON.stringify(canonicalJsonValue(first)) === JSON.stringify(canonicalJsonValue(second));
+}
+
+function outcomeCanvasChangedPixelRatio(canvas: HTMLCanvasElement): number {
+  try {
+    const sample = canvas.ownerDocument.createElement("canvas");
+    sample.width = 24;
+    sample.height = 24;
+    const context = sample.getContext("2d", { willReadFrequently: true });
+    if (!context) return 0;
+    context.drawImage(canvas, 0, 0, sample.width, sample.height);
+    const pixels = context.getImageData(0, 0, sample.width, sample.height).data;
+    const base = [pixels[0], pixels[1], pixels[2], pixels[3]];
+    let changed = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      const delta = Math.abs(pixels[index] - base[0])
+        + Math.abs(pixels[index + 1] - base[1])
+        + Math.abs(pixels[index + 2] - base[2])
+        + Math.abs(pixels[index + 3] - base[3]);
+      if (delta > 24) changed += 1;
+    }
+    return Number((changed / (pixels.length / 4)).toFixed(4));
+  } catch {
+    return 0;
+  }
 }
 
 function normalizeImportedMarkdown(content: string): string {
@@ -41727,6 +42460,9 @@ function shouldNeedMoreActionAfterToolRuns(runs: ToolRun[]): boolean {
   const active = runs.filter((run) => run.status === "executed" || run.status === "failed");
   if (!active.length) return false;
   if (active.some((run) => run.status === "failed")) return true;
+  const outcomeFailures = active.map(outcomeVerificationFailureState).filter((state): state is OutcomeVerificationFailureState => Boolean(state));
+  if (outcomeFailures.some((state) => !state.atLimit)) return true;
+  if (outcomeFailures.some((state) => state.atLimit)) return false;
   if (active.every((run) => isLowCommitmentAction(run.action))) return true;
   return hasUnverifiedWriteAction(active);
 }
@@ -41734,6 +42470,8 @@ function shouldNeedMoreActionAfterToolRuns(runs: ToolRun[]): boolean {
 function shouldNeedMoreActionForPrompt(prompt: string, runs: ToolRun[]): boolean {
   if (classifyPromptIntent(prompt) !== "implementation") return false;
   const requiresStateChange = promptRequiresStateChange(prompt);
+  const outcomeFailures = runs.map(outcomeVerificationFailureState).filter((state): state is OutcomeVerificationFailureState => Boolean(state));
+  if (!runs.some((run) => run.status === "failed") && outcomeFailures.some((state) => state.atLimit) && !outcomeFailures.some((state) => !state.atLimit)) return false;
   if (shouldNeedMoreActionAfterToolRuns(runs)) return requiresStateChange || runs.some((run) => run.status === "failed");
   const lower = prompt.toLowerCase();
   const isUiOrPluginTask = /(settings?\s*(page|tab|ui)|ui|interface|button|model\s*options?|model\s*management|设置页|设置中|界面|按钮|可选模型|模型管理|插件|自身|自己)/i.test(lower);
@@ -41775,10 +42513,31 @@ function shouldContinueToolLoopFromRuns(runs: ToolRun[]): boolean {
   if (!runs.length) return false;
   if (runs.some((run) => run.status === "pending" || run.status === "executing" || run.status === "blocked")) return false;
   if (runs.some((run) => run.status === "failed" || run.status === "rejected")) return true;
+  const outcomeFailures = runs.map(outcomeVerificationFailureState).filter((state): state is OutcomeVerificationFailureState => Boolean(state));
+  if (outcomeFailures.some((state) => !state.atLimit)) return true;
+  if (outcomeFailures.some((state) => state.atLimit)) return false;
   const executed = runs.filter((run) => run.status === "executed");
   if (!executed.length) return false;
   if (executed.every((run) => isLowCommitmentAction(run.action))) return false;
   return hasUnverifiedWriteAction(executed);
+}
+
+type OutcomeVerificationFailureState = {
+  attempt: number;
+  maxAttempts: number;
+  atLimit: boolean;
+};
+
+function outcomeVerificationFailureState(run: ToolRun): OutcomeVerificationFailureState | null {
+  if (run.status !== "executed" || run.action.type !== "command") return null;
+  const command = run.action.command.trim();
+  if (!new Set(["cancip.outcome.verify", "cancip.outcome.capture", "cancip.outcome.exportPdf"]).has(command)) return null;
+  const result = run.result ?? "";
+  if (!/(?:结果验收：未通过|Outcome verification:\s*failed)/i.test(result)) return null;
+  const match = result.match(/(?:轮次|Attempt)[：:]\s*(\d+)\s*\/\s*(\d+)/i);
+  const attempt = match ? Math.max(1, Number(match[1])) : 1;
+  const maxAttempts = match ? Math.max(1, Number(match[2])) : 1;
+  return { attempt, maxAttempts, atLimit: attempt >= maxAttempts };
 }
 
 function hasUnverifiedWriteAction(runs: ToolRun[]): boolean {
@@ -41836,6 +42595,7 @@ function isVerificationAction(action: CancipAction, writePaths: string[]): boole
   }
   if (action.type !== "command") return false;
   const command = action.command.trim();
+  if (command === "cancip.outcome.verify") return writePaths.length > 0;
   if (command === "cancip.searchVault" || command === "cancip.searchAll" || command === "cancip.previewVaultSearch") return true;
   return writePaths.some((target) => target === command);
 }
@@ -41849,6 +42609,9 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "obsidian.listCommands",
     "obsidian.currentView",
     "obsidian.dom.snapshot",
+    "cancip.outcome.observe",
+    "cancip.outcome.verify",
+    "cancip.outcome.capture",
     "obsidian.ui.buttons",
     "obsidian.ui.buttonRules",
     "obsidian.tags",
@@ -42251,8 +43014,18 @@ function formatI18n(template: string, vars: Record<string, string | number> = {}
 }
 
 function runtimeI18nTemplate(key: I18nKey, template: string): string {
+  if (key === "finalAnswerFormatPrompt") {
+    return `${template} ${/[\u3400-\u9fff]/.test(template)
+      ? "不能只根据函数返回成功就宣称完成；先读回实际状态，界面任务还要核对活动视图、DOM/布局或视觉证据。未达到预期且仍可修时继续最小修正，达到上限才带证据交审核。"
+      : "Never claim completion from a successful function return alone. Read back actual state; for UI work also verify the active view, DOM/layout, or visual evidence. Correct measured differences while attempts remain, then hand off with evidence at the limit."}`;
+  }
+  if (key === "toolContinuationPrompt") {
+    return `${template}\n\n${template.startsWith("上一步工具执行结果")
+      ? "结果验收规则：若 cancip.outcome.verify 返回未通过且轮次未到上限，只修正列出的差异，然后使用相同 loopId、递增 attempt 再验收；不得重复完全相同的失败动作。达到上限时停止自动重试，保留证据并给出可审核结论。"
+      : "Outcome rule: when cancip.outcome.verify reports failed below the attempt limit, correct only the listed differences and verify again with the same loopId and an incremented attempt; never repeat the identical failed action. At the limit, stop automatic retries, preserve evidence, and give a reviewable conclusion."}`;
+  }
   if (key !== "toolProtocol") return template;
-  return template
+  const normalized = template
     .replace(
       /^Tool protocol: For greetings, tests, identity questions, and ordinary chat, do not output cancip-action\./,
       "Tool protocol: Choose tools by user intent, not by rigid greeting/simple-chat rules. When information is missing, inspect memory/tool/session/file routes before asking the user for permission."
@@ -42365,6 +43138,9 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
       /可用 obsidian\.tabs 查看工作区标签页，/,
       "可用 obsidian.files.pins 查看原生文件列表置顶顺序，用 obsidian.files.pin/unpin/movePin/reorderPins 修改同文件夹置顶顺序且不替换普通文件原生排序。可用 obsidian.tabs 查看工作区标签页，"
     );
+  return `${normalized} ${normalized.startsWith("工具协议")
+    ? "执行写入、命令、插件或界面任务后，不能只信返回值；用 cancip.outcome.observe/verify 读取活动视图、DOM、文件、插件和工作区实际结果。结构化证据不足时再用 cancip.outcome.capture 截取活动区域，PDF 证据用 cancip.outcome.exportPdf。验收失败只修差异并以同一 loopId、递增 attempt 有限重试；达到 maxAttempts 后停止并保留证据交审核。"
+    : "After writes, commands, plugin actions, or UI work, do not trust the return value alone. Use cancip.outcome.observe/verify to read actual active-view, DOM, file, plugin, and workspace state. Use cancip.outcome.capture for the active region only when structured evidence is insufficient, and cancip.outcome.exportPdf for PDF evidence. On failure correct only measured differences, retry with the same loopId and incremented attempt, then stop at maxAttempts with evidence for review."}`;
 }
 
 function isReadOnlyAction(action: CancipAction): boolean {
@@ -42374,10 +43150,14 @@ function isReadOnlyAction(action: CancipAction): boolean {
   if (action.type !== "command") return false;
   const command = action.command.trim();
   if (isObsidianJsHelpCommandAlias(command) || isObsidianJsProbeCommandAlias(command)) return true;
+  if (command === "cancip.outcome.exportPdf" && action.args?.dryRun === true) return true;
   return new Set([
     "obsidian.listCommands",
     "obsidian.currentView",
     "obsidian.dom.snapshot",
+    "cancip.outcome.observe",
+    "cancip.outcome.verify",
+    "cancip.outcome.capture",
     "obsidian.ui.buttons",
     "obsidian.ui.buttonRules",
     "obsidian.tags",
@@ -46047,7 +46827,10 @@ function normalizeToolRuns(raw: unknown): ToolRun[] {
         reviewStage: item.reviewStage === "pre-execution" || item.reviewStage === "post-execution" ? item.reviewStage : undefined,
         autoApproved: typeof item.autoApproved === "boolean" ? item.autoApproved : undefined,
         automationTaskId: typeof item.automationTaskId === "string" ? item.automationTaskId : undefined,
-        lineDeltas: normalizeToolRunLineDeltas(item.lineDeltas)
+        lineDeltas: normalizeToolRunLineDeltas(item.lineDeltas),
+        evidencePaths: Array.isArray(item.evidencePaths)
+          ? uniqueStrings(item.evidencePaths.filter((path): path is string => typeof path === "string").map((path) => normalizePath(path)).filter(Boolean))
+          : undefined
       };
     })
     .filter((item): item is ToolRun => item !== null);
@@ -46078,7 +46861,8 @@ function cloneToolRun(run: ToolRun): ToolRun {
   return {
     ...run,
     action: cloneJsonValue(run.action) as CancipAction,
-    lineDeltas: run.lineDeltas?.map((item) => ({ ...item }))
+    lineDeltas: run.lineDeltas?.map((item) => ({ ...item })),
+    evidencePaths: run.evidencePaths ? [...run.evidencePaths] : undefined
   };
 }
 

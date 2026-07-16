@@ -418,7 +418,7 @@ try {
   $Script:OriginalSessionId = [string]$probe.sessionId
   if (-not $probe.ok) { throw 'Cancip plugin/view is not loaded' }
   if ($RunProfile -ne 'ui-button') {
-    $StartSmokeSessionCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;if(!v)throw new Error('Cancip view unavailable');await v.newChat();v.sessionTitleOverride='Cancip smoke';await v.saveCurrentSession();return JSON.stringify({ok:true,sessionId:v.sessionId});})()"
+    $StartSmokeSessionCode = "(async()=>{const p=app.plugins.plugins.cancip;const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;if(!v)throw new Error('Cancip view unavailable');await v.newChat();v.sessionTitleOverride='Cancip smoke';await v.saveCurrentSession();await new Promise(r=>setTimeout(r,700));return JSON.stringify({ok:true,sessionId:v.sessionId});})()"
     $smokeSession = Invoke-CancipEval -Code $StartSmokeSessionCode -TimeoutSeconds 35
     $Script:SmokeSessionId = [string]$smokeSession.sessionId
   }
@@ -452,6 +452,63 @@ foreach ($test in $CommandCases) {
     Add-CaseResult 'commandCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; textChars = $item.textChars; text = $item.text }
   } catch {
     Add-CaseResult 'commandCases' @{ id = $test.id; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (Should-RunProgrammaticCase 'programmatic.outcome-verification-evidence') {
+  $outcomeSmokeReady = $false
+  try {
+    $started = Get-Date
+    Invoke-CancipEval -TimeoutSeconds 25 -Code @'
+(async()=>{
+  const p=app.plugins.plugins.cancip;
+  const v=await p?.activateView?.();
+  if(!p||!v||typeof v.executeCommandAction!=='function')throw new Error('Cancip outcome command runtime unavailable');
+  const doc=v.containerEl.ownerDocument;
+  const fixture=doc.createElement('div');
+  fixture.className='obcc-outcome-smoke-fixture';
+  fixture.style.cssText='position:fixed;left:0;top:80px;width:64px;height:120px;z-index:9999;display:grid;grid-template-rows:repeat(4,1fr);background:#fff;color:#111;border:1px solid #d33;overflow:hidden;font-size:8px;line-height:1;';
+  fixture.innerHTML='<div class="outcome-target" style="background:#1367a8;color:#fff;padding:2px;overflow:hidden">TARGET</div><div style="background:#f3c623;padding:2px;overflow:hidden">EVIDENCE</div><div style="background:#2f8f46;color:#fff;padding:2px;overflow:hidden">PASS</div><div style="background:#fff;padding:2px;overflow:hidden">OK</div>';
+  v.containerEl.appendChild(fixture);
+  window.__cancipOutcomeSmoke={v,fixture,loop:'outcome-smoke-'+Date.now(),created:[]};
+  return JSON.stringify({ready:true});
+})()
+'@
+    $outcomeSmokeReady = $true
+    $pass = Invoke-CancipEval -TimeoutSeconds 35 -Code @'
+(async()=>{const s=window.__cancipOutcomeSmoke,{v,loop,created}=s;const run={id:loop+'-pass',action:{type:'command',command:'cancip.outcome.capture',args:{}},summary:'capture',status:'executed',createdAt:new Date().toISOString()};const text=String(await v.executeCommandAction('cancip.outcome.capture',{scope:'cancip',rootSelector:'.obcc-outcome-smoke-fixture',visualReview:true,loopId:loop+'-pass',attempt:1,maxAttempts:2,expected:{selectors:[{id:'target',selector:'.outcome-target',count:1,visible:true,withinViewport:true}],noHorizontalOverflow:true}},run));run.result=text;created.push(...(run.evidencePaths||[]));const reportPath=run.evidencePaths.find(path=>path.endsWith('.json')),pngPath=run.evidencePaths.find(path=>path.endsWith('.png')),report=JSON.parse(await app.vault.adapter.read(reportPath)),png=new Uint8Array(await app.vault.adapter.readBinary(pngPath)),queued=(v.outcomeEvidenceImagesByRunId?.get(run.id)||[]).length,taken=v.takeOutcomeEvidenceImages([run]),host=v.containerEl.ownerDocument.createElement('div');v.renderToolRuns(host,{id:'outcome-smoke-message',toolRuns:[run]},false);return JSON.stringify({passed:/结果验收：通过|Outcome verification: passed/i.test(text)&&report.status==='passed'&&report.schemaVersion===1&&report.checks.every(item=>item.pass),pngValid:png.length>256&&png[0]===137&&png[1]===80&&png[2]===78&&png[3]===71&&report.evidence.png?.width>1&&report.evidence.png?.height>1&&report.evidence.png?.changedPixelRatio>0.0005,imageForwarding:queued===1&&taken.length===1&&!v.outcomeEvidenceImagesByRunId?.has(run.id),base64NotPersisted:!JSON.stringify(run).includes('data:image'),evidenceUi:!!host.querySelector('.obcc-tool-run-evidence button')})})()
+'@
+    $fail1 = Invoke-CancipEval -TimeoutSeconds 35 -Code @'
+(async()=>{const s=window.__cancipOutcomeSmoke,{v,loop,created}=s,run={id:loop+'-fail-1',action:{type:'command',command:'cancip.outcome.verify',args:{}},summary:'verify',status:'executed',createdAt:new Date().toISOString()};const text=String(await v.executeCommandAction('cancip.outcome.verify',{scope:'cancip',rootSelector:'.obcc-outcome-smoke-fixture',loopId:loop+'-fail',attempt:1,maxAttempts:2,expected:{selectors:[{id:'missing-second',selector:'.outcome-target',minCount:2}]}},run));run.result=text;created.push(...(run.evidencePaths||[]));return JSON.stringify({failureVisible:/结果验收：未通过|Outcome verification: failed/i.test(text)&&/attempt=2|attempt 2|轮次/i.test(text),retryBeforeLimit:v.shouldContinueFromToolRuns({runs:[run]})})})()
+'@
+    $fail2 = Invoke-CancipEval -TimeoutSeconds 35 -Code @'
+(async()=>{const s=window.__cancipOutcomeSmoke,{v,loop,created}=s,run={id:loop+'-fail-2',action:{type:'command',command:'cancip.outcome.verify',args:{}},summary:'verify',status:'executed',createdAt:new Date().toISOString()};const text=String(await v.executeCommandAction('cancip.outcome.verify',{scope:'cancip',rootSelector:'.obcc-outcome-smoke-fixture',loopId:loop+'-fail',attempt:2,maxAttempts:2,expected:{selectors:[{id:'missing-second',selector:'.outcome-target',minCount:2}]}},run));run.result=text;created.push(...(run.evidencePaths||[]));return JSON.stringify({stopsAtLimit:!v.shouldContinueFromToolRuns({runs:[run]}),limitVisible:/达到修正次数上限|Correction limit reached/i.test(text),evidenceCount:new Set(created).size})})()
+'@
+    foreach ($check in @(
+      [pscustomobject]@{ name = 'passed'; value = $pass.passed },
+      [pscustomobject]@{ name = 'pngValid'; value = $pass.pngValid },
+      [pscustomobject]@{ name = 'imageForwarding'; value = $pass.imageForwarding },
+      [pscustomobject]@{ name = 'base64NotPersisted'; value = $pass.base64NotPersisted },
+      [pscustomobject]@{ name = 'evidenceUi'; value = $pass.evidenceUi },
+      [pscustomobject]@{ name = 'failureVisible'; value = $fail1.failureVisible },
+      [pscustomobject]@{ name = 'retryBeforeLimit'; value = $fail1.retryBeforeLimit },
+      [pscustomobject]@{ name = 'stopsAtLimit'; value = $fail2.stopsAtLimit },
+      [pscustomobject]@{ name = 'limitVisible'; value = $fail2.limitVisible }
+    )) { if (-not [bool]$check.value) { throw "$($check.name) failed" } }
+    if ([int]$fail2.evidenceCount -lt 6) { throw "expected at least 6 unique evidence files, got $($fail2.evidenceCount)" }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.outcome-verification-evidence'; pass = $true; elapsedMs = [int]((Get-Date) - $started).TotalMilliseconds; evidenceCount = $fail2.evidenceCount }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.outcome-verification-evidence'; pass = $false; error = $_.Exception.Message }
+  } finally {
+    if ($outcomeSmokeReady) {
+      try {
+        Invoke-CancipEval -TimeoutSeconds 30 -Code @'
+(async()=>{const s=window.__cancipOutcomeSmoke;if(!s)return JSON.stringify({clean:true});s.fixture?.remove();for(const path of [...new Set(s.created||[])])if(await app.vault.adapter.exists(path))await app.vault.adapter.remove(path);const folder=(s.created||[])[0]?.replace(/\/[^/]+$/,'')||'';if(folder){try{const listing=await app.vault.adapter.list(folder);if(!listing.files.length&&!listing.folders.length)await app.vault.adapter.rmdir(folder,false)}catch{}}delete window.__cancipOutcomeSmoke;return JSON.stringify({clean:true})})()
+'@ | Out-Null
+      } catch {
+        Write-Host "Outcome smoke cleanup warning: $($_.Exception.Message)"
+      }
+    }
   }
 }
 

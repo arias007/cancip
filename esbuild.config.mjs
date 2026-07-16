@@ -1,5 +1,5 @@
 import { builtinModules } from "node:module";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import esbuild from "esbuild";
 import process from "process";
 
@@ -7,6 +7,8 @@ const prod = process.argv[2] === "production";
 
 await mkdir("outputs/build", { recursive: true });
 await mkdir("outputs/cancip", { recursive: true });
+
+const mainOutput = "outputs/cancip/main.js";
 
 await esbuild.build({
   entryPoints: ["src/primeTtsWorker.ts"],
@@ -48,6 +50,9 @@ await esbuild.build({
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
-  outfile: "outputs/cancip/main.js",
+  outfile: mainOutput,
   minify: prod
 });
+
+const mainSource = await readFile(mainOutput, "utf8");
+await writeFile(mainOutput, mainSource.replace(/[ \t]+(?=\r?$)/gm, ""));

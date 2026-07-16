@@ -5,6 +5,7 @@ This product includes third-party open-source components. Their licenses
 remain with their respective authors.
 
 Notable bundled runtime assets:
+- html2canvas 1.4.1 (MIT) for local active-view PNG evidence capture.
 - PrimeTTS v3_4.6M model assets under outputs/cancip/tts/prime-tts/.
 - ONNX Runtime Web WASM files under outputs/cancip/tts/prime-tts/ort/.
 
