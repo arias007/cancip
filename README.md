@@ -59,6 +59,13 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic benefit gate classifies each file as curate, skip, or protected before any model call: only concrete high-value defects become candidates; clean, cosmetic-only, or Inbox-only cases are consumed silently; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic rename/restructure. Each candidate carries a defect-derived action allowlist so one formatting issue cannot authorize unrelated tags, links, summaries, or renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
 
+## 2.14.2
+
+- New chats now select a stable greeting from several background-generated, evidence-backed variants. Greetings can use an explicitly configured or reliably labeled preferred name, optionally include cached live Open-Meteo weather, and offer two or three concrete next-action buttons without delaying chat creation.
+- Composer autocomplete now returns one compact JSON result containing the gray suffix, up to three input-specific action buttons, and short reusable workflow steps. The suggestions float without changing footer height, while scroll clearance keeps the final chat content reachable above the keyboard.
+- Cancip records recommendation-button use locally. Repeated choices create a native Review Gate sorting proposal at three uses; priority changes only after approval. Repeated successful multi-tool workflows may become generated Skills, while one-off actions are no longer promoted.
+- The core agent prompt now explicitly completes clear low-risk next steps on the user's behalf while keeping writes and high-impact operations behind the existing access mode and audit flow.
+
 ## 2.14.1
 
 - Reworked outcome-capture and hidden-button styling through Obsidian DOM/CSS helpers, removing the blocking static-style review errors without changing capture behavior.
