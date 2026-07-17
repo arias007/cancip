@@ -44,6 +44,7 @@ $RunProfile = if ($Mobile) { 'mobile' } elseif (
   $Case -like '*ui-button*' -or
   $Case -like '*code-block-wrap*' -or
   $Case -like '*context-editor-settings*' -or
+  $Case -like '*editor-autocomplete*' -or
   $Case -like '*personalization-autocomplete*' -or
   $Case -like '*process-detail-deferred-dom*' -or
   $Case -like '*interaction-regression-controls*'
@@ -101,7 +102,7 @@ $Report = [ordered]@{
 }
 $Started = Get-Date
 
-if (Test-Path -LiteralPath $InstalledCancipDataPath) {
+if ($Case -notlike '*editor-autocomplete-mounted*' -and (Test-Path -LiteralPath $InstalledCancipDataPath)) {
   $snapshotName = "cancip-smoke-data-before-$((Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssfffZ')).json"
   $Script:SmokeSettingsSnapshotPath = Join-Path $OutDir $snapshotName
   Copy-Item -LiteralPath $InstalledCancipDataPath -Destination $Script:SmokeSettingsSnapshotPath -Force
@@ -1808,8 +1809,17 @@ if (Should-RunProgrammaticCase 'programmatic.context-editor-settings') {
     $evidenceCode = @'
 (()=>{const v=app.workspace.getLeavesOfType('cancip-view').map((leaf)=>leaf.view).find((view)=>typeof view?.personalizationCacheFromModel==='function');if(!v)throw new Error('personalization parser unavailable');const fallback={schemaVersion:3,updatedAt:new Date().toISOString(),timeKey:'smoke',greeting:'上午好。可靠回退。',greetings:[{text:'上午好。可靠回退。',choices:[]}],friendlyName:'',weather:null,inferredWeatherLocation:'',diary:'',autocomplete:[],sourcePaths:[]},source='用户姓名：木拉提\n常住地：乌鲁木齐',forged=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'虚构名字',weatherLocation:'虚构市',greetings:[{text:'虚构名字，上午好。虚构市今天天气晴朗。',choices:['查看虚构市天气']}],autocomplete:[]}),fallback,[],'smoke',source),accepted=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'木拉提',weatherLocation:'乌鲁木齐',greetings:[{text:'木拉提，上午好。最近事情不少，先处理最明确的一项。',choices:['继续处理 Cancip 并核对结果']}],autocomplete:[]}),fallback,[],'smoke',source),forgedText=forged.greetings.map((item)=>`${item.text} ${item.choices.join(' ')}`).join(' ');return JSON.stringify({personalizationEvidence:forged.friendlyName===''&&forged.inferredWeatherLocation===''&&!/虚构名字|虚构市|天气晴朗/.test(forgedText)&&accepted.friendlyName==='木拉提'&&accepted.inferredWeatherLocation==='乌鲁木齐'&&accepted.greetings.some((item)=>item.text.includes('木拉提'))})})()
 '@
+    $spinnerCode = @'
+(()=>{const p=app.plugins.plugins.cancip;if(!p)throw new Error('runtime unavailable');const before=p.editorAutocompleteActivityCount,finish=p.beginEditorAutocompleteActivity(),during=p.editorAutocompleteActivityCount===before+1&&!!p.statusBarEl?.classList.contains('is-editor-autocomplete-running')&&!!p.statusBarEl?.querySelector('.obcc-statusbar-icon-glyph svg');finish();return JSON.stringify({editorSpinner:during&&p.editorAutocompleteActivityCount===before})})()
+'@
+    $editorCleanupCode = @'
+(()=>{const p=app.plugins.plugins.cancip;if(!p)throw new Error('runtime unavailable');p.editorAutocompleteGeneration+=1;p.editorAutocompleteModelBusy=false;p.editorAutocompleteActivityCount=0;p.editorAutocompleteCache.clear();p.updateStatusBarAttention(p.statusBarAttentionState);return JSON.stringify({ok:true})})()
+'@
     Write-Host 'context/editor stage: editor'
     $editor = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $editorCode) -TimeoutSeconds 20
+    $editorCleanup = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $editorCleanupCode) -TimeoutSeconds 20
+    Write-Host 'context/editor stage: spinner'
+    $spinner = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $spinnerCode) -TimeoutSeconds 20
     Write-Host 'context/editor stage: autocomplete-model'
     $autocompleteModel = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $autocompleteModelCode) -TimeoutSeconds 20
     Write-Host 'context/editor stage: rich-memory'
@@ -1830,7 +1840,7 @@ if (Should-RunProgrammaticCase 'programmatic.context-editor-settings') {
       editorLocal = $editor.editorLocal
       editorModel = $editor.editorModel
       editorWithoutChatLeaf = $editor.editorWithoutChatLeaf
-      editorSpinner = $editor.editorSpinner
+      editorSpinner = $spinner.editorSpinner
       editorExtension = $editor.editorExtension
       autocompleteModelRoute = $autocompleteModel.selectedRoute
       autocompleteModelStored = $autocompleteModel.selectionStored
@@ -1863,26 +1873,53 @@ if (Should-RunProgrammaticCase 'programmatic.context-editor-settings') {
 if (Should-RunProgrammaticCase 'programmatic.editor-autocomplete-mounted') {
   try {
     $started = Get-Date
-    $code = @'
-(async()=>{
-  const p=app.plugins.plugins.cancip,leaf=app.workspace.getLeavesOfType('markdown').find((item)=>item.view?.editor?.cm),wait=(ms)=>new Promise((resolve)=>setTimeout(resolve,ms));
-  if(!p||!leaf)throw new Error('mounted Markdown editor unavailable');
-  const editor=leaf.view.editor,cm=editor.cm,before=editor.getValue(),oldCursor=editor.getCursor(),old={enabled:p.settings.composerAutocompleteEnabled,local:p.editorLocalAutocompleteSuffix,model:p.editorAutocompleteSuffix};
-  try{
-    let calls=0;
-    let target=null;
-    for(let line=0;line<editor.lineCount();line+=1){const text=editor.getLine(line)||'';if(text.trim().length>=2&&!/[。！？!?；;]\s*$/.test(text)&&!/^(?:\s*`{3,}|\s*~{3,}|\s*(?:-{3,}|\*{3,}|_{3,}))\s*$/.test(text)){target={line,ch:text.length};break}}
-    if(!target)throw new Error('eligible Markdown line unavailable');
-    p.settings.composerAutocompleteEnabled=true;p.editorLocalAutocompleteSuffix=()=>'';p.editorAutocompleteSuffix=async()=>{calls++;await wait(40);return '测试补全'};
-    editor.focus();editor.setCursor(target);cm.dispatch({selection:{anchor:cm.state.selection.main.head}});let ghost='';for(let attempt=0;attempt<30&&!ghost;attempt+=1){await wait(100);ghost=leaf.containerEl.querySelector('.obcc-editor-autocomplete-ghost')?.textContent||''}await wait(120);const finalGhost=leaf.containerEl.querySelector('.obcc-editor-autocomplete-ghost')?.textContent||'';
-    return JSON.stringify({mountedSuggestion:ghost==='测试补全'&&finalGhost==='测试补全',documentUntouched:editor.getValue()===before,ghost,finalGhost,calls,hasFocus:cm.hasFocus,target,path:leaf.view.file?.path||''});
-  }finally{
-    editor.setCursor(oldCursor);p.settings.composerAutocompleteEnabled=old.enabled;p.editorLocalAutocompleteSuffix=old.local;p.editorAutocompleteSuffix=old.model;cm.focus();
-  }
-})()
+    $setupCode = @'
+(()=>{const p=app.plugins.plugins.cancip,leaf=app.workspace.getLeavesOfType('markdown').find((item)=>item.view?.editor?.cm);if(!p||!leaf)throw new Error('mounted Markdown editor unavailable');const editor=leaf.view.editor,cm=editor.cm,before=editor.getValue(),oldCursor=editor.getCursor(),old={enabled:p.settings.composerAutocompleteEnabled,local:p.editorLocalAutocompleteSuffix,model:p.editorAutocompleteCandidates};let target=null;for(let line=0;line<editor.lineCount();line+=1){const text=editor.getLine(line)||'';if(text.trim().length>=3){target={line,ch:text.length};break}}if(!target)throw new Error('eligible Markdown line unavailable');const smoke={leaf,editor,cm,before,oldCursor,old,target,calls:0};p.__editorAutocompleteSmoke=smoke;p.settings.composerAutocompleteEnabled=true;p.editorLocalAutocompleteSuffix=()=>'';p.editorAutocompleteCandidates=async()=>{smoke.calls+=1;return ['第一项完整补全','第二项\n包含换行','第三项完整补全']};editor.focus();editor.setCursor(target);cm.dispatch({selection:{anchor:cm.state.selection.main.head}});return JSON.stringify({ok:true,target,path:leaf.view.file?.path||''})})()
 '@
-    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 20
-    if (-not $item.mountedSuggestion -or -not $item.documentUntouched) { throw "mounted editor autocomplete failed: $($item | ConvertTo-Json -Compress -Depth 8)" }
+    $snapshotCode = @'
+(()=>{const p=app.plugins.plugins.cancip,s=p?.__editorAutocompleteSmoke;if(!s)throw new Error('autocomplete smoke state unavailable');const ghostEl=s.leaf.containerEl.querySelector('.obcc-editor-autocomplete-ghost'),style=ghostEl?getComputedStyle(ghostEl):null;return JSON.stringify({ghost:ghostEl?.textContent||'',position:s.leaf.containerEl.querySelector('.obcc-editor-autocomplete-position')?.textContent||'',whiteSpace:style?.whiteSpace||'',textOverflow:style?.textOverflow||'',calls:s.calls,documentUntouched:s.editor.getValue()===s.before})})()
+'@
+    $menuCode = @'
+(()=>{const p=app.plugins.plugins.cancip,s=p?.__editorAutocompleteSmoke;if(!s)throw new Error('autocomplete smoke state unavailable');const doc=s.cm.dom.ownerDocument,button=s.leaf.containerEl.querySelector('.obcc-editor-autocomplete-apply'),beforePosition=s.leaf.containerEl.querySelector('.obcc-editor-autocomplete-position')?.textContent||'';button?.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true,view:doc.defaultView}));const menus=Array.from(doc.querySelectorAll('.menu')),menu=menus[menus.length-1],menuText=menu?.textContent||'',menuComplete=['上一个补全','下一个补全','换一批补全','应用补全','选择补全模型','编辑补全提示','关闭自动补全'].every((label)=>menuText.includes(label)),nextItem=Array.from(menu?.querySelectorAll('.menu-item')||[]).find((item)=>(item.textContent||'').includes('下一个补全'));nextItem?.click();const afterPosition=s.leaf.containerEl.querySelector('.obcc-editor-autocomplete-position')?.textContent||'';return JSON.stringify({menuComplete,menuAction:!menu?.isConnected&&!!beforePosition&&!!afterPosition&&afterPosition!==beforePosition})})()
+'@
+    $blockCode = @'
+(()=>{const p=app.plugins.plugins.cancip,s=p?.__editorAutocompleteSmoke;if(!s)throw new Error('autocomplete smoke state unavailable');const text=s.editor.getLine(s.target.line)||'',blocker=Math.max(0,text.search(/\S/));s.callsBeforeBlocked=s.calls;s.cm.focus();s.editor.setCursor({line:s.target.line,ch:blocker});s.cm.dispatch({selection:{anchor:s.cm.state.selection.main.head}});return JSON.stringify({ok:true,blocker,callsBeforeBlocked:s.callsBeforeBlocked})})()
+'@
+    $blockedSnapshotCode = @'
+(()=>{const p=app.plugins.plugins.cancip,s=p?.__editorAutocompleteSmoke;if(!s)throw new Error('autocomplete smoke state unavailable');return JSON.stringify({ghost:s.leaf.containerEl.querySelector('.obcc-editor-autocomplete-ghost')?.textContent||'',calls:s.calls,callsBeforeBlocked:s.callsBeforeBlocked,documentUntouched:s.editor.getValue()===s.before})})()
+'@
+    $cleanupCode = @'
+(()=>{const p=app.plugins.plugins.cancip,s=p?.__editorAutocompleteSmoke;if(!p||!s)return JSON.stringify({ok:true,cleaned:false});s.editor.setCursor(s.oldCursor);p.settings.composerAutocompleteEnabled=s.old.enabled;p.editorLocalAutocompleteSuffix=s.old.local;p.editorAutocompleteCandidates=s.old.model;delete p.__editorAutocompleteSmoke;s.cm.focus();return JSON.stringify({ok:true,cleaned:true})})()
+'@
+    $setup = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $setupCode) -TimeoutSeconds 12
+    try {
+      Start-Sleep -Milliseconds 1800
+      $initial = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $snapshotCode) -TimeoutSeconds 12
+      $rotated = $null
+      for ($attempt = 0; $attempt -lt 12; $attempt++) {
+        Start-Sleep -Milliseconds 450
+        $rotated = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $snapshotCode) -TimeoutSeconds 12
+        if ($rotated.position -eq '2/3') { break }
+      }
+      $menu = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $menuCode) -TimeoutSeconds 12
+      $blockedSetup = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $blockCode) -TimeoutSeconds 12
+      Start-Sleep -Milliseconds 900
+      $blocked = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $blockedSnapshotCode) -TimeoutSeconds 12
+    } finally {
+      Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $cleanupCode) -TimeoutSeconds 12 | Out-Null
+    }
+    $item = [pscustomobject]@{
+      mountedSuggestion = $initial.ghost -eq '第一项完整补全' -and $initial.position -eq '1/3'
+      rotatesCandidates = $rotated.ghost -eq "第二项`n包含换行" -and $rotated.position -eq '2/3'
+      multilineComplete = ([string]$rotated.ghost).Contains("`n") -and $initial.whiteSpace -eq 'pre-wrap' -and $initial.textOverflow -ne 'ellipsis'
+      blockedByFollowingText = $blocked.ghost -eq '' -and $blocked.calls -eq $blocked.callsBeforeBlocked
+      documentUntouched = $initial.documentUntouched -and $blocked.documentUntouched
+      menuComplete = $menu.menuComplete
+      menuAction = $menu.menuAction
+    }
+    foreach ($field in @('mountedSuggestion','rotatesCandidates','multilineComplete','menuComplete','menuAction','blockedByFollowingText','documentUntouched')) {
+      if (-not [bool]$item.$field) { throw "mounted editor autocomplete failed: $field; $($item | ConvertTo-Json -Compress -Depth 8)" }
+    }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.editor-autocomplete-mounted'; pass = $true; elapsedMs = [int]((Get-Date) - $started).TotalMilliseconds }
   } catch {
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.editor-autocomplete-mounted'; pass = $false; error = $_.Exception.Message }

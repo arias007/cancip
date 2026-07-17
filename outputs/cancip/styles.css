@@ -3961,9 +3961,9 @@ body .obcc-code-action-layer.obcc-code-action-layer > button.copy-code-button.co
 
 .obcc-editor-autocomplete-widget {
   display: inline-flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 3px;
-  max-width: min(58vw, 52ch);
+  max-width: min(74vw, 72ch);
   margin-inline-start: 1px;
   color: var(--text-faint);
   vertical-align: baseline;
@@ -3971,13 +3971,27 @@ body .obcc-code-action-layer.obcc-code-action-layer > button.copy-code-button.co
 }
 
 .obcc-editor-autocomplete-ghost {
+  display: inline-block;
   min-width: 0;
-  overflow: hidden;
+  max-width: 100%;
+  overflow: visible;
   color: var(--text-faint);
   opacity: 0.72;
+  overflow-wrap: anywhere;
   pointer-events: none;
-  text-overflow: ellipsis;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.obcc-editor-autocomplete-position {
+  flex: 0 0 auto;
+  min-width: 3ch;
+  color: var(--text-faint);
+  font-size: var(--font-smallest);
+  line-height: 20px;
+  opacity: 0.72;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .obcc-editor-autocomplete-apply {
