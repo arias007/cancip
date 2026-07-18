@@ -2615,6 +2615,7 @@ const EDITOR_AUTOCOMPLETE_ROTATION_SECONDS_MIN = 2;
 const EDITOR_AUTOCOMPLETE_ROTATION_SECONDS_MAX = 30;
 const EDITOR_AUTOCOMPLETE_DEBOUNCE_MS = 300;
 const EDITOR_AUTOCOMPLETE_MODEL_COOLDOWN_MS = 650;
+const EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS = 12_000;
 const EDITOR_AUTOCOMPLETE_MAX_CANDIDATE_CHARS = 420;
 const EDITOR_AUTOCOMPLETE_MAX_BRANCH_CHARS = 320;
 const EDITOR_AUTOCOMPLETE_NEARBY_CONTEXT_CHARS = 1200;
@@ -6327,6 +6328,7 @@ const setEditorAutocompleteSuggestion = StateEffect.define<EditorAutocompleteSug
 const refreshEditorAutocompleteSuggestion = StateEffect.define<null>();
 const regenerateEditorAutocompleteSuggestion = StateEffect.define<null>();
 const resyncEditorAutocompleteRotation = StateEffect.define<null>();
+const prefetchEditorAutocompleteNextBranches = StateEffect.define<null>();
 
 function uniqueEditorAutocompleteCandidates(values: string[], limit = 3): string[] {
   const output: string[] = [];
@@ -6680,7 +6682,7 @@ function applyEditorAutocompleteSuggestion(view: EditorView): boolean {
             candidates,
             candidateIndex: 0
           }),
-          refreshEditorAutocompleteSuggestion.of(null)
+          prefetchEditorAutocompleteNextBranches.of(null)
         ]
       });
       return true;
@@ -6724,6 +6726,14 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
       const effects = update.transactions.flatMap((transaction) => transaction.effects);
       if (effects.some((effect) => effect.is(setEditorAutocompleteSuggestion))) this.syncCandidateRotation();
       if (effects.some((effect) => effect.is(resyncEditorAutocompleteRotation))) this.syncCandidateRotation();
+      if (effects.some((effect) => effect.is(prefetchEditorAutocompleteNextBranches))) {
+        const suggestion = this.view.state.field(editorAutocompleteState);
+        if (suggestion) {
+          const path = plugin.app.workspace.getActiveFile()?.path ?? "";
+          this.scheduleBranchPrefetch(suggestion, suggestion.candidates, path);
+        }
+        return;
+      }
       if (effects.some((effect) => effect.is(regenerateEditorAutocompleteSuggestion))) {
         this.schedule(undefined, { force: true });
         return;
@@ -6850,6 +6860,7 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
           if (requestId === this.requestId) this.dispatchSuggestion(snapshot, []);
         }, 0);
       }
+      if (!options.force && prefetched.length) return;
       this.timer = win.setTimeout(() => {
         this.timer = null;
         const current = editorAutocompleteSnapshot(this.view, plugin);
@@ -6908,9 +6919,11 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
         const branches = plugin.editorPrefetchedAutocompleteCandidates(`${snapshot.prefix}${accepted}`, path);
         const adopted = plugin.rememberEditorAutocompleteCandidateAlias(latest.prefix, path, branches);
         if (adopted.length) {
+          this.clearTimer();
+          this.queuedSnapshot = null;
+          this.queuedForce = false;
           this.dispatchSuggestion(latest, adopted);
           this.scheduleBranchPrefetch(latest, adopted, path);
-          this.schedule();
           return;
         }
       }
@@ -6999,6 +7012,7 @@ export default class CancipPlugin extends Plugin {
   private editorAutocompleteCache = new Map<string, string[]>();
   private editorAutocompleteBranchCache = new Map<string, string[]>();
   private editorAutocompleteBranchPrefetches = new Map<string, Promise<string[]>>();
+  private editorAutocompleteBranchPrefetchAttempts = new Set<string>();
   private autocompleteTransportModeCache = new Map<string, Exclude<ApiMode, "auto">>();
   private editorAutocompleteLastModelAt = 0;
   private editorAutocompleteModelBusy = false;
@@ -14382,10 +14396,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   async callLightweightAutocompleteModel(profile: ApiProfile, inputText: string, system: string, maxTokens: number): Promise<string> {
     if (!profile.apiUrl || !profile.apiKey || !profile.model) return "";
     const endpoint = normalizeApiUrl(profile.apiUrl);
+    const requestDeadline = Date.now() + EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS;
     const post = async (url: string, body: unknown): Promise<string> => {
-      const finishActivity = this.beginEditorAutocompleteActivity();
-      try {
-        const response = await requestUrl({
+      const timeoutMs = requestDeadline - Date.now();
+      if (timeoutMs <= 0) throw new Error("editor autocomplete network timed out");
+      const response = await this.runEditorAutocompleteNetworkRequest(
+        () => requestUrl({
           url,
           method: "POST",
           headers: {
@@ -14394,20 +14410,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           },
           body: JSON.stringify(body),
           throw: false
-        });
-        if (response.status < 200 || response.status >= 300) {
-          throw new Error(`Autocomplete HTTP ${response.status}: ${trimContext(response.text, 240)}`);
-        }
-        let json: unknown = null;
-        try {
-          json = response.json;
-        } catch {
-          json = null;
-        }
-        return sanitizeModelVisibleAnswer(extractResponseText(json) || extractNonJsonText(response.text));
-      } finally {
-        finishActivity();
+        }),
+        timeoutMs
+      );
+      if (response.status < 200 || response.status >= 300) {
+        throw new Error(`Autocomplete HTTP ${response.status}: ${trimContext(response.text, 240)}`);
       }
+      let json: unknown = null;
+      try {
+        json = response.json;
+      } catch {
+        json = null;
+      }
+      return sanitizeModelVisibleAnswer(extractResponseText(json) || extractNonJsonText(response.text));
     };
     const compatible = async (): Promise<string> => await post(endpoint.chatUrl, {
       model: profile.model,
@@ -14452,6 +14467,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     throw lastError instanceof Error ? lastError : new Error("Autocomplete request failed");
   }
 
+  private async runEditorAutocompleteNetworkRequest<T>(request: () => Promise<T>, timeoutMs: number): Promise<T> {
+    const finishActivity = this.beginEditorAutocompleteActivity();
+    try {
+      return await withTimeout(request(), Math.max(1, timeoutMs), "editor autocomplete network timed out");
+    } finally {
+      finishActivity();
+    }
+  }
+
   private syncEditorAutocompleteMemorySettingsState(force = false): void {
     const signature = stableTextHash([
       this.settings.includeCoreMemory ? "1" : "0",
@@ -14472,6 +14496,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.editorAutocompleteCache.clear();
     this.editorAutocompleteBranchCache.clear();
     this.editorAutocompleteBranchPrefetches.clear();
+    this.editorAutocompleteBranchPrefetchAttempts.clear();
     this.app.workspace.iterateAllLeaves((leaf) => {
       const editorView = (leaf.view as unknown as { editor?: { cm?: EditorView } }).editor?.cm;
       editorView?.dispatch({ effects: refreshEditorAutocompleteSuggestion.of(null) });
@@ -14746,6 +14771,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.editorAutocompleteCache.clear();
     this.editorAutocompleteBranchCache.clear();
     this.editorAutocompleteBranchPrefetches.clear();
+    this.editorAutocompleteBranchPrefetchAttempts.clear();
     this.autocompleteTransportModeCache.clear();
     this.app.workspace.iterateAllLeaves((leaf) => {
       const editorView = (leaf.view as unknown as { editor?: { cm?: EditorView } }).editor?.cm;
@@ -15188,6 +15214,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const oldest = this.editorAutocompleteBranchCache.keys().next();
       if (oldest.done) break;
       this.editorAutocompleteBranchCache.delete(oldest.value);
+      this.editorAutocompleteBranchPrefetchAttempts.delete(oldest.value);
     }
     return normalized;
   }
@@ -15206,6 +15233,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const oldest = this.editorAutocompleteBranchCache.keys().next();
       if (oldest.done) break;
       this.editorAutocompleteBranchCache.delete(oldest.value);
+      this.editorAutocompleteBranchPrefetchAttempts.delete(oldest.value);
     }
   }
 
@@ -15223,20 +15251,29 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     for (const root of candidates) {
       const completedPrefix = `${prefix}${root}`;
       if (this.editorPrefetchedAutocompleteCandidates(completedPrefix, path).length === candidateCount) continue;
-      const existing = this.editorAutocompleteBranchPrefetches.get(this.editorAutocompleteBranchKey(completedPrefix, path));
+      const key = this.editorAutocompleteBranchKey(completedPrefix, path);
+      const existing = this.editorAutocompleteBranchPrefetches.get(key);
       if (existing) pending.add(existing);
-      else unclaimed.push(root);
+      else if (!this.editorAutocompleteBranchPrefetchAttempts.has(key)) unclaimed.push(root);
     }
     if (unclaimed.length) {
       const generation = this.editorAutocompleteGeneration;
       const memoryGeneration = this.editorAutocompleteMemoryGeneration;
+      for (const root of unclaimed) {
+        this.editorAutocompleteBranchPrefetchAttempts.add(this.editorAutocompleteBranchKey(`${prefix}${root}`, path));
+      }
+      while (this.editorAutocompleteBranchPrefetchAttempts.size > 144) {
+        const oldest = this.editorAutocompleteBranchPrefetchAttempts.values().next();
+        if (oldest.done) break;
+        this.editorAutocompleteBranchPrefetchAttempts.delete(oldest.value);
+      }
       const batch = (async (): Promise<void> => {
         if (!this.settings.composerAutocompleteEnabled) return;
         const profile = this.autocompleteApiProfile();
         if (!profile.apiKey || !profile.apiUrl || !profile.model) return;
-        const requestBranches = async (requestedRoots: string[]): Promise<void> => {
+        try {
           const raw = await withTimeout(
-            this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, [], requestedRoots),
+            this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, [], unclaimed),
             14000,
             "editor autocomplete branch prefetch timed out"
           );
@@ -15244,7 +15281,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             || memoryGeneration !== this.editorAutocompleteMemoryGeneration
             || !this.settings.composerAutocompleteEnabled) return;
           const tree = normalizeEditorAutocompleteModelTree(raw, prefix, candidateCount);
-          for (const [index, root] of requestedRoots.entries()) {
+          for (const [index, root] of unclaimed.entries()) {
             const parsedRoot = tree.candidates.find((candidate) => candidate.toLocaleLowerCase() === root.toLocaleLowerCase())
               ?? tree.candidates[index]
               ?? "";
@@ -15256,26 +15293,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
               this.rememberEditorAutocompleteCandidateAlias(`${prefix}${root}`, path, children);
             }
           }
-        };
-        try {
-          await requestBranches(unclaimed);
         } catch (error) {
           console.debug("Cancip editor autocomplete branch prefetch unavailable", error);
-        }
-        if (generation !== this.editorAutocompleteGeneration
-          || memoryGeneration !== this.editorAutocompleteMemoryGeneration
-          || !this.settings.composerAutocompleteEnabled) return;
-        const missing = unclaimed.filter((root) => (
-          this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
-        ));
-        if (unclaimed.length > 1 && missing.length) {
-          await Promise.allSettled(missing.map(async (root) => {
-            try {
-              await requestBranches([root]);
-            } catch (error) {
-              console.debug("Cancip editor autocomplete branch fallback unavailable", error);
-            }
-          }));
         }
       })();
       for (const root of unclaimed) {
@@ -15308,8 +15327,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     prefix: string,
     nearbyContext: string,
     path: string,
-    roots: string[],
-    retry = true
+    roots: string[]
   ): Promise<number> {
     if (!this.settings.composerAutocompletePrefetchEnabled) return 0;
     const candidateCount = this.editorAutocompleteCandidateCount();
@@ -15326,19 +15344,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       await this.prefetchEditorAutocompleteBranches(prefix, nearbyContext, path, missing);
     };
     await prefetchMissing();
-    if (retry && candidates.some((root) => (
-      this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
-    ))) {
-      const missing = candidates.filter((root) => (
-        this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
-      ));
-      for (const root of missing) {
-        this.editorAutocompleteBranchPrefetches.delete(this.editorAutocompleteBranchKey(`${prefix}${root}`, path));
-      }
-      await Promise.allSettled(missing.map((root) => (
-        this.prefetchEditorAutocompleteRootBranch(prefix, nearbyContext, path, root)
-      )));
-    }
     return candidates.filter((root) => (
       this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length === candidateCount
     )).length;
