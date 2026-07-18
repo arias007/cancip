@@ -6537,7 +6537,7 @@ function rebaseEditorAutocompleteSuggestion(
     .map((candidate) => `${source.prefix}${candidate}`)
     .filter((completed) => completed.startsWith(current.prefix))
     .map((completed) => completed.slice(current.prefix.length))
-    .filter(Boolean), Math.max(1, source.candidates.length));
+    .filter(Boolean), Math.max(1, candidates.length));
   if (!remaining.length) return null;
   return { ...current, suffix: remaining[0], candidates: remaining, candidateIndex: 0 };
 }
@@ -6656,7 +6656,8 @@ function applyEditorAutocompleteSuggestion(view: EditorView): boolean {
   const current = editorAutocompleteSnapshot(view, plugin);
   if (!current || current.signature !== suggestion.signature) return false;
   const path = plugin.app.workspace.getActiveFile()?.path ?? "";
-  const prefetched = plugin.editorPrefetchedAutocompleteCandidates(`${suggestion.prefix}${suggestion.suffix}`, path);
+  const completedPrefix = `${suggestion.prefix}${suggestion.suffix}`;
+  const prefetched = plugin.editorPrefetchedAutocompleteCandidates(completedPrefix, path);
   view.dispatch({
     changes: { from: suggestion.from, insert: suggestion.suffix },
     selection: { anchor: suggestion.from + suggestion.suffix.length },
@@ -6665,13 +6666,16 @@ function applyEditorAutocompleteSuggestion(view: EditorView): boolean {
   });
   view.focus();
   const next = editorAutocompleteSnapshot(view, plugin);
-  if (next && prefetched.length) {
-    const candidates = plugin.rememberEditorAutocompleteCandidateAlias(next.prefix, path, prefetched);
+  const adoptBranch = (expected: EditorAutocompleteSuggestion, values: string[]): boolean => {
+    if (!view.dom.isConnected || plugin.app.workspace.getActiveFile()?.path !== path) return false;
+    const live = editorAutocompleteSnapshot(view, plugin);
+    if (!live || live.signature !== expected.signature) return false;
+    const candidates = plugin.rememberEditorAutocompleteCandidateAlias(live.prefix, path, values);
     if (candidates.length) {
       view.dispatch({
         effects: [
           setEditorAutocompleteSuggestion.of({
-            ...next,
+            ...live,
             suffix: candidates[0],
             candidates,
             candidateIndex: 0
@@ -6679,7 +6683,18 @@ function applyEditorAutocompleteSuggestion(view: EditorView): boolean {
           refreshEditorAutocompleteSuggestion.of(null)
         ]
       });
+      return true;
     }
+    return false;
+  };
+  if (next && prefetched.length) {
+    adoptBranch(next, prefetched);
+  } else if (next && plugin.settings.composerAutocompletePrefetchEnabled) {
+    void plugin.awaitEditorAutocompleteBranchPrefetch(completedPrefix, path)
+      .then((candidates) => {
+        if (candidates.length) adoptBranch(next, candidates);
+      })
+      .catch(() => undefined);
   }
   return true;
 }
@@ -15207,10 +15222,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         if (!this.settings.composerAutocompleteEnabled) return;
         const profile = this.autocompleteApiProfile();
         if (!profile.apiKey || !profile.apiUrl || !profile.model) return;
-        const finishActivity = this.beginEditorAutocompleteActivity();
-        try {
+        const requestBranches = async (requestedRoots: string[]): Promise<void> => {
           const raw = await withTimeout(
-            this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, [], unclaimed),
+            this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, [], requestedRoots),
             14000,
             "editor autocomplete branch prefetch timed out"
           );
@@ -15218,7 +15232,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             || memoryGeneration !== this.editorAutocompleteMemoryGeneration
             || !this.settings.composerAutocompleteEnabled) return;
           const tree = normalizeEditorAutocompleteModelTree(raw, prefix, candidateCount);
-          for (const [index, root] of unclaimed.entries()) {
+          for (const [index, root] of requestedRoots.entries()) {
             const parsedRoot = tree.candidates.find((candidate) => candidate.toLocaleLowerCase() === root.toLocaleLowerCase())
               ?? tree.candidates[index]
               ?? "";
@@ -15230,10 +15244,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
               this.rememberEditorAutocompleteCandidateAlias(`${prefix}${root}`, path, children);
             }
           }
+        };
+        try {
+          await requestBranches(unclaimed);
         } catch (error) {
           console.debug("Cancip editor autocomplete branch prefetch unavailable", error);
-        } finally {
-          finishActivity();
+        }
+        if (generation !== this.editorAutocompleteGeneration
+          || memoryGeneration !== this.editorAutocompleteMemoryGeneration
+          || !this.settings.composerAutocompleteEnabled) return;
+        const missing = unclaimed.filter((root) => (
+          this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
+        ));
+        if (unclaimed.length > 1 && missing.length) {
+          await Promise.allSettled(missing.map(async (root) => {
+            try {
+              await requestBranches([root]);
+            } catch (error) {
+              console.debug("Cancip editor autocomplete branch fallback unavailable", error);
+            }
+          }));
         }
       })();
       for (const root of unclaimed) {
@@ -15287,11 +15317,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (retry && candidates.some((root) => (
       this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
     ))) {
-      for (const root of candidates) {
-        if (this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length === candidateCount) continue;
+      const missing = candidates.filter((root) => (
+        this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
+      ));
+      for (const root of missing) {
         this.editorAutocompleteBranchPrefetches.delete(this.editorAutocompleteBranchKey(`${prefix}${root}`, path));
       }
-      await prefetchMissing();
+      await Promise.allSettled(missing.map((root) => (
+        this.prefetchEditorAutocompleteRootBranch(prefix, nearbyContext, path, root)
+      )));
     }
     return candidates.filter((root) => (
       this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length === candidateCount
