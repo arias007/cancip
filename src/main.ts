@@ -6411,6 +6411,17 @@ class EditorAutocompleteWidget extends WidgetType {
     const lineCount = Math.max(1, (this.suggestion.suffix.match(/\n/g)?.length ?? 0) + 1);
     wrap.setCssProps({ "--obcc-editor-autocomplete-line-count": String(lineCount) });
     wrap.toggleClass("is-multiline", lineCount > 1);
+    const spacer = wrap.createSpan({ cls: "obcc-editor-autocomplete-spacer" });
+    spacer.setAttr("aria-hidden", "true");
+    spacer.createSpan({ cls: "obcc-editor-autocomplete-ghost", text: this.suggestion.suffix });
+    if (this.suggestion.candidates.length > 1) {
+      spacer.createSpan({
+        cls: "obcc-editor-autocomplete-position",
+        text: `${this.suggestion.candidateIndex + 1}/${this.suggestion.candidates.length}`
+      });
+    }
+    const spacerButton = spacer.createSpan({ cls: "obcc-editor-autocomplete-apply" });
+    setIcon(spacerButton, "corner-down-left");
     view.requestMeasure({
       read: () => {
         const cursorRect = view.coordsAtPos(this.suggestion.from);
@@ -6432,6 +6443,7 @@ class EditorAutocompleteWidget extends WidgetType {
           "--obcc-editor-autocomplete-block-start": `${measurement.blockStart}px`
         });
         wrap.addClass("is-positioned");
+        view.requestMeasure();
       }
     });
     const overlay = wrap.createSpan({ cls: "obcc-editor-autocomplete-overlay" });
@@ -6698,6 +6710,39 @@ function showEditorAutocompleteMenu(view: EditorView, button: HTMLElement): void
   menu.showAtPosition(position, view.dom.ownerDocument);
 }
 
+function editorAutocompleteSuggestionAfterInsertion(
+  view: EditorView,
+  source: EditorAutocompleteSuggestion,
+  inserted: string,
+  candidates: string[]
+): EditorAutocompleteSuggestion | null {
+  const normalizedCandidates = uniqueEditorAutocompleteCandidates(
+    candidates,
+    cancipEditorAutocompletePlugin.editorAutocompleteCandidateCount()
+  );
+  if (!normalizedCandidates.length) return null;
+  const from = source.from + inserted.length;
+  const lastLineBreak = inserted.lastIndexOf("\n");
+  const prefix = lastLineBreak >= 0
+    ? inserted.slice(lastLineBreak + 1)
+    : `${source.prefix}${inserted}`;
+  const lineFrom = lastLineBreak >= 0
+    ? source.from + lastLineBreak + 1
+    : source.lineFrom;
+  const trailing = source.trailing;
+  return {
+    from,
+    suffix: normalizedCandidates[0],
+    candidates: normalizedCandidates,
+    candidateIndex: 0,
+    rotationPaused: false,
+    signature: `${view.state.doc.length + inserted.length}:${lineFrom}:${from}:${stableTextHash(`${prefix}\0${trailing}`)}`,
+    prefix,
+    trailing,
+    lineFrom
+  };
+}
+
 function applyEditorAutocompleteSuggestion(view: EditorView, trigger: EditorAutocompleteApplyTrigger = "button"): boolean {
   const suggestion = view.state.field(editorAutocompleteState);
   if (!suggestion || !suggestion.suffix || view.state.selection.main.head !== suggestion.from) return false;
@@ -6707,6 +6752,15 @@ function applyEditorAutocompleteSuggestion(view: EditorView, trigger: EditorAuto
   const path = plugin.app.workspace.getActiveFile()?.path ?? "";
   const completedPrefix = `${suggestion.prefix}${suggestion.suffix}`;
   const prefetched = plugin.editorPrefetchedAutocompleteCandidates(completedPrefix, path);
+  const provisionalNext = prefetched.length
+    ? editorAutocompleteSuggestionAfterInsertion(view, suggestion, suggestion.suffix, prefetched)
+    : null;
+  const immediateCandidates = provisionalNext
+    ? plugin.rememberEditorAutocompleteCandidateAlias(provisionalNext.prefix, path, provisionalNext.candidates)
+    : [];
+  const immediateNext = provisionalNext && immediateCandidates.length
+    ? { ...provisionalNext, suffix: immediateCandidates[0], candidates: immediateCandidates }
+    : null;
   void plugin.recordEditorAutocompleteChoice(suggestion.suffix, {
     prefix: suggestion.prefix,
     index: suggestion.candidateIndex,
@@ -6718,10 +6772,16 @@ function applyEditorAutocompleteSuggestion(view: EditorView, trigger: EditorAuto
   view.dispatch({
     changes: { from: suggestion.from, insert: suggestion.suffix },
     selection: { anchor: suggestion.from + suggestion.suffix.length },
-    effects: setEditorAutocompleteSuggestion.of(null),
+    effects: immediateNext
+      ? [
+          setEditorAutocompleteSuggestion.of(immediateNext),
+          prefetchEditorAutocompleteNextBranches.of(null)
+        ]
+      : setEditorAutocompleteSuggestion.of(null),
     scrollIntoView: true
   });
   view.focus();
+  if (immediateNext) return true;
   const next = editorAutocompleteSnapshot(view, plugin);
   const adoptBranch = (expected: EditorAutocompleteSuggestion, values: string[]): boolean => {
     if (!view.dom.isConnected || plugin.app.workspace.getActiveFile()?.path !== path) return false;
@@ -14578,15 +14638,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.invalidateEditorAutocompleteMemoryContext();
   }
 
-  private invalidateEditorAutocompleteMemoryContext(refreshViews = true): void {
+  private invalidateEditorAutocompleteMemoryContext(refreshViews = true, preserveActiveTree = false): void {
     this.editorAutocompleteMemoryGeneration += 1;
     this.editorAutocompleteMemoryCorpusCache = null;
     this.editorAutocompleteMemoryCorpusPromise = null;
     this.editorAutocompleteCache.clear();
     this.editorAutocompleteFailureCooldowns.clear();
-    this.editorAutocompleteBranchCache.clear();
-    this.editorAutocompleteBranchPrefetches.clear();
-    this.editorAutocompleteBranchPrefetchAttempts.clear();
+    if (!preserveActiveTree) {
+      this.editorAutocompleteBranchCache.clear();
+      this.editorAutocompleteBranchPrefetches.clear();
+      this.editorAutocompleteBranchPrefetchAttempts.clear();
+    }
     if (!refreshViews) return;
     this.app.workspace.iterateAllLeaves((leaf) => {
       const editorView = (leaf.view as unknown as { editor?: { cm?: EditorView } }).editor?.cm;
@@ -15420,7 +15482,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     if (unclaimed.length) {
       const generation = this.editorAutocompleteGeneration;
-      const memoryGeneration = this.editorAutocompleteMemoryGeneration;
       for (const root of unclaimed) {
         this.editorAutocompleteBranchPrefetchAttempts.add(this.editorAutocompleteBranchKey(`${prefix}${root}`, path));
       }
@@ -15440,7 +15501,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             "editor autocomplete branch prefetch timed out"
           );
           if (generation !== this.editorAutocompleteGeneration
-            || memoryGeneration !== this.editorAutocompleteMemoryGeneration
             || !this.settings.composerAutocompleteEnabled) return;
           const tree = normalizeEditorAutocompleteModelTree(raw, prefix, candidateCount);
           for (const [index, root] of unclaimed.entries()) {
@@ -19225,7 +19285,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     const kinds = cancipVaultSyncKindsForPath(normalized, this.settings);
     if (kinds.has("memory") || kinds.has("sessions") || normalized === PERSONALIZATION_CACHE_PATH) {
-      this.invalidateEditorAutocompleteMemoryContext(false);
+      this.invalidateEditorAutocompleteMemoryContext(false, true);
     }
     if (!kinds.size) return;
     if (kinds.has("automations")) {

@@ -3978,18 +3978,30 @@ details.obcc-process-step-details:not([open]) > :not(summary),
   display: inline-block;
   position: relative;
   width: 0;
-  height: 1em;
+  min-height: 1em;
   overflow: visible;
   color: var(--text-faint);
-  vertical-align: baseline;
+  vertical-align: top;
   user-select: none;
   pointer-events: none;
 }
 
 .obcc-editor-autocomplete-widget.is-multiline {
-  height: calc(var(--obcc-editor-autocomplete-line-count, 1) * var(--line-height-normal, 1.5em));
-  min-height: calc(var(--obcc-editor-autocomplete-line-count, 1) * var(--line-height-normal, 1.5em));
   vertical-align: top;
+}
+
+.obcc-editor-autocomplete-spacer {
+  display: block;
+  box-sizing: border-box;
+  width: var(--obcc-editor-autocomplete-overlay-width, min(74vw, 72ch));
+  margin-inline-start: var(--obcc-editor-autocomplete-inline-start, 0);
+  padding-block-start: var(--obcc-editor-autocomplete-block-start, 0);
+  color: transparent;
+  text-indent: var(--obcc-editor-autocomplete-first-line-indent, 0);
+  visibility: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  pointer-events: none;
 }
 
 .obcc-editor-autocomplete-overlay {
