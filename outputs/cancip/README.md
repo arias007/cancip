@@ -59,6 +59,11 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - New-file curation runs in an isolated session with a stable minimal prompt prefix. A programmatic benefit gate classifies each file as curate, skip, or protected before any model call: only concrete high-value defects become candidates; clean, cosmetic-only, or Inbox-only cases are consumed silently; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic rename/restructure. Each candidate carries a defect-derived action allowlist so one formatting issue cannot authorize unrelated tags, links, summaries, or renaming.
 - TTS is provider-routed by language. English defaults to Web Speech / system TTS and does not need a local model package. Chinese can auto-download and use the current compact PrimeTTS Chinese/English ONNX package. Other languages use system/Web/custom URL unless a compatible local PrimeTTS package is installed under `tts/<package>/` with a manifest.
 
+## 2.14.13
+
+- 默认开启编辑器自动补全；只要光标仍在当前活动编辑器，即使焦点短暂转移到工作台或其他 UI，也会继续准备候选。首批 3 个候选先快速返回，3×3 二级候选随后后台预取；个性化缓存刷新只更新记忆，不再取消正在返回的补全。新会话启动立即后台预热个性化问候；没有可靠资料时只显示自然的时段问候，不声称“没有信息”或猜测近况。
+- DOCX、XLSX、PPTX、HTML/MHTML 和其他未被占用的常见文档默认进入文档工作台；PDF 保持 Obsidian 核心视图默认打开，也可手动送入工作台。扩展冲突逐项隔离，不再中断 Cancip 启动。XLSX 按 OOXML 工作簿关系解析工作表，兼容大小写/相对路径差异，并在关系异常时按工作表顺序回退，保留共享字符串、空列位置、公式和布尔值。
+
 ## 2.14.12
 
 - Keeps recursive 3-by-3 editor completion prefetch, but makes it lighter: compact complete candidates, smaller relevant context, lower output budget, shorter debounce/cooldown, and a cached working Responses/Chat Completions route avoid repeated failed transport probes.
