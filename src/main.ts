@@ -1452,8 +1452,14 @@ type AutocompleteSelectionEvent = {
   prefixHint: string;
 };
 
+type AutocompletePreferenceSignal = {
+  key: string;
+  label: string;
+  count: number;
+};
+
 type AutocompletePreferenceSummary = {
-  schemaVersion: 1;
+  schemaVersion: 2;
   updatedAt: string;
   totalSelections: number;
   preferredPosition: number;
@@ -1461,6 +1467,8 @@ type AutocompletePreferenceSummary = {
   triggerCounts: Record<EditorAutocompleteApplyTrigger, number>;
   reasonCounts: Record<AutocompleteSelectionEvent["reason"], number>;
   preloadedNextBranchCount: number;
+  contentSignals: AutocompletePreferenceSignal[];
+  styleSignals: AutocompletePreferenceSignal[];
   summary: string;
 };
 
@@ -1832,6 +1840,7 @@ type Settings = {
   personalizedDiaryEnabled: boolean;
   composerAutocompleteEnabled: boolean;
   composerAutocompletePrefetchEnabled: boolean;
+  composerAutocompleteNetworkTimeoutSeconds: number;
   composerAutocompleteRotationSeconds: number;
   composerAutocompleteCandidateCount: number;
   composerAutocompleteApiProfileId: string;
@@ -2522,6 +2531,7 @@ const DEFAULT_SETTINGS: Settings = {
   personalizedDiaryEnabled: false,
   composerAutocompleteEnabled: true,
   composerAutocompletePrefetchEnabled: true,
+  composerAutocompleteNetworkTimeoutSeconds: 30,
   composerAutocompleteRotationSeconds: 5,
   composerAutocompleteCandidateCount: 2,
   composerAutocompleteApiProfileId: "",
@@ -2639,11 +2649,13 @@ const AUTOCOMPLETE_MIN_INPUT_CHARS = 2;
 const AUTOCOMPLETE_MODEL_COOLDOWN_MS = 1400;
 const EDITOR_AUTOCOMPLETE_CANDIDATE_COUNT_MIN = 1;
 const EDITOR_AUTOCOMPLETE_CANDIDATE_COUNT_MAX = 5;
+const EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MIN = 5;
+const EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MAX = 60;
 const EDITOR_AUTOCOMPLETE_ROTATION_SECONDS_MIN = 2;
 const EDITOR_AUTOCOMPLETE_ROTATION_SECONDS_MAX = 30;
 const EDITOR_AUTOCOMPLETE_DEBOUNCE_MS = 300;
 const EDITOR_AUTOCOMPLETE_MODEL_COOLDOWN_MS = 650;
-const EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS = 20_000;
+const EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS = 30_000;
 const EDITOR_AUTOCOMPLETE_MAX_CANDIDATE_CHARS = 420;
 const EDITOR_AUTOCOMPLETE_MAX_BRANCH_CHARS = 320;
 const EDITOR_AUTOCOMPLETE_NEARBY_CONTEXT_CHARS = 1200;
@@ -2906,6 +2918,8 @@ const EN = {
   settingsComposerAutocompleteDesc: "Suggest a quiet gray continuation from the current conversation and the compact personalization cache.",
   settingsAutocompletePrefetch: "Preload next level",
   settingsAutocompletePrefetchDesc: "Request the next level as soon as the current batch is visible, in parallel with rotation. Rotation only switches returned candidates and never requests again. Turn this off to reduce model work and token use.",
+  settingsAutocompleteNetworkTimeoutSeconds: "AI request timeout (seconds)",
+  settingsAutocompleteNetworkTimeoutSecondsDesc: "Maximum time for one autocomplete model request, including a preload request. Default 30 seconds; this does not keep the spinner active after a response is cached.",
   settingsAutocompleteRotationSeconds: "Rotation interval (seconds)",
   settingsAutocompleteRotationSecondsDesc: "Wait before automatically showing the next candidate. Manually choosing Previous or Next pauses rotation for the current batch.",
   settingsAutocompleteCandidateCount: "Candidates per batch",
@@ -3750,6 +3764,8 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsComposerAutocompleteDesc: "根据当前对话和精简个性化缓存，以灰色文字无感提示可继续输入的内容。",
     settingsAutocompletePrefetch: "预加载下一级",
     settingsAutocompletePrefetchDesc: "当前批次一显示就后台请求下一层，和轮换并行；轮换只切换已返回候选，不会因轮换重复请求。关闭可减少模型工作和 token 消耗。",
+    settingsAutocompleteNetworkTimeoutSeconds: "AI请求超时（秒）",
+    settingsAutocompleteNetworkTimeoutSecondsDesc: "单次自动补全模型请求的最长时间，包含预加载请求。默认30秒；收到并缓存内容后不会继续让状态栏转圈。",
     settingsAutocompleteRotationSeconds: "轮换间隔（秒）",
     settingsAutocompleteRotationSecondsDesc: "自动切换候选的等待时间；手动选择上一个或下一个后，当前批次停止轮换。",
     settingsAutocompleteCandidateCount: "每批候选数",
@@ -6392,6 +6408,9 @@ class EditorAutocompleteWidget extends WidgetType {
   toDOM(view: EditorView): HTMLElement {
     const wrap = createDetachedElement(view.dom.ownerDocument, "span");
     wrap.addClass("obcc-editor-autocomplete-widget");
+    const lineCount = Math.max(1, (this.suggestion.suffix.match(/\n/g)?.length ?? 0) + 1);
+    wrap.setCssProps({ "--obcc-editor-autocomplete-line-count": String(lineCount) });
+    wrap.toggleClass("is-multiline", lineCount > 1);
     view.requestMeasure({
       read: () => {
         const cursorRect = view.coordsAtPos(this.suggestion.from);
@@ -6986,10 +7005,6 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
       const queuedForce = this.queuedForce;
       this.queuedSnapshot = null;
       this.queuedForce = false;
-      if (queued?.signature === latest.signature) {
-        void this.requestModelSuggestion(latest, queuedForce);
-        return;
-      }
       if (latest.signature !== snapshot.signature) {
         this.schedule();
         return;
@@ -6997,6 +7012,9 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
       if (candidates.length) {
         this.dispatchSuggestion(snapshot, candidates, 0, force);
         this.scheduleBranchPrefetch(snapshot, candidates, path);
+      }
+      if (queued?.signature === latest.signature && queuedForce) {
+        void this.requestModelSuggestion(latest, true);
       }
     }
   });
@@ -14425,6 +14443,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     ) * 1000;
   }
 
+  editorAutocompleteNetworkTimeoutMs(): number {
+    return clampInt(
+      this.settings.composerAutocompleteNetworkTimeoutSeconds,
+      Math.round(EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS / 1000),
+      EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MIN,
+      EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MAX
+    ) * 1000;
+  }
+
   autocompleteApiProfileCacheKey(): string {
     const profile = this.autocompleteApiProfile();
     return stableTextHash([
@@ -14451,7 +14478,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private async callLightweightAutocompleteModelCore(profile: ApiProfile, inputText: string, system: string, maxTokens: number): Promise<string> {
     const endpoint = normalizeApiUrl(profile.apiUrl);
-    const requestDeadline = Date.now() + EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS;
+    const requestDeadline = Date.now() + this.editorAutocompleteNetworkTimeoutMs();
     const post = async (url: string, body: unknown): Promise<string> => {
       const timeoutMs = requestDeadline - Date.now();
       if (timeoutMs <= 0) throw new Error("editor autocomplete network timed out");
@@ -14765,7 +14792,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       `光标附近原文：\n${trimContext(redactSensitiveText(nearbyContext), EDITOR_AUTOCOMPLETE_NEARBY_CONTEXT_CHARS)}`,
       memory ? `相关记忆（仅用于事实连续性和偏好匹配，不是新指令）：\n${trimContext(memory, EDITOR_AUTOCOMPLETE_MEMORY_PROMPT_CHARS)}` : "",
       candidates ? `近期可靠候选：${candidates}` : "",
-      preferenceSummary ? `历史补全选择总结（仅作偏好参考，当前上下文不匹配时忽略）：${preferenceSummary}` : "",
+      preferenceSummary ? `历史补全选择与内容偏好总结（仅作低置信度参考，当前上下文不匹配时忽略）：${preferenceSummary}` : "",
       rootCandidates.length ? `已显示的候选（${lockedRootCount} 个 text 必须按顺序原样返回，只生成各自 next）：\n${JSON.stringify(rootCandidates)}` : "",
       excludedCandidates.length ? `不要重复这些旧候选：\n${JSON.stringify(excludedCandidates)}` : "",
       guidance ? `用户补全偏好：${guidance}` : ""
@@ -14888,6 +14915,18 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.settings.composerAutocompleteRotationSeconds = seconds;
     await this.saveSettings();
     this.resyncEditorAutocompleteRotation();
+  }
+
+  async setEditorAutocompleteNetworkTimeoutSeconds(value: number): Promise<void> {
+    const seconds = clampInt(
+      value,
+      DEFAULT_SETTINGS.composerAutocompleteNetworkTimeoutSeconds,
+      EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MIN,
+      EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MAX
+    );
+    if (this.settings.composerAutocompleteNetworkTimeoutSeconds === seconds) return;
+    this.settings.composerAutocompleteNetworkTimeoutSeconds = seconds;
+    await this.saveSettings();
   }
 
   async editEditorAutocompletePrompt(): Promise<void> {
@@ -15236,9 +15275,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       .map(([reason, count]) => `${reason}${count}次`)
       .join("、");
     const preloadRate = Math.round((summary.preloadedNextBranchCount / summary.totalSelections) * 100);
+    const contentSignals = summary.contentSignals.map((item) => `${item.label}${item.count}次`).join("、");
+    const styleSignals = summary.styleSignals.map((item) => `${item.label}${item.count}次`).join("、");
     return [
       `- 最近${days}天记录：${summary.totalSelections}次；常接受第${summary.preferredPosition}项；位置分布：${positionCounts || "无"}。`,
       `- 触发方式：${triggerCounts || "无"}；接受原因：${reasonCounts || "无"}；下一层预加载命中率：${preloadRate}%。`,
+      `- 内容分析：${contentSignals || "样本不足，暂不推断主题"}。`,
+      `- 体验偏好：${styleSignals || "样本不足，暂不推断表达方式"}。`,
       "- 改良依据：后续补全仅把上述统计作为低置信度排序参考，优先保持当前光标上下文和完整换行；不因统计自动改设置、不重复请求、不把未验证偏好写成硬规则。",
       `- 现有摘要：${summary.summary}`
     ].join("\n");
@@ -15276,7 +15319,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   editorPrefetchedAutocompleteCandidates(prefix: string, path: string): string[] {
     if (!this.settings.composerAutocompletePrefetchEnabled) return [];
-    return this.editorAutocompleteBranchCache.get(this.editorAutocompleteBranchKey(prefix, path)) ?? [];
+    const candidates = this.editorAutocompleteBranchCache.get(this.editorAutocompleteBranchKey(prefix, path)) ?? [];
+    return candidates.length >= this.editorAutocompleteCandidateCount() ? candidates : [];
   }
 
   async awaitEditorAutocompleteBranchPrefetch(prefix: string, path: string): Promise<string[]> {
@@ -15358,7 +15402,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         try {
           const raw = await withTimeout(
             this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, [], unclaimed),
-            EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS,
+            this.editorAutocompleteNetworkTimeoutMs(),
             "editor autocomplete branch prefetch timed out"
           );
           if (generation !== this.editorAutocompleteGeneration
@@ -15379,6 +15423,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           }
         } catch (error) {
           console.debug("Cancip editor autocomplete branch prefetch unavailable", error);
+        } finally {
+          for (const root of unclaimed) {
+            const key = this.editorAutocompleteBranchKey(`${prefix}${root}`, path);
+            if (this.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount) {
+              this.editorAutocompleteBranchPrefetchAttempts.delete(key);
+            }
+          }
         }
       })();
       for (const root of unclaimed) {
@@ -15465,7 +15516,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     const cached = this.editorAutocompleteCache.get(cacheKey);
     if (cached !== undefined) return cached;
-    const busyDeadline = Date.now() + EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS;
+    const busyDeadline = Date.now() + this.editorAutocompleteNetworkTimeoutMs();
     while (this.editorAutocompleteModelBusy && generation === this.editorAutocompleteGeneration && this.settings.composerAutocompleteEnabled && Date.now() < busyDeadline) {
       await sleep(80);
     }
@@ -15481,7 +15532,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     try {
         const raw = await withTimeout(
           this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, options.excluded, options.roots),
-          EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_MS,
+          this.editorAutocompleteNetworkTimeoutMs(),
           "editor autocomplete timed out"
         );
         if (generation !== this.editorAutocompleteGeneration) return [];
@@ -23339,6 +23390,18 @@ class CancipView extends ItemView {
     const prefetchToggle = prefetchRow.createEl("input", { attr: { type: "checkbox" } });
     prefetchToggle.checked = this.plugin.settings.composerAutocompletePrefetchEnabled;
 
+    const timeoutLabel = popover.createEl("label", { cls: "obcc-autocomplete-prompt-row" });
+    timeoutLabel.createSpan({ text: this.t("settingsAutocompleteNetworkTimeoutSeconds") });
+    const timeoutInput = timeoutLabel.createEl("input", {
+      attr: {
+        type: "number",
+        min: String(EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MIN),
+        max: String(EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MAX),
+        step: "1",
+        value: String(this.plugin.settings.composerAutocompleteNetworkTimeoutSeconds)
+      }
+    });
+
     const rotationLabel = popover.createEl("label", { cls: "obcc-autocomplete-prompt-row" });
     rotationLabel.createSpan({ text: this.t("settingsAutocompleteRotationSeconds") });
     const rotationInput = rotationLabel.createEl("input", {
@@ -23401,6 +23464,11 @@ class CancipView extends ItemView {
     rotationInput.addEventListener("change", async () => {
       await this.plugin.setEditorAutocompleteRotationSeconds(Number.parseInt(rotationInput.value, 10));
       rotationInput.value = String(this.plugin.settings.composerAutocompleteRotationSeconds);
+      this.placeAutocompletePopover();
+    });
+    timeoutInput.addEventListener("change", async () => {
+      await this.plugin.setEditorAutocompleteNetworkTimeoutSeconds(Number.parseInt(timeoutInput.value, 10));
+      timeoutInput.value = String(this.plugin.settings.composerAutocompleteNetworkTimeoutSeconds);
       this.placeAutocompletePopover();
     });
     candidateSelect.addEventListener("change", async () => {
@@ -41517,6 +41585,18 @@ class CancipSettingTab extends PluginSettingTab {
     }, "settingsAutocompletePrefetchDesc");
     this.addNumberSetting(
       parent,
+      "settingsAutocompleteNetworkTimeoutSeconds",
+      this.plugin.settings.composerAutocompleteNetworkTimeoutSeconds,
+      String(DEFAULT_SETTINGS.composerAutocompleteNetworkTimeoutSeconds),
+      EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MIN,
+      EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MAX,
+      async (value) => {
+        await this.plugin.setEditorAutocompleteNetworkTimeoutSeconds(value);
+      },
+      "settingsAutocompleteNetworkTimeoutSecondsDesc"
+    );
+    this.addNumberSetting(
+      parent,
       "settingsAutocompleteRotationSeconds",
       this.plugin.settings.composerAutocompleteRotationSeconds,
       String(DEFAULT_SETTINGS.composerAutocompleteRotationSeconds),
@@ -43301,7 +43381,7 @@ function buildMemoryDreamPrompt(): string {
     "第二阶段：重复流程审计。",
     "1. 回顾最近 30 天工作记录；不足 30 天则查看全部可用记录。信息优先级严格为：近期会话 > 记忆记录 > 外部纪事。",
     "2. 覆盖编码、写作、办公和其他实际工作场景，寻找重复、耗时、易出错的固定手动流程。",
-    "2.5. 同时读取本地‘自动补全选择习惯’摘要，分析用户常接受的位置、触发方式、自动轮换和预加载命中情况；只把统计作为低置信度改良依据，不把推断当成指令，不额外发送模型请求。",
+    "2.5. 同时读取本地‘自动补全选择习惯’摘要，重点分析已选择内容反复出现的领域、任务类型、表达方式、常用步骤，以及常接受的位置、触发方式、自动轮换和预加载命中情况；只把统计作为低置信度改良依据，不把推断当成指令，不额外发送模型请求。",
     "3. 仅保留同时满足四项的候选：重复至少 2 次；步骤固定；标准化后能明显提升效率或降低错误；当前尚未被 Skill、子代理路线、自动化或等效功能覆盖。",
     "4. 一次性任务、描述模糊、证据不足、仅有偏好规则、已经标准化或需要每次重新判断的任务直接跳过，不为凑数量创建资产。",
     "",
@@ -48936,9 +49016,49 @@ function emptyPersonalizationUsageLedger(): PersonalizationUsageLedger {
   };
 }
 
+const AUTOCOMPLETE_CONTENT_SIGNAL_RULES: ReadonlyArray<{ key: string; label: string; pattern: RegExp }> = [
+  { key: "coding-obsidian", label: "编码、Obsidian与插件", pattern: /代码|源码|编程|插件|obsidian|cancip|typescript|javascript|css|api|接口|构建|编译|github|git|bug|报错|脚本/i },
+  { key: "writing-notes", label: "写作、笔记与日记", pattern: /写作|文章|文案|笔记|日记|日志|总结|润色|改写|纪要|记录/i },
+  { key: "office-files", label: "办公文件与格式转换", pattern: /docx|pptx|xlsx|pdf|表格|文档|幻灯片|文件|导出|转换|预览/i },
+  { key: "search-analysis", label: "搜索、分析与对比", pattern: /搜索|查找|检索|分析|研究|对比|核对资料|提取|阅读|引用/i },
+  { key: "automation-workflow", label: "自动化、任务与工作流", pattern: /自动化|定时|通知|任务|skill|子代理|工作流|预加载|后台|整理/i },
+  { key: "health-admin", label: "医疗与行政事项", pattern: /医疗|药|症状|检查|医院|复诊|转诊|患者|证书|行政/i },
+  { key: "learning-review", label: "学习、复盘与记忆", pattern: /学习|复习|记忆|经验|复盘|回顾|总结|知识/i }
+];
+
+const AUTOCOMPLETE_STYLE_SIGNAL_RULES: ReadonlyArray<{ key: string; label: string; pattern: RegExp }> = [
+  { key: "concise", label: "偏好精简、少废话", pattern: /精简|简短|扼要|少废话|不废话|省token|省 token|直接说|不要套话/i },
+  { key: "verification", label: "偏好执行后核对验证", pattern: /核对|验证|测试|检查|确认|读回|复盘|对齐/i },
+  { key: "direct-action", label: "偏好直接执行和修复", pattern: /修复|改成|完成|执行|打开|生成|整理|转换|导出|安装|升级/i },
+  { key: "preserve", label: "偏好保持原样、少动正常内容", pattern: /原样|不要动|别动|不影响|保持|保留|不要改|只改|仅改/i },
+  { key: "stepwise", label: "偏好分阶段、按步骤推进", pattern: /先|然后|接着|下一步|步骤|流程|依次|逐步|以此类推/i },
+  { key: "proactive", label: "偏好主动预判和后台准备", pattern: /自动|后台|预加载|提前|推荐|根据.*习惯|主动|随时/i }
+];
+
+function countAutocompletePreferenceSignals(
+  events: AutocompleteSelectionEvent[],
+  rules: ReadonlyArray<{ key: string; label: string; pattern: RegExp }>,
+  limit = 6
+): AutocompletePreferenceSignal[] {
+  const counts = new Map<string, AutocompletePreferenceSignal>();
+  for (const event of events) {
+    const source = `${event.prefixHint}\n${event.text}`;
+    for (const rule of rules) {
+      if (!rule.pattern.test(source)) continue;
+      const existing = counts.get(rule.key);
+      counts.set(rule.key, existing
+        ? { ...existing, count: existing.count + 1 }
+        : { key: rule.key, label: rule.label, count: 1 });
+    }
+  }
+  return [...counts.values()]
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, limit);
+}
+
 function emptyAutocompletePreferenceSummary(): AutocompletePreferenceSummary {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     updatedAt: "",
     totalSelections: 0,
     preferredPosition: 1,
@@ -48946,6 +49066,8 @@ function emptyAutocompletePreferenceSummary(): AutocompletePreferenceSummary {
     triggerCounts: { button: 0, tab: 0, menu: 0 },
     reasonCounts: { "first-visible": 0, "auto-rotated": 0, "manual-navigation": 0 },
     preloadedNextBranchCount: 0,
+    contentSignals: [],
+    styleSignals: [],
     summary: ""
   };
 }
@@ -49005,8 +49127,12 @@ function summarizeAutocompletePreference(events: AutocompleteSelectionEvent[]): 
   if (triggerCounts.tab) parts.push(`Tab 应用 ${triggerCounts.tab} 次`);
   const preloadRate = Math.round((preloadedNextBranchCount / totalSelections) * 100);
   if (preloadRate) parts.push(`${preloadRate}% 的选择发生在下一层已预加载时`);
+  const contentSignals = countAutocompletePreferenceSignals(events, AUTOCOMPLETE_CONTENT_SIGNAL_RULES);
+  const styleSignals = countAutocompletePreferenceSignals(events, AUTOCOMPLETE_STYLE_SIGNAL_RULES);
+  if (contentSignals.length) parts.push(`内容偏好：${contentSignals.slice(0, 4).map((item) => `${item.label}${item.count}次`).join("、")}`);
+  if (styleSignals.length) parts.push(`工作方式：${styleSignals.slice(0, 4).map((item) => `${item.label}${item.count}次`).join("、")}`);
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     updatedAt: events.at(-1)?.at ?? new Date().toISOString(),
     totalSelections,
     preferredPosition: preferredIndex + 1,
@@ -49014,6 +49140,8 @@ function summarizeAutocompletePreference(events: AutocompleteSelectionEvent[]): 
     triggerCounts,
     reasonCounts,
     preloadedNextBranchCount,
+    contentSignals,
+    styleSignals,
     summary: parts.join("；")
   };
 }
@@ -49180,6 +49308,7 @@ function normalizeSettings(input: Partial<Settings>): Settings {
   const localVersionHour = Number.parseInt(String(merged.localVersionHour), 10);
   const localVersionMaxFileBytes = Number.parseInt(String(merged.localVersionMaxFileBytes), 10);
   const automationCheckMinutes = Number.parseInt(String(merged.automationCheckMinutes), 10);
+  const composerAutocompleteNetworkTimeoutSeconds = Number.parseInt(String(merged.composerAutocompleteNetworkTimeoutSeconds), 10);
   const composerAutocompleteRotationSeconds = Number.parseInt(String(merged.composerAutocompleteRotationSeconds), 10);
   const composerAutocompleteCandidateCount = Number.parseInt(String(merged.composerAutocompleteCandidateCount), 10);
   const ttsRate = Number(merged.ttsRate);
@@ -49247,6 +49376,9 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     personalizedDiaryEnabled: typeof merged.personalizedDiaryEnabled === "boolean" ? merged.personalizedDiaryEnabled : DEFAULT_SETTINGS.personalizedDiaryEnabled,
     composerAutocompleteEnabled: typeof merged.composerAutocompleteEnabled === "boolean" ? merged.composerAutocompleteEnabled : DEFAULT_SETTINGS.composerAutocompleteEnabled,
     composerAutocompletePrefetchEnabled: typeof merged.composerAutocompletePrefetchEnabled === "boolean" ? merged.composerAutocompletePrefetchEnabled : DEFAULT_SETTINGS.composerAutocompletePrefetchEnabled,
+    composerAutocompleteNetworkTimeoutSeconds: Number.isFinite(composerAutocompleteNetworkTimeoutSeconds)
+      ? Math.max(EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MIN, Math.min(EDITOR_AUTOCOMPLETE_NETWORK_TIMEOUT_SECONDS_MAX, composerAutocompleteNetworkTimeoutSeconds))
+      : DEFAULT_SETTINGS.composerAutocompleteNetworkTimeoutSeconds,
     composerAutocompleteRotationSeconds: Number.isFinite(composerAutocompleteRotationSeconds)
       ? Math.max(EDITOR_AUTOCOMPLETE_ROTATION_SECONDS_MIN, Math.min(EDITOR_AUTOCOMPLETE_ROTATION_SECONDS_MAX, composerAutocompleteRotationSeconds))
       : DEFAULT_SETTINGS.composerAutocompleteRotationSeconds,
@@ -49357,6 +49489,7 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     personalizedDiaryEnabled: settings.personalizedDiaryEnabled,
     composerAutocompleteEnabled: settings.composerAutocompleteEnabled,
     composerAutocompletePrefetchEnabled: settings.composerAutocompletePrefetchEnabled,
+    composerAutocompleteNetworkTimeoutSeconds: settings.composerAutocompleteNetworkTimeoutSeconds,
     composerAutocompleteRotationSeconds: settings.composerAutocompleteRotationSeconds,
     composerAutocompleteCandidateCount: settings.composerAutocompleteCandidateCount,
     composerAutocompleteApiProfileId: settings.composerAutocompleteApiProfileId,
@@ -49474,6 +49607,7 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.personalizedDiaryEnabled === "boolean") config.personalizedDiaryEnabled = raw.personalizedDiaryEnabled;
   if (typeof raw.composerAutocompleteEnabled === "boolean") config.composerAutocompleteEnabled = raw.composerAutocompleteEnabled;
   if (typeof raw.composerAutocompletePrefetchEnabled === "boolean") config.composerAutocompletePrefetchEnabled = raw.composerAutocompletePrefetchEnabled;
+  if (typeof raw.composerAutocompleteNetworkTimeoutSeconds === "number" || typeof raw.composerAutocompleteNetworkTimeoutSeconds === "string") config.composerAutocompleteNetworkTimeoutSeconds = Number.parseInt(String(raw.composerAutocompleteNetworkTimeoutSeconds), 10);
   if (typeof raw.composerAutocompleteRotationSeconds === "number" || typeof raw.composerAutocompleteRotationSeconds === "string") config.composerAutocompleteRotationSeconds = Number.parseInt(String(raw.composerAutocompleteRotationSeconds), 10);
   if (typeof raw.composerAutocompleteCandidateCount === "number" || typeof raw.composerAutocompleteCandidateCount === "string") config.composerAutocompleteCandidateCount = Number.parseInt(String(raw.composerAutocompleteCandidateCount), 10);
   if (typeof raw.composerAutocompleteApiProfileId === "string") config.composerAutocompleteApiProfileId = raw.composerAutocompleteApiProfileId;
@@ -49591,6 +49725,7 @@ const CANCIP_CONFIG_NUMBER_KEYS = new Set([
   "localVersionHour",
   "localVersionMaxFileBytes",
   "automationCheckMinutes",
+  "composerAutocompleteNetworkTimeoutSeconds",
   "composerAutocompleteRotationSeconds",
   "composerAutocompleteCandidateCount",
   "ttsRate",

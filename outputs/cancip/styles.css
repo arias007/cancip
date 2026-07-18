@@ -3986,6 +3986,12 @@ details.obcc-process-step-details:not([open]) > :not(summary),
   pointer-events: none;
 }
 
+.obcc-editor-autocomplete-widget.is-multiline {
+  height: calc(var(--obcc-editor-autocomplete-line-count, 1) * var(--line-height-normal, 1.5em));
+  min-height: calc(var(--obcc-editor-autocomplete-line-count, 1) * var(--line-height-normal, 1.5em));
+  vertical-align: top;
+}
+
 .obcc-editor-autocomplete-overlay {
   display: block;
   position: absolute;
