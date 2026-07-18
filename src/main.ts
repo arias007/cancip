@@ -1028,6 +1028,17 @@ type VaultDailyTaskClue = {
   done: boolean;
 };
 
+type KnowledgeWikiCard = {
+  key: string;
+  topic: string;
+  title: string;
+  summary: string;
+  facts: string[];
+  sources: string[];
+  confidence: "high" | "medium";
+  updatedAt: string;
+};
+
 type NewsBriefItem = {
   source: string;
   category: string;
@@ -2623,6 +2634,10 @@ const CANCIP_OBSIDIAN_ORGANIZATION_MEMORY_PATH = `${DEFAULT_MEMORY_FOLDER}/obsid
 const CANCIP_OBSIDIAN_ORGANIZATION_MEMORY_MARKER = "<!-- cancip-ob-organization-preferences -->";
 const CANCIP_VAULT_OVERVIEW_PATH = `${DEFAULT_MEMORY_FOLDER}/VAULT_OVERVIEW.md`;
 const CANCIP_VAULT_OVERVIEW_MARKER = "<!-- cancip-programmatic-vault-overview -->";
+const CANCIP_KNOWLEDGE_WIKI_PATH = `${DEFAULT_MEMORY_FOLDER}/WIKI.md`;
+const CANCIP_KNOWLEDGE_WIKI_START = "<!-- cancip-knowledge-wiki-auto-start -->";
+const CANCIP_KNOWLEDGE_WIKI_END = "<!-- cancip-knowledge-wiki-auto-end -->";
+const CANCIP_KNOWLEDGE_WIKI_MAX_CARDS = 80;
 const PROJECT_MEMORY_PATH = `${CANCIP_CONFIG_DIR}/PROJECT_MEMORY.md`;
 const LOCAL_VERSION_DIR = `${CANCIP_CONFIG_DIR}/versions`;
 const LOCAL_VERSION_INDEX_PATH = `${LOCAL_VERSION_DIR}/index.json`;
@@ -2707,7 +2722,7 @@ const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
 const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v6";
 const VAULT_CURATION_NEW_FILE_STATE_PATH = `${AUTOMATION_DIR}/vault-curation-new-files.json`;
 const MEMORY_DREAM_AUTOMATION_ID = "auto-cancip-memory-dream";
-const MEMORY_DREAM_PROMPT_MARKER = "Workflow Optimizer v2";
+const MEMORY_DREAM_PROMPT_MARKER = "Workflow Optimizer v3";
 const DEPRECATED_AUTOMATION_IDS = new Set([
   "auto-vault-content-beautify",
   "auto-vault-auto-tags",
@@ -12147,6 +12162,7 @@ Cancip 的长期记忆入口。这个文件是给人和 AI 都能读的自然目
 - [[AI/Cancip/Memory/TOOLS]]
 - [[AI/Cancip/Memory/SKILLS]]
 - [[AI/Cancip/Memory/VAULT_OVERVIEW]]
+- [[AI/Cancip/Memory/WIKI]]
 - [[AI/Cancip/Memory/CANCIP_RULES]]
 
 ## Project and runtime memory
@@ -12192,6 +12208,13 @@ Vault 初装概览入口：[[AI/Cancip/Memory/VAULT_OVERVIEW]]。这个文件由
             "- [[AI/Cancip/Memory/PREFERENCES]]\n- [[AI/Cancip/Memory/obsidian-整理偏好]]"
           );
         }
+        if (!nextIndex.includes("[[AI/Cancip/Memory/WIKI]]")) {
+          const wikiLink = "- [[AI/Cancip/Memory/WIKI]]";
+          const overviewLink = "- [[AI/Cancip/Memory/VAULT_OVERVIEW]]";
+          nextIndex = nextIndex.includes(overviewLink)
+            ? nextIndex.replace(overviewLink, `${overviewLink}\n${wikiLink}`)
+            : `${nextIndex.trimEnd()}\n${wikiLink}\n`;
+        }
         if (!nextIndex.includes("CANCIP_RULES") || !nextIndex.includes(".cancip/index/") || !nextIndex.includes("cancip.tools.index")) {
           nextIndex = `${nextIndex.trimEnd()}
 - [[AI/Cancip/Memory/CANCIP_RULES]]
@@ -12203,6 +12226,15 @@ Vault 初装概览入口：[[AI/Cancip/Memory/VAULT_OVERVIEW]]。这个文件由
         if (nextIndex !== index) {
           await adapter.write(CANCIP_MEMORY_INDEX_PATH, nextIndex);
         }
+      }
+      if (!(await adapter.exists(CANCIP_KNOWLEDGE_WIKI_PATH))) {
+        await writeTextInChunks(
+          adapter,
+          CANCIP_KNOWLEDGE_WIKI_PATH,
+          "# Cancip Knowledge Wiki\n\n## 人工维护区\n\n这里保留用户手写的长期知识、定义和链接。\n\n"
+            + renderKnowledgeWikiCards([])
+            + "\n"
+        );
       }
       if (!(await adapter.exists(CANCIP_RULES_PATH))) {
         await adapter.write(CANCIP_RULES_PATH, `# Cancip Detailed Rules
@@ -27650,6 +27682,7 @@ class CancipView extends ItemView {
     const harvested = await this.harvestExperienceSkills(false);
     const skillIndex = await this.refreshSkillIndex(false);
     await this.appendProjectMemoryDreamNote(summary, dreamPath);
+    const knowledgeWiki = await this.updateKnowledgeWiki(sourcePack, summary, days);
 
     return [
       "Cancip 零点记忆整理已完成。",
@@ -27658,11 +27691,93 @@ class CancipView extends ItemView {
       `2. 已写入：${dreamPath}`,
       `3. 已收割/清理经验 Skill：${harvested.count} 个 -> ${harvested.path}`,
       `4. 已刷新 Skill 索引：${skillIndex.count} 个 -> ${skillIndex.path}`,
-      `5. ${compactResult}`,
+      `5. 知识库 Wiki：${knowledgeWiki.generated} 张新/更新知识卡，当前保留 ${knowledgeWiki.total} 张 -> ${knowledgeWiki.path}${knowledgeWiki.note ? `（${knowledgeWiki.note}）` : ""}`,
+      `6. ${compactResult}`,
       "",
       "摘要：",
       summary
     ].join("\n");
+  }
+
+  private async buildKnowledgeWikiEvidencePack(sourcePack: string, summary: string, days: number, existingWiki: string): Promise<string> {
+    const since = Date.now() - Math.min(days, 3) * 24 * 60 * 60 * 1000;
+    const recentFiles = this.app.vault.getFiles()
+      .filter((file) => isContextTextFile(file) && file.stat.mtime >= since)
+      .sort((a, b) => b.stat.mtime - a.stat.mtime || a.path.localeCompare(b.path))
+      .slice(0, 18);
+    const recentEvidence: string[] = [];
+    for (const file of recentFiles) {
+      let excerpt = "";
+      try {
+        if (file.stat.size <= 14000) excerpt = makeExcerpt(await this.app.vault.cachedRead(file), []);
+      } catch {
+        excerpt = "";
+      }
+      recentEvidence.push(`- ${file.path}${excerpt ? `: ${trimContext(redactSensitiveText(excerpt).replace(/\s+/g, " "), 280)}` : ""}`);
+    }
+    return [
+      `整理窗口：最近 ${days} 天；知识卡必须是可复用、相对稳定的事实或工作方法。`,
+      "",
+      "## 本轮记忆整理摘要",
+      trimContext(redactSensitiveText(summary), 4200),
+      "",
+      "## 近期可靠来源（会话/经验/记忆优先）",
+      trimContext(redactSensitiveText(sourcePack), 7600),
+      "",
+      "## 近期文件线索（仅作交叉证据，不要把文件列表本身当知识）",
+      recentEvidence.length ? recentEvidence.join("\n") : "- none",
+      "",
+      "## 已有 Wiki 机器维护区",
+      trimContext(existingWiki, 5600)
+    ].join("\n");
+  }
+
+  private async updateKnowledgeWiki(sourcePack: string, summary: string, days: number): Promise<{ path: string; generated: number; total: number; note?: string }> {
+    const adapter = this.app.vault.adapter;
+    await ensureParentFolder(adapter, CANCIP_KNOWLEDGE_WIKI_PATH);
+    const existing = await adapter.exists(CANCIP_KNOWLEDGE_WIKI_PATH)
+      ? await adapter.read(CANCIP_KNOWLEDGE_WIKI_PATH)
+      : "";
+    const existingCards = parseKnowledgeWikiCards(existing);
+    const profile = this.plugin.activeApiProfile();
+    let generatedCards: KnowledgeWikiCard[] = [];
+    let note = "";
+    if (profile.apiUrl && profile.apiKey && profile.model) {
+      const evidence = await this.buildKnowledgeWikiEvidencePack(sourcePack, summary, days, existing);
+      const system = [
+        "你是本地 LLM 知识库 Wiki 的日常整理器。只返回严格 JSON，不要 Markdown、解释或工具调用。",
+        "格式：{\"cards\":[{\"topic\":\"主题\",\"title\":\"短标题\",\"summary\":\"一句可复用结论\",\"facts\":[\"关键事实\"],\"sources\":[\"证据中的原始 Vault 相对路径\"],\"confidence\":\"high|medium\"}] }。",
+        "最多生成 4 张卡；同一主题已有卡时只返回真正新增或需要纠正的卡。",
+        "只提炼有证据、可复用、相对稳定的用户偏好、项目状态、插件/API路线、工作方法和已验证避坑；临时待办、一次性任务、泛泛总结、情绪推测、隐私原文、医疗细节、密钥、token、账号信息一律不进入 Wiki。",
+        "sources 只能填写证据中出现过的 Vault 相对路径，无法确认就填空数组；不要编造路径。confidence 只有在证据明确时才用 high，否则用 medium。",
+        "标题和摘要要短、中文优先、结论先行；不要把整段会话、文件列表或模型推断写进卡片。"
+      ].join("\n");
+      try {
+        const raw = await withTimeout(
+          this.callLightweightModel(evidence, system, 620, profile),
+          20000,
+          "knowledge Wiki model request timed out"
+        );
+        const parsed = parseFirstJsonObject(raw);
+        const rawCards = isRecord(parsed) && Array.isArray(parsed.cards) ? parsed.cards : [];
+        generatedCards = rawCards
+          .map((item) => normalizeKnowledgeWikiCard(item))
+          .filter((card): card is KnowledgeWikiCard => card !== null)
+          .slice(0, 4);
+      } catch (error) {
+        note = `模型提炼失败，保留已有知识卡：${error instanceof Error ? error.message : String(error)}`;
+      }
+    } else {
+      note = "API 未配置，未生成新的模型知识卡";
+    }
+    const merged = new Map(existingCards.map((card) => [card.key, card]));
+    for (const card of generatedCards) merged.set(card.key, card);
+    const cards = [...merged.values()]
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.title.localeCompare(b.title))
+      .slice(0, CANCIP_KNOWLEDGE_WIKI_MAX_CARDS);
+    const next = mergeKnowledgeWikiDocument(existing, cards);
+    if (next !== existing) await writeTextInChunks(adapter, CANCIP_KNOWLEDGE_WIKI_PATH, next);
+    return { path: CANCIP_KNOWLEDGE_WIKI_PATH, generated: generatedCards.length, total: cards.length, note };
   }
 
   private async buildMemoryDreamSourcePack(days: number): Promise<string> {
@@ -43317,7 +43432,11 @@ function localizeUntouchedAutomationTask(task: AutomationTask, template: Automat
     ...variants.map((item) => item.prompt ?? "")
   ]);
   const title = knownTitles.includes(task.title) ? template.title : task.title;
-  const prompt = task.prompt && knownPrompts.includes(task.prompt) ? template.prompt?.trim() ?? "" : task.prompt;
+  const legacyMemoryDreamPrompt = task.id === MEMORY_DREAM_AUTOMATION_ID
+    && task.prompt.includes("Workflow Optimizer v2");
+  const prompt = task.prompt && (knownPrompts.includes(task.prompt) || legacyMemoryDreamPrompt)
+    ? template.prompt?.trim() ?? ""
+    : task.prompt;
   return title === task.title && prompt === task.prompt ? task : { ...task, title, prompt };
 }
 
@@ -43385,7 +43504,7 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
     {
       id: MEMORY_DREAM_AUTOMATION_ID,
       title: local("Cancip 零点记忆整理", "Cancip midnight memory review"),
-      description: local("整理记忆并审计近 30 天重复手动流程，只标准化有证据的高价值流程。", "Distill memory and audit 30 days of repeated work, standardizing only proven high-value workflows."),
+      description: local("整理记忆、更新知识库 Wiki，并审计近 30 天重复手动流程，只标准化有证据的高价值流程。", "Distill memory, update the knowledge Wiki, and audit 30 days of repeated work, standardizing only proven high-value workflows."),
       prompt: `${buildMemoryDreamPrompt()}\n\n${promptLanguage}`,
       schedule: "daily",
       enabled: true,
@@ -43492,14 +43611,102 @@ function buildVaultDailyReportPrompt(hours: number): string {
   ].join("\n");
 }
 
+function normalizeKnowledgeWikiText(value: unknown, maxChars: number): string {
+  return trimContext(String(value ?? "")
+    .replace(/<!--|-->/g, "")
+    .replace(/\s+/g, " ")
+    .trim(), maxChars);
+}
+
+function normalizeKnowledgeWikiSource(value: unknown): string {
+  const source = normalizePath(String(value ?? "").trim().replace(/^[-*]\s*/, ""));
+  if (!source || source.includes("..") || /^[a-z][a-z\d+.-]*:\/\//i.test(source)) return "";
+  return source.slice(0, 180);
+}
+
+function normalizeKnowledgeWikiCard(raw: unknown, updatedAt = new Date().toISOString()): KnowledgeWikiCard | null {
+  if (!isRecord(raw)) return null;
+  const title = normalizeKnowledgeWikiText(raw.title, 90);
+  const topic = normalizeKnowledgeWikiText(raw.topic, 50) || "未分类";
+  const summary = normalizeKnowledgeWikiText(raw.summary, 360);
+  if (title.length < 2 || summary.length < 12) return null;
+  const facts = uniqueStrings((Array.isArray(raw.facts) ? raw.facts : [])
+    .map((item) => normalizeKnowledgeWikiText(item, 180))
+    .filter((item) => item.length >= 4))
+    .slice(0, 4);
+  const sources = uniqueStrings((Array.isArray(raw.sources) ? raw.sources : [])
+    .map(normalizeKnowledgeWikiSource)
+    .filter(Boolean))
+    .slice(0, 5);
+  const rawKey = normalizeKnowledgeWikiText(raw.key, 80);
+  const key = /^[a-z\d_-]{3,80}$/i.test(rawKey)
+    ? rawKey.toLowerCase()
+    : stableTextHash(`${topic}\n${title}`);
+  const confidence = raw.confidence === "high" ? "high" : "medium";
+  return { key, topic, title, summary, facts, sources, confidence, updatedAt };
+}
+
+function parseKnowledgeWikiCards(content: string): KnowledgeWikiCard[] {
+  const cards: KnowledgeWikiCard[] = [];
+  for (const match of content.matchAll(/<!-- cancip-knowledge-card:([^\s]+) -->/g)) {
+    try {
+      const parsed = JSON.parse(decodeURIComponent(match[1])) as unknown;
+      const card = normalizeKnowledgeWikiCard(parsed, typeof (parsed as Record<string, unknown>)?.updatedAt === "string"
+        ? String((parsed as Record<string, unknown>).updatedAt)
+        : new Date().toISOString());
+      if (card) cards.push(card);
+    } catch {
+      // Ignore malformed machine cards and preserve the surrounding Wiki text.
+    }
+  }
+  return cards;
+}
+
+function renderKnowledgeWikiCards(cards: KnowledgeWikiCard[]): string {
+  const rendered = cards.length
+    ? cards.map((card) => [
+        `<!-- cancip-knowledge-card:${encodeURIComponent(JSON.stringify(card))} -->`,
+        `### ${card.title}`,
+        `- 主题：${card.topic}`,
+        `- 摘要：${card.summary}`,
+        card.facts.length ? `- 关键事实：${card.facts.join("；")}` : "",
+        card.sources.length ? `- 来源：${card.sources.map(vaultPathWikilink).join("、")}` : "- 来源：本地会话/记忆摘要（具体路径未可靠确认）",
+        `- 置信度：${card.confidence}；更新：${card.updatedAt}`,
+        ""
+      ].filter(Boolean).join("\n")).join("\n")
+    : "- 暂无达到稳定性门槛的知识卡；下一次每日整理继续累积证据。";
+  return [
+    CANCIP_KNOWLEDGE_WIKI_START,
+    "## 自动提炼知识卡（机器维护）",
+    "> 只收录有来源、可复用、相对稳定的事实、项目知识和工作方法；临时事件、未经验证推断和私人原文不进入这里。",
+    "",
+    rendered.trimEnd(),
+    "",
+    CANCIP_KNOWLEDGE_WIKI_END
+  ].join("\n");
+}
+
+function mergeKnowledgeWikiDocument(existing: string, cards: KnowledgeWikiCard[]): string {
+  const managed = renderKnowledgeWikiCards(cards);
+  const start = existing.indexOf(CANCIP_KNOWLEDGE_WIKI_START);
+  const end = existing.indexOf(CANCIP_KNOWLEDGE_WIKI_END, start + CANCIP_KNOWLEDGE_WIKI_START.length);
+  if (start >= 0 && end >= start) {
+    return `${existing.slice(0, start)}${managed}${existing.slice(end + CANCIP_KNOWLEDGE_WIKI_END.length)}`.replace(/\n{4,}/g, "\n\n").trimEnd() + "\n";
+  }
+  const base = existing.trim() || "# Cancip Knowledge Wiki\n\n## 人工维护区\n\n这里保留用户手写的长期知识、定义和链接。";
+  return `${base.trimEnd()}\n\n${managed}\n`;
+}
+
 function buildMemoryDreamPrompt(): string {
   return [
-    "内部版本：Cancip Memory Dream + Workflow Optimizer v2。",
+    `内部版本：Cancip Memory Dream + ${MEMORY_DREAM_PROMPT_MARKER}。`,
     "目标：先完成记忆整理，再回顾工作记录，识别并标准化真正重复的手动流程，让后续任务更省 token、更少重复失败。",
     "",
     "第一阶段：记忆整理。",
     "1. 先调用 command cancip.memoryDream，参数 days=30、compactExperience=true，整理近期成功、失败、用户反馈、经验和 Skill 索引。",
     "2. 稳定规则保持短小；不保存密钥、token、隐私全文或整段聊天；压缩低价值经验前先归档，不删除用户笔记。",
+    "1.5. 同步更新 AI/Cancip/Memory/WIKI.md：把有可靠来源、可复用、相对稳定的项目事实、插件/API 路线、工作方法和已验证避坑提炼成少量原子知识卡。每张卡写短标题、主题、结论、关键事实、来源路径、置信度和更新时间；同类知识合并更新，不重复堆积。",
+    "1.6. Wiki 只维护机器区，保留人工维护区原文；临时事件、一次性任务、未经验证推断、情绪猜测、医疗细节、密钥、token、账号和整段会话不得进入 Wiki。来源不足时宁缺毋滥，不能为了凑卡片编造。",
     "",
     "第二阶段：重复流程审计。",
     "1. 回顾最近 30 天工作记录；不足 30 天则查看全部可用记录。信息优先级严格为：近期会话 > 记忆记录 > 外部纪事。",
@@ -43520,7 +43727,7 @@ function buildMemoryDreamPrompt(): string {
     "",
     "最终复盘顺序：",
     "1. 优化清单。",
-    "2. 新增/更新资产：名称、类型、路径或任务 ID、解决的问题、验证结果。",
+    "2. 新增/更新资产：名称、类型、路径或任务 ID、解决的问题、验证结果；单独报告 Wiki 新增/更新知识卡数量、路径和来源质量。",
     "3. 跳过任务：任务名称和跳过原因。",
     "4. 待补充信息：只有确实缺少会影响落地的信息才列出；没有则省略。",
     "最终回答中文、结论先行、精简但保留证据；不要只给建议，符合门槛且低风险的资产应实际创建并验证。"
