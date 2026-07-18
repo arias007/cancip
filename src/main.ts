@@ -6798,7 +6798,16 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
         return;
       }
       if (update.docChanged) {
-        this.schedule(update.startState.field(editorAutocompleteState));
+        const userChangedDocument = update.transactions.some((transaction) => (
+          transaction.isUserEvent("input")
+          || transaction.isUserEvent("delete")
+          || transaction.isUserEvent("undo")
+          || transaction.isUserEvent("redo")
+        ));
+        const appliedAutocomplete = effects.some((effect) => effect.is(setEditorAutocompleteSuggestion));
+        if (userChangedDocument || appliedAutocomplete) {
+          this.schedule(update.startState.field(editorAutocompleteState));
+        }
         return;
       }
       if (update.selectionSet || update.focusChanged) this.schedule();
@@ -7074,6 +7083,8 @@ export default class CancipPlugin extends Plugin {
   private personalizationRefreshPromise: Promise<void> | null = null;
   private personalizationPendingPaths = new Set<string>();
   private editorAutocompleteCache = new Map<string, string[]>();
+  private editorAutocompleteRequestFlights = new Map<string, Promise<string[]>>();
+  private editorAutocompleteFailureCooldowns = new Map<string, number>();
   private editorAutocompleteBranchCache = new Map<string, string[]>();
   private editorAutocompleteBranchPrefetches = new Map<string, Promise<string[]>>();
   private editorAutocompleteBranchPrefetchAttempts = new Set<string>();
@@ -14468,6 +14479,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   async callLightweightAutocompleteModel(profile: ApiProfile, inputText: string, system: string, maxTokens: number): Promise<string> {
     if (!profile.apiUrl || !profile.apiKey || !profile.model) return "";
+    if (this.editorAutocompleteActivityCount > 0) return "";
     const finishActivity = this.beginEditorAutocompleteActivity();
     try {
       return await this.callLightweightAutocompleteModelCore(profile, inputText, system, maxTokens);
@@ -14566,14 +14578,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.invalidateEditorAutocompleteMemoryContext();
   }
 
-  private invalidateEditorAutocompleteMemoryContext(): void {
+  private invalidateEditorAutocompleteMemoryContext(refreshViews = true): void {
     this.editorAutocompleteMemoryGeneration += 1;
     this.editorAutocompleteMemoryCorpusCache = null;
     this.editorAutocompleteMemoryCorpusPromise = null;
     this.editorAutocompleteCache.clear();
+    this.editorAutocompleteFailureCooldowns.clear();
     this.editorAutocompleteBranchCache.clear();
     this.editorAutocompleteBranchPrefetches.clear();
     this.editorAutocompleteBranchPrefetchAttempts.clear();
+    if (!refreshViews) return;
     this.app.workspace.iterateAllLeaves((leaf) => {
       const editorView = (leaf.view as unknown as { editor?: { cm?: EditorView } }).editor?.cm;
       editorView?.dispatch({ effects: refreshEditorAutocompleteSuggestion.of(null) });
@@ -14849,6 +14863,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.autocompleteProfileStateSignature = signature;
     this.editorAutocompleteGeneration += 1;
     this.editorAutocompleteCache.clear();
+    this.editorAutocompleteFailureCooldowns.clear();
     this.editorAutocompleteBranchCache.clear();
     this.editorAutocompleteBranchPrefetches.clear();
     this.editorAutocompleteBranchPrefetchAttempts.clear();
@@ -15317,6 +15332,25 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     ].join("\n"));
   }
 
+  private editorAutocompleteCandidatesRequestKey(
+    prefix: string,
+    nearbyContext: string,
+    path: string,
+    options: { roots?: string[] } = {}
+  ): string {
+    const candidateCount = this.editorAutocompleteCandidateCount();
+    return stableTextHash([
+      this.editorAutocompleteGeneration,
+      this.editorAutocompleteMemoryGeneration,
+      this.autocompleteProfileStateSignature,
+      this.settings.composerAutocompletePrompt.trim().toLocaleLowerCase(),
+      normalizePath(path),
+      prefix.toLocaleLowerCase(),
+      uniqueEditorAutocompleteCandidates(options.roots ?? [], candidateCount).join("\n"),
+      trimContext(nearbyContext, EDITOR_AUTOCOMPLETE_NEARBY_CONTEXT_CHARS)
+    ].join("\n"));
+  }
+
   editorPrefetchedAutocompleteCandidates(prefix: string, path: string): string[] {
     if (!this.settings.composerAutocompletePrefetchEnabled) return [];
     const candidates = this.editorAutocompleteBranchCache.get(this.editorAutocompleteBranchKey(prefix, path)) ?? [];
@@ -15495,6 +15529,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     path: string,
     options: { force?: boolean; excluded?: string[]; roots?: string[] } = {}
   ): Promise<string[]> {
+    const requestKey = this.editorAutocompleteCandidatesRequestKey(prefix, nearbyContext, path, options);
+    const pending = this.editorAutocompleteRequestFlights.get(requestKey);
+    if (pending) return await pending;
+    const request = this.editorAutocompleteCandidatesInternal(prefix, nearbyContext, path, options);
+    this.editorAutocompleteRequestFlights.set(requestKey, request);
+    try {
+      return await request;
+    } finally {
+      if (this.editorAutocompleteRequestFlights.get(requestKey) === request) {
+        this.editorAutocompleteRequestFlights.delete(requestKey);
+      }
+    }
+  }
+
+  private async editorAutocompleteCandidatesInternal(
+    prefix: string,
+    nearbyContext: string,
+    path: string,
+    options: { force?: boolean; excluded?: string[]; roots?: string[] } = {}
+  ): Promise<string[]> {
     if (!this.settings.composerAutocompleteEnabled) return [];
     const candidateCount = this.editorAutocompleteCandidateCount();
     const local = this.editorLocalAutocompleteSuffix(prefix);
@@ -15503,7 +15557,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const generation = this.editorAutocompleteGeneration;
     const cacheKey = stableTextHash([
       this.autocompleteApiProfileCacheKey(),
-      String(Math.floor(Date.now() / EDITOR_AUTOCOMPLETE_MEMORY_TTL_MS)),
+      String(this.editorAutocompleteMemoryGeneration),
       this.settings.composerAutocompletePrompt.trim().toLocaleLowerCase(),
       normalizePath(path),
       prefix.toLocaleLowerCase(),
@@ -15516,20 +15570,23 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     const cached = this.editorAutocompleteCache.get(cacheKey);
     if (cached !== undefined) return cached;
-    const busyDeadline = Date.now() + this.editorAutocompleteNetworkTimeoutMs();
-    while (this.editorAutocompleteModelBusy && generation === this.editorAutocompleteGeneration && this.settings.composerAutocompleteEnabled && Date.now() < busyDeadline) {
-      await sleep(80);
+    const blockedUntil = this.editorAutocompleteFailureCooldowns.get(cacheKey) ?? 0;
+    if (!options.force && blockedUntil > Date.now()) return [];
+    if (blockedUntil) this.editorAutocompleteFailureCooldowns.delete(cacheKey);
+    if (generation !== this.editorAutocompleteGeneration || !this.settings.composerAutocompleteEnabled) return [];
+    if (this.editorAutocompleteModelBusy) {
+      this.editorAutocompleteFailureCooldowns.set(cacheKey, Date.now() + EDITOR_AUTOCOMPLETE_MODEL_COOLDOWN_MS);
+      return [];
     }
-    if (generation !== this.editorAutocompleteGeneration || this.editorAutocompleteModelBusy || !this.settings.composerAutocompleteEnabled) return [];
     if (options.force) this.editorAutocompleteCache.delete(cacheKey);
     const cachedAfterWait = this.editorAutocompleteCache.get(cacheKey);
     if (!options.force && cachedAfterWait !== undefined) return cachedAfterWait;
     const waitMs = Math.max(0, this.editorAutocompleteLastModelAt + EDITOR_AUTOCOMPLETE_MODEL_COOLDOWN_MS - Date.now());
-    if (waitMs) await sleep(waitMs);
-    if (generation !== this.editorAutocompleteGeneration || this.editorAutocompleteModelBusy || !this.settings.composerAutocompleteEnabled) return [];
     this.editorAutocompleteModelBusy = true;
     this.editorAutocompleteLastModelAt = Date.now();
     try {
+        if (waitMs) await sleep(waitMs);
+        if (generation !== this.editorAutocompleteGeneration || !this.settings.composerAutocompleteEnabled) return [];
         const raw = await withTimeout(
           this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, options.excluded, options.roots),
           this.editorAutocompleteNetworkTimeoutMs(),
@@ -15559,7 +15616,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           });
         }
         this.editorAutocompleteCache.delete(cacheKey);
-        if (candidates.length) this.editorAutocompleteCache.set(cacheKey, candidates);
+        if (candidates.length) {
+          this.editorAutocompleteCache.set(cacheKey, candidates);
+          this.editorAutocompleteFailureCooldowns.delete(cacheKey);
+        } else {
+          this.editorAutocompleteFailureCooldowns.set(cacheKey, Date.now() + this.editorAutocompleteNetworkTimeoutMs());
+        }
         while (this.editorAutocompleteCache.size > 32) {
           const oldest = this.editorAutocompleteCache.keys().next();
           if (oldest.done) break;
@@ -15568,6 +15630,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         return candidates;
       } catch (error) {
         console.debug("Cancip editor autocomplete unavailable", error);
+        this.editorAutocompleteFailureCooldowns.set(cacheKey, Date.now() + this.editorAutocompleteNetworkTimeoutMs());
         return [];
       } finally {
         this.editorAutocompleteModelBusy = false;
@@ -19162,7 +19225,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     const kinds = cancipVaultSyncKindsForPath(normalized, this.settings);
     if (kinds.has("memory") || kinds.has("sessions") || normalized === PERSONALIZATION_CACHE_PATH) {
-      this.invalidateEditorAutocompleteMemoryContext();
+      this.invalidateEditorAutocompleteMemoryContext(false);
     }
     if (!kinds.size) return;
     if (kinds.has("automations")) {
