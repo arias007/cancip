@@ -6830,10 +6830,11 @@ function createCancipEditorAutocompleteExtension(plugin: CancipPlugin): Extensio
       const local = plugin.editorLocalAutocompleteSuffix(snapshot.prefix);
       const path = plugin.app.workspace.getActiveFile()?.path ?? "";
       const prefetched = options.force ? [] : plugin.editorPrefetchedAutocompleteCandidates(snapshot.prefix, path);
+      const waitForCompleteModelTree = plugin.editorAutocompleteModelConfigured();
       const immediateCandidates = uniqueEditorAutocompleteCandidates([
         ...(prefetched ?? []),
         ...(carried?.candidates ?? []),
-        ...(local ? [local] : [])
+        ...(waitForCompleteModelTree ? [] : local ? [local] : [])
       ], plugin.editorAutocompleteCandidateCount());
       if (immediateCandidates.length) {
         this.queuedSnapshot = null;
@@ -14327,6 +14328,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return this.activeApiProfile();
   }
 
+  editorAutocompleteModelConfigured(): boolean {
+    if (!this.settings.composerAutocompleteEnabled || !this.settings.composerAutocompletePrefetchEnabled) return false;
+    const profile = this.autocompleteApiProfile();
+    return Boolean(profile.apiUrl.trim() && profile.apiKey.trim() && profile.model.trim());
+  }
+
   autocompleteApiProfileOptions(): Array<{ value: string; label: string }> {
     const selectedId = this.settings.composerAutocompleteApiProfileId.trim();
     return [
@@ -14376,26 +14383,31 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (!profile.apiUrl || !profile.apiKey || !profile.model) return "";
     const endpoint = normalizeApiUrl(profile.apiUrl);
     const post = async (url: string, body: unknown): Promise<string> => {
-      const response = await requestUrl({
-        url,
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${profile.apiKey}`
-        },
-        body: JSON.stringify(body),
-        throw: false
-      });
-      if (response.status < 200 || response.status >= 300) {
-        throw new Error(`Autocomplete HTTP ${response.status}: ${trimContext(response.text, 240)}`);
-      }
-      let json: unknown = null;
+      const finishActivity = this.beginEditorAutocompleteActivity();
       try {
-        json = response.json;
-      } catch {
-        json = null;
+        const response = await requestUrl({
+          url,
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${profile.apiKey}`
+          },
+          body: JSON.stringify(body),
+          throw: false
+        });
+        if (response.status < 200 || response.status >= 300) {
+          throw new Error(`Autocomplete HTTP ${response.status}: ${trimContext(response.text, 240)}`);
+        }
+        let json: unknown = null;
+        try {
+          json = response.json;
+        } catch {
+          json = null;
+        }
+        return sanitizeModelVisibleAnswer(extractResponseText(json) || extractNonJsonText(response.text));
+      } finally {
+        finishActivity();
       }
-      return sanitizeModelVisibleAnswer(extractResponseText(json) || extractNonJsonText(response.text));
     };
     const compatible = async (): Promise<string> => await post(endpoint.chatUrl, {
       model: profile.model,
@@ -15364,22 +15376,20 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     const cached = this.editorAutocompleteCache.get(cacheKey);
     if (cached !== undefined) return cached;
-    const finishActivity = this.beginEditorAutocompleteActivity();
+    const busyDeadline = Date.now() + 15000;
+    while (this.editorAutocompleteModelBusy && generation === this.editorAutocompleteGeneration && this.settings.composerAutocompleteEnabled && Date.now() < busyDeadline) {
+      await sleep(80);
+    }
+    if (generation !== this.editorAutocompleteGeneration || this.editorAutocompleteModelBusy || !this.settings.composerAutocompleteEnabled) return [];
+    if (options.force) this.editorAutocompleteCache.delete(cacheKey);
+    const cachedAfterWait = this.editorAutocompleteCache.get(cacheKey);
+    if (!options.force && cachedAfterWait !== undefined) return cachedAfterWait;
+    const waitMs = Math.max(0, this.editorAutocompleteLastModelAt + EDITOR_AUTOCOMPLETE_MODEL_COOLDOWN_MS - Date.now());
+    if (waitMs) await sleep(waitMs);
+    if (generation !== this.editorAutocompleteGeneration || this.editorAutocompleteModelBusy || !this.settings.composerAutocompleteEnabled) return [];
+    this.editorAutocompleteModelBusy = true;
+    this.editorAutocompleteLastModelAt = Date.now();
     try {
-      const busyDeadline = Date.now() + 15000;
-      while (this.editorAutocompleteModelBusy && generation === this.editorAutocompleteGeneration && this.settings.composerAutocompleteEnabled && Date.now() < busyDeadline) {
-        await sleep(80);
-      }
-      if (generation !== this.editorAutocompleteGeneration || this.editorAutocompleteModelBusy || !this.settings.composerAutocompleteEnabled) return [];
-      if (options.force) this.editorAutocompleteCache.delete(cacheKey);
-      const cachedAfterWait = this.editorAutocompleteCache.get(cacheKey);
-      if (!options.force && cachedAfterWait !== undefined) return cachedAfterWait;
-      const waitMs = Math.max(0, this.editorAutocompleteLastModelAt + EDITOR_AUTOCOMPLETE_MODEL_COOLDOWN_MS - Date.now());
-      if (waitMs) await sleep(waitMs);
-      if (generation !== this.editorAutocompleteGeneration || this.editorAutocompleteModelBusy || !this.settings.composerAutocompleteEnabled) return [];
-      this.editorAutocompleteModelBusy = true;
-      this.editorAutocompleteLastModelAt = Date.now();
-      try {
         const raw = await withTimeout(
           this.generateEditorAutocompleteSuffix(prefix, nearbyContext, path, profile, options.excluded, options.roots),
           14000,
@@ -15422,9 +15432,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       } finally {
         this.editorAutocompleteModelBusy = false;
       }
-    } finally {
-      finishActivity();
-    }
   }
 
   sortComposerSuggestionChoices(choices: ComposerSuggestionChoice[]): ComposerSuggestionChoice[] {
