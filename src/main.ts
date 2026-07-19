@@ -29,7 +29,7 @@ import {
 } from "obsidian";
 import html2canvas from "html2canvas";
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
+import { Decoration, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { DEFAULT_SYSTEM_PROMPT, LEGACY_SYSTEM_PROMPT, PLUGIN_NAME, VIEW_TYPE } from "./constants";
 import {
   buildObReviewGatePackage,
@@ -201,6 +201,12 @@ type ReviewGateSnapshot = {
   packages: string[];
   byPath: Map<string, ReviewGateSnapshotEntry>;
   pendingCount: number;
+};
+
+type ReviewGatePackageIndex = {
+  schemaVersion: 1;
+  updatedAt: string;
+  packages: string[];
 };
 
 type ReviewGateSourcePane = {
@@ -740,6 +746,14 @@ type DocumentDrawingTextStroke = {
   fontSize: number;
   bold: boolean;
   code: boolean;
+};
+
+type NoteDrawApi = {
+  readDrawings?: (file: TFile) => unknown | Promise<unknown>;
+  writeDrawings?: (file: TFile, data: Record<string, unknown>) => unknown | Promise<unknown>;
+  insertStroke?: (file: TFile, stroke: Record<string, unknown>) => unknown | Promise<unknown>;
+  getStoragePaths?: (file: TFile) => unknown;
+  on?: (event: string, listener: (detail: unknown) => void) => unknown;
 };
 
 type VaultAttachmentParseCacheEntry = ParsedAttachmentResult & {
@@ -2826,6 +2840,7 @@ const TOOL_RESULT_DETAIL_MAX_CHARS = 120000;
 const MODEL_EXCHANGE_FRAGMENT_MAX_CHARS = 60000;
 const REVIEW_GATE_DIR = `${CANCIP_AI_DIR}/Review`;
 const REVIEW_GATE_HIDDEN_DIR = `${CANCIP_CONFIG_DIR}/review-gates`;
+const REVIEW_GATE_PACKAGE_INDEX_PATH = `${CANCIP_CONFIG_DIR}/review-index.json`;
 const REVIEW_GATE_MAX_FILES = 80;
 const REVIEW_GATE_MAX_FILE_CHARS = 120000;
 const CONTEXT_STEP_TIMEOUT_MS = 3500;
@@ -7299,6 +7314,7 @@ export default class CancipPlugin extends Plugin {
   private reviewGateSnapshotPromiseRevision = -1;
   private reviewGateSnapshotRevision = 0;
   private reviewGateSnapshotTtlMs = 10000;
+  private reviewGatePackageIndexWriteQueue: Promise<void> = Promise.resolve();
   private statusBarVisibilityObserver: MutationObserver | null = null;
   private statusBarVisibilityTimer: number | null = null;
   private statusBarVisibilityApplying = false;
@@ -7511,7 +7527,7 @@ export default class CancipPlugin extends Plugin {
     void this.restoreDocumentWorkbenchLeaves();
     this.ensureDocumentWorkbenchExtensions();
     this.app.workspace.onLayoutReady(() => {
-      activeWindow.setTimeout(() => {
+      window.setTimeout(() => {
         this.ensureDocumentWorkbenchExtensions();
         void this.restoreDocumentWorkbenchLeaves();
       }, 0);
@@ -8306,6 +8322,9 @@ export default class CancipPlugin extends Plugin {
     };
     await run("ensureDefaultDailyAutomations", () => this.ensureDefaultDailyAutomations());
     await run("resumeInterruptedSessions", () => this.resumeInterruptedSessionsOnStartup());
+    await run("reconcileReviewGatePackageIndex", async () => {
+      await this.reconcileReviewGatePackageIndex();
+    });
     this.scheduleAutomations();
     this.scheduleCancipStatePolling();
     this.scheduleBuiltinPrimeTtsWarmup();
@@ -13271,8 +13290,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         const stillSortable = parent ? this.sortableUiButtonChildren(parent).includes(target) : false;
         if (!target.isConnected || !stillSortable) {
           target.removeClass("obcc-ui-sort-target", "obcc-ui-sort-dragging");
-          target.style.removeProperty("--obcc-ui-sort-outline-width");
-          target.style.removeProperty("--obcc-ui-sort-outline-offset");
+          target.setCssProps({
+            "--obcc-ui-sort-outline-width": "",
+            "--obcc-ui-sort-outline-offset": ""
+          });
           handle.remove();
           handles.delete(target);
           continue;
@@ -13285,19 +13306,22 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         handle.setCssStyles({ display: "" });
         if (inlineSortHandle) {
           const size = Math.max(16, Math.round(20 * sortFrameScale));
-          handle.style.setProperty("--obcc-ui-sort-handle-size", `${size}px`);
-          handle.style.removeProperty("left");
-          handle.style.removeProperty("top");
-          target.style.setProperty("--obcc-ui-sort-outline-width", `${Math.max(1, sortFrameScale)}px`);
-          target.style.setProperty("--obcc-ui-sort-outline-offset", `${Math.max(1, 2 * sortFrameScale)}px`);
+          handle.setCssProps({ "--obcc-ui-sort-handle-size": `${size}px` });
+          handle.setCssStyles({ left: "", top: "" });
+          target.setCssProps({
+            "--obcc-ui-sort-outline-width": `${Math.max(1, sortFrameScale)}px`,
+            "--obcc-ui-sort-outline-offset": `${Math.max(1, 2 * sortFrameScale)}px`
+          });
           continue;
         }
         const rect = target.getBoundingClientRect();
         const size = Math.max(16, Math.round(20 * sortFrameScale));
         const inset = Math.max(1, Math.round(2 * sortFrameScale));
-        target.style.setProperty("--obcc-ui-sort-outline-width", `${Math.max(1, sortFrameScale)}px`);
-        target.style.setProperty("--obcc-ui-sort-outline-offset", `${Math.max(1, 2 * sortFrameScale)}px`);
-        handle.style.setProperty("--obcc-ui-sort-handle-size", `${size}px`);
+        target.setCssProps({
+          "--obcc-ui-sort-outline-width": `${Math.max(1, sortFrameScale)}px`,
+          "--obcc-ui-sort-outline-offset": `${Math.max(1, 2 * sortFrameScale)}px`
+        });
+        handle.setCssProps({ "--obcc-ui-sort-handle-size": `${size}px` });
         const rawLeft = rect.right - size - inset;
         const rawTop = rect.bottom - size - inset;
         const minLeft = Math.max(4, Math.min(rect.right - size, rect.left + inset));
@@ -13559,8 +13583,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       win.removeEventListener("resize", scrollOrResize);
       for (const target of handles.keys()) {
         target.removeClass("obcc-ui-sort-target", "obcc-ui-sort-dragging");
-        target.style.removeProperty("--obcc-ui-sort-outline-width");
-        target.style.removeProperty("--obcc-ui-sort-outline-offset");
+        target.setCssProps({
+          "--obcc-ui-sort-outline-width": "",
+          "--obcc-ui-sort-outline-offset": ""
+        });
       }
       overlay.remove();
       snapshotStage?.cleanup();
@@ -13586,8 +13612,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     doc.querySelectorAll<HTMLElement>(".obcc-ui-sort-handle").forEach((el) => el.remove());
     doc.querySelectorAll<HTMLElement>(".obcc-ui-sort-target, .obcc-ui-sort-dragging").forEach((target) => {
       target.removeClass("obcc-ui-sort-target", "obcc-ui-sort-dragging");
-      target.style.removeProperty("--obcc-ui-sort-outline-width");
-      target.style.removeProperty("--obcc-ui-sort-outline-offset");
+      target.setCssProps({
+        "--obcc-ui-sort-outline-width": "",
+        "--obcc-ui-sort-outline-offset": ""
+      });
     });
   }
 
@@ -15304,6 +15332,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       maxFiles: clampInt(args.maxFiles, REVIEW_GATE_MAX_FILES, 1, 500),
       maxFileChars: clampInt(args.maxFileChars, REVIEW_GATE_MAX_FILE_CHARS, 1000, 1000000)
     });
+    await this.mergeReviewGatePackageIndex([result.indexPath], false);
     this.invalidateReviewGateSnapshot();
     return result;
   }
@@ -15328,6 +15357,82 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   async prewarmReviewGateData(force = false): Promise<ReviewGateSnapshot> {
     return await this.reviewGateSnapshot(force);
+  }
+
+  private normalizeReviewGatePackageManifestPath(path: string): string {
+    const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, ""));
+    const prefix = `${REVIEW_GATE_HIDDEN_DIR}/`;
+    if (!normalized.startsWith(prefix)) return "";
+    const parts = normalized.slice(prefix.length).split("/").filter(Boolean);
+    if (parts.length !== 2 || parts[1].toLowerCase() !== "manifest.json") return "";
+    return `${prefix}${parts[0]}/manifest.json`;
+  }
+
+  private sortReviewGatePackagePaths(paths: string[]): string[] {
+    return uniqueStrings(paths
+      .map((path) => this.normalizeReviewGatePackageManifestPath(path))
+      .filter(Boolean))
+      .sort((a, b) => reviewGateDisplayName(b).localeCompare(reviewGateDisplayName(a)) || b.localeCompare(a));
+  }
+
+  private async readReviewGatePackageIndex(): Promise<ReviewGatePackageIndex | null> {
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(REVIEW_GATE_PACKAGE_INDEX_PATH))) return null;
+    try {
+      const parsed = JSON.parse(await adapter.read(REVIEW_GATE_PACKAGE_INDEX_PATH)) as unknown;
+      if (!isRecord(parsed) || parsed.schemaVersion !== 1 || !Array.isArray(parsed.packages)) return null;
+      return {
+        schemaVersion: 1,
+        updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
+        packages: this.sortReviewGatePackagePaths(parsed.packages.filter((path): path is string => typeof path === "string"))
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  private async mergeReviewGatePackageIndex(additionalPaths: string[], reconcile: boolean): Promise<string[]> {
+    let result: string[] = [];
+    const operation = this.reviewGatePackageIndexWriteQueue.then(async () => {
+      const adapter = this.app.vault.adapter;
+      const current = await this.readReviewGatePackageIndex();
+      const discovered = reconcile || !current
+        ? await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 500).catch(() => [] as string[])
+        : [];
+      result = this.sortReviewGatePackagePaths([
+        ...(current?.packages ?? []),
+        ...discovered,
+        ...additionalPaths
+      ]);
+      if (current && sameStringArray(current.packages, result)) return;
+      await ensureFolder(adapter, CANCIP_CONFIG_DIR);
+      const payload: ReviewGatePackageIndex = {
+        schemaVersion: 1,
+        updatedAt: new Date().toISOString(),
+        packages: result
+      };
+      await adapter.write(REVIEW_GATE_PACKAGE_INDEX_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+      const verified = await this.readReviewGatePackageIndex();
+      if (!verified || !result.every((path) => verified.packages.includes(path))) {
+        throw new Error("Review Gate package index verification failed");
+      }
+    });
+    this.reviewGatePackageIndexWriteQueue = operation.catch(() => undefined);
+    await operation;
+    return result;
+  }
+
+  async reviewGatePackagePaths(reconcile = false): Promise<string[]> {
+    await this.reviewGatePackageIndexWriteQueue;
+    const indexed = await this.readReviewGatePackageIndex();
+    if (indexed && !reconcile) return indexed.packages;
+    return await this.mergeReviewGatePackageIndex([], true);
+  }
+
+  async reconcileReviewGatePackageIndex(): Promise<string[]> {
+    const packages = await this.reviewGatePackagePaths(true);
+    this.invalidateReviewGateSnapshot();
+    return packages;
   }
 
   private async readReviewGatePackage(path: string): Promise<ReviewGatePackageData> {
@@ -15429,11 +15534,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       return await this.reviewGateSnapshotPromise;
     }
     const operation = (async () => {
-      const limit = 500;
-      const roots = [REVIEW_GATE_HIDDEN_DIR];
-      const packages = uniqueStrings((await Promise.all(
-        roots.map((root) => listReviewGatePackages(this.app.vault.adapter, root, limit).catch(() => [] as string[]))
-      )).flat())
+      const packages = (await this.reviewGatePackagePaths())
         .filter((path) => !isReviewGateAttentionExcluded(path))
         .sort((a, b) => reviewGateDisplayName(b).localeCompare(reviewGateDisplayName(a)));
       const byPath = new Map<string, ReviewGateSnapshotEntry>();
@@ -17268,7 +17369,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       doc.querySelectorAll<HTMLElement>(".is-cancip-file-pin-container").forEach((element) => element.removeClass("is-cancip-file-pin-container"));
       doc.querySelectorAll<HTMLElement>("[data-cancip-file-pin-seen], .is-cancip-file-pinned, .is-cancip-file-pin-sortable, .is-cancip-file-pin-dragging, .is-cancip-file-pin-ordered").forEach((element) => {
         element.removeClass("is-cancip-file-pinned", "is-cancip-file-pin-sortable", "is-cancip-file-pin-dragging", "is-cancip-file-pin-ordered");
-        element.style.removeProperty("--obcc-file-pin-order");
+        element.setCssProps({ "--obcc-file-pin-order": "" });
         delete element.dataset.cancipFilePinned;
         delete element.dataset.cancipFilePinSeen;
       });
@@ -18039,8 +18140,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       if (el.dataset.cancipUiOriginalDisplay !== undefined || el.dataset.cancipUiOriginalDisplayPriority !== undefined) {
         const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
         const originalPriority = el.dataset.cancipUiOriginalDisplayPriority ?? "";
-        if (originalDisplay) el.style.setProperty("display", originalDisplay, originalPriority);
-        else el.style.removeProperty("display");
+        el.setCssStyles({
+          display: originalDisplay
+            ? `${originalDisplay}${originalPriority ? " !important" : ""}`
+            : ""
+        });
         delete el.dataset.cancipUiOriginalDisplay;
         delete el.dataset.cancipUiOriginalDisplayPriority;
       }
@@ -18075,8 +18179,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     for (const el of Array.from(doc.querySelectorAll<HTMLElement>(".obcc-ui-rule-flex-parent, .obcc-ui-rule-inline-flex-parent, .obcc-ui-rule-menu-section-contents, .obcc-ui-rule-menu-complete-sort-parent"))) {
       const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
       const originalPriority = el.dataset.cancipUiOriginalDisplayPriority ?? "";
-      if (originalDisplay) el.style.setProperty("display", originalDisplay, originalPriority);
-      else el.style.removeProperty("display");
+      el.setCssStyles({
+        display: originalDisplay
+          ? `${originalDisplay}${originalPriority ? " !important" : ""}`
+          : ""
+      });
       delete el.dataset.cancipUiOriginalDisplay;
       delete el.dataset.cancipUiOriginalDisplayPriority;
       el.removeClass("obcc-ui-rule-flex-parent", "obcc-ui-rule-inline-flex-parent", "obcc-ui-rule-menu-section-contents", "obcc-ui-rule-menu-complete-sort-parent");
@@ -19887,6 +19994,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       AUTOMATION_DIR,
       LOCAL_VERSION_DIR,
       LOCAL_VERSION_INDEX_PATH,
+      REVIEW_GATE_PACKAGE_INDEX_PATH,
       REVIEW_GATE_HIDDEN_DIR,
       DEFAULT_MEMORY_FOLDER,
       this.settings.memoryFolder || DEFAULT_MEMORY_FOLDER,
@@ -20415,12 +20523,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private async reviewGateVaultStateFingerprint(): Promise<string> {
     const adapter = this.app.vault.adapter;
-    const listing = await adapter.list(REVIEW_GATE_HIDDEN_DIR).catch(() => null);
-    if (!listing) return "missing";
-    const folders = listing.folders.map((path) => normalizePath(path)).sort().slice(0, 500);
-    const rows = [`packages:${folders.join(",")}`];
+    const packages = await this.reviewGatePackagePaths();
+    const indexStat = await adapter.stat(REVIEW_GATE_PACKAGE_INDEX_PATH).catch(() => null);
+    const rows = [
+      `index:${indexStat?.mtime ?? 0}:${indexStat?.size ?? 0}:${stableTextHash(packages.join("\n"))}`
+    ];
     const seen = new Set<string>();
-    for (const folder of folders) {
+    for (const manifestPath of packages) {
+      const manifestStat = await adapter.stat(manifestPath).catch(() => null);
+      rows.push(`${manifestPath}:${manifestStat?.mtime ?? 0}:${manifestStat?.size ?? 0}`);
+      const folder = reviewGatePackageFolder(manifestPath);
       const path = `${folder}/review-corrections/pending.jsonl`;
       seen.add(path);
       const stat = await adapter.stat(path).catch(() => null);
@@ -20679,7 +20791,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     } finally {
       if (temporary) {
         const current = this.app.vault.getAbstractFileByPath(temporary.path);
-        if (current instanceof TFile) await this.app.vault.delete(current, true);
+        if (current instanceof TFile) await this.app.fileManager.trashFile(current);
       } else if (await this.app.vault.adapter.exists(tempPath)) {
         await this.app.vault.adapter.remove(tempPath);
       }
@@ -21789,10 +21901,10 @@ class CancipDocumentWorkbenchView extends FileView {
     }
   }
 
-  private noteDrawApi(): Record<string, (...items: unknown[]) => unknown> | null {
+  private noteDrawApi(): NoteDrawApi | null {
     const runtime = ((this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins ?? {})["notedraw"];
     if (!isRecord(runtime) || !isRecord(runtime.api)) return null;
-    return runtime.api as Record<string, (...items: unknown[]) => unknown>;
+    return runtime.api as NoteDrawApi;
   }
 
   private async readNoteDrawStrokes(file: TFile): Promise<DocumentDrawingStroke[]> {
@@ -37593,9 +37705,7 @@ class CancipView extends ItemView {
     const adapter = this.app.vault.adapter;
     let packages: string[] = [];
     try {
-      packages = uniqueStrings([
-        ...await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 80)
-      ]);
+      packages = await this.plugin.reviewGatePackagePaths();
     } catch {
       return null;
     }
@@ -37668,9 +37778,7 @@ class CancipView extends ItemView {
     const adapter = this.app.vault.adapter;
     let packages: string[] = [];
     try {
-      packages = uniqueStrings([
-        ...await listReviewGatePackages(adapter, REVIEW_GATE_HIDDEN_DIR, 120)
-      ]);
+      packages = await this.plugin.reviewGatePackagePaths();
     } catch {
       return;
     }
@@ -40019,10 +40127,10 @@ class CancipView extends ItemView {
     return lines.filter(Boolean).join("\n");
   }
 
-  private noteDrawApi(): Record<string, (...items: unknown[]) => unknown> | null {
+  private noteDrawApi(): NoteDrawApi | null {
     const runtime = ((this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins ?? {})["notedraw"];
     if (!isRecord(runtime) || !isRecord(runtime.api)) return null;
-    return runtime.api as Record<string, (...items: unknown[]) => unknown>;
+    return runtime.api as NoteDrawApi;
   }
 
   private noteAnnotationFile(args: Record<string, unknown>, required = true): TFile | null {
@@ -40078,7 +40186,7 @@ class CancipView extends ItemView {
     };
   }
 
-  private async noteDrawStrokeCount(api: Record<string, (...items: unknown[]) => unknown>, file: TFile): Promise<number> {
+  private async noteDrawStrokeCount(api: NoteDrawApi, file: TFile): Promise<number> {
     if (typeof api.readDrawings !== "function") return 0;
     try {
       const data = await Promise.resolve(api.readDrawings(file));
@@ -40088,7 +40196,7 @@ class CancipView extends ItemView {
     }
   }
 
-  private noteDrawStorageSummary(api: Record<string, (...items: unknown[]) => unknown>, file: TFile): string {
+  private noteDrawStorageSummary(api: NoteDrawApi, file: TFile): string {
     if (typeof api.getStoragePaths !== "function") return "";
     try {
       return safeJsonishDisplay(api.getStoragePaths(file));
@@ -40811,12 +40919,13 @@ class CancipView extends ItemView {
       if (!source || !target || !target.isConnected) continue;
       const computed = sourceWindow.getComputedStyle(source);
       target.removeAttribute("style");
+      const copiedStyles: Record<string, string> = {};
       for (const property of Array.from(computed)) {
-        target.style.setProperty(property, normalizeModernColors(computed.getPropertyValue(property)), computed.getPropertyPriority(property));
+        const value = normalizeModernColors(computed.getPropertyValue(property));
+        const priority = computed.getPropertyPriority(property);
+        copiedStyles[property] = priority ? `${value} !${priority}` : value;
       }
-      target.style.removeProperty("animation");
-      target.style.removeProperty("transition");
-      target.style.removeProperty("caret-color");
+      setCaptureStyles(target, copiedStyles as Partial<CSSStyleDeclaration>);
       setCaptureStyles(target, { animation: "none", transition: "none", caretColor: "transparent" });
       if (source.tagName === "INPUT" && target.tagName === "INPUT") (target as HTMLInputElement).value = (source as HTMLInputElement).value;
       if (source.tagName === "TEXTAREA" && target.tagName === "TEXTAREA") (target as HTMLTextAreaElement).value = (source as HTMLTextAreaElement).value;
@@ -46213,35 +46322,6 @@ function buildVaultCurationPrompt(): string {
   ].join("\n");
 }
 
-function shouldUpgradeVaultCurationAutomationTask(task: AutomationTask, template: AutomationTemplate): boolean {
-  if (task.id !== VAULT_CURATION_AUTOMATION_ID) return false;
-  const nextPrompt = template.prompt?.trim() ?? "";
-  if (!nextPrompt) return false;
-  if ((template.watchNewFiles && !task.watchNewFiles)
-    || (template.newFilePattern && task.newFilePattern !== template.newFilePattern)
-    || (template.notifyMode && task.notifyMode !== template.notifyMode)) return true;
-  if (task.prompt.includes(VAULT_CURATION_AUTOMATION_PROMPT_MARKER)) return false;
-  const text = `${task.title}\n${task.prompt}`;
-  return /Vault 自动整理|auto-vault-curation|改名、内容整理美化|挂 tag|挂总结|auto-vault-content-beautify|auto-vault-auto-tags|auto-vault-file-summaries/i.test(text);
-}
-
-function shouldUpgradeVaultDailyReportAutomationTask(task: AutomationTask, template: AutomationTemplate): boolean {
-  if (task.id !== VAULT_DAILY_REPORT_AUTOMATION_ID) return false;
-  const nextPrompt = template.prompt?.trim() ?? "";
-  if (!nextPrompt) return false;
-  if (task.prompt.includes(VAULT_DAILY_REPORT_PROMPT_MARKER)) return false;
-  const text = `${task.title}\n${task.prompt}`;
-  return /Vault\s*每日|维护合并日报|maintenance|merge-candidate|每日维护|日报/i.test(text);
-}
-
-function shouldUpgradeMemoryDreamAutomationTask(task: AutomationTask, template: AutomationTemplate): boolean {
-  if (task.id !== MEMORY_DREAM_AUTOMATION_ID) return false;
-  const nextPrompt = template.prompt?.trim() ?? "";
-  if (!nextPrompt || task.prompt.includes(MEMORY_DREAM_PROMPT_MARKER)) return false;
-  return task.command?.trim() === "cancip.memoryDream"
-    || task.prompt.includes("做一次 Cancip 零点记忆整理，让后续任务更省 token、更少重复失败");
-}
-
 function buildTranslateCurrentPagePrompt(input: CurrentPageTranslationCapture, targetLanguage: string): string {
   const source = [input.label, input.path].filter(Boolean).join(" · ") || input.source;
   return [
@@ -47504,7 +47584,8 @@ function isReviewGateAttentionExcluded(path: string): boolean {
 function isReviewGateRelatedPath(path: string): boolean {
   const normalized = normalizePath(String(path ?? "").replace(/\\/g, "/"));
   if (!normalized) return false;
-  return normalized === REVIEW_GATE_HIDDEN_DIR
+  return normalized === REVIEW_GATE_PACKAGE_INDEX_PATH
+    || normalized === REVIEW_GATE_HIDDEN_DIR
     || normalized.startsWith(`${REVIEW_GATE_HIDDEN_DIR}/`);
 }
 
