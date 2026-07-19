@@ -691,6 +691,70 @@ if (-not $Case -or 'programmatic.review-count-canonical-state'.Contains($Case)) 
   }
 }
 
+if (-not $Case -or 'programmatic.review-auto-advance'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const started=Date.now(),p=app.plugins.plugins.cancip,doc=activeDocument;
+  if(!p)throw new Error('Cancip runtime unavailable');
+  const view=await p.activateReviewView();
+  if(!view||typeof view.advanceReviewAfterDecision!=='function'||typeof view.renderReviewGatePanel!=='function')throw new Error('review navigation API unavailable');
+  const item=(path)=>({path,old_text:'old',new_text:'new',changes:['write'],links:{},structure:[]});
+  const entry=(pkg,path)=>({packagePath:pkg,data:{path:pkg,folder:pkg.replace(/\/manifest\.json$/,''),title:pkg,generatedAt:'',items:[item(path)]},item:item(path)});
+  const a=entry('.cancip/review-gates/a/manifest.json','notes/a.md');
+  const b=entry('.cancip/review-gates/a/manifest.json','notes/b.md');
+  const c=entry('.cancip/review-gates/b/manifest.json','notes/c.md');
+  const original={
+    collect:view.collectAllPendingReviewEntries,render:view.render,renderAll:view.renderAllPendingReviewGates,
+    count:p.pendingReviewGateItemCount,refresh:view.refreshReviewState,
+    packagePath:view.packagePath,selectedItemPath:view.selectedItemPath,sourceMode:view.sourceMode,reviewViewMode:view.reviewViewMode
+  };
+  let remaining=[],renders=0,globalFallbacks=0,sourceRefreshes=0,forceFlags=[];
+  const host=doc.createElement('div');
+  try{
+    view.collectAllPendingReviewEntries=async(force)=>{forceFlags.push(Boolean(force));return remaining;};
+    view.render=async()=>{renders+=1;};
+    remaining=[b,c];
+    await view.advanceReviewAfterDecision(a.packagePath,a.item.path,[a,b,c]);
+    const samePackage=view.packagePath===b.packagePath&&view.selectedItemPath===b.item.path;
+    remaining=[c];
+    await view.advanceReviewAfterDecision(b.packagePath,b.item.path,[b,c]);
+    const crossPackage=view.packagePath===c.packagePath&&view.selectedItemPath===c.item.path;
+    remaining=[];
+    await view.advanceReviewAfterDecision(c.packagePath,c.item.path,[c]);
+    const finished=view.packagePath===''&&view.selectedItemPath==='';
+    view.packagePath=a.packagePath;view.selectedItemPath=a.item.path;
+    p.pendingReviewGateItemCount=async()=>0;
+    view.renderAllPendingReviewGates=async()=>{globalFallbacks+=1;};
+    await view.renderReviewGatePanel(host,a.packagePath);
+    const completeFallback=globalFallbacks===1&&view.packagePath===''&&view.selectedItemPath==='';
+    view.refreshReviewState=async()=>{sourceRefreshes+=1;};
+    p.syncOpenReviewGateDecision(a.packagePath,view);
+    await new Promise((resolve)=>setTimeout(resolve,20));
+    return JSON.stringify({
+      id:'programmatic.review-auto-advance',elapsedMs:Date.now()-started,
+      samePackage,crossPackage,finished,completeFallback,sourceRefreshSkipped:sourceRefreshes===0,
+      nonForcingAdvance:forceFlags.every((value)=>value===false),renders
+    });
+  }finally{
+    view.collectAllPendingReviewEntries=original.collect;view.render=original.render;view.renderAllPendingReviewGates=original.renderAll;
+    p.pendingReviewGateItemCount=original.count;view.refreshReviewState=original.refresh;
+    view.packagePath=original.packagePath;view.selectedItemPath=original.selectedItemPath;view.sourceMode=original.sourceMode;view.reviewViewMode=original.reviewViewMode;
+    host.remove();await original.render.call(view);
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 60
+    foreach ($field in @('samePackage','crossPackage','finished','completeFallback','sourceRefreshSkipped','nonForcingAdvance')) {
+      if (-not [bool]$item.$field) { throw "review auto-advance regression failed: $field; $($item | ConvertTo-Json -Compress -Depth 8)" }
+    }
+    if ([int]$item.renders -ne 3) { throw "review navigation rendered an unexpected number of times: $($item.renders)" }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.review-auto-advance'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.community-review-regressions'.Contains($Case)) {
   try {
     $code = @'

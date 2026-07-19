@@ -185,6 +185,12 @@ type ReviewGatePackageData = {
   items: ReviewGateManifestItem[];
 };
 
+type ReviewGatePendingEntry = {
+  packagePath: string;
+  data: ReviewGatePackageData;
+  item: ReviewGateManifestItem;
+};
+
 type ReviewGateLightItem = ReviewGateManifestItem & {
   summaryLineDelta?: LineDeltaSummary;
 };
@@ -15551,7 +15557,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private async mutateReviewGateCanonicalState(
-    mutate: (state: ReviewGateCanonicalState) => ReviewGateCanonicalState | void
+    mutate: (state: ReviewGateCanonicalState) => ReviewGateCanonicalState | void,
+    invalidateSnapshot = true
   ): Promise<ReviewGateCanonicalState> {
     let result: ReviewGateCanonicalState | null = null;
     const operation = this.reviewGateCanonicalStateWriteQueue.then(async () => {
@@ -15568,7 +15575,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.reviewGateCanonicalStateWriteQueue = operation.catch(() => undefined);
     await operation;
     if (!result) throw new Error("Review Gate canonical state update failed");
-    this.invalidateReviewGateSnapshot();
+    if (invalidateSnapshot) this.invalidateReviewGateSnapshot();
     return result;
   }
 
@@ -15595,14 +15602,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       itemKeys: new Set(update.itemPaths.map(reviewGateLogicalPathKey).filter(Boolean))
     })).filter((update) => update.manifestKey && update.itemKeys.size);
     if (!normalizedUpdates.length) return;
-    await this.mutateReviewGateCanonicalState((state) => {
+    const state = await this.mutateReviewGateCanonicalState((state) => {
       for (const update of normalizedUpdates) {
         const entry = state.packages.find((candidate) => reviewGateLogicalPathKey(candidate.manifestPath) === update.manifestKey);
         if (!entry) continue;
         entry.pendingPaths = entry.pendingPaths.filter((itemPath) => !update.itemKeys.has(reviewGateLogicalPathKey(itemPath)));
       }
       return state;
-    });
+    }, false);
+    const snapshot = this.reviewGateSnapshotCache;
+    if (!snapshot || this.reviewGateSnapshotPromise) {
+      this.invalidateReviewGateSnapshot();
+      return;
+    }
+    for (const update of normalizedUpdates) {
+      const entry = snapshot.byPath.get(update.manifestKey);
+      if (!entry) continue;
+      entry.pendingPaths = new Set([...entry.pendingPaths].filter((itemPath) => !update.itemKeys.has(reviewGateLogicalPathKey(itemPath))));
+    }
+    snapshot.pendingCount = state.pendingPaths.length;
+    snapshot.loadedAt = Date.now();
   }
 
   private async readReviewGatePackage(path: string): Promise<ReviewGatePackageData> {
@@ -19976,7 +19995,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.syncAllCodeBlockWrap();
   }
 
-  syncOpenReviewGateDecision(reviewPath: string): void {
+  syncOpenReviewGateDecision(reviewPath: string, sourceView?: CancipReviewLeafView): void {
     this.invalidateReviewGateSnapshot();
     for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
@@ -19985,7 +20004,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
     }
     for (const leaf of this.app.workspace.getLeavesOfType(CANCIP_REVIEW_VIEW_TYPE)) {
-      if (leaf.view instanceof CancipReviewLeafView) {
+      if (leaf.view instanceof CancipReviewLeafView && leaf.view !== sourceView) {
         void leaf.view.refreshReviewState();
       }
     }
@@ -22758,10 +22777,18 @@ class CancipReviewLeafView extends ItemView {
       return;
     }
     if (selectedPath && await this.plugin.pendingReviewGateItemCount(selectedPath) === 0) {
-      const pendingPath = await this.plugin.firstPendingReviewGate(50);
-      if (pendingPath && pendingPath !== selectedPath) {
-        selectedPath = pendingPath;
-        this.packagePath = selectedPath;
+      this.packagePath = "";
+      this.selectedItemPath = "";
+      await this.renderAllPendingReviewGates(parent);
+      return;
+    }
+    if (selectedPath && this.selectedItemPath) {
+      const pendingKeys = new Set((await this.plugin.cachedPendingReviewGateItemPaths(selectedPath)).map(reviewGateLogicalPathKey));
+      if (!pendingKeys.has(reviewGateLogicalPathKey(this.selectedItemPath))) {
+        this.packagePath = "";
+        this.selectedItemPath = "";
+        await this.renderAllPendingReviewGates(parent);
+        return;
       }
     }
     if (!selectedPath) {
@@ -22777,64 +22804,48 @@ class CancipReviewLeafView extends ItemView {
     }
   }
 
-  private async renderAllPendingReviewGates(parent: HTMLElement): Promise<void> {
-    this.plugin.invalidateReviewGateSnapshot();
-    const snapshot = await this.plugin.prewarmReviewGateData(true);
-    const packages = snapshot.packages.filter((path) => (
-      snapshot.byPath.get(reviewGateLogicalPathKey(path))?.pendingPaths.size ?? 0
-    ) > 0);
-    if (!packages.length) {
-      parent.createDiv({ cls: "obcc-review-native-empty", text: this.t("reviewGatePanelEmpty") });
-      return;
-    }
-    const pendingData: Array<{ data: ReviewGatePackageData; items: ReviewGateManifestItem[] }> = [];
+  private async collectAllPendingReviewEntries(force = false): Promise<ReviewGatePendingEntry[]> {
+    if (force) this.plugin.invalidateReviewGateSnapshot();
+    const snapshot = await this.plugin.prewarmReviewGateData(force);
+    const result: ReviewGatePendingEntry[] = [];
     const seenPaths = new Set<string>();
-    for (const packagePath of packages) {
-      try {
-        const entry = snapshot.byPath.get(reviewGateLogicalPathKey(packagePath));
-        if (!entry) continue;
-        const data = entry.data;
-        const pendingPaths = entry.pendingPaths;
-        const pendingKeys = new Set([...pendingPaths].map(reviewGateLogicalPathKey));
-        const items = data.items.filter((item) => {
-          const key = reviewGateLogicalPathKey(item.path);
-          if (!pendingKeys.has(key)) return false;
-          if (seenPaths.has(key)) return false;
-          seenPaths.add(key);
-          return true;
-        });
-        if (items.length) pendingData.push({ data, items });
-      } catch (error) {
-        console.warn("Cancip review package load failed", packagePath, error);
+    for (const packagePath of snapshot.packages) {
+      const snapshotEntry = snapshot.byPath.get(reviewGateLogicalPathKey(packagePath));
+      if (!snapshotEntry?.pendingPaths.size) continue;
+      const pendingKeys = new Set([...snapshotEntry.pendingPaths].map(reviewGateLogicalPathKey));
+      for (const item of snapshotEntry.data.items) {
+        const key = reviewGateLogicalPathKey(item.path);
+        if (!pendingKeys.has(key) || seenPaths.has(key)) continue;
+        seenPaths.add(key);
+        result.push({ packagePath: snapshotEntry.data.path, data: snapshotEntry.data, item });
       }
     }
-    const total = pendingData.reduce((sum, entry) => sum + entry.items.length, 0);
-    if (!pendingData.length || total <= 0) {
+    return result;
+  }
+
+  private async renderAllPendingReviewGates(parent: HTMLElement): Promise<void> {
+    const entries = await this.collectAllPendingReviewEntries(true);
+    if (!entries.length) {
       parent.createDiv({ cls: "obcc-review-native-empty", text: this.t("reviewGatePanelEmpty") });
       return;
     }
-    const selectedPackage = pendingData.find((entry) =>
-      entry.data.path === this.packagePath && entry.items.some((item) => item.path === this.selectedItemPath)
+    const selectedIndex = entries.findIndex((entry) =>
+      reviewGateLogicalPathKey(entry.packagePath) === reviewGateLogicalPathKey(this.packagePath)
+      && reviewGateLogicalPathKey(entry.item.path) === reviewGateLogicalPathKey(this.selectedItemPath)
     );
-    const selectedItem = selectedPackage?.items.find((item) => item.path === this.selectedItemPath);
-    if (selectedPackage && selectedItem) {
-      this.renderReviewDetail(parent, selectedPackage.data, selectedItem, selectedPackage.items.indexOf(selectedItem) + 1, selectedPackage.items.length);
+    if (selectedIndex >= 0) {
+      const selected = entries[selectedIndex];
+      this.renderReviewDetail(parent, selected.data, selected.item, selectedIndex + 1, entries.length);
       return;
     }
     const navigation = parent.createDiv({ cls: "obcc-review-file-nav is-page" });
     this.contentEl.addClass("has-review-nav");
     const head = navigation.createDiv({ cls: "obcc-review-file-nav-head" });
     head.createDiv({ cls: "obcc-review-title", text: this.t("reviewGatePendingFiles") });
-    head.createDiv({ cls: "obcc-review-meta", text: this.t("reviewPendingCount", { count: total }) });
+    head.createDiv({ cls: "obcc-review-meta", text: this.t("reviewPendingCount", { count: entries.length }) });
     const tree = navigation.createDiv({ cls: "obcc-review-file-nav-tree" });
     this.installReviewTreeTouchScroll(tree);
-    const entries: Array<{ packagePath: string; item: ReviewGateManifestItem }> = [];
-    for (const entry of pendingData) {
-      for (const item of entry.items) {
-        entries.push({ packagePath: entry.data.path, item });
-      }
-    }
-    this.renderReviewNavSections(tree, entries);
+    this.renderReviewNavSections(tree, entries.map((entry) => ({ packagePath: entry.packagePath, item: entry.item })));
     this.scheduleReviewTreeLayoutSync(tree);
   }
 
@@ -23214,6 +23225,7 @@ class CancipReviewLeafView extends ItemView {
   ): Promise<void> {
     const trimmed = note.trim();
     try {
+      const previousPending = data ? await this.collectAllPendingReviewEntries(false) : [];
       const dir = `${folder}/review-corrections`;
       await ensureFolder(this.app.vault.adapter, dir);
       const path = `${dir}/pending.jsonl`;
@@ -23240,13 +23252,13 @@ class CancipReviewLeafView extends ItemView {
       await this.app.vault.adapter.write(path, `${existing}${JSON.stringify(payload)}\n`);
       await this.plugin.markReviewGateItemsDecided(`${folder}/manifest.json`, [item.path]);
       await this.plugin.handlePersonalizationReviewDecision(item, decision);
-      this.plugin.syncOpenReviewGateDecision(`${folder}/manifest.json`);
+      if (data) {
+        await this.advanceReviewAfterDecision(data.path, item.path, previousPending);
+      }
+      this.plugin.syncOpenReviewGateDecision(`${folder}/manifest.json`, this);
       this.plugin.refreshStatusBarAttention();
       if (decision === "correction" && trimmed) {
         await this.plugin.submitReviewCorrectionPrompt({ item, note: trimmed, reviewFolder: folder });
-      }
-      if (data) {
-        await this.advanceReviewAfterDecision(data, item.path);
       }
       new Notice(decision === "cancelled" ? this.t("reviewGateCancelled") : this.t("reviewGateCorrectionSaved"));
     } catch (error) {
@@ -23255,19 +23267,31 @@ class CancipReviewLeafView extends ItemView {
     }
   }
 
-  private async advanceReviewAfterDecision(data: ReviewGatePackageData, decidedPath: string): Promise<void> {
-    const pending = (await this.pendingReviewGateItems(data)).filter((entry) => normalizePath(entry.path) !== normalizePath(decidedPath));
-    if (pending.length) {
-      this.selectedItemPath = pending[0].path;
+  private async advanceReviewAfterDecision(
+    decidedPackagePath: string,
+    decidedItemPath: string,
+    previousPending: ReviewGatePendingEntry[]
+  ): Promise<void> {
+    const remaining = await this.collectAllPendingReviewEntries(false);
+    if (!remaining.length) {
+      this.packagePath = "";
+      this.selectedItemPath = "";
       await this.render();
       return;
     }
-    this.selectedItemPath = "";
-    const nextPackage = await this.plugin.firstPendingReviewGate(50);
-    if (nextPackage && nextPackage !== data.path) {
-      this.packagePath = nextPackage;
-      this.selectedItemPath = "";
-    }
+    const identity = (entry: ReviewGatePendingEntry) =>
+      `${reviewGateLogicalPathKey(entry.packagePath)}\n${reviewGateLogicalPathKey(entry.item.path)}`;
+    const decidedIdentity = `${reviewGateLogicalPathKey(decidedPackagePath)}\n${reviewGateLogicalPathKey(decidedItemPath)}`;
+    const decidedIndex = previousPending.findIndex((entry) => identity(entry) === decidedIdentity);
+    const orderedCandidates = decidedIndex >= 0
+      ? [...previousPending.slice(decidedIndex + 1), ...previousPending.slice(0, decidedIndex)]
+      : previousPending;
+    const remainingByIdentity = new Map(remaining.map((entry) => [identity(entry), entry]));
+    const next = orderedCandidates.map((entry) => remainingByIdentity.get(identity(entry))).find(Boolean) ?? remaining[0];
+    this.packagePath = next.packagePath;
+    this.selectedItemPath = next.item.path;
+    this.sourceMode = "render";
+    this.reviewViewMode = "diff";
     await this.render();
   }
 }
