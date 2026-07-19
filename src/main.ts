@@ -12235,14 +12235,12 @@ export default class CancipPlugin extends Plugin {
 
     const configSettings = await this.loadCancipConfig();
     if (configSettings) {
-      const preferPluginData = await this.shouldPreferPluginDataSettings();
-      const combined: Partial<Settings> = preferPluginData
-        ? { ...configSettings, ...nextSettings }
-        : { ...nextSettings, ...configSettings };
-      combined.uiButtonRules = preferPluginData
-        ? mergeUiButtonRules(normalizeUiButtonRules(configSettings.uiButtonRules), normalizeUiButtonRules(saved?.uiButtonRules))
-        : mergeUiButtonRules(normalizeUiButtonRules(saved?.uiButtonRules), normalizeUiButtonRules(configSettings.uiButtonRules));
-      if (!preferPluginData && !configSettings.apiProfiles && hasLegacyApiProfileFields(configSettings)) {
+      const combined: Partial<Settings> = { ...nextSettings, ...configSettings };
+      combined.uiButtonRules = mergeUiButtonRules(
+        normalizeUiButtonRules(saved?.uiButtonRules),
+        normalizeUiButtonRules(configSettings.uiButtonRules)
+      );
+      if (!configSettings.apiProfiles && hasLegacyApiProfileFields(configSettings)) {
         delete combined.apiProfiles;
         delete combined.activeApiProfileId;
       }
@@ -12264,16 +12262,6 @@ export default class CancipPlugin extends Plugin {
     this.settings = nextSettings;
     await this.saveData(this.settings);
     await this.writeCancipConfig();
-  }
-
-  private async shouldPreferPluginDataSettings(): Promise<boolean> {
-    const adapter = this.app.vault.adapter;
-    const dataPath = `${this.pluginInstallDir(this.manifest.id)}/data.json`;
-    const [dataStat, configStat] = await Promise.all([
-      adapter.stat(dataPath).catch(() => null),
-      adapter.stat(CANCIP_CONFIG_PATH).catch(() => null)
-    ]);
-    return Boolean(dataStat?.type === "file" && configStat?.type === "file" && dataStat.mtime > configStat.mtime);
   }
 
   private async importNtfySettingsFromInstalledPlugin(settings: Settings): Promise<Settings> {
@@ -15445,7 +15433,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
-      items: filterReviewGateVisibleItems(normalizeReviewGateItems(manifest.items), this.obsidianConfigDir(), this.settings.memoryFolder)
+      items: filterStoredReviewGateItems(normalizeReviewGateItems(manifest.items))
     };
   }
 
@@ -15495,7 +15483,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       folder,
       title: typeof summary.title === "string" && summary.title.trim() ? summary.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof summary.generated_at === "string" ? summary.generated_at : "",
-      items: filterReviewGateVisibleItems(items, this.obsidianConfigDir(), this.settings.memoryFolder)
+      items: filterStoredReviewGateItems(items)
     };
   }
 
@@ -15518,7 +15506,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return uniqueStrings(data.items
       .filter((item) =>
         isReviewGateItemChanged(item)
-        && isReviewGateItemReviewable(item, this.obsidianConfigDir(), this.settings.memoryFolder)
         && !decided.has(normalizePath(item.path))
       )
       .map((item) => normalizePath(item.path)));
@@ -15549,9 +15536,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           keptPackages.push(data.path);
           byPath.set(normalizePath(data.path), entry);
           byPath.set(normalizePath(data.folder), entry);
-          for (const item of data.items) {
-            if (isReviewGateItemReviewable(item, this.obsidianConfigDir(), this.settings.memoryFolder)) byPath.set(normalizePath(item.path), entry);
-          }
+          for (const item of data.items) byPath.set(normalizePath(item.path), entry);
         } catch (error) {
           console.warn("Cancip review snapshot package skipped", path, error);
         }
@@ -20263,7 +20248,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const folder = reviewGatePackageFolder(reviewPath);
       const rawManifest = await adapter.read(`${folder}/manifest.json`);
       const manifest = JSON.parse(rawManifest) as unknown;
-      const items = normalizeReviewGateItems(isRecord(manifest) ? manifest.items : []);
+      const items = filterStoredReviewGateItems(normalizeReviewGateItems(isRecord(manifest) ? manifest.items : []));
       if (!items.length) return [];
       const rawDecisions = await readTextIfExists(adapter, `${folder}/review-corrections/pending.jsonl`, "");
       const decided = new Set<string>();
@@ -20283,7 +20268,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       return uniqueStrings(items
         .filter((item) =>
           isReviewGateItemChanged(item)
-          && isReviewGateItemReviewable(item, this.obsidianConfigDir(), this.settings.memoryFolder)
           && !decided.has(normalizePath(item.path))
         )
         .map((item) => normalizePath(item.path)));
@@ -22722,16 +22706,14 @@ class CancipReviewLeafView extends ItemView {
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
-      items: filterReviewGateVisibleItems(normalizeReviewGateItems(manifest.items), this.plugin.obsidianConfigDir(), this.plugin.settings.memoryFolder)
+      items: filterStoredReviewGateItems(normalizeReviewGateItems(manifest.items))
     };
     this.reviewPackageCache.set(cacheKey, data);
     return data;
   }
 
   private async pendingReviewGateItems(data: ReviewGatePackageData): Promise<ReviewGateManifestItem[]> {
-    const changedItems = data.items.filter((item) =>
-      isReviewGateItemChanged(item) && isReviewGateItemReviewable(item, this.plugin.obsidianConfigDir(), this.plugin.settings.memoryFolder)
-    );
+    const changedItems = data.items.filter(isReviewGateItemChanged);
     if (!changedItems.length) return [];
     const rawDecisions = await readTextIfExists(this.app.vault.adapter, `${data.folder}/review-corrections/pending.jsonl`, "");
     const decided = new Set<string>();
@@ -27569,7 +27551,7 @@ class CancipView extends ItemView {
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
-      items: filterReviewGateVisibleItems(normalizeReviewGateItems(manifest.items), this.plugin.obsidianConfigDir(), this.plugin.settings.memoryFolder)
+      items: filterStoredReviewGateItems(normalizeReviewGateItems(manifest.items))
     };
   }
 
@@ -37715,12 +37697,12 @@ class CancipView extends ItemView {
         const folder = reviewGatePackageFolder(reviewPath);
         const rawManifest = await adapter.read(`${folder}/manifest.json`);
         const manifest = JSON.parse(rawManifest) as unknown;
-        const items = normalizeReviewGateItems(isRecord(manifest) ? manifest.items : []);
+        const items = filterStoredReviewGateItems(normalizeReviewGateItems(isRecord(manifest) ? manifest.items : []));
         if (!items.length) continue;
         const decided = await this.reviewGateTerminalDecisionPaths(folder);
         for (const item of items) {
           if (decided.has(normalizePath(item.path))) continue;
-          if (!isReviewGateItemChanged(item) || !isReviewGateItemReviewable(item, this.plugin.obsidianConfigDir(), this.plugin.settings.memoryFolder)) continue;
+          if (!isReviewGateItemChanged(item) || !isStoredReviewGateItemVisible(item)) continue;
           if (targets.some((target) => this.reviewGateItemBaselineTouchesPath(item, target))) return item;
         }
       } catch {
@@ -37787,13 +37769,13 @@ class CancipView extends ItemView {
       try {
         const folder = reviewGatePackageFolder(reviewPath);
         const manifest = JSON.parse(await adapter.read(`${folder}/manifest.json`)) as unknown;
-        const items = normalizeReviewGateItems(isRecord(manifest) ? manifest.items : []);
+        const items = filterStoredReviewGateItems(normalizeReviewGateItems(isRecord(manifest) ? manifest.items : []));
         if (!items.length) continue;
         const decided = await this.reviewGateTerminalDecisionPaths(folder);
         const superseded = items.filter((item) =>
           !decided.has(normalizePath(item.path))
           && isReviewGateItemChanged(item)
-          && isReviewGateItemReviewable(item, this.plugin.obsidianConfigDir(), this.plugin.settings.memoryFolder)
+          && isStoredReviewGateItemVisible(item)
           && newPaths.some((path) => this.reviewGateItemSupersedePaths(item).some((candidate) => this.pathsTouchForReview(candidate, path)))
         );
         if (!superseded.length) continue;
@@ -47932,13 +47914,12 @@ function isReviewGateInternalItem(item: ReviewGateManifestItem, obsidianConfigDi
   return reviewItemAllOpenPaths(item).some((path) => isReviewableInternalAiPath(path, obsidianConfigDir, memoryFolder));
 }
 
-function filterReviewGateVisibleItems(items: ReviewGateManifestItem[], obsidianConfigDir: string, memoryFolder = DEFAULT_MEMORY_FOLDER): ReviewGateManifestItem[] {
-  return items.filter((item) => {
-    if (isReviewGateMachineFilePath(item.path)) return false;
-    const internal = isReviewGateInternalItem(item, obsidianConfigDir, memoryFolder);
-    if (!internal && reviewItemAllOpenPaths(item).some(isDotFolderVaultPath)) return false;
-    return isReviewGateItemReviewable(item, obsidianConfigDir, memoryFolder);
-  });
+function isStoredReviewGateItemVisible(item: ReviewGateManifestItem): boolean {
+  return reviewItemAllOpenPaths(item).some((path) => !isReviewGateMachineFilePath(path));
+}
+
+function filterStoredReviewGateItems(items: ReviewGateManifestItem[]): ReviewGateManifestItem[] {
+  return items.filter(isStoredReviewGateItemVisible);
 }
 
 function isTerminalReviewGateDecision(decision: string): decision is ReviewGateTerminalDecision {

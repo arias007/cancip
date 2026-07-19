@@ -26,7 +26,8 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "applyPersonalizedDiaryButtons",
   "clearPersonalizedDiaryButtons",
   "insertPersonalizedDiary",
-  "schedulePersonalizedDiaryButtons"
+  "schedulePersonalizedDiaryButtons",
+  "shouldPreferPluginDataSettings"
 ]);
 const removedFromRuntime = [...runtimeMethods]
   .filter((name) => intentionallyRemovedRuntimeMethods.has(name) && !sourceMethods.has(name))

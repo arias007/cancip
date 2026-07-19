@@ -584,6 +584,51 @@ if (-not $Case -or 'programmatic.vault-state-sync-classifier'.Contains($Case)) {
   }
 }
 
+if (-not $Case -or 'programmatic.review-count-config-invariance'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const t=Date.now();
+  const p=app.plugins.plugins.cancip;
+  if(!p||typeof p.reviewGateSnapshot!=='function')throw new Error('missing review snapshot API');
+  const collect=async()=>{
+    p.invalidateReviewGateSnapshot?.();
+    const snapshot=await p.reviewGateSnapshot(true);
+    const paths=[...new Set([...snapshot.byPath.values()].flatMap((entry)=>[...entry.pendingPaths]))].sort();
+    return {packages:snapshot.packages.length,pending:snapshot.pendingCount,paths};
+  };
+  const originalConfigDir=p.obsidianConfigDir;
+  const originalMemoryFolder=p.settings.memoryFolder;
+  try{
+    const normal=await collect();
+    p.obsidianConfigDir=()=>'.mobile-config';
+    p.settings.memoryFolder='.mobile-memory';
+    const alternate=await collect();
+    return JSON.stringify({
+      id:'programmatic.review-count-config-invariance',elapsedMs:Date.now()-t,
+      normalPackages:normal.packages,alternatePackages:alternate.packages,
+      normalPending:normal.pending,alternatePending:alternate.pending,
+      samePaths:normal.paths.length===alternate.paths.length&&normal.paths.every((path,index)=>path===alternate.paths[index]),
+      mtimeSelectorRemoved:typeof p.shouldPreferPluginDataSettings==='undefined'
+    });
+  }finally{
+    p.obsidianConfigDir=originalConfigDir;
+    p.settings.memoryFolder=originalMemoryFolder;
+    p.invalidateReviewGateSnapshot?.();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
+    if ([int]$item.normalPackages -ne [int]$item.alternatePackages) { throw "review package count changed with local config: $($item.normalPackages) -> $($item.alternatePackages)" }
+    if ([int]$item.normalPending -ne [int]$item.alternatePending) { throw "pending review count changed with local config: $($item.normalPending) -> $($item.alternatePending)" }
+    if (-not [bool]$item.samePaths) { throw 'pending review paths changed with local config' }
+    if (-not [bool]$item.mtimeSelectorRemoved) { throw 'platform-dependent config mtime selector is still active' }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; packages = $item.normalPackages; pending = $item.normalPending }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.review-count-config-invariance'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.native-file-pins'.Contains($Case)) {
   try {
     $started = Get-Date
