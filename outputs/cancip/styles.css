@@ -9031,6 +9031,14 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   isolation: isolate;
 }
 
+.obcc-document-drawing-overlay {
+  pointer-events: none;
+}
+
+.obcc-document-drawing-overlay.is-active {
+  pointer-events: auto;
+}
+
 .obcc-document-note-draw-edit-surface {
   position: absolute;
   inset: 0;

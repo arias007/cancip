@@ -629,6 +629,46 @@ if (-not $Case -or 'programmatic.review-count-config-invariance'.Contains($Case)
   }
 }
 
+if (-not $Case -or 'programmatic.community-review-regressions'.Contains($Case)) {
+  try {
+    $code = @'
+(()=>{
+  const started=Date.now(),p=app.plugins.plugins.cancip,s=p?.settingTab,doc=activeDocument;
+  if(!p||!s)throw new Error('Cancip settings unavailable');
+  const originalContainer=s.containerEl,originalPage=s.activeSettingsPage;
+  const host=doc.createElement('div'),canvas=doc.createElement('canvas');
+  host.style.position='fixed';host.style.left='-10000px';host.style.top='0';host.style.width='420px';
+  canvas.className='obcc-document-drawing-overlay';
+  doc.body.append(host,canvas);
+  try{
+    s.containerEl=host;s.activeSettingsPage='common';s.display();
+    const legacyRendered=!!host.querySelector('.obcc-settings-page-tabs')&&host.childElementCount>1;
+    host.replaceChildren();s.refreshSettings();
+    const refreshRendered=!!host.querySelector('.obcc-settings-page-tabs')&&host.childElementCount>1;
+    const displayDelegates=String(s.display).includes('renderSettings')&&!String(s.renderSettings).includes('.display(');
+    const pointerDefault=doc.defaultView.getComputedStyle(canvas).pointerEvents;
+    canvas.classList.add('is-active');
+    const pointerActive=doc.defaultView.getComputedStyle(canvas).pointerEvents;
+    return JSON.stringify({
+      id:'programmatic.community-review-regressions',elapsedMs:Date.now()-started,
+      legacyRendered,refreshRendered,displayDelegates,
+      noteDrawClassPointer:pointerDefault==='none'&&pointerActive==='auto'
+    });
+  }finally{
+    s.containerEl=originalContainer;s.activeSettingsPage=originalPage;host.remove();canvas.remove();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 25
+    foreach ($field in @('legacyRendered','refreshRendered','displayDelegates','noteDrawClassPointer')) {
+      if (-not [bool]$item.$field) { throw "community review regression failed: $field; $($item | ConvertTo-Json -Compress -Depth 6)" }
+    }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.community-review-regressions'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.native-file-pins'.Contains($Case)) {
   try {
     $started = Get-Date
@@ -2028,7 +2068,7 @@ if (Should-RunProgrammaticCase 'programmatic.context-editor-settings') {
 (async()=>{const s=app.plugins.plugins.cancip?.settingTab;if(!s)throw new Error('settings unavailable');const old=s.containerEl,scroller=activeDocument.createElement('div'),root=activeDocument.createElement('div');try{activeDocument.body.append(scroller);scroller.append(root);scroller.style.position='fixed';scroller.style.left='-10000px';scroller.style.top='0';scroller.style.width='360px';scroller.style.height='180px';scroller.style.overflowY='auto';for(let i=0;i<12;i++){const item=activeDocument.createElement('div');item.className='setting-item';item.style.height='64px';const name=activeDocument.createElement('div');name.className='setting-item-name';name.textContent=`设置项-${i}`;item.append(name);root.append(item)}s.containerEl=root;scroller.scrollTop=230;const snapshots=s.captureScrollSnapshots(),identity=snapshots[0]?.anchorIdentity,anchor=Array.from(root.querySelectorAll('.setting-item')).find(x=>s.settingsAnchorIdentity(x)===identity);if(!anchor)throw new Error('anchor unavailable');const before=anchor.getBoundingClientRect().top-scroller.getBoundingClientRect().top,spacer=activeDocument.createElement('div');spacer.style.height='90px';root.prepend(spacer);s.restoreScrollSnapshots(snapshots);await new Promise(resolve=>setTimeout(resolve,80));const afterAnchor=Array.from(root.querySelectorAll('.setting-item')).find(x=>s.settingsAnchorIdentity(x)===identity),after=afterAnchor.getBoundingClientRect().top-scroller.getBoundingClientRect().top,error=Math.abs(after-before);return JSON.stringify({settingsScrollStable:error<2,settingsOffsetError:error})}finally{s.containerEl=old;scroller.remove()}})()
 '@
     $settingsTabsCode = @'
-(()=>{const s=app.plugins.plugins.cancip?.settingTab;if(!s)throw new Error('settings unavailable');const old=s.settingsPageTabsScrollLeft,host=activeDocument.createElement('div'),makeTabs=()=>{const tabs=activeDocument.createElement('div');tabs.className='obcc-settings-page-tabs';tabs.style.width='280px';tabs.style.overflowX='auto';const content=activeDocument.createElement('div');content.style.width='960px';content.style.height='20px';content.style.flex='0 0 960px';tabs.append(content);return tabs};try{host.style.position='fixed';host.style.left='-10000px';host.style.top='0';activeDocument.body.append(host);let tabs=makeTabs();host.append(tabs);tabs.scrollLeft=120;s.rememberSettingsPageTabsScroll(tabs);const before=s.settingsPageTabsScrollLeft;tabs.remove();tabs=makeTabs();host.append(tabs);s.restoreSettingsPageTabsScroll(tabs);const after=tabs.scrollLeft,source=String(s.display),wired=source.includes('rememberSettingsPageTabsScroll')&&source.includes('restoreSettingsPageTabsScroll'),settingsPagesSeparated=source.includes('"buttons"')&&source.includes('displayButtonEditingSettings')&&source.includes('"autocomplete"')&&source.includes('displayAutocompleteSettings');return JSON.stringify({settingsTabsStable:before>0&&Math.abs(after-before)<1&&wired,settingsPagesSeparated,before,after})}finally{s.settingsPageTabsScrollLeft=old;host.remove()}})()
+(()=>{const s=app.plugins.plugins.cancip?.settingTab;if(!s)throw new Error('settings unavailable');const old=s.settingsPageTabsScrollLeft,host=activeDocument.createElement('div'),makeTabs=()=>{const tabs=activeDocument.createElement('div');tabs.className='obcc-settings-page-tabs';tabs.style.width='280px';tabs.style.overflowX='auto';const content=activeDocument.createElement('div');content.style.width='960px';content.style.height='20px';content.style.flex='0 0 960px';tabs.append(content);return tabs};try{host.style.position='fixed';host.style.left='-10000px';host.style.top='0';activeDocument.body.append(host);let tabs=makeTabs();host.append(tabs);tabs.scrollLeft=120;s.rememberSettingsPageTabsScroll(tabs);const before=s.settingsPageTabsScrollLeft;tabs.remove();tabs=makeTabs();host.append(tabs);s.restoreSettingsPageTabsScroll(tabs);const after=tabs.scrollLeft,source=String(s.renderSettings||s.display),wired=source.includes('rememberSettingsPageTabsScroll')&&source.includes('restoreSettingsPageTabsScroll'),settingsPagesSeparated=source.includes('"buttons"')&&source.includes('displayButtonEditingSettings')&&source.includes('"autocomplete"')&&source.includes('displayAutocompleteSettings');return JSON.stringify({settingsTabsStable:before>0&&Math.abs(after-before)<1&&wired,settingsPagesSeparated,before,after})}finally{s.settingsPageTabsScrollLeft=old;host.remove()}})()
 '@
     $evidenceCode = @'
 (()=>{const v=app.workspace.getLeavesOfType('cancip-view').map((leaf)=>leaf.view).find((view)=>typeof view?.personalizationCacheFromModel==='function');if(!v)throw new Error('personalization parser unavailable');const fallback={schemaVersion:3,updatedAt:new Date().toISOString(),timeKey:'smoke',greeting:'上午好。可靠回退。',greetings:[{text:'上午好。可靠回退。',choices:[]}],friendlyName:'',weather:null,inferredWeatherLocation:'',diary:'',autocomplete:[],sourcePaths:[]},source='用户姓名：测试用户\n常住地：测试城市',forged=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'虚构名字',weatherLocation:'虚构市',greetings:[{text:'虚构名字，上午好。虚构市今天天气晴朗。',choices:['查看虚构市天气']}],autocomplete:[]}),fallback,[],'smoke',source),accepted=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'测试用户',weatherLocation:'测试城市',greetings:[{text:'测试用户，上午好。最近事情不少，先处理最明确的一项。',choices:['继续处理 Cancip 并核对结果']}],autocomplete:[]}),fallback,[],'smoke',source),forgedText=forged.greetings.map((item)=>`${item.text} ${item.choices.join(' ')}`).join(' ');return JSON.stringify({personalizationEvidence:forged.friendlyName===''&&forged.inferredWeatherLocation===''&&!/虚构名字|虚构市|天气晴朗/.test(forgedText)&&accepted.friendlyName==='测试用户'&&accepted.inferredWeatherLocation==='测试城市'&&accepted.greetings.some((item)=>item.text.includes('测试用户'))})})()

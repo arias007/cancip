@@ -749,11 +749,11 @@ type DocumentDrawingTextStroke = {
 };
 
 type NoteDrawApi = {
-  readDrawings?: (file: TFile) => unknown | Promise<unknown>;
-  writeDrawings?: (file: TFile, data: Record<string, unknown>) => unknown | Promise<unknown>;
-  insertStroke?: (file: TFile, stroke: Record<string, unknown>) => unknown | Promise<unknown>;
+  readDrawings?: (file: TFile) => unknown;
+  writeDrawings?: (file: TFile, data: Record<string, unknown>) => unknown;
+  insertStroke?: (file: TFile, stroke: Record<string, unknown>) => unknown;
   getStoragePaths?: (file: TFile) => unknown;
-  on?: (event: string, listener: (detail: unknown) => void) => unknown;
+  on?: (event: string, listener: (detail: unknown) => void) => void | (() => void);
 };
 
 type VaultAttachmentParseCacheEntry = ParsedAttachmentResult & {
@@ -16348,7 +16348,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   async handlePersonalizationReviewDecision(item: ReviewGateManifestItem, decision: ReviewGateDecision): Promise<void> {
     if (normalizePath(item.path) !== normalizePath(PERSONALIZATION_PRIORITY_REVIEW_PATH)) return;
     const matches = [...item.new_text.matchAll(new RegExp(`<!--\\s*${PERSONALIZATION_PRIORITY_REVIEW_MARKER}:([a-z0-9-]+)\\s*-->`, "gi"))];
-    const key = matches.at(-1)?.[1] ?? "";
+    const key = matches[matches.length - 1]?.[1] ?? "";
     if (!key) return;
     await this.loadPersonalizationUsage();
     if (!this.personalizationUsage.reviewedPriorityKeys.includes(key)) this.personalizationUsage.reviewedPriorityKeys.push(key);
@@ -19936,7 +19936,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       this.invalidateSkillCaches();
     }
     try {
-      this.settingTab?.display();
+      this.settingTab?.refreshSettings();
     } catch (error) {
       console.warn("Cancip settings tab refresh failed", error);
     }
@@ -21434,7 +21434,6 @@ class CancipDocumentWorkbenchView extends FileView {
     const canvas = this.noteDrawCanvas;
     if (canvas) {
       canvas.toggleClass("is-active", this.noteDrawMode);
-      canvas.setCssProps({ "pointer-events": this.noteDrawMode ? "auto" : "none" });
       canvas.setAttr("aria-hidden", String(!this.noteDrawMode));
     }
     const button = this.contentEl.querySelector<HTMLButtonElement>(".obcc-document-action.is-notedraw");
@@ -21473,15 +21472,16 @@ class CancipDocumentWorkbenchView extends FileView {
   private installNoteDrawMarkdownEditModeBridge(stage: HTMLElement, onModeChange?: (enabled: boolean) => void): void {
     const hostWindow = stage.ownerDocument.defaultView ?? activeWindow;
     const hostElementCtor = (hostWindow as Window & { Element?: typeof Element }).Element ?? Element;
-    const controller = (): {
-      setBrushMode?: (mode: string) => unknown;
-      setToolFromApi?: (tool: string) => unknown;
-    } | null => {
+    const controller = (): Record<string, unknown> | null => {
       const value = (stage as HTMLElement & { _noteDrawController?: unknown })._noteDrawController;
-      return isRecord(value) ? value as {
-        setBrushMode?: (mode: string) => unknown;
-        setToolFromApi?: (tool: string) => unknown;
-      } : null;
+      return isRecord(value) ? value : null;
+    };
+    const callController = (methodName: "setBrushMode" | "setToolFromApi", value: string): boolean => {
+      const notedraw = controller();
+      const method = notedraw?.[methodName];
+      if (!notedraw || typeof method !== "function") return false;
+      Reflect.apply(method, notedraw, [value]);
+      return true;
     };
     const isEditMarkdownButton = (button: HTMLButtonElement): boolean => {
       const label = `${button.getAttribute("title") ?? ""} ${button.getAttribute("aria-label") ?? ""}`.trim().toLowerCase();
@@ -21504,10 +21504,8 @@ class CancipDocumentWorkbenchView extends FileView {
         event.preventDefault();
         event.stopImmediatePropagation();
         this.noteDrawMarkdownEditMode = false;
-        const notedraw = controller();
         try {
-          if (typeof notedraw?.setBrushMode === "function") notedraw.setBrushMode("pen");
-          else notedraw?.setToolFromApi?.("pen");
+          if (!callController("setBrushMode", "pen")) callController("setToolFromApi", "pen");
         } catch {
           // The CSS/state guard below still prevents Cancip text editing if NoteDraw is unavailable.
         }
@@ -21888,7 +21886,7 @@ class CancipDocumentWorkbenchView extends FileView {
   private noteDrawApi(): NoteDrawApi | null {
     const runtime = ((this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins ?? {})["notedraw"];
     if (!isRecord(runtime) || !isRecord(runtime.api)) return null;
-    return runtime.api as NoteDrawApi;
+    return runtime.api;
   }
 
   private async readNoteDrawStrokes(file: TFile): Promise<DocumentDrawingStroke[]> {
@@ -21981,7 +21979,7 @@ class CancipDocumentWorkbenchView extends FileView {
     const api = this.noteDrawApi();
     if (api && typeof api.on === "function") {
       const unsubscribe = api.on("drawings-changed", (detail: unknown) => {
-        if (!isRecord(detail) || normalizePath(String(detail.file ?? "")) !== normalizePath(file.path)) return;
+        if (!isRecord(detail) || typeof detail.file !== "string" || normalizePath(detail.file) !== normalizePath(file.path)) return;
         void this.refreshNoteDrawOverlay(file);
       });
       if (typeof unsubscribe === "function") {
@@ -22153,7 +22151,9 @@ class CancipDocumentWorkbenchView extends FileView {
     }
     try {
       const data = await Promise.resolve(api.readDrawings(file));
-      const strokes = isRecord(data) && Array.isArray(data.strokes) ? [...data.strokes] : [];
+      const strokes: unknown[] = isRecord(data) && Array.isArray(data.strokes)
+        ? data.strokes.map((stroke: unknown) => stroke)
+        : [];
       const next = normalizeNoteDrawStrokeForStorage({
         kind: "text",
         text: value.trim(),
@@ -25718,10 +25718,11 @@ class CancipView extends ItemView {
       modelSelect.createEl("option", { text: option.label, attr: { value: option.value } });
     }
     modelSelect.value = this.plugin.settings.composerAutocompleteApiProfileId;
-    modelSelect.addEventListener("change", async () => {
-      await this.plugin.selectAutocompleteApiProfile(modelSelect.value);
-      modelSelect.value = this.plugin.settings.composerAutocompleteApiProfileId;
-      this.placeAutocompletePopover();
+    modelSelect.addEventListener("change", () => {
+      void this.plugin.selectAutocompleteApiProfile(modelSelect.value).then(() => {
+        modelSelect.value = this.plugin.settings.composerAutocompleteApiProfileId;
+        this.placeAutocompletePopover();
+      });
     });
 
     const regenerate = popover.createEl("button", {
@@ -25740,36 +25741,40 @@ class CancipView extends ItemView {
     const prompt = promptLabel.createEl("input", {
       attr: { type: "text", placeholder: this.t("autocompletePromptPlaceholder"), value: this.plugin.settings.composerAutocompletePrompt }
     });
-    prompt.addEventListener("change", async () => {
+    prompt.addEventListener("change", () => {
       this.plugin.settings.composerAutocompletePrompt = trimContext(prompt.value.trim(), 240);
       this.autocompleteCache.clear();
-      await this.plugin.selectAutocompleteApiProfile(this.plugin.settings.composerAutocompleteApiProfileId);
-      this.scheduleAutocomplete();
+      void this.plugin.selectAutocompleteApiProfile(this.plugin.settings.composerAutocompleteApiProfileId)
+        .then(() => this.scheduleAutocomplete());
     });
-    prefetchToggle.addEventListener("change", async () => {
-      await this.plugin.setEditorAutocompletePrefetchEnabled(prefetchToggle.checked);
-      this.placeAutocompletePopover();
+    prefetchToggle.addEventListener("change", () => {
+      void this.plugin.setEditorAutocompletePrefetchEnabled(prefetchToggle.checked)
+        .then(() => this.placeAutocompletePopover());
     });
-    rotationInput.addEventListener("change", async () => {
-      await this.plugin.setEditorAutocompleteRotationSeconds(Number.parseInt(rotationInput.value, 10));
-      rotationInput.value = String(this.plugin.settings.composerAutocompleteRotationSeconds);
-      this.placeAutocompletePopover();
+    rotationInput.addEventListener("change", () => {
+      void this.plugin.setEditorAutocompleteRotationSeconds(Number.parseInt(rotationInput.value, 10)).then(() => {
+        rotationInput.value = String(this.plugin.settings.composerAutocompleteRotationSeconds);
+        this.placeAutocompletePopover();
+      });
     });
-    timeoutInput.addEventListener("change", async () => {
-      await this.plugin.setEditorAutocompleteNetworkTimeoutSeconds(Number.parseInt(timeoutInput.value, 10));
-      timeoutInput.value = String(this.plugin.settings.composerAutocompleteNetworkTimeoutSeconds);
-      this.placeAutocompletePopover();
+    timeoutInput.addEventListener("change", () => {
+      void this.plugin.setEditorAutocompleteNetworkTimeoutSeconds(Number.parseInt(timeoutInput.value, 10)).then(() => {
+        timeoutInput.value = String(this.plugin.settings.composerAutocompleteNetworkTimeoutSeconds);
+        this.placeAutocompletePopover();
+      });
     });
-    candidateSelect.addEventListener("change", async () => {
-      await this.plugin.setEditorAutocompleteCandidateCount(Number.parseInt(candidateSelect.value, 10));
-      candidateSelect.value = String(this.plugin.settings.composerAutocompleteCandidateCount);
-      this.placeAutocompletePopover();
+    candidateSelect.addEventListener("change", () => {
+      void this.plugin.setEditorAutocompleteCandidateCount(Number.parseInt(candidateSelect.value, 10)).then(() => {
+        candidateSelect.value = String(this.plugin.settings.composerAutocompleteCandidateCount);
+        this.placeAutocompletePopover();
+      });
     });
-    toggle.addEventListener("change", async () => {
-      await this.plugin.setEditorAutocompleteEnabled(toggle.checked);
-      regenerate.disabled = !toggle.checked;
-      if (toggle.checked) this.scheduleAutocomplete();
-      else this.clearAutocompleteSuggestion();
+    toggle.addEventListener("change", () => {
+      void this.plugin.setEditorAutocompleteEnabled(toggle.checked).then(() => {
+        regenerate.disabled = !toggle.checked;
+        if (toggle.checked) this.scheduleAutocomplete();
+        else this.clearAutocompleteSuggestion();
+      });
     });
     popover.addEventListener("pointerdown", (event) => event.stopPropagation());
     this.placeAutocompletePopover();
@@ -26481,7 +26486,7 @@ class CancipView extends ItemView {
     const target = event.target as Node | null;
     const win = this.containerEl.ownerDocument.defaultView;
     if (!win || !target?.instanceOf(win.Element)) return;
-    const element = target as Element;
+    const element = target;
     if (element.closest("input, textarea, select, option, label")) return;
     if (element.closest(".obcc-autocomplete-apply, .obcc-editor-autocomplete-apply, .obcc-tts-drag-handle, .obcc-document-stage, .obcc-review-resize-handle, [draggable='true']")) return;
     const actionable = element.closest<HTMLElement>("button, summary, [role='button']");
@@ -26508,7 +26513,7 @@ class CancipView extends ItemView {
     const target = event.target as Node | null;
     const win = this.containerEl.ownerDocument.defaultView;
     if (!win || !target?.instanceOf(win.Element)) return;
-    const actionable = (target as Element).closest<HTMLElement>("button, summary, [role='button']");
+    const actionable = target.closest<HTMLElement>("button, summary, [role='button']");
     const firstTarget = this.mobileFirstTouchTarget;
     if (!actionable || !firstTarget || Date.now() - this.mobileFirstTouchAt > 900) return;
     if (actionable !== firstTarget && !actionable.contains(firstTarget) && !firstTarget.contains(actionable)) return;
@@ -40112,7 +40117,7 @@ class CancipView extends ItemView {
   private noteDrawApi(): NoteDrawApi | null {
     const runtime = ((this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins ?? {})["notedraw"];
     if (!isRecord(runtime) || !isRecord(runtime.api)) return null;
-    return runtime.api as NoteDrawApi;
+    return runtime.api;
   }
 
   private noteAnnotationFile(args: Record<string, unknown>, required = true): TFile | null {
@@ -40907,7 +40912,7 @@ class CancipView extends ItemView {
         const priority = computed.getPropertyPriority(property);
         copiedStyles[property] = priority ? `${value} !${priority}` : value;
       }
-      setCaptureStyles(target, copiedStyles as Partial<CSSStyleDeclaration>);
+      setCaptureStyles(target, copiedStyles);
       setCaptureStyles(target, { animation: "none", transition: "none", caretColor: "transparent" });
       if (source.tagName === "INPUT" && target.tagName === "INPUT") (target as HTMLInputElement).value = (source as HTMLInputElement).value;
       if (source.tagName === "TEXTAREA" && target.tagName === "TEXTAREA") (target as HTMLTextAreaElement).value = (source as HTMLTextAreaElement).value;
@@ -43781,7 +43786,11 @@ class CancipSettingTab extends PluginSettingTab {
   selectPage(page: string): void {
     this.activeSettingsPage = page;
     this.restoreSettingsAnchorOnNextDisplay = false;
-    if (this.containerEl.isConnected) this.display();
+    this.refreshSettings();
+  }
+
+  refreshSettings(): void {
+    if (this.containerEl.isConnected) this.renderSettings();
   }
 
   private rememberSettingsPageTabsScroll(tabs: HTMLElement | null): void {
@@ -43793,6 +43802,10 @@ class CancipSettingTab extends PluginSettingTab {
   }
 
   display(): void {
+    this.renderSettings();
+  }
+
+  private renderSettings(): void {
     const { containerEl } = this;
     const existingTabs = containerEl.querySelector<HTMLElement>(":scope > .obcc-settings-page-tabs");
     this.rememberSettingsPageTabsScroll(existingTabs);
@@ -43848,7 +43861,7 @@ class CancipSettingTab extends PluginSettingTab {
           this.rememberSettingsPageTabsScroll(tabs);
           this.activeSettingsPage = page.id;
           this.restoreSettingsAnchorOnNextDisplay = false;
-          this.display();
+          this.renderSettings();
         });
       }
       const body = containerEl.createDiv({ cls: "obcc-settings-page-body" });
@@ -43874,7 +43887,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.language = value as LanguageMode;
             await this.plugin.saveSettings();
             this.plugin.refreshOpenViews();
-            this.display();
+            this.renderSettings();
           });
       });
 
@@ -44163,7 +44176,7 @@ class CancipSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
             this.plugin.ensureDocumentWorkbenchExtensions();
             extensionDraft = this.plugin.settings.documentWorkbenchExtensions.join(", ");
-            this.display();
+            this.renderSettings();
           });
       });
     this.addToggleSetting(parent, "settingsDocumentWorkbenchCompactHeader", this.plugin.settings.documentWorkbenchCompactHeader, async (value) => {
@@ -44264,7 +44277,7 @@ class CancipSettingTab extends PluginSettingTab {
           button.setIcon("rotate-ccw");
           button.setTooltip(this.plugin.t("personalizationPriorityRemove"));
           button.onClick(() => {
-            void this.plugin.removePersonalizationPriority(entry.key).then(() => this.display());
+            void this.plugin.removePersonalizationPriority(entry.key).then(() => this.renderSettings());
           });
         });
     }
@@ -44288,7 +44301,7 @@ class CancipSettingTab extends PluginSettingTab {
       resetAll.addEventListener("click", () => {
         void this.plugin.resetAllUiButtonRules().then((count) => {
           new Notice(this.plugin.t("buttonRuleResetAllDone", { count }));
-          this.display();
+          this.renderSettings();
         });
       });
     }
@@ -44322,7 +44335,7 @@ class CancipSettingTab extends PluginSettingTab {
       reset.addEventListener("click", () => {
         void this.plugin.resetUiButtonRule(rule.id).then((removed) => {
           if (removed) new Notice(this.plugin.t("buttonRuleResetDone"));
-          this.display();
+          this.renderSettings();
         });
       });
     }
@@ -44587,7 +44600,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onClick(async () => {
             this.plugin.settings.githubApiBaseUrl = DEFAULT_SETTINGS.githubApiBaseUrl;
             await this.plugin.saveSettings();
-            this.display();
+            this.renderSettings();
           });
       })
       .addButton((button) => {
@@ -44724,7 +44737,7 @@ class CancipSettingTab extends PluginSettingTab {
         .setValue(task.enabled)
         .onChange(async (value) => {
           await patchTask({ enabled: value });
-          this.display();
+          this.renderSettings();
         });
     });
     title.addButton((button) => {
@@ -44748,7 +44761,7 @@ class CancipSettingTab extends PluginSettingTab {
         .onClick(async () => {
           await this.plugin.removeAutomation(task.id);
           new Notice(this.plugin.t("automationDeleted"));
-          this.display();
+          this.renderSettings();
         });
     });
 
@@ -44802,7 +44815,7 @@ class CancipSettingTab extends PluginSettingTab {
           .setValue(task.apiProfileId ?? "")
           .onChange(async (value) => {
             await patchTask({ apiProfileId: value.trim() || undefined });
-            this.display();
+            this.renderSettings();
           });
       });
 
@@ -44818,7 +44831,7 @@ class CancipSettingTab extends PluginSettingTab {
           .setValue(task.model ?? "")
           .onChange(async (value) => {
             await patchTask({ model: value.trim() || undefined });
-            this.display();
+            this.renderSettings();
           });
       });
 
@@ -45042,7 +45055,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.ttsProvider = "builtin-prime-tts";
             this.plugin.settings.ttsQualityMode = "quality-first";
             await this.plugin.saveSettings();
-            this.display();
+            this.renderSettings();
             new Notice(await this.plugin.ttsProbe(), 10000);
           });
       })
@@ -45054,7 +45067,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.ttsQualityMode = "quality-first";
             if (!this.plugin.settings.ttsVoice.trim()) this.plugin.settings.ttsVoice = DEFAULT_SETTINGS.ttsVoice;
             await this.plugin.saveSettings();
-            this.display();
+            this.renderSettings();
             new Notice(await this.plugin.ttsProbe(), 10000);
           });
       })
@@ -45065,7 +45078,7 @@ class CancipSettingTab extends PluginSettingTab {
             this.plugin.settings.ttsProvider = "android-system";
             this.plugin.settings.ttsQualityMode = "quality-first";
             await this.plugin.saveSettings();
-            this.display();
+            this.renderSettings();
             new Notice(await this.plugin.ttsProbe(), 10000);
           });
       });
@@ -45110,7 +45123,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onClick(async () => {
             try {
               new Notice(await this.plugin.installBuiltinPrimeTtsPackage(true), 10000);
-              this.display();
+              this.renderSettings();
             } catch (error) {
               const reason = error instanceof Error ? error.message : String(error);
               new Notice(this.plugin.t("ttsLocalPackageInstallFailed", { reason }), 12000);
@@ -45198,7 +45211,7 @@ class CancipSettingTab extends PluginSettingTab {
             );
             await this.plugin.saveSettings();
             this.plugin.refreshOpenViews();
-            this.display();
+            this.renderSettings();
           });
       });
   }
@@ -45251,7 +45264,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             await this.plugin.selectApiProfile(value);
             this.plugin.refreshOpenViews();
-            this.display();
+            this.renderSettings();
           });
       })
       .addButton((button) => {
@@ -45261,7 +45274,7 @@ class CancipSettingTab extends PluginSettingTab {
             const profile = await this.plugin.addApiProfile();
             new Notice(this.plugin.t("apiProfileChanged", { profile: profile.name }));
             this.plugin.refreshOpenViews();
-            this.display();
+            this.renderSettings();
           });
       })
       .addButton((button) => {
@@ -45271,7 +45284,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onClick(async () => {
             await this.plugin.removeActiveApiProfile();
             this.plugin.refreshOpenViews();
-            this.display();
+            this.renderSettings();
           });
       });
 
@@ -51708,9 +51721,9 @@ function personalizationCacheFromModel(
 }
 
 function personalizationEvidenceContains(source: string, value: string): boolean {
-  const needle = value.toLocaleLowerCase().replace(/[\s,，。.!！?？:：;；()（）\[\]{}]/g, "");
+  const needle = value.toLocaleLowerCase().replace(/[\s,，。.!！?？:：;；()（）[\]{}]/g, "");
   if (needle.length < 2) return false;
-  const haystack = source.toLocaleLowerCase().replace(/[\s,，。.!！?？:：;；()（）\[\]{}]/g, "");
+  const haystack = source.toLocaleLowerCase().replace(/[\s,，。.!！?？:：;；()（）[\]{}]/g, "");
   return haystack.includes(needle);
 }
 
@@ -51807,13 +51820,13 @@ function sanitizePersonalizationText(input: string, maxChars: number, singleLine
 }
 
 function sanitizePersonalizationName(input: string): string {
-  return trimContext(redactSensitiveText(input).replace(/[\r\n\t<>\[\]{}]/g, " ").replace(/\s+/g, " ").trim(), 24)
+  return trimContext(redactSensitiveText(input).replace(/[\r\n\t<>[\]{}]/g, " ").replace(/\s+/g, " ").trim(), 24)
     .replace(/^[,，。.!！?？:：]+|[,，。.!！?？:：]+$/g, "")
     .trim();
 }
 
 function sanitizePersonalizationLocation(input: string): string {
-  return trimContext(redactSensitiveText(input).replace(/[\r\n\t<>\[\]{}]/g, " ").replace(/\s+/g, " ").trim(), 60)
+  return trimContext(redactSensitiveText(input).replace(/[\r\n\t<>[\]{}]/g, " ").replace(/\s+/g, " ").trim(), 60)
     .replace(/^[,，。.!！?？:：]+|[,，。.!！?？:：]+$/g, "")
     .trim();
 }
@@ -52078,11 +52091,13 @@ function summarizeAutocompletePreference(events: AutocompleteSelectionEvent[], u
   if (preloadRate) parts.push(`${preloadRate}% 的选择发生在下一层已预加载时`);
   const contentSignals = countAutocompletePreferenceSignals(events, AUTOCOMPLETE_CONTENT_SIGNAL_RULES);
   const styleSignals = countAutocompletePreferenceSignals(events, AUTOCOMPLETE_STYLE_SIGNAL_RULES);
+  const lastUsage = usage[usage.length - 1];
+  const lastSelection = events[events.length - 1];
   if (contentSignals.length) parts.push(`内容偏好：${contentSignals.slice(0, 4).map((item) => `${item.label}${item.count}次`).join("、")}`);
   if (styleSignals.length) parts.push(`工作方式：${styleSignals.slice(0, 4).map((item) => `${item.label}${item.count}次`).join("、")}`);
   return {
     schemaVersion: 3,
-    updatedAt: usage.at(-1)?.selectedAt ?? usage.at(-1)?.shownAt ?? events.at(-1)?.at ?? new Date().toISOString(),
+    updatedAt: lastUsage?.selectedAt ?? lastUsage?.shownAt ?? lastSelection?.at ?? new Date().toISOString(),
     totalSelections,
     totalShown,
     totalUsed,
