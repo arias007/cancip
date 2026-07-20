@@ -539,6 +539,138 @@ if (-not $Case -or 'programmatic.ui-button-model-settings-structure'.Contains($C
   }
 }
 
+if (-not $Case -or 'programmatic.ui-button-mention-hierarchy'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const started=Date.now(),p=app.plugins.plugins.cancip,v=await p?.activateView?.();
+  if(!p||!v?.inputEl||!v?.headerMenuEl)throw new Error('Cancip mention UI unavailable');
+  const oldValue=v.inputEl.value,oldStart=v.inputEl.selectionStart,oldEnd=v.inputEl.selectionEnd;
+  const hasSend=()=>[...v.headerMenuEl.querySelectorAll('button')].some(button=>button.getAttribute('title')===p.t('sendToAI'));
+  try{
+    const categories=await v.findMentionCandidates('',12);
+    const firstThree=categories.slice(0,3).map(item=>item.path);
+    if(firstThree.join('|')!=='category:sessions|category:skills|category:automations')throw new Error('top mention categories are not stable');
+    v.inputEl.value='@';v.inputEl.setSelectionRange(1,1);v.activeMention={start:0,end:1,query:''};v.activeMentionSource='typing';
+    v.insertMention(categories[2]);
+    const categoryValue=v.inputEl.value;
+    const categoryQuery=p.language().startsWith('zh')?'自动化:':'automation:';
+    const automationItems=await v.findMentionCandidates(categoryQuery,12);
+    const automation=automationItems.find(item=>item.kind==='automation');
+    if(!automation)throw new Error('automation category did not expand');
+    v.inputEl.value=categoryValue;v.inputEl.setSelectionRange(categoryValue.length,categoryValue.length);v.activeMention={start:0,end:categoryValue.length,query:categoryQuery};v.activeMentionSource='typing';
+    v.insertMention(automation);
+    const stableAutomation=v.inputEl.value.startsWith('@['+automation.path+'] ');
+    await v.openHistoryMenu();const historySend=hasSend();
+    await v.openSkillsMenu();const skillSend=hasSend();
+    await v.openAutomationMenu();const automationSend=hasSend();
+    return JSON.stringify({id:'programmatic.ui-button-mention-hierarchy',elapsedMs:Date.now()-started,firstThree,categoryValue,automationCount:automationItems.length,stableAutomation,historySend,skillSend,automationSend});
+  }finally{
+    v.closeMentionPopup();v.closeHeaderMenu();v.inputEl.value=oldValue;v.inputEl.setSelectionRange(oldStart??oldValue.length,oldEnd??oldValue.length);v.handleComposerInputChanged();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 55
+    foreach ($field in @('stableAutomation','historySend','skillSend','automationSend')) {
+      if (-not [bool]$item.$field) { throw "mention hierarchy failed: $field ($($item | ConvertTo-Json -Compress))" }
+    }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; firstThree = $item.firstThree; automationCount = $item.automationCount }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.ui-button-mention-hierarchy'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.ui-button-document-html-save'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const started=Date.now(),p=app.plugins.plugins.cancip,folder='Cancip验收-临时',path=folder+'/__cancip-html-save-'+Date.now()+'.html';
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const adapter=app.vault.adapter,previousLeaf=app.workspace.getLeaf(false),source='<!doctype html><html><body><p>Hello <strong>world</strong></p></body></html>';
+  let leaf=null,file=null,folderCreated=false;
+  try{
+    if(!(await adapter.exists(folder))){await app.vault.createFolder(folder);folderCreated=true}
+    file=await app.vault.create(path,source);
+    leaf=app.workspace.getLeaf('tab');
+    await leaf.setViewState({type:'cancip-document-workbench-view',active:true,state:{file:path,filePath:path,mode:'preview'}});
+    await new Promise(resolve=>setTimeout(resolve,120));
+    const view=leaf.view;
+    if(!view||typeof view.replaceUniqueHtmlSourceText!=='function')throw new Error('document workbench HTML editor unavailable');
+    const snapshot=await p.loadDocumentSnapshot(file);
+    const changed=await view.replaceUniqueHtmlSourceText(snapshot,'Hello world','Hello universe','body>p:nth-of-type(1)');
+    const saved=await app.vault.read(file);
+    return JSON.stringify({id:'programmatic.ui-button-document-html-save',elapsedMs:Date.now()-started,changed,verified:saved.includes('Hello universe')&&!saved.includes('Hello <strong>world</strong>'),bytes:new TextEncoder().encode(saved).length});
+  }finally{
+    if(leaf&&leaf!==previousLeaf)leaf.detach();
+    if(previousLeaf)app.workspace.setActiveLeaf(previousLeaf,{focus:false});
+    if(await adapter.exists(path))await adapter.remove(path);
+    if(folderCreated){try{const listing=await adapter.list(folder);if(!listing.files.length&&!listing.folders.length)await adapter.rmdir(folder,false)}catch{}}
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 55
+    foreach ($field in @('changed','verified')) {
+      if (-not [bool]$item.$field) { throw "HTML save verification failed: $field ($($item | ConvertTo-Json -Compress))" }
+    }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; bytes = $item.bytes }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.ui-button-document-html-save'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.ui-button-context-recent-history'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const started=Date.now(),p=app.plugins.plugins.cancip,v=await p?.activateView?.();
+  if(!p||!v||typeof v.modelInputText!=='function')throw new Error('model context runtime unavailable');
+  const oldMessages=v.messages,oldLimit=p.settings.maxRecentTranscriptMessages,now=Date.now(),current='修复当前文件并验证';
+  try{
+    p.settings.maxRecentTranscriptMessages=6;
+    v.messages=[
+      {id:'history-old-user',role:'user',createdAt:now-3000,content:'之前的用户要求：保留原文'},
+      {id:'history-old-assistant',role:'assistant',createdAt:now-2000,content:'之前的回答：已经记录'},
+      {id:'history-current-user',role:'user',createdAt:now-1000,content:current}
+    ];
+    const policy=v.promptPayloadPolicy(current);
+    const input=v.modelInputText(current,{contextText:''},current);
+    const currentCount=input.split(current).length-1;
+    return JSON.stringify({id:'programmatic.ui-button-context-recent-history',elapsedMs:Date.now()-started,includesRecent:input.includes('之前的用户要求：保留原文')&&input.includes('之前的回答：已经记录'),currentCount,recentEnabled:policy.includeRecentTranscript,intent:policy.intent,inputChars:input.length});
+  }finally{v.messages=oldMessages;p.settings.maxRecentTranscriptMessages=oldLimit}
+})()
+'@
+    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 45
+    if (-not [bool]$item.includesRecent -or -not [bool]$item.recentEnabled -or [int]$item.currentCount -ne 1 -or [string]$item.intent -ne 'implementation') {
+      throw "recent context verification failed: $($item | ConvertTo-Json -Compress)"
+    }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; currentCount = $item.currentCount; inputChars = $item.inputChars }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.ui-button-context-recent-history'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
+if (-not $Case -or 'programmatic.ui-button-automation-truthful-status'.Contains($Case)) {
+  try {
+    $code = @'
+(async()=>{
+  const started=Date.now(),p=app.plugins.plugins.cancip;
+  if(!p)throw new Error('Cancip plugin unavailable');
+  const tasks=await p.loadAutomations(true),curation=tasks.find(task=>task.id==='auto-vault-curation');
+  const suspicious=tasks.filter(task=>task.lastStatus==='ok'&&(!String(task.lastResult||'').trim()||/^Resumed\b|^(?:模型调用失败|模型生成失败|还没有配置 API|automation final response was missing)/i.test(String(task.lastResult||'').trim()))).map(task=>task.id);
+  const invalidStatuses=tasks.filter(task=>task.lastStatus&&!['ok','failed','skipped','pending'].includes(task.lastStatus)).map(task=>task.id);
+  return JSON.stringify({id:'programmatic.ui-button-automation-truthful-status',elapsedMs:Date.now()-started,count:tasks.length,suspicious,invalidStatuses,curationWatch:curation?.watchNewFiles===true,curationPattern:curation?.newFilePattern||''});
+})()
+'@
+    $item = Invoke-CancipEval -Code (ConvertTo-CancipEvalBootstrap -Code $code) -TimeoutSeconds 45
+    if (@($item.suspicious).Count -or @($item.invalidStatuses).Count -or -not [bool]$item.curationWatch) {
+      throw "automation status contract failed: $($item | ConvertTo-Json -Compress)"
+    }
+    Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; count = $item.count; curationPattern = $item.curationPattern }
+  } catch {
+    Add-CaseResult 'programmaticCases' @{ id = 'programmatic.ui-button-automation-truthful-status'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 foreach ($test in $PromptCases) {
   try {
     $testJson = ConvertTo-CompactJson $test

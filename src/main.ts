@@ -997,6 +997,7 @@ type AutomationSchedule = "manual" | "hourly" | "daily";
 type AutomationSessionMode = "current" | "new" | "session";
 type AutomationActionOperation = "add" | "update" | "remove" | "list" | "run";
 type AutomationNotifyMode = "inherit" | "always" | "failure" | "never";
+type AutomationRunStatus = "ok" | "failed" | "skipped" | "pending";
 
 type AutomationTask = {
   id: string;
@@ -1021,7 +1022,7 @@ type AutomationTask = {
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
-  lastStatus?: "ok" | "failed";
+  lastStatus?: AutomationRunStatus;
   lastResult?: string;
   lastResultPath?: string;
 };
@@ -1052,8 +1053,14 @@ type AutomationAction = {
 
 type AutomationRunResult = {
   ok: boolean;
+  status: AutomationRunStatus;
   text: string;
   path?: string;
+};
+
+type AutomationRunnerResult = {
+  status: Extract<AutomationRunStatus, "ok" | "pending">;
+  text: string;
 };
 
 type AutomationSessionChoice = {
@@ -1452,7 +1459,7 @@ type SessionEvent = {
 
 type SessionEventView = Required<Pick<SessionEvent, "at" | "kind">> & Omit<SessionEvent, "at" | "kind">;
 
-type MentionKind = "file" | "folder" | "skill" | "action" | "command";
+type MentionKind = "category" | "session" | "automation" | "file" | "folder" | "skill" | "action" | "command";
 type MentionSource = "file" | "folder" | "virtual";
 type ObsidianNoticeKind = "completed" | "failed" | "approval" | "stopped";
 
@@ -2723,7 +2730,7 @@ const DEFAULT_SETTINGS: Settings = {
   maxToolIterations: 3,
   exportMarkdownContextSnapshots: true,
   exportMarkdownManualTodos: true,
-  maxRecentTranscriptMessages: 2,
+  maxRecentTranscriptMessages: 6,
   includeHistoryAnchors: true,
   maxHistoryAnchors: 4,
   maxMentionResults: 12,
@@ -2872,7 +2879,7 @@ const UNIVERSAL_SEARCH_MAX_DOCUMENTS = 12000;
 const UNIVERSAL_SEARCH_MAX_QUERY_CANDIDATES = 180;
 let AUTOMATION_DIR = `${CANCIP_CONFIG_DIR}/automations`;
 let AUTOMATION_STATE_PATH = `${CANCIP_CONFIG_DIR}/automations.json`;
-const AUTOMATION_SCHEMA_VERSION = 6;
+const AUTOMATION_SCHEMA_VERSION = 8;
 const AUTOMATION_NEW_FILE_DEFAULT_DEBOUNCE_SECONDS = 45;
 const AUTOMATION_NEW_FILE_MAX_BATCH = 40;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
@@ -2991,7 +2998,7 @@ const MODEL_CONTEXT_IMPLEMENTATION_MAX_CHARS = 3000;
 const MODEL_CONTEXT_COMPACT_STATE_CHANGE_MAX_CHARS = 1100;
 const MODEL_CONTEXT_CONTINUATION_MAX_CHARS = 2000;
 const TASK_CONTROL_MAX_CHARS = 520;
-const RECENT_TRANSCRIPT_MAX_MESSAGES = 2;
+const RECENT_TRANSCRIPT_MAX_MESSAGES = 8;
 const TOOL_STEP_CONTEXT_MAX_CHARS = 360;
 const TOOL_STEP_CONTEXT_MAX_RUNS = 3;
 const PROGRAMMATIC_PLAN_TEMPLATE_TEXTS = new Set([
@@ -7597,6 +7604,7 @@ export default class CancipPlugin extends Plugin {
   private personalizationRefreshTimer: number | null = null;
   private personalizationRefreshPromise: Promise<void> | null = null;
   private personalizationPendingPaths = new Set<string>();
+  private vaultOverviewRefreshTimer: number | null = null;
   private editorAutocompleteCache = new Map<string, string[]>();
   private editorAutocompleteRequestFlights = new Map<string, Promise<string[]>>();
   private editorAutocompleteFailureCooldowns = new Map<string, number>();
@@ -7846,6 +7854,7 @@ export default class CancipPlugin extends Plugin {
       this.captureAiVaultEventMutation("create", file.path);
       this.invalidateDocumentSnapshot(file.path);
       this.handleCancipVaultFileChanged(file.path);
+      this.scheduleVaultOverviewRefresh(file.path);
       if (file instanceof TFile) {
         this.queueNewFileAutomations(file.path);
         this.schedulePersonalizationRefresh(PERSONALIZATION_REFRESH_DEBOUNCE_MS, file.path);
@@ -7855,20 +7864,24 @@ export default class CancipPlugin extends Plugin {
       this.captureAiVaultEventMutation("modify", file.path);
       this.invalidateDocumentSnapshot(file.path);
       this.handleCancipVaultFileChanged(file.path);
+      if (this.vaultOverviewPluginPath(file.path)) this.scheduleVaultOverviewRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on("delete", (file) => {
       this.captureAiVaultEventMutation("delete", file.path);
       this.invalidateDocumentSnapshot(file.path);
       void this.removeDeletedFilePins(file.path).catch((error) => this.recordFilePinError("delete migration", error));
       this.handleCancipVaultFileChanged(file.path);
+      this.scheduleVaultOverviewRefresh(file.path);
     }));
     this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
       this.captureAiVaultEventMutation("rename", file.path, oldPath);
       this.invalidateDocumentSnapshot(oldPath);
       this.invalidateDocumentSnapshot(file.path);
       void this.migrateRenamedFilePins(oldPath, file.path).catch((error) => this.recordFilePinError("rename migration", error));
+      void this.migrateVaultCurationRenamedPath(oldPath, file.path);
       this.handleCancipVaultFileChanged(oldPath);
       this.handleCancipVaultFileChanged(file.path);
+      this.scheduleVaultOverviewRefresh(file.path);
     }));
 
     this.addRibbonIcon("bot", this.t("openCancip"), () => {
@@ -9327,9 +9340,31 @@ export default class CancipPlugin extends Plugin {
   private async ensureVaultOverviewMemory(): Promise<void> {
     const adapter = this.app.vault.adapter;
     const overviewPath = this.memoryPath("VAULT_OVERVIEW.md");
-    if (await adapter.exists(overviewPath)) return;
+    if (await adapter.exists(overviewPath)) {
+      const existing = await adapter.read(overviewPath);
+      if (!existing.includes(CANCIP_VAULT_OVERVIEW_MARKER)) return;
+    }
     await ensureParentFolder(adapter, overviewPath);
     await writeTextInChunks(adapter, overviewPath, await this.buildVaultOverviewMemory());
+  }
+
+  private vaultOverviewPluginPath(path: string): boolean {
+    const normalized = normalizePath(path.replace(/\\/g, "/"));
+    return normalized === this.communityPluginsPath()
+      || (isPathInFolder(normalized, this.obsidianPluginsDir()) && /\/(?:manifest\.json|main\.js|data\.json)$/i.test(normalized));
+  }
+
+  private scheduleVaultOverviewRefresh(path: string): void {
+    const normalized = normalizePath(path.replace(/\\/g, "/"));
+    if (!normalized || normalized === this.memoryPath("VAULT_OVERVIEW.md")) return;
+    if (isPathInFolder(normalized, CANCIP_CONFIG_DIR)) return;
+    if (isPathInFolder(normalized, this.obsidianConfigDir()) && !this.vaultOverviewPluginPath(normalized)) return;
+    if (this.vaultOverviewPluginPath(normalized)) this.invalidateSkillCaches();
+    if (this.vaultOverviewRefreshTimer !== null) window.clearTimeout(this.vaultOverviewRefreshTimer);
+    this.vaultOverviewRefreshTimer = window.setTimeout(() => {
+      this.vaultOverviewRefreshTimer = null;
+      void this.ensureVaultOverviewMemory().catch((error) => console.warn("Cancip Vault overview refresh failed", error));
+    }, 1200);
   }
 
   private async buildVaultOverviewMemory(): Promise<string> {
@@ -9510,6 +9545,10 @@ export default class CancipPlugin extends Plugin {
     if (this.personalizationRefreshTimer !== null) {
       window.clearTimeout(this.personalizationRefreshTimer);
       this.personalizationRefreshTimer = null;
+    }
+    if (this.vaultOverviewRefreshTimer !== null) {
+      window.clearTimeout(this.vaultOverviewRefreshTimer);
+      this.vaultOverviewRefreshTimer = null;
     }
     this.personalizationPendingPaths.clear();
     this.personalizationRefreshPromise = null;
@@ -19477,11 +19516,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const result = await view.resumeInterruptedSession(entry, candidate.automationTaskId, candidate.notifyMode);
       if (!result.resumed) continue;
       if (result.automationTaskId) {
-        const ok = result.status === "completed" || result.status === "idle";
+        const status: AutomationRunStatus = result.status === "completed" && result.finalText
+          ? "ok"
+          : result.status === "idle"
+            ? "pending"
+            : "failed";
         await this.markAutomationRun(
           result.automationTaskId,
-          ok,
-          result.status === "idle" ? `Resumed ${entry.id}; waiting for approval or review` : `Resumed ${entry.id}: ${result.status}`,
+          status,
+          result.finalText || (status === "pending"
+            ? `Resumed ${entry.id}; waiting for approval or review`
+            : `Resumed ${entry.id} without a verified final answer`),
           entry.path
         );
       }
@@ -19555,6 +19600,42 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
   }
 
+  private async migrateVaultCurationRenamedPath(oldPath: string, newPath: string): Promise<void> {
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!(await adapter.exists(VAULT_CURATION_NEW_FILE_STATE_PATH))) return;
+      const state = normalizeVaultCurationNewFileState(JSON.parse(await adapter.read(VAULT_CURATION_NEW_FILE_STATE_PATH)));
+      if (!state) return;
+      const oldNormalized = normalizePath(oldPath.replace(/\\/g, "/"));
+      const newNormalized = normalizePath(newPath.replace(/\\/g, "/"));
+      if (!oldNormalized || !newNormalized || oldNormalized === newNormalized) return;
+      let changed = false;
+      const movedKnown: Array<[string, number]> = [];
+      for (const [path, ctime] of Object.entries(state.known)) {
+        if (path !== oldNormalized && !isPathInFolder(path, oldNormalized)) continue;
+        const suffix = path === oldNormalized ? "" : path.slice(oldNormalized.length + 1);
+        movedKnown.push([suffix ? `${newNormalized}/${suffix}` : newNormalized, ctime]);
+        delete state.known[path];
+        changed = true;
+      }
+      for (const [path, ctime] of movedKnown) state.known[path] = ctime;
+      const nextPending = state.pending.map((path) => {
+        const normalized = normalizePath(path);
+        if (normalized !== oldNormalized && !isPathInFolder(normalized, oldNormalized)) return normalized;
+        changed = true;
+        const suffix = normalized === oldNormalized ? "" : normalized.slice(oldNormalized.length + 1);
+        return suffix ? `${newNormalized}/${suffix}` : newNormalized;
+      });
+      if (!changed) return;
+      state.pending = uniqueStrings(nextPending);
+      state.updatedAt = new Date().toISOString();
+      await ensureParentFolder(adapter, VAULT_CURATION_NEW_FILE_STATE_PATH);
+      await adapter.write(VAULT_CURATION_NEW_FILE_STATE_PATH, `${JSON.stringify(state, null, 2)}\n`);
+    } catch (error) {
+      console.warn("Cancip Vault curation rename migration failed", error);
+    }
+  }
+
   async automationSessionChoices(limit = 50): Promise<AutomationSessionChoice[]> {
     const openSessionIds = new Set(
       this.chatLeaves()
@@ -19607,7 +19688,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         );
         let tasks = parsed.tasks.map(normalizeAutomationTask).filter((task): task is AutomationTask => task !== null);
         if (Number(parsed.schemaVersion) < AUTOMATION_SCHEMA_VERSION) {
-          tasks = tasks.map((task) => automationWithDedicatedSession(task, true));
+          tasks = tasks.map((task) => {
+            const dedicated = automationWithDedicatedSession(task, true);
+            return task.id === VAULT_CURATION_AUTOMATION_ID
+              ? { ...dedicated, watchNewFiles: true, newFilePattern: dedicated.newFilePattern || "**/*.md" }
+              : dedicated;
+          });
           await adapter.write(AUTOMATION_STATE_PATH, `${JSON.stringify({
             schemaVersion: AUTOMATION_SCHEMA_VERSION,
             updatedAt: new Date().toISOString(),
@@ -20018,7 +20104,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     state.before.set(path, { path, text, exists: true });
   }
 
-  async runAutomationById(id: string, options: { trigger?: "manual" | "scheduled" | "new-file"; paths?: string[] } = {}): Promise<AutomationRunResult> {
+  async runAutomationById(id: string, options: { trigger?: "manual" | "scheduled" | "new-file"; paths?: string[]; prompt?: string } = {}): Promise<AutomationRunResult> {
     const tasks = await this.loadAutomations();
     const task = tasks.find((item) => item.id === id);
     if (!task) throw new Error(this.t("automationNotFound", { id }));
@@ -20036,9 +20122,21 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ...triggerPaths.map((path) => `- ${path}`)
       ].join("\n")
       : "";
-    const executionTask: AutomationTask = triggerPaths.length
-      ? { ...task, args: { ...(task.args ?? {}), trigger: "new-file", paths: triggerPaths, path: triggerPaths[0] } }
+    const supplementalPrompt = options.prompt?.trim() ?? "";
+    const invokedTask: AutomationTask = supplementalPrompt
+      ? {
+        ...task,
+        prompt: [
+          task.prompt.trim(),
+          "---",
+          "本次用户补充要求（只影响本次运行，不修改自动化配置）：",
+          supplementalPrompt
+        ].filter(Boolean).join("\n\n")
+      }
       : task;
+    const executionTask: AutomationTask = triggerPaths.length
+      ? { ...invokedTask, args: { ...(invokedTask.args ?? {}), trigger: "new-file", paths: triggerPaths, path: triggerPaths[0] } }
+      : invokedTask;
     const finishCapture = async (): Promise<void> => {
       if (!capture) return;
       await this.settleAiVaultMutationCapture(capture, 5000, 9000, 300);
@@ -20055,8 +20153,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         curationPaths = vaultCurationScannedPathsFromPack(curationPack);
         if (!candidatePaths.length) {
           if (curationPaths.length) await view.completeVaultCurationNewFiles(curationPaths);
-          await this.markAutomationRun(task.id, true, "");
-          return { ok: true, text: "" };
+          const text = isChineseLanguage(this.language()) ? "没有符合条件的新文件，本次无需运行。" : "No eligible new files; this run was skipped.";
+          await this.markAutomationRun(task.id, "skipped", text);
+          return { ok: true, status: "skipped", text };
         }
       }
       const targetSessionId = await this.persistForegroundAutomationSession(executionTask);
@@ -20068,20 +20167,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ? await view.runAutomationCommand(executionTask, eventContext)
         : await view.runAutomationPrompt(executionTask, [curationPack, eventContext].filter(Boolean).join("\n\n---\n\n"));
       await finishCapture();
+      if (result.status === "pending") {
+        const pendingText = result.text.trim() || (isChineseLanguage(this.language()) ? "自动化已运行，正在等待确认或审核。" : "Automation ran and is waiting for approval or review.");
+        await this.markAutomationRun(task.id, "pending", trimContext(pendingText, 600));
+        return { ok: true, status: "pending", text: pendingText };
+      }
+      if (!result.text.trim()) throw new Error("automation completed without a verified final answer");
       if (curationPaths.length) await view.completeVaultCurationNewFiles(curationPaths);
-      const resultPath = await this.writeAutomationLog(task, result);
-      await this.markAutomationRun(task.id, true, trimContext(result, 600), resultPath);
-      return { ok: true, text: result, path: resultPath };
+      const resultPath = await this.writeAutomationLog(executionTask, result.text);
+      await this.markAutomationRun(task.id, "ok", trimContext(result.text, 600), resultPath);
+      return { ok: true, status: "ok", text: result.text, path: resultPath };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       try {
         await finishCapture();
       } catch (reviewError) {
         const reviewReason = reviewError instanceof Error ? reviewError.message : String(reviewError);
-        await this.markAutomationRun(task.id, false, `${reason}; review: ${reviewReason}`);
+        await this.markAutomationRun(task.id, "failed", `${reason}; review: ${reviewReason}`);
         throw reviewError;
       }
-      await this.markAutomationRun(task.id, false, reason);
+      await this.markAutomationRun(task.id, "failed", reason);
       throw error;
     } finally {
       this.automationRunningIds.delete(task.id);
@@ -20089,7 +20194,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
   }
 
-  async markAutomationRun(id: string, ok: boolean, result: string, resultPath?: string): Promise<void> {
+  async markAutomationRun(id: string, status: AutomationRunStatus, result: string, resultPath?: string): Promise<void> {
     const tasks = await this.loadAutomations(true);
     const now = new Date().toISOString();
     const next = tasks.map((task) =>
@@ -20098,7 +20203,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             ...task,
             updatedAt: now,
             lastRunAt: now,
-            lastStatus: ok ? "ok" as const : "failed" as const,
+            lastStatus: status,
             lastResult: result,
             lastResultPath: resultPath ?? task.lastResultPath
           }
@@ -20150,9 +20255,23 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         const condition = task.condition ? `, condition:${trimContext(task.condition, 80)}` : "";
         const fileTrigger = task.watchNewFiles ? `, new-file:${task.newFilePattern || "**/*"}/${task.newFileDebounceSeconds}s` : "";
         const notify = task.notifyMode !== "inherit" ? `, notify:${task.notifyMode}` : "";
-        return `- ${task.id}: ${task.title} [${status}, ${formatAutomationSchedule(task)}, ${mode}, ${session}${profile}${model}${fileTrigger}${notify}${condition}${last}]`;
+        const lastStatus = task.lastStatus ? `, status:${this.automationStatusLabel(task.lastStatus)}` : "";
+        return `- ${task.id}: ${task.title} [${status}, ${formatAutomationSchedule(task)}, ${mode}, ${session}${profile}${model}${fileTrigger}${notify}${condition}${lastStatus}${last}]`;
       })
       .join("\n");
+  }
+
+  automationStatusLabel(status: AutomationRunStatus): string {
+    if (isChineseLanguage(this.language())) {
+      if (status === "ok") return "成功";
+      if (status === "failed") return "失败";
+      if (status === "skipped") return "无需运行";
+      return "等待确认";
+    }
+    if (status === "ok") return "Succeeded";
+    if (status === "failed") return "Failed";
+    if (status === "skipped") return "Skipped";
+    return "Pending approval";
   }
 
   language(): Language {
@@ -21464,18 +21583,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async saveDocumentRawSource(file: TFile, text: string, encoding: DocumentTextEncoding = "utf-8", hasBom = false): Promise<void> {
-    const adapter = this.app.vault.adapter as DataAdapter & {
-      writeBinary?: (path: string, data: ArrayBuffer) => Promise<void>;
-      readBinary?: (path: string) => Promise<ArrayBuffer>;
-    };
-    if (typeof adapter.writeBinary !== "function" || typeof adapter.readBinary !== "function") {
-      throw new Error(this.t("documentSourceProtected"));
-    }
     const encoded = encodeDocumentText(text, encoding, hasBom);
     const payload = encoded.bytes.buffer.slice(encoded.bytes.byteOffset, encoded.bytes.byteOffset + encoded.bytes.byteLength) as ArrayBuffer;
-    await adapter.writeBinary(file.path, payload);
-    const verified = decodeDocumentText(new Uint8Array(await adapter.readBinary(file.path)), true);
-    if (!verified.available || verified.text !== text) throw new Error(`Document raw save verification failed: ${file.path}`);
+    await this.app.vault.modifyBinary(file, payload);
+    let verified: RawDocumentSource | null = null;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt > 0) await sleep(40 * attempt);
+      verified = decodeDocumentText(new Uint8Array(await this.app.vault.readBinary(file)), true);
+      if (verified.available && verified.text === text) break;
+    }
+    if (!verified?.available || verified.text !== text) throw new Error(`Document raw save verification failed: ${file.path}`);
     this.invalidateDocumentSnapshot(file.path);
   }
 
@@ -22732,8 +22849,9 @@ class CancipDocumentWorkbenchView extends FileView {
       if (event.data.type !== "commit" || snapshot.previewKind !== "html") return;
       const originalText = typeof event.data.originalText === "string" ? event.data.originalText : "";
       const editedText = typeof event.data.editedText === "string" ? event.data.editedText : "";
+      const selector = typeof event.data.selector === "string" ? event.data.selector : "";
       if (!originalText || originalText === editedText) return;
-      void this.commitHtmlPreviewText(snapshot, originalText, editedText);
+      void this.commitHtmlPreviewText(snapshot, originalText, editedText, selector);
     };
     iframe.addEventListener("load", syncEditMode);
     hostWindow.addEventListener("message", onMessage);
@@ -22743,13 +22861,14 @@ class CancipDocumentWorkbenchView extends FileView {
     };
   }
 
-  private async commitHtmlPreviewText(snapshot: DocumentSnapshot, originalText: string, editedText: string): Promise<void> {
+  private async commitHtmlPreviewText(snapshot: DocumentSnapshot, originalText: string, editedText: string, selector = ""): Promise<void> {
     let persisted = false;
     try {
       if (snapshot.kind === "html") {
         // NoteDraw's Markdown block formatter must not replace HTML tags along with their text.
-        const nextSource = this.replaceUniqueDocumentText(snapshot.rawSourceText, originalText, editedText, true);
-        const changed = await this.replaceUniqueHtmlSourceText(snapshot, originalText, editedText);
+        const nextSource = this.replaceUniqueDocumentText(snapshot.rawSourceText, originalText, editedText, true)
+          ?? this.replaceHtmlElementText(snapshot.rawSourceText, selector, originalText, editedText);
+        const changed = await this.replaceUniqueHtmlSourceText(snapshot, originalText, editedText, selector);
         if (!changed) throw new Error("The selected HTML text could not be matched safely");
         persisted = true;
         const refreshed = await this.loadAndRender(false);
@@ -22786,9 +22905,10 @@ class CancipDocumentWorkbenchView extends FileView {
     }
   }
 
-  private async replaceUniqueHtmlSourceText(snapshot: DocumentSnapshot, originalText: string, editedText: string): Promise<boolean> {
+  private async replaceUniqueHtmlSourceText(snapshot: DocumentSnapshot, originalText: string, editedText: string, selector = ""): Promise<boolean> {
     const source = snapshot.rawSourceText;
-    const next = this.replaceUniqueDocumentText(source, originalText, editedText, true);
+    const next = this.replaceUniqueDocumentText(source, originalText, editedText, true)
+      ?? this.replaceHtmlElementText(source, selector, originalText, editedText);
     if (next === null) return false;
     try {
       await this.plugin.saveDocumentRawSource(snapshot.file, next, snapshot.rawSourceEncoding, snapshot.rawSourceHasBom);
@@ -22808,6 +22928,25 @@ class CancipDocumentWorkbenchView extends FileView {
       }
     }
     return true;
+  }
+
+  private replaceHtmlElementText(source: string, selector: string, originalText: string, editedText: string): string | null {
+    if (!selector.trim()) return null;
+    const parsed = new DOMParser().parseFromString(source || "<p></p>", "text/html");
+    let element: Element | null = null;
+    try {
+      element = parsed.querySelector(selector);
+    } catch {
+      return null;
+    }
+    if (!element) return null;
+    const comparable = element.cloneNode(true) as Element;
+    comparable.querySelectorAll("br").forEach((node) => node.replaceWith(parsed.createTextNode(" ")));
+    const currentText = comparable.textContent ?? "";
+    if (normalizeHtmlPreviewEditText(currentText) !== normalizeHtmlPreviewEditText(originalText)) return null;
+    element.textContent = editedText;
+    const doctype = source.match(/^\s*<!doctype[^>]*>/i)?.[0].trim() || "<!doctype html>";
+    return `${doctype}\n${parsed.documentElement.outerHTML}`;
   }
 
   private replaceUniqueDocumentText(source: string, originalText: string, editedText: string, htmlEntities = false): string | null {
@@ -24683,11 +24822,12 @@ class CancipView extends ItemView {
     resumed: boolean;
     status: NonNullable<SessionHistoryEntry["status"]>;
     automationTaskId: string;
+    finalText: string;
   }> {
-    if (this.activeRequest) return { resumed: false, status: "running", automationTaskId: "" };
+    if (this.activeRequest) return { resumed: false, status: "running", automationTaskId: "", finalText: "" };
     const loaded = await this.loadSessionHistoryEntry(entry, { saveCurrent: false, focusInput: false, markRead: false });
     if (!loaded || !this.resumableTask) {
-      return { resumed: false, status: this.currentSessionStatus, automationTaskId: "" };
+      return { resumed: false, status: this.currentSessionStatus, automationTaskId: "", finalText: "" };
     }
     if (automationTaskId) {
       this.resumableAutomationTaskId = automationTaskId;
@@ -24695,7 +24835,11 @@ class CancipView extends ItemView {
     }
     const resumedAutomationTaskId = this.resumableAutomationTaskId;
     await this.resumeLastTask();
-    return { resumed: true, status: this.currentSessionStatus, automationTaskId: resumedAutomationTaskId };
+    const finalMessage = this.visibleFinalAssistantForMessages(this.messages);
+    const finalText = finalMessage
+      ? prepareMessageDisplay(redactSensitiveText(finalMessage.content)).visibleContent.trim()
+      : "";
+    return { resumed: true, status: this.currentSessionStatus, automationTaskId: resumedAutomationTaskId, finalText };
   }
 
   async onOpen(): Promise<void> {
@@ -27023,13 +27167,13 @@ class CancipView extends ItemView {
     this.mentionItems.forEach((item, index) => {
       const row = this.mentionEl!.createEl("button", {
         cls: `obcc-mention-item ${index === this.mentionActiveIndex ? "is-active" : ""}`,
-        attr: { type: "button", title: item.path }
+        attr: { type: "button", title: item.kind === "category" ? item.title : item.path }
       });
       setIcon(row.createSpan({ cls: "obcc-mention-icon" }), mentionIcon(item.kind));
       const body = row.createDiv({ cls: "obcc-mention-body" });
       body.createDiv({ cls: "obcc-mention-title", text: item.title });
-      body.createDiv({ cls: "obcc-mention-path", text: item.path });
-      row.createSpan({ cls: `obcc-mention-kind is-${item.kind}`, text: item.detail });
+      body.createDiv({ cls: "obcc-mention-path", text: item.kind === "category" ? item.detail : item.path });
+      row.createSpan({ cls: `obcc-mention-kind is-${item.kind}`, text: item.kind === "category" ? (isChineseLanguage(this.plugin.language()) ? "分类" : "Category") : item.detail });
       row.addEventListener("pointerdown", (event) => event.preventDefault());
       row.addEventListener("mouseenter", () => {
         this.mentionActiveIndex = index;
@@ -27097,6 +27241,18 @@ class CancipView extends ItemView {
   private insertMention(item: MentionTarget): void {
     if (!this.activeMention) return;
     const value = this.inputEl.value;
+    if (item.kind === "category") {
+      const source = this.activeMentionSource ?? "typing";
+      const replacement = `@[${this.mentionCategoryPrefix(item.path)}`;
+      this.inputEl.value = `${value.slice(0, this.activeMention.start)}${replacement}${value.slice(this.activeMention.end)}`;
+      const cursor = this.activeMention.start + replacement.length;
+      this.inputEl.setSelectionRange(cursor, cursor);
+      this.closeMentionPopup();
+      this.handleComposerInputChanged();
+      this.queueMentionPopupUpdate(source);
+      this.focusInput();
+      return;
+    }
     const replacement = `@[${item.path}] `;
     this.inputEl.value = `${value.slice(0, this.activeMention.start)}${replacement}${value.slice(this.activeMention.end)}`;
     const cursor = this.activeMention.start + replacement.length;
@@ -27905,6 +28061,11 @@ class CancipView extends ItemView {
         state.createSpan({ cls: "obcc-session-dot" });
       }
       const actions = row.createDiv({ cls: "obcc-session-actions" });
+      if (!entry.eventOnly) {
+        this.createHistoryActionButton(actions, "send", this.t("sendToAI"), () => {
+          this.sendMentionToCancip(`session:${entry.id}`);
+        });
+      }
       if (entry.parentSessionId) {
         this.createHistoryActionButton(actions, "corner-up-left", this.t("subagentParent"), () => {
           void this.loadSessionById(entry.parentSessionId ?? "");
@@ -28041,6 +28202,12 @@ class CancipView extends ItemView {
       onClick();
     });
     return button;
+  }
+
+  private sendMentionToCancip(path: string): void {
+    this.closeHeaderMenu();
+    this.insertPromptText(`@[${path}] `);
+    this.focusInput();
   }
 
   private async reorderSessionHistoryFromMenu(sourceId: string, targetId: string, visibleIds: string[]): Promise<void> {
@@ -29321,9 +29488,25 @@ class CancipView extends ItemView {
       return;
     }
     for (const skill of skills.slice(0, 18)) {
-      this.renderHeaderPanelActionButton(body, "sparkles", skill.name, `${skill.path}${skill.description ? ` · ${trimContext(skill.description, 100)}` : ""}`, () => {
-        void this.attachSkillFromPanel(skill);
+      const card = body.createDiv({ cls: "obcc-management-card" });
+      const row = card.createDiv({ cls: "obcc-management-card-main" });
+      row.createDiv({ cls: "obcc-command-title", text: skill.name });
+      row.createDiv({ cls: "obcc-command-detail", text: `${skill.path}${skill.description ? ` · ${trimContext(skill.description, 100)}` : ""}` });
+      row.addEventListener("pointerdown", (event) => event.preventDefault());
+      row.addEventListener("click", () => void this.attachSkillFromPanel(skill));
+      const actions = card.createDiv({ cls: "obcc-management-actions" });
+      const attach = actions.createEl("button", {
+        cls: "obcc-link-button",
+        attr: { type: "button", title: this.t("skillAttached", { name: skill.name }), "aria-label": this.t("skillAttached", { name: skill.name }) }
       });
+      setIcon(attach, "paperclip");
+      attach.addEventListener("click", () => void this.attachSkillFromPanel(skill));
+      const send = actions.createEl("button", {
+        cls: "obcc-link-button",
+        attr: { type: "button", title: this.t("sendToAI"), "aria-label": this.t("sendToAI") }
+      });
+      setIcon(send, "send");
+      send.addEventListener("click", () => this.sendMentionToCancip(skill.path));
     }
     this.placeHeaderMenu();
   }
@@ -29400,6 +29583,12 @@ class CancipView extends ItemView {
     title.setAttr("title", task.title);
     row.createDiv({ cls: "obcc-command-detail", text: trimContext(this.plugin.formatAutomations([task]).replace(/\s+/g, " "), 180) });
     const actions = card.createDiv({ cls: "obcc-management-actions" });
+    const send = actions.createEl("button", {
+      cls: "obcc-link-button",
+      attr: { type: "button", title: this.t("sendToAI"), "aria-label": this.t("sendToAI") }
+    });
+    setIcon(send, "send");
+    send.addEventListener("click", () => this.sendMentionToCancip(`automation:${task.id}`));
     const run = actions.createEl("button", {
       cls: "obcc-link-button",
       attr: { type: "button", title: this.t("automationRunTask"), "aria-label": this.t("automationRunTask") }
@@ -29995,6 +30184,64 @@ class CancipView extends ItemView {
     await this.sendPromptNow(next.prompt);
   }
 
+  private automationMentionInvocation(prompt: string): { id: string; prompt: string } | null {
+    const token = extractMentionTokens(prompt).find((item) => item.startsWith("automation:"));
+    if (!token) return null;
+    const id = token.slice("automation:".length).trim();
+    if (!id) return null;
+    const bracketToken = `@[${token}]`;
+    const simpleToken = `@${token}`;
+    const supplemental = prompt.replace(bracketToken, "").replace(simpleToken, "").trim();
+    return {
+      id,
+      prompt: supplemental || (isChineseLanguage(this.plugin.language()) ? "立即运行并返回本次真实结果。" : "Run now and return the verified result.")
+    };
+  }
+
+  private async runMentionedAutomation(rawPrompt: string, invocation: { id: string; prompt: string }, userMessage: ChatMessage, startedAt: number): Promise<void> {
+    userMessage.mode = this.mode;
+    userMessage.accessMode = this.plugin.settings.accessMode;
+    userMessage.apiProfile = this.redactedApiProfile(this.plugin.activeApiProfile());
+    this.noteTaskControlPrompt(rawPrompt);
+    this.renderMessages();
+    this.scrollMessagesToBottom(false);
+    const progress = this.addProgressStep(this.t("automationStarted", { title: invocation.id }));
+    try {
+      this.setStatus(this.t("automationStarted", { title: invocation.id }));
+      this.updateProgressStep(progress, this.t("automationStarted", { title: invocation.id }), invocation.prompt, this.t("toolRunExecuting"));
+      const result = await this.plugin.runAutomationById(invocation.id, { trigger: "manual", prompt: invocation.prompt });
+      const text = result.text.trim() || this.plugin.automationStatusLabel(result.status);
+      this.updateProgressStep(
+        progress,
+        this.plugin.automationStatusLabel(result.status),
+        result.path ? `${text}\n${result.path}` : text,
+        result.status === "failed" ? this.t("toolRunFailed") : result.status === "pending" ? this.t("toolRunPending") : this.t("toolRunExecuted")
+      );
+      const answer = this.appendFinalRunStats(text, startedAt);
+      this.addMessage("assistant", this.withInlineChoiceMetadata(answer, invocation.prompt));
+      const sessionStatus: NonNullable<SessionHistoryEntry["status"]> = result.status === "pending" ? "idle" : "completed";
+      this.currentSessionStatus = sessionStatus;
+      this.currentSessionCompletedNotice = result.status !== "pending";
+      this.setStatus(result.status === "pending" ? this.t("toolRunPending") : this.t("done"));
+      await this.saveCurrentSession();
+      await this.updateCurrentSessionStatus(sessionStatus, result.status !== "pending");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.updateProgressStep(progress, this.t("automationFailed", { reason }), reason, this.t("toolRunFailed"));
+      this.addMessage("assistant", this.appendFinalRunStats(this.t("automationFailed", { reason }), startedAt));
+      this.currentSessionStatus = "failed";
+      this.currentSessionCompletedNotice = true;
+      this.setStatus(this.t("callFailed"));
+      await this.saveCurrentSession();
+      await this.updateCurrentSessionStatus("failed", true);
+    } finally {
+      this.stopProgressStepTimer(progress.id);
+      this.renderMessages();
+      this.syncRequestControls();
+      if (this.drainQueueAfterRequest) void this.drainQueuedPrompts();
+    }
+  }
+
   private async sendPromptNow(rawPrompt: string): Promise<void> {
     const startedAt = Date.now();
     this.turnModelUsage = null;
@@ -30010,6 +30257,11 @@ class CancipView extends ItemView {
     const workflowHint = this.composerWorkflowHints.get(rawPrompt);
     if (workflowHint?.steps.length) userMessage.workflowHint = workflowHint;
     this.composerWorkflowHints.delete(rawPrompt);
+    const mentionedAutomation = this.automationMentionInvocation(rawPrompt);
+    if (mentionedAutomation) {
+      await this.runMentionedAutomation(rawPrompt, mentionedAutomation, userMessage, startedAt);
+      return;
+    }
     const taskGoal = this.resolveTaskGoal(rawPrompt);
     const previousRequestProfile = this.activeRequestApiProfile;
     const requestProfile = this.plugin.activeApiProfile();
@@ -30150,7 +30402,8 @@ class CancipView extends ItemView {
         actionReport = await this.forceReadOnlyCapabilityDiscovery(taskGoal, answer, context, request);
       }
       if (!actionReport && implementationNeedsAction) {
-        actionReport = await this.forceToolActionForImplementationTask(taskGoal, context, request);
+        actionReport = await this.forceToolActionForImplementationTask(taskGoal, context, request)
+          ?? await this.forceToolActionForImplementationTask(taskGoal, context, request, "hard");
       }
       if (!visibleAnswer && !answerHasExecutableActions && !actionReport) {
         const retryAnswer = await this.retryEmptyAssistantReply(modelPrompt, context, rawPrompt, generationStep, request);
@@ -30211,6 +30464,13 @@ class CancipView extends ItemView {
           return;
         }
       } else {
+        if (implementationNeedsAction) {
+          void this.recordSessionEvent({ kind: "prompt.final_missing", detail: "implementation response contained no executable or verified action", status: "retryable" });
+          this.markResumableTask(taskGoal, "failed");
+          this.setStatus(this.t("callFailed"));
+          await this.finishCurrentSessionStatus("failed", true, request);
+          return;
+        }
         if (!this.ensurePlainFinalConclusion(startedAt, taskGoal)) {
           this.markResumableTask(taskGoal, "failed");
           this.setStatus(this.t("callFailed"));
@@ -30715,7 +30975,7 @@ class CancipView extends ItemView {
     return { added: exact.added, removed: exact.removed, estimated: exact.estimated };
   }
 
-  async runAutomationPrompt(task: AutomationTask, preparedExtraContext = ""): Promise<string> {
+  async runAutomationPrompt(task: AutomationTask, preparedExtraContext = ""): Promise<AutomationRunnerResult> {
     const startedAt = Date.now();
     if (this.activeRequest) throw new Error(this.t("todoRequestRunning"));
     const modelPromptInfo = this.plugin.automationModelPromptForTask(task, task.prompt);
@@ -30755,7 +31015,8 @@ class CancipView extends ItemView {
       const fallback = this.localFallback(task.prompt, context.searchHits, this.t("missingApi"));
       this.addMessage("assistant", fallback);
       this.renderMessages();
-      return fallback;
+      await this.updateCurrentSessionStatus("failed", true);
+      throw new Error(this.t("missingApi"));
     }
 
     const request = new AbortController();
@@ -30781,41 +31042,49 @@ class CancipView extends ItemView {
         automationProfile,
         this.modelStreamProgressUpdater(generationStep, generationSummary)
       );
-      if (request.signal.aborted || !this.isCurrentRequest(request)) return this.t("stopped");
+      if (request.signal.aborted || !this.isCurrentRequest(request)) throw new Error(this.t("stopped"));
       const initialActions = extractCancipActions(answer);
       const initialVisible = initialActions.length ? "" : visibleAssistantAnswer(answer, false);
       this.updateProgressStep(generationStep, this.generationStepSummary(generationSummary, this.currentModelCharUsageText()), this.formatGenerationAuditDetail(modelPrompt, context, activeProfile, answer, initialVisible, prompt));
       const assistantMessage = initialVisible ? this.addMessage("assistant", initialVisible) : undefined;
       if (assistantMessage) this.attachChoiceSource(assistantMessage, answer);
       if (assistantMessage) this.renderMessages();
-      const actionReport = await this.handleActionBlocks(answer, assistantMessage);
-      let result = answer;
+      let actionReport = await this.handleActionBlocks(answer, assistantMessage);
+      if (!actionReport && shouldExpectToolActionForPrompt(task.prompt)) {
+        actionReport = await this.forceToolActionForImplementationTask(task.prompt, context, request)
+          ?? await this.forceToolActionForImplementationTask(task.prompt, context, request, "hard");
+      }
       if (actionReport) {
         this.addActionReportMessage(actionReport);
         this.renderMessages();
-        result = `${result}\n\n${actionReport.report}`;
         if (this.hasPendingToolRuns(actionReport.runs)) {
           this.setPendingToolRunStatus(actionReport.runs);
           await this.finishCurrentSessionStatus("idle", false, request);
-          return result;
+          return { status: "pending", text: this.humanFinalConclusion(actionReport.runs, true, task.prompt) };
         }
         const finalReport = await this.continueAfterToolRuns(context, actionReport, request, task.prompt);
         const finalActionReport = finalReport ?? actionReport;
         if (this.hasPendingToolRuns(finalActionReport.runs)) {
           this.setPendingToolRunStatus(finalActionReport.runs);
           await this.finishCurrentSessionStatus("idle", false, request);
-          return result;
+          return { status: "pending", text: this.humanFinalConclusion(finalActionReport.runs, true, task.prompt) };
         }
         const finalDecision = await this.driveStructuredFinal(context, finalActionReport, request, task.prompt);
         if (finalDecision.status === "pending") {
           this.setPendingToolRunStatus(finalDecision.handling.runs);
           await this.finishCurrentSessionStatus("idle", false, request);
-          return finalDecision.handling.report;
+          return { status: "pending", text: this.humanFinalConclusion(finalDecision.handling.runs, true, task.prompt) };
         }
         if (finalDecision.status !== "answered" || !this.ensureFinalConclusion(finalDecision.handling, startedAt, false, task.prompt)) {
           throw new Error("automation response did not reach structured final state");
         }
+        if (shouldExpectToolActionForPrompt(task.prompt) && shouldNeedMoreActionForPrompt(task.prompt, finalDecision.handling.runs)) {
+          throw new Error("automation described the task but did not execute and verify the required change");
+        }
       } else {
+        if (shouldExpectToolActionForPrompt(task.prompt)) {
+          throw new Error("automation described the task but did not execute it");
+        }
         if (!this.ensurePlainFinalConclusion(startedAt, task.prompt)) {
           const finalDecision = await this.driveStructuredFinal(context, { report: "", runs: [], executed: false }, request, task.prompt);
           if (finalDecision.status !== "answered" || !this.ensurePlainFinalConclusion(startedAt, task.prompt)) {
@@ -30823,9 +31092,14 @@ class CancipView extends ItemView {
           }
         }
       }
+      const finalMessage = this.visibleFinalAssistantForMessages(this.messages);
+      const finalText = finalMessage
+        ? prepareMessageDisplay(redactSensitiveText(finalMessage.content)).visibleContent.trim()
+        : "";
+      if (!finalText) throw new Error("automation final response was missing or invalid");
       this.setStatus(this.t("automationDone", { title: task.title }));
       await this.finishCurrentSessionStatus("completed", true, request);
-      return result;
+      return { status: "ok", text: finalText };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.updateProgressStep(generationStep, this.generationStepSummary(this.t("automationStarted", { title: task.title }), this.currentModelCharUsageText()), this.formatGenerationAuditDetail(modelPrompt, context, activeProfile, `Model call failed: ${reason}`, "", prompt), this.t("toolRunFailed"));
@@ -30848,7 +31122,7 @@ class CancipView extends ItemView {
     return "";
   }
 
-  async runAutomationCommand(task: AutomationTask, preparedExtraContext = ""): Promise<string> {
+  async runAutomationCommand(task: AutomationTask, preparedExtraContext = ""): Promise<AutomationRunnerResult> {
     if (!task.command) throw new Error("automation command is empty");
     const startedAt = Date.now();
     if (this.activeRequest) throw new Error(this.t("todoRequestRunning"));
@@ -30881,17 +31155,21 @@ class CancipView extends ItemView {
           : "Distilling memory, experience, and Skill index";
         contextStep = this.addProgressStep(summary);
         const result = await this.runMemoryDreamCommand(task.args ?? {});
-        if (request.signal.aborted || !this.isCurrentRequest(request)) return this.t("stopped");
+        if (request.signal.aborted || !this.isCurrentRequest(request)) throw new Error(this.t("stopped"));
         this.updateProgressStep(contextStep, summary, result);
         this.addMessage("assistant", result);
         this.renderMessages();
         this.setStatus(this.t("automationDone", { title: task.title }));
         await this.finishCurrentSessionStatus("completed", true, request);
-        return result;
+        return { status: "ok", text: result };
+      }
+      const activeProfile = automationProfile;
+      if (!activeProfile.apiUrl || !activeProfile.apiKey || !activeProfile.model) {
+        throw new Error(this.t("missingApi"));
       }
       contextStep = this.addProgressStep(this.t("preparingContext"));
       const commandContext = await this.automationCommandModelContext(task, displayPrompt);
-      if (request.signal.aborted || !this.isCurrentRequest(request)) return this.t("stopped");
+      if (request.signal.aborted || !this.isCurrentRequest(request)) throw new Error(this.t("stopped"));
       const baseContext = await this.buildContext(commandContext.prompt);
       const context = {
         ...baseContext,
@@ -30906,19 +31184,6 @@ class CancipView extends ItemView {
       userMessage.apiProfile = this.redactedApiProfile(automationProfile);
       this.renderSources(context.searchHits);
 
-      const activeProfile = automationProfile;
-      if (!activeProfile.apiUrl || !activeProfile.apiKey || !activeProfile.model) {
-        const fallback = [
-          this.t("missingApi"),
-          "",
-          trimContext(commandContext.contextText, Math.max(1200, this.plugin.settings.maxFileContextChars))
-        ].join("\n");
-        this.addMessage("assistant", fallback);
-        this.renderMessages();
-        await this.finishCurrentSessionStatus("failed", true, request);
-        return fallback;
-      }
-
       const generationSummary = this.t("automationStarted", { title: task.title });
       this.primeModelCharStats(commandContext.prompt, context, rawPrompt);
       generationStep = this.addProgressStep(this.modelCharProgressSummary(generationSummary));
@@ -30932,14 +31197,21 @@ class CancipView extends ItemView {
         automationProfile,
         this.modelStreamProgressUpdater(generationStep, generationSummary)
       );
-      if (request.signal.aborted || !this.isCurrentRequest(request)) return this.t("stopped");
+      if (request.signal.aborted || !this.isCurrentRequest(request)) throw new Error(this.t("stopped"));
       this.updateProgressStep(generationStep, this.generationStepSummary(generationSummary, this.currentModelCharUsageText()), this.formatGenerationAuditDetail(commandContext.prompt, context, activeProfile, answer, answer.trim(), rawPrompt));
       this.addMessage("assistant", answer);
       this.renderMessages();
-      this.ensurePlainFinalConclusion(startedAt);
+      if (!this.ensurePlainFinalConclusion(startedAt, displayPrompt)) {
+        throw new Error("automation final response was missing or invalid");
+      }
+      const finalMessage = this.visibleFinalAssistantForMessages(this.messages);
+      const finalText = finalMessage
+        ? prepareMessageDisplay(redactSensitiveText(finalMessage.content)).visibleContent.trim()
+        : "";
+      if (!finalText) throw new Error("automation final response was missing or invalid");
       this.setStatus(this.t("automationDone", { title: task.title }));
       await this.finishCurrentSessionStatus("completed", true, request);
-      return answer;
+      return { status: "ok", text: finalText };
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (generationStep) {
@@ -31726,14 +31998,12 @@ class CancipView extends ItemView {
       return { initialized: true, pending: [] };
     }
 
-    const knownTimes = new Set(Object.values(existing.known));
     const pending = new Set(existing.pending.map((path) => normalizePath(path)).filter((path) => byPath.has(path)));
     for (const file of files) {
       const path = normalizePath(file.path);
       if (Object.prototype.hasOwnProperty.call(existing.known, path)) continue;
       existing.known[path] = file.stat.ctime;
-      if (!knownTimes.has(file.stat.ctime)) pending.add(path);
-      knownTimes.add(file.stat.ctime);
+      pending.add(path);
     }
     existing.pending = [...pending];
     existing.updatedAt = now;
@@ -33817,7 +34087,7 @@ class CancipView extends ItemView {
       includeToolCatalog: implementation || this.mode === "edit" || looksLikePathQuery(prompt) || (!preRoutedReadOnly && (pluginNeed || capabilityNeed)),
       includeDetailedToolProtocol: detailedToolHelpNeed,
       includeAccessPrompt: implementation || this.mode === "edit",
-      includeRecentTranscript: false,
+      includeRecentTranscript: true,
       includeHistoryAnchors: hasHistoryAnchors && !includeWorkingState,
       includeWorkingState,
       includeCoreMemory: memoryNeed && !pluginNeed,
@@ -33958,15 +34228,43 @@ class CancipView extends ItemView {
   private modelInputText(prompt: string, context: { contextText: string }, rawPrompt = prompt): string {
     const policy = this.promptPayloadPolicy(prompt);
     const anchors = policy.includeHistoryAnchors ? this.conversationAnchors() : "";
+    const recent = policy.includeRecentTranscript ? this.recentConversationForModel(rawPrompt) : "";
     const control = policy.includeWorkingState ? this.taskControlBlockForModel(rawPrompt, prompt) : "";
     const executionGuide = policy.intent === "implementation" ? this.executionGuideForPrompt(prompt) : "";
     return [
       anchors ? `${this.t("conversationAnchors")}:\n${anchors}` : "",
+      recent ? `## Recent conversation\n${recent}` : "",
       control,
       executionGuide,
       `${this.t("userQuestion")}：${prompt}`,
       context.contextText ? `${this.t("obsidianContext")}：\n${context.contextText}` : ""
     ].filter(Boolean).join("\n\n");
+  }
+
+  private recentConversationForModel(currentPrompt: string): string {
+    const limit = Math.max(0, Math.min(RECENT_TRANSCRIPT_MAX_MESSAGES, this.plugin.settings.maxRecentTranscriptMessages));
+    if (!limit) return "";
+    const selected: string[] = [];
+    let skippedCurrentPrompt = false;
+    for (let index = this.messages.length - 1; index >= 0 && selected.length < limit; index -= 1) {
+      const message = this.messages[index];
+      if (!message || (message.role !== "user" && message.role !== "assistant")) continue;
+      if (!skippedCurrentPrompt && message.role === "user" && samePromptForDedup(message.content, currentPrompt)) {
+        skippedCurrentPrompt = true;
+        continue;
+      }
+      const display = prepareMessageDisplay(redactSensitiveText(message.content));
+      if (display.processOnly) continue;
+      const visible = (messageOutlineText(display.visibleContent) || display.visibleContent).replace(/\s+/g, " ").trim();
+      const runSummary = (message.toolRuns ?? [])
+        .filter((run) => run.status !== "pending" && run.status !== "executing")
+        .slice(-2)
+        .map((run) => `${run.status}:${trimContext(run.summary, 100)}`)
+        .join("; ");
+      if (!visible && !runSummary) continue;
+      selected.push(`${message.role}: ${trimContext(visible, 360)}${runSummary ? ` | tools ${runSummary}` : ""}`);
+    }
+    return trimPromptPayload(selected.reverse().join("\n\n"), 2200);
   }
 
   private executionGuideForPrompt(prompt: string): string {
@@ -35191,11 +35489,13 @@ class CancipView extends ItemView {
   private async findMentionTargets(prompt: string): Promise<MentionTarget[]> {
     const tokens = extractMentionTokens(prompt);
     if (!tokens.length) return [];
-    const allTargets = await this.buildMentionTargets();
+    let allTargets: MentionTarget[] | null = null;
     const used = new Set<string>();
     const resolved: MentionTarget[] = [];
     for (const token of tokens) {
-      const target = this.resolveMentionToken(token, allTargets);
+      const stable = await this.resolveStableMentionToken(token);
+      if (!stable && !allTargets) allTargets = await this.buildMentionTargets();
+      const target = stable ?? this.resolveMentionToken(token, allTargets ?? []);
       if (!target) continue;
       const key = mentionTargetKey(target);
       if (used.has(key)) continue;
@@ -35203,6 +35503,33 @@ class CancipView extends ItemView {
       resolved.push(target);
     }
     return resolved.slice(0, Math.max(1, Math.min(20, this.plugin.settings.maxMentionResults)));
+  }
+
+  private async resolveStableMentionToken(token: string): Promise<MentionTarget | null> {
+    const normalized = normalizeMentionQuery(token);
+    if (normalized.startsWith("session:")) {
+      const id = normalized.slice("session:".length).trim();
+      const entry = (await this.readSessionHistoryIndex({ mergeFiles: false })).find((item) => item.id === id);
+      return entry ? this.sessionMentionTarget(entry) : null;
+    }
+    if (normalized.startsWith("automation:")) {
+      const id = normalized.slice("automation:".length).trim();
+      const task = (await this.plugin.loadAutomations()).find((item) => item.id === id);
+      return task ? this.automationMentionTarget(task) : null;
+    }
+    const skill = (await this.discoverSkills()).find((item) => normalizePath(item.path) === normalizePath(normalized));
+    if (skill) {
+      return {
+        kind: "skill",
+        source: "file",
+        path: skill.path,
+        title: skill.name,
+        detail: skill.description ? `${this.t("mentionSkill")} · ${trimContext(skill.description.replace(/\s+/g, " "), 80)}` : this.t("mentionSkill"),
+        keywords: skillMentionKeywords(skill),
+        score: skill.priority
+      };
+    }
+    return null;
   }
 
   private resolveMentionToken(mentionText: string, allTargets: MentionTarget[]): MentionTarget | null {
@@ -35224,8 +35551,116 @@ class CancipView extends ItemView {
   }
 
   private async findMentionCandidates(query: string, limit: number, targets?: MentionTarget[]): Promise<MentionTarget[]> {
+    const normalized = normalizeMentionQuery(query);
+    if (!normalized) return this.buildMentionCategoryTargets().slice(0, limit);
+    const category = this.parseMentionCategoryQuery(normalized);
+    if (category) {
+      const categoryTargets = await this.buildMentionCategoryItems(category.id);
+      return this.rankMentionCandidates(category.query, categoryTargets).slice(0, limit);
+    }
+    const categories = this.rankMentionCandidates(normalized, this.buildMentionCategoryTargets());
     const allTargets = targets ?? await this.buildMentionTargets();
-    return this.rankMentionCandidates(query, allTargets).slice(0, limit);
+    return uniqueMentionTargets([...categories, ...this.rankMentionCandidates(normalized, allTargets)]).slice(0, limit);
+  }
+
+  private buildMentionCategoryTargets(): MentionTarget[] {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const category = (path: string, title: string, detail: string, keywords: string[], score: number): MentionTarget => ({
+      kind: "category",
+      source: "virtual",
+      path,
+      title,
+      detail,
+      keywords,
+      score
+    });
+    return [
+      category("category:sessions", chinese ? "会话历史" : "Session history", chinese ? "选择会话并带入上下文" : "Choose a session as context", ["session", "history", "chat", "会话", "历史", "聊天"], 100),
+      category("category:skills", "Skill", chinese ? "选择可执行能力和工作流" : "Choose a capability or workflow", ["skill", "skills", "workflow", "技能", "能力", "工作流"], 99),
+      category("category:automations", chinese ? "自动化" : "Automations", chinese ? "选择任务并结合后续要求运行" : "Choose a task and run it with the following request", ["automation", "task", "schedule", "自动化", "任务", "定时"], 98),
+      category("category:files", chinese ? "文件和文件夹" : "Files and folders", chinese ? "选择 Vault 内容" : "Choose Vault content", ["file", "folder", "vault", "文件", "文件夹", "笔记"], 90),
+      category("category:commands", chinese ? "插件、命令和 Cancip 功能" : "Plugins, commands, and Cancip", chinese ? "选择可执行功能" : "Choose an executable capability", ["plugin", "command", "action", "插件", "命令", "功能"], 88)
+    ];
+  }
+
+  private parseMentionCategoryQuery(query: string): { id: string; query: string } | null {
+    const definitions = [
+      { id: "sessions", aliases: ["会话历史", "会话", "sessions", "session", "history"] },
+      { id: "skills", aliases: ["技能", "skill", "skills"] },
+      { id: "automations", aliases: ["自动化", "automation", "automations"] },
+      { id: "files", aliases: ["文件和文件夹", "文件", "files", "file", "folder", "folders"] },
+      { id: "commands", aliases: ["插件、命令和cancip功能", "插件", "命令", "commands", "command", "plugin", "action"] }
+    ];
+    const lower = query.toLocaleLowerCase();
+    for (const definition of definitions) {
+      for (const alias of definition.aliases) {
+        const normalizedAlias = alias.toLocaleLowerCase();
+        if (lower === normalizedAlias) return { id: definition.id, query: "" };
+        if (lower.startsWith(`${normalizedAlias}:`) || lower.startsWith(`${normalizedAlias}：`)) {
+          return { id: definition.id, query: query.slice(alias.length + 1).trim() };
+        }
+      }
+    }
+    return null;
+  }
+
+  private mentionCategoryPrefix(path: string): string {
+    const chinese = isChineseLanguage(this.plugin.language());
+    if (path === "category:sessions") return chinese ? "会话:" : "session:";
+    if (path === "category:skills") return chinese ? "技能:" : "skill:";
+    if (path === "category:automations") return chinese ? "自动化:" : "automation:";
+    if (path === "category:files") return chinese ? "文件:" : "file:";
+    return chinese ? "命令:" : "command:";
+  }
+
+  private async buildMentionCategoryItems(id: string): Promise<MentionTarget[]> {
+    if (id === "sessions") {
+      return (await this.readSessionHistoryIndex({ mergeFiles: false }))
+        .filter((entry) => !entry.eventOnly)
+        .sort(compareSessionHistoryEntries)
+        .slice(0, 80)
+        .map((entry) => this.sessionMentionTarget(entry));
+    }
+    if (id === "skills") return await this.buildSkillMentionTargets();
+    if (id === "automations") return (await this.plugin.loadAutomations()).map((task) => this.automationMentionTarget(task));
+    if (id === "commands") return [...this.buildActionMentionTargets(), ...this.buildCommandMentionTargets()];
+    return (await this.buildMentionTargets()).filter((target) => target.kind === "file" || target.kind === "folder");
+  }
+
+  private sessionMentionTarget(entry: SessionHistoryEntry): MentionTarget {
+    return {
+      kind: "session",
+      source: "virtual",
+      path: `session:${entry.id}`,
+      title: entry.title || this.t("untitledSession"),
+      detail: `${this.sessionStatusLabel(this.displaySessionStatus(entry))} · ${formatSessionHistoryTime(entry.updatedAt)}`,
+      keywords: uniqueStrings([entry.id, entry.title, entry.parentSessionTitle ?? "", entry.subagentGoal ?? ""]),
+      score: entry.pinned ? 90 : entry.archived ? 40 : 70
+    };
+  }
+
+  private automationMentionTarget(task: AutomationTask): MentionTarget {
+    return {
+      kind: "automation",
+      source: "virtual",
+      path: `automation:${task.id}`,
+      title: task.title,
+      detail: `${task.enabled ? this.t("automationEnabled") : this.t("automationDisabled")} · ${formatAutomationSchedule(task)}${task.lastStatus ? ` · ${this.plugin.automationStatusLabel(task.lastStatus)}` : ""}`,
+      keywords: uniqueStrings([task.id, task.title, task.command ?? "", task.prompt]),
+      score: task.enabled ? 82 : 42
+    };
+  }
+
+  private async buildSkillMentionTargets(): Promise<MentionTarget[]> {
+    return (await this.discoverSkills()).map((skill) => ({
+      kind: "skill" as const,
+      source: "file" as const,
+      path: skill.path,
+      title: skill.name,
+      detail: skill.description ? `${this.t("mentionSkill")} · ${trimContext(skill.description.replace(/\s+/g, " "), 80)}` : this.t("mentionSkill"),
+      keywords: skillMentionKeywords(skill),
+      score: skill.priority
+    }));
   }
 
   private rankMentionCandidates(query: string, targets: MentionTarget[]): MentionTarget[] {
@@ -35557,6 +35992,25 @@ class CancipView extends ItemView {
 
   private async readMentionTarget(target: MentionTarget): Promise<string> {
     if (target.source === "virtual") {
+      if (target.kind === "session" && target.path.startsWith("session:")) {
+        const sessionId = target.path.slice("session:".length);
+        return trimContext(await this.sessionHistoryCommand({ sessionId, mode: "full", limit: 12, includeContext: false }), 6200);
+      }
+      if (target.kind === "automation" && target.path.startsWith("automation:")) {
+        const id = target.path.slice("automation:".length);
+        const task = (await this.plugin.loadAutomations()).find((item) => item.id === id);
+        if (!task) throw new Error(this.t("automationNotFound", { id }));
+        return trimContext([
+          `Automation ID: ${task.id}`,
+          `Title: ${task.title}`,
+          `Schedule: ${formatAutomationSchedule(task)}`,
+          task.command ? `Command: ${task.command}` : "",
+          "Prompt:",
+          task.prompt,
+          "",
+          "Invocation contract: this stable automation mention means run the selected automation once. Combine the user's text after the mention as a one-time supplemental prompt. Do not merely explain how to run it and do not permanently overwrite the saved task."
+        ].filter(Boolean).join("\n"), 6200);
+      }
       if (target.path.startsWith("command:")) return this.describeCommandMention(target.path.slice("command:".length));
       if (target.path.startsWith("obsidian-command:")) return this.describeObsidianCommandMention(target.path.slice("obsidian-command:".length), target.title);
       return this.describeActionMention(target.path);
@@ -39776,7 +40230,7 @@ class CancipView extends ItemView {
     if (action.op === "run") {
       const id = action.id?.trim();
       if (!id) throw new Error("automation run requires id");
-      const result = await this.plugin.runAutomationById(id);
+      const result = await this.plugin.runAutomationById(id, { prompt: action.prompt });
       return this.t("automationActionResult", { summary: result.path ? this.t("automationLogSaved", { path: result.path }) : trimContext(result.text, 1200) });
     }
 
@@ -40424,7 +40878,7 @@ class CancipView extends ItemView {
     if (normalized === "cancip.automation.run") {
       const id = typeof args.id === "string" ? args.id.trim() : "";
       if (!id) throw new Error("cancip.automation.run requires args.id");
-      const result = await this.plugin.runAutomationById(id);
+      const result = await this.plugin.runAutomationById(id, { prompt: typeof args.prompt === "string" ? args.prompt : undefined });
       return this.t("commandExecuted", { command: normalized, result: result.path ? this.t("automationLogSaved", { path: result.path }) : trimContext(result.text, 1200) });
     }
 
@@ -46206,7 +46660,7 @@ class CancipSettingTab extends PluginSettingTab {
     summary.createSpan({ cls: "obcc-automation-card-title", text: task.title });
     summary.createSpan({
       cls: `obcc-automation-card-state ${task.enabled ? "is-enabled" : "is-disabled"}`,
-      text: `${task.enabled ? "启用" : "停用"} · ${task.schedule}${task.lastStatus ? ` · ${task.lastStatus === "ok" ? "成功" : "失败"}` : ""}`
+      text: `${task.enabled ? "启用" : "停用"} · ${task.schedule}${task.lastStatus ? ` · ${this.plugin.automationStatusLabel(task.lastStatus)}` : ""}`
     });
     const body = card.createDiv({ cls: "obcc-automation-card-body" });
     const patchTask = async (patch: Partial<AutomationTask>): Promise<void> => {
@@ -47323,6 +47777,22 @@ function selectRelevantExperience(raw: string, prompt: string): string {
   return [header, ...selected].filter(Boolean).join("\n\n");
 }
 
+function repairLegacyAutomationRunStatus(
+  id: string,
+  status: AutomationRunStatus | undefined,
+  result: string | undefined
+): AutomationRunStatus | undefined {
+  if (status !== "ok") return status;
+  const text = result?.trim() ?? "";
+  if (!text) return id === VAULT_CURATION_AUTOMATION_ID ? "skipped" : "failed";
+  if (/^Resumed\b[\s\S]*(?:waiting for approval|waiting for review)/i.test(text)) return "pending";
+  if (/^Resumed\b/i.test(text)) return "failed";
+  if (/^(?:模型调用失败|模型生成失败|自动化(?:任务)?失败|Automation (?:model |final |response )?(?:failed|failure)|API (?:未配置|missing)|Missing API|还没有配置 API|automation final response was missing|automation response did not reach|automation completed without)/i.test(text)) {
+    return "failed";
+  }
+  return status;
+}
+
 function normalizeAutomationTask(raw: unknown): AutomationTask | null {
   if (!isRecord(raw)) return null;
   const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : "";
@@ -47338,7 +47808,12 @@ function normalizeAutomationTask(raw: unknown): AutomationTask | null {
   const newFileDebounceSeconds = Number.parseInt(String(raw.newFileDebounceSeconds ?? ""), 10);
   const createdAt = typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString();
   const updatedAt = typeof raw.updatedAt === "string" ? raw.updatedAt : createdAt;
-  const lastStatus = raw.lastStatus === "ok" || raw.lastStatus === "failed" ? raw.lastStatus : undefined;
+  const lastResult = typeof raw.lastResult === "string" ? raw.lastResult : undefined;
+  const lastStatus = repairLegacyAutomationRunStatus(
+    id,
+    isAutomationRunStatus(raw.lastStatus) ? raw.lastStatus : undefined,
+    lastResult
+  );
   return {
     id,
     title,
@@ -47365,7 +47840,7 @@ function normalizeAutomationTask(raw: unknown): AutomationTask | null {
     updatedAt,
     lastRunAt: typeof raw.lastRunAt === "string" ? raw.lastRunAt : undefined,
     lastStatus,
-    lastResult: typeof raw.lastResult === "string" ? raw.lastResult : undefined,
+    lastResult,
     lastResultPath: typeof raw.lastResultPath === "string" ? raw.lastResultPath : undefined
   };
 }
@@ -49139,6 +49614,9 @@ function normalizeMentionQuery(input: string): string {
 }
 
 function mentionIcon(kind: MentionKind): string {
+  if (kind === "category") return "layout-list";
+  if (kind === "session") return "messages-square";
+  if (kind === "automation") return "calendar-clock";
   if (kind === "command") return "terminal";
   if (kind === "folder") return "folder";
   if (kind === "skill") return "sparkles";
@@ -49148,6 +49626,16 @@ function mentionIcon(kind: MentionKind): string {
 
 function mentionTargetKey(target: MentionTarget): string {
   return `${target.kind}:${target.source}:${target.path}`;
+}
+
+function uniqueMentionTargets(targets: MentionTarget[]): MentionTarget[] {
+  const seen = new Set<string>();
+  return targets.filter((target) => {
+    const key = mentionTargetKey(target);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function contextChipName(path: string, fallback: string): string {
@@ -50107,11 +50595,14 @@ function isContextSource(value: unknown): value is ContextSource {
 }
 
 function mentionKindRank(kind: MentionKind): number {
-  if (kind === "action") return 0;
-  if (kind === "command") return 1;
+  if (kind === "category") return 0;
+  if (kind === "session") return 1;
   if (kind === "skill") return 2;
-  if (kind === "file") return 3;
-  return 4;
+  if (kind === "automation") return 3;
+  if (kind === "action") return 4;
+  if (kind === "command") return 5;
+  if (kind === "file") return 6;
+  return 7;
 }
 
 function mentionPathKeywords(path: string, title: string): string[] {
@@ -50689,6 +51180,9 @@ function scoreMentionTarget(target: MentionTarget, query: string): number {
 
   if (!matched) return 0;
   score += Math.min(target.score, 35);
+  if (target.kind === "category") score += 12;
+  if (target.kind === "session") score += 9;
+  if (target.kind === "automation") score += 8;
   if (target.kind === "action") score += 8;
   if (target.kind === "command") score += 7;
   if (target.kind === "skill") score += 6;
@@ -54133,6 +54627,7 @@ function migrateTokenSavingDefaults(settings: Settings): Settings {
   updateDefault("maxContextFiles", 6, DEFAULT_SETTINGS.maxContextFiles);
   updateDefault("maxRecentTranscriptMessages", 8, DEFAULT_SETTINGS.maxRecentTranscriptMessages);
   updateDefault("maxRecentTranscriptMessages", 4, DEFAULT_SETTINGS.maxRecentTranscriptMessages);
+  updateDefault("maxRecentTranscriptMessages", 2, DEFAULT_SETTINGS.maxRecentTranscriptMessages);
   updateDefault("maxHistoryAnchors", 8, DEFAULT_SETTINGS.maxHistoryAnchors);
   updateDefault("maxFileContextChars", 8000, DEFAULT_SETTINGS.maxFileContextChars);
   updateDefault("maxFolderFileContextChars", 2600, DEFAULT_SETTINGS.maxFolderFileContextChars);
@@ -58493,6 +58988,10 @@ function isAutomationNotifyMode(value: unknown): value is AutomationNotifyMode {
   return value === "inherit" || value === "always" || value === "failure" || value === "never";
 }
 
+function isAutomationRunStatus(value: unknown): value is AutomationRunStatus {
+  return value === "ok" || value === "failed" || value === "skipped" || value === "pending";
+}
+
 function isAutomationInternalPath(path: string, obsidianConfigDir: string): boolean {
   const normalized = normalizePath(path.replace(/\\/g, "/").replace(/^\/+/, ""));
   return isPathInVaultFolder(normalized, CANCIP_CONFIG_DIR)
@@ -60263,9 +60762,13 @@ function isolatedHtmlPreview(source: string): string {
   return `<!doctype html><html dir="${escapeHtmlAttribute(direction)}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; media-src data: blob:; font-src data: blob:; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"><style>html{color-scheme:light dark}body{margin:0;padding:18px;font:16px/1.6 system-ui,sans-serif;color:CanvasText;background:Canvas}img,video{max-width:100%;height:auto}table{border-collapse:collapse;display:block;overflow:auto}th,td{border:1px solid GrayText;padding:5px 9px;text-align:left;vertical-align:top}pre{overflow:auto;white-space:pre-wrap;padding:12px;border:1px solid GrayText;border-radius:6px}article{max-width:1080px;margin:0 auto}.cancip-office-preview h1{font-size:1.35em}.cancip-file-embed,.cancip-file-link{color:GrayText;font-family:ui-monospace,monospace}[contenteditable="true"],[contenteditable="plaintext-only"]{outline:2px solid Highlight;outline-offset:2px}</style>${parsed.head.innerHTML}</head><body>${parsed.body.innerHTML}${documentHtmlPreviewBridgeScript()}</body></html>`;
 }
 
+function normalizeHtmlPreviewEditText(value: string): string {
+  return value.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+
 function documentHtmlPreviewBridgeScript(): string {
   const channel = JSON.stringify(DOCUMENT_HTML_PREVIEW_CHANNEL);
-  return `<script>(()=>{const channel=${channel};let active=null;let originalText="";let editMode=false;let heightFrame=0;const sendHeight=()=>{if(heightFrame)return;heightFrame=requestAnimationFrame(()=>{heightFrame=0;const root=document.documentElement;const body=document.body;const height=Math.max(root.scrollHeight,root.offsetHeight,body?body.scrollHeight:0,body?body.offsetHeight:0);parent.postMessage({channel,type:"height",height},"*")})};const sendEditMode=()=>parent.postMessage({channel,type:"edit-mode",enabled:editMode},"*");const finish=(commit)=>{if(!active)return;const element=active;const before=originalText;const after=element.innerText||element.textContent||"";active=null;originalText="";element.removeAttribute("contenteditable");element.removeAttribute("spellcheck");if(commit&&before!==after)parent.postMessage({channel,type:"commit",originalText:before,editedText:after},"*");sendHeight()};const editableAt=(x,y)=>{const target=document.elementFromPoint(x,y);if(!target||target.closest("script,style,noscript,svg,canvas,img,video,audio,input,textarea,select,button"))return null;return target.closest("p,h1,h2,h3,h4,h5,h6,li,td,th,blockquote,pre,code,figcaption,label,summary,span,div,section,article")};const begin=(element,x,y)=>{if(!element)return;finish(true);const text=element.innerText||element.textContent||"";if(!text.trim())return;active=element;originalText=text;element.setAttribute("contenteditable","plaintext-only");element.setAttribute("spellcheck","true");element.focus({preventScroll:true});const selection=getSelection();const range=document.caretRangeFromPoint?document.caretRangeFromPoint(x,y):null;if(selection&&range){selection.removeAllRanges();selection.addRange(range)}};addEventListener("message",event=>{if(event.source!==parent||!event.data||event.data.channel!==channel)return;if(event.data.action==="edit-on"){editMode=true;sendEditMode();return}if(event.data.action==="edit-off"){editMode=false;finish(true);sendEditMode();return}if(event.data.action==="find"){const query=String(event.data.query||"");if(!query){getSelection()?.removeAllRanges();return}const found=window.find?.(query,false,event.data.backwards===true,true,false,false,false)??false;const node=getSelection()?.focusNode?.parentElement;if(found&&node)node.scrollIntoView({block:"center",inline:"nearest"});parent.postMessage({channel,type:"find-result",found},"*");return}if(event.data.action!=="edit-at")return;begin(editableAt(Number(event.data.x)||0,Number(event.data.y)||0),Number(event.data.x)||0,Number(event.data.y)||0)});addEventListener("pointerdown",event=>{if(!editMode||active?.contains(event.target))return;const element=event.target?.closest?.("p,h1,h2,h3,h4,h5,h6,li,td,th,blockquote,pre,code,figcaption,label,summary,span,div,section,article");if(!element||element.closest("script,style,noscript,svg,canvas,img,video,audio,input,textarea,select,button"))return;event.preventDefault();event.stopPropagation();begin(element,event.clientX,event.clientY)},true);addEventListener("keydown",event=>{if(!active)return;if(event.key==="Escape"){event.preventDefault();active.innerText=originalText;finish(false)}else if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();finish(true)}});addEventListener("focusout",()=>setTimeout(()=>{if(active&&!active.contains(document.activeElement))finish(true)},0),true);addEventListener("load",()=>{sendHeight();sendEditMode()});addEventListener("resize",sendHeight);new MutationObserver(sendHeight).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});if(typeof ResizeObserver==="function")new ResizeObserver(sendHeight).observe(document.documentElement);sendHeight();sendEditMode()})()</script>`;
+  return `<script>(()=>{const channel=${channel};const editableSelector="p,h1,h2,h3,h4,h5,h6,li,td,th,blockquote,pre,code,figcaption,label,summary,span,strong,em,b,i,u,s,mark,small,a,div,section,article";let active=null;let originalText="";let editMode=false;let heightFrame=0;const sendHeight=()=>{if(heightFrame)return;heightFrame=requestAnimationFrame(()=>{heightFrame=0;const root=document.documentElement;const body=document.body;const height=Math.max(root.scrollHeight,root.offsetHeight,body?body.scrollHeight:0,body?body.offsetHeight:0);parent.postMessage({channel,type:"height",height},"*")})};const sendEditMode=()=>parent.postMessage({channel,type:"edit-mode",enabled:editMode},"*");const selectorFor=element=>{const parts=[];let current=element;while(current&&current!==document.body){const tag=current.tagName.toLowerCase();let index=1;for(let sibling=current.previousElementSibling;sibling;sibling=sibling.previousElementSibling)if(sibling.tagName===current.tagName)index+=1;parts.unshift(tag+":nth-of-type("+index+")");current=current.parentElement}return parts.length?"body>"+parts.join(">"):""};const finish=commit=>{if(!active)return;const element=active;const before=originalText;const after=element.innerText||element.textContent||"";const selector=selectorFor(element);active=null;originalText="";element.removeAttribute("contenteditable");element.removeAttribute("spellcheck");if(commit&&before!==after)parent.postMessage({channel,type:"commit",selector,originalText:before,editedText:after},"*");sendHeight()};const editableAt=(x,y)=>{const target=document.elementFromPoint(x,y);if(!target||target.closest("script,style,noscript,svg,canvas,img,video,audio,input,textarea,select,button"))return null;return target.closest(editableSelector)};const begin=(element,x,y)=>{if(!element)return;finish(true);const text=element.innerText||element.textContent||"";if(!text.trim())return;active=element;originalText=text;element.setAttribute("contenteditable","plaintext-only");element.setAttribute("spellcheck","true");element.focus({preventScroll:true});const selection=getSelection();const range=document.caretRangeFromPoint?document.caretRangeFromPoint(x,y):null;if(selection&&range){selection.removeAllRanges();selection.addRange(range)}};addEventListener("message",event=>{if(event.source!==parent||!event.data||event.data.channel!==channel)return;if(event.data.action==="edit-on"){editMode=true;sendEditMode();return}if(event.data.action==="edit-off"){editMode=false;finish(true);sendEditMode();return}if(event.data.action==="find"){const query=String(event.data.query||"");if(!query){getSelection()?.removeAllRanges();return}const found=window.find?.(query,false,event.data.backwards===true,true,false,false,false)??false;const node=getSelection()?.focusNode?.parentElement;if(found&&node)node.scrollIntoView({block:"center",inline:"nearest"});parent.postMessage({channel,type:"find-result",found},"*");return}if(event.data.action!=="edit-at")return;begin(editableAt(Number(event.data.x)||0,Number(event.data.y)||0),Number(event.data.x)||0,Number(event.data.y)||0)});addEventListener("pointerdown",event=>{if(!editMode||active?.contains(event.target))return;const element=event.target?.closest?.(editableSelector);if(!element||element.closest("script,style,noscript,svg,canvas,img,video,audio,input,textarea,select,button"))return;event.preventDefault();event.stopPropagation();begin(element,event.clientX,event.clientY)},true);addEventListener("keydown",event=>{if(!active)return;if(event.key==="Escape"){event.preventDefault();active.innerText=originalText;finish(false)}else if(event.key==="Enter"&&(event.ctrlKey||event.metaKey)){event.preventDefault();finish(true)}});addEventListener("focusout",()=>setTimeout(()=>{if(active&&!active.contains(document.activeElement))finish(true)},0),true);addEventListener("load",()=>{sendHeight();sendEditMode()});addEventListener("resize",sendHeight);new MutationObserver(sendHeight).observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});if(typeof ResizeObserver==="function")new ResizeObserver(sendHeight).observe(document.documentElement);sendHeight();sendEditMode()})()</script>`;
 }
 
 function htmlToMarkdown(source: string, fallbackTitle: string): string {
