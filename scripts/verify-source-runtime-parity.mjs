@@ -28,6 +28,7 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "clearPersonalizedDiaryButtons",
   "createNoteDrawWorkbenchStage",
   "insertPersonalizedDiary",
+  "installReviewTreeTouchScroll",
   "noteDrawControllerForStage",
   "noteDrawRuntime",
   "schedulePersonalizedDiaryButtons",

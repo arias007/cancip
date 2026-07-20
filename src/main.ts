@@ -271,7 +271,7 @@ type ToolRunLineDelta = LineDeltaSummary & {
 };
 type HeaderMenuKind = "history" | "events" | "outline" | "plan" | "live-files" | "audit" | "git" | "more" | "skills" | "automation";
 type ComposerSubmitMode = "queue" | "direct" | "hold";
-type CancipVaultSyncKind = "review" | "sessions" | "config" | "automations" | "skills" | "memory" | "versions" | "file-pins";
+type CancipVaultSyncKind = "review" | "sessions" | "config" | "automations" | "skills" | "memory" | "personalization" | "versions" | "file-pins";
 
 type ApiProfile = {
   id: string;
@@ -792,6 +792,15 @@ type NoteDrawApi = {
   insertStroke?: (file: TFile, stroke: Record<string, unknown>) => unknown;
   getStoragePaths?: (file: TFile) => unknown;
   on?: (event: string, listener: (detail: unknown) => void) => void | (() => void);
+};
+
+type NoteDrawWorkbenchController = {
+  destroy?: () => void;
+};
+
+type NoteDrawRuntime = {
+  api?: NoteDrawApi;
+  resolveLivePreviewController?: (view: FileView, controllers?: unknown[]) => unknown;
 };
 
 type VaultAttachmentParseCacheEntry = ParsedAttachmentResult & {
@@ -16721,7 +16730,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const next = this.personalizationUsageMutationQueue
       .catch(() => undefined)
       .then(async () => {
-        await this.loadPersonalizationUsage();
+        await this.loadPersonalizationUsage(true);
         mutator(this.personalizationUsage);
         this.personalizationUsage.autocompleteSummary = summarizeAutocompletePreference(
           this.personalizationUsage.autocompleteSelections,
@@ -19475,7 +19484,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     try {
       const templates = cancipAutomationTemplates(this.language());
       if (!templates.length) return;
-      const tasks = await this.loadAutomations();
+      const tasks = await this.loadAutomations(true);
       const activeTasks = tasks.filter((task) => !DEPRECATED_AUTOMATION_IDS.has(task.id));
       const templatesById = new Map(templates.map((template) => [template.id, template]));
       const nextTasks = activeTasks.map((task) => {
@@ -19516,7 +19525,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async upsertAutomationFromAction(action: AutomationAction): Promise<AutomationTask> {
-    const tasks = await this.loadAutomations();
+    const tasks = await this.loadAutomations(true);
     const now = new Date().toISOString();
     const existing = action.id ? tasks.find((task) => task.id === action.id) : undefined;
     if (!existing && action.op === "update") throw new Error(this.t("automationNotFound", { id: action.id ?? "" }));
@@ -19574,7 +19583,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async updateAutomationTask(id: string, patch: Partial<AutomationTask>): Promise<AutomationTask> {
-    const tasks = await this.loadAutomations();
+    const tasks = await this.loadAutomations(true);
     const existing = tasks.find((task) => task.id === id);
     if (!existing) throw new Error(this.t("automationNotFound", { id }));
     const normalized = normalizeAutomationTask({
@@ -19590,7 +19599,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async removeAutomation(id: string): Promise<boolean> {
-    const tasks = await this.loadAutomations();
+    const tasks = await this.loadAutomations(true);
     const next = tasks.filter((task) => task.id !== id);
     if (cancipAutomationTemplates(this.language()).some((template) => template.id === id)) {
       this.dismissedAutomationTemplateIds.add(id);
@@ -19909,7 +19918,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async markAutomationRun(id: string, ok: boolean, result: string, resultPath?: string): Promise<void> {
-    const tasks = await this.loadAutomations();
+    const tasks = await this.loadAutomations(true);
     const now = new Date().toISOString();
     const next = tasks.map((task) =>
       task.id === id
@@ -20361,6 +20370,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       this.filePinStateCache = null;
       this.filePinStateReadPromise = null;
     }
+    if (kinds.has("personalization")) {
+      this.personalizationCache = null;
+      this.personalizationUsageLoaded = false;
+    }
     for (const kind of kinds) this.pendingCancipSyncKinds.add(kind);
     if (normalized) this.pendingCancipSyncPaths.add(normalized);
     this.scheduleCancipStateSync();
@@ -20399,6 +20412,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       this.requestNativeFileExplorerSort();
     }
+    if (kinds.has("personalization")) {
+      await this.personalizationUsageMutationQueue.catch(() => undefined);
+      await Promise.all([this.loadPersonalizationCache(true), this.loadPersonalizationUsage(true)]);
+      this.refreshPersonalizedSurfaces();
+    }
     const viewRefreshes: Promise<void>[] = [];
     for (const leaf of this.chatLeaves()) {
       if (leaf.view instanceof CancipView) {
@@ -20407,7 +20425,18 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     if (viewRefreshes.length) await Promise.allSettled(viewRefreshes);
     if (kinds.has("review")) {
-      this.invalidateReviewGateSnapshot();
+      const shouldRebuildCanonicalState = paths.some((path) => {
+        const normalized = normalizePath(path.replace(/\\/g, "/"));
+        return isReviewGateRelatedPath(normalized) && normalized !== REVIEW_GATE_CANONICAL_STATE_PATH;
+      });
+      if (shouldRebuildCanonicalState) {
+        await this.rebuildReviewGateCanonicalState().catch((error) => {
+          console.warn("Cancip synchronized review state rebuild failed", error);
+          this.invalidateReviewGateSnapshot();
+        });
+      } else {
+        this.invalidateReviewGateSnapshot();
+      }
       for (const leaf of this.app.workspace.getLeavesOfType(CANCIP_REVIEW_VIEW_TYPE)) {
         if (leaf.view instanceof CancipReviewLeafView) {
           void leaf.view.refreshReviewState();
@@ -20489,6 +20518,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       SESSION_HISTORY_DIR,
       SESSION_HISTORY_INDEX_PATH,
       SESSION_EVENTS_PATH,
+      PERSONALIZATION_CACHE_PATH,
+      PERSONALIZATION_USAGE_PATH,
       AUTOMATION_STATE_PATH,
       AUTOMATION_DIR,
       LOCAL_VERSION_DIR,
@@ -20543,7 +20574,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       const stat = await adapter.stat(path);
       if (!stat) return "missing";
-      if (stat.type === "file") return `file:${stat.mtime}:${stat.size}`;
+      if (stat.type === "file") {
+        const signature = `file:${stat.mtime}:${stat.size}`;
+        const kinds = cancipVaultSyncKindsForPath(path, this.settings);
+        if (kinds.size && stat.size <= 512 * 1024) {
+          const content = await adapter.read(path);
+          return `${signature}:${stableTextHash(content)}`;
+        }
+        return signature;
+      }
       const rows = [`folder:${stat.mtime}:${stat.size}`];
       await this.appendCancipFolderFingerprint(path, rows, 2, 260);
       return rows.join("|");
@@ -20560,13 +20599,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     } catch {
       return;
     }
-    for (const file of listing.files.map((item) => normalizePath(item)).sort()) {
+    for (const file of listing.files.map((item) => normalizePath(item)).sort().reverse()) {
       if (rows.length >= maxRows) return;
       const stat = await this.app.vault.adapter.stat(file).catch(() => null);
       rows.push(`f:${file}:${stat?.mtime ?? 0}:${stat?.size ?? 0}`);
     }
     if (depth <= 0) return;
-    for (const folder of listing.folders.map((item) => normalizePath(item)).sort()) {
+    for (const folder of listing.folders.map((item) => normalizePath(item)).sort().reverse()) {
       if (rows.length >= maxRows) return;
       const stat = await this.app.vault.adapter.stat(folder).catch(() => null);
       rows.push(`d:${folder}:${stat?.mtime ?? 0}:${stat?.size ?? 0}`);
@@ -21406,6 +21445,7 @@ class CancipDocumentWorkbenchView extends FileView {
   private noteDrawMarkdownEditMode = false;
   private noteDrawMarkdownEditObserver: MutationObserver | null = null;
   private noteDrawMarkdownEditCleanup: (() => void) | null = null;
+  private nativeNoteDrawController: NoteDrawWorkbenchController | null = null;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -21487,6 +21527,7 @@ class CancipDocumentWorkbenchView extends FileView {
     this.noteDrawMarkdownEditMode = false;
     delete this.contentEl.dataset.url;
     delete this.contentEl.dataset.noteDrawSourcePath;
+    this.containerEl.querySelectorAll(".notedraw-header-button").forEach((element) => element.remove());
     this.contentEl.empty();
   }
 
@@ -21595,11 +21636,6 @@ class CancipDocumentWorkbenchView extends FileView {
     this.addIconButton(actions, "volume-2", this.plugin.t("documentSpeak"), () => {
       this.speakCurrentDocument();
     });
-    const noteDrawButton = this.addIconButton(actions, "wand-sparkles", this.plugin.t("documentDrawWithNoteDraw"), () => {
-      void this.activateNoteDraw("draw");
-    });
-    noteDrawButton.addClass("is-notedraw");
-    noteDrawButton.setAttr("aria-pressed", "false");
     this.addIconButton(actions, "file-code-2", this.plugin.t("documentExportHtml"), () => {
       void this.exportConversion("html");
     });
@@ -21643,6 +21679,35 @@ class CancipDocumentWorkbenchView extends FileView {
     this.contentEl.addClass("obcc-document-workbench");
     this.contentEl.toggleClass("is-compact-header", this.plugin.settings.documentWorkbenchCompactHeader);
     this.contentEl.toggleClass("is-metadata-hidden", !this.plugin.settings.documentWorkbenchShowMetadata);
+    this.scheduleWorkbenchBottomClearanceSync();
+  }
+
+  private scheduleWorkbenchBottomClearanceSync(): void {
+    const hostWindow = this.contentEl.ownerDocument.defaultView ?? activeWindow;
+    hostWindow.requestAnimationFrame(() => this.syncWorkbenchBottomClearance());
+    hostWindow.setTimeout(() => this.syncWorkbenchBottomClearance(), 160);
+  }
+
+  private syncWorkbenchBottomClearance(): void {
+    const root = this.contentEl;
+    if (!root.isConnected) return;
+    const doc = root.ownerDocument;
+    const body = doc.body;
+    if (!(Platform.isMobile || body.hasClass("is-mobile") || body.hasClass("is-phone"))) {
+      root.setCssProps({ "--obcc-document-bottom-clearance": "" });
+      return;
+    }
+    const rootRect = root.getBoundingClientRect();
+    let overlap = 0;
+    for (const element of Array.from(doc.querySelectorAll<HTMLElement>(".status-bar, .mobile-navbar, .mobile-toolbar"))) {
+      if (!element.isConnected) continue;
+      const rect = element.getBoundingClientRect();
+      if (rect.height <= 0 || rect.right <= rootRect.left || rect.left >= rootRect.right) continue;
+      overlap = Math.max(overlap, Math.ceil(rootRect.bottom - rect.top));
+    }
+    root.setCssProps({
+      "--obcc-document-bottom-clearance": overlap > 0 ? `${Math.min(120, Math.max(72, overlap + 12))}px` : ""
+    });
   }
 
   private addModeButton(parent: HTMLElement, mode: DocumentWorkbenchMode, label: string): void {
@@ -21950,6 +22015,8 @@ class CancipDocumentWorkbenchView extends FileView {
   }
 
   private clearNoteDrawOverlay(): void {
+    this.nativeNoteDrawController?.destroy?.();
+    this.nativeNoteDrawController = null;
     this.clearNoteDrawMarkdownEditBridge();
     this.clearHtmlPreviewBridge();
     this.noteDrawUnsubscribe?.();
@@ -22063,7 +22130,7 @@ class CancipDocumentWorkbenchView extends FileView {
     if (this.dirty) {
       await MarkdownRenderer.render(this.app, this.currentMarkdown(), stage, snapshot.file.path, this);
       this.installNoteDrawDraftBridge(stage, snapshot);
-      await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+      this.mountNativeNoteDrawSurface(stage);
       return;
     }
     const resourcePath = this.app.vault.getResourcePath(snapshot.file);
@@ -22078,7 +22145,7 @@ class CancipDocumentWorkbenchView extends FileView {
       this.htmlPreviewFrame = iframe;
       this.installHtmlPreviewBridge(stage, iframe, snapshot);
       iframe.srcdoc = previewHtml;
-      await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+      this.mountNativeNoteDrawSurface(stage);
       return;
     }
     if (snapshot.previewKind === "pdf") {
@@ -22087,7 +22154,7 @@ class CancipDocumentWorkbenchView extends FileView {
       iframe.setAttr("src", resourcePath);
       iframe.setAttr("data-note-draw-source-path", snapshot.file.path);
       this.installNoteDrawDraftBridge(stage, snapshot);
-      await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+      this.mountNativeNoteDrawSurface(stage);
       return;
     }
     if (snapshot.previewKind === "image") {
@@ -22100,7 +22167,7 @@ class CancipDocumentWorkbenchView extends FileView {
         }
       });
       this.installNoteDrawDraftBridge(stage, snapshot);
-      await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+      this.mountNativeNoteDrawSurface(stage);
       return;
     }
     if (snapshot.previewKind === "audio") {
@@ -22114,7 +22181,7 @@ class CancipDocumentWorkbenchView extends FileView {
         }
       });
       this.installNoteDrawDraftBridge(stage, snapshot);
-      await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+      this.mountNativeNoteDrawSurface(stage);
       return;
     }
     if (snapshot.previewKind === "video") {
@@ -22128,20 +22195,36 @@ class CancipDocumentWorkbenchView extends FileView {
         }
       });
       this.installNoteDrawDraftBridge(stage, snapshot);
-      await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+      this.mountNativeNoteDrawSurface(stage);
       return;
     }
     await MarkdownRenderer.render(this.app, this.currentMarkdown(), stage, snapshot.file.path, this);
     this.installNoteDrawDraftBridge(stage, snapshot);
-    await this.renderFallbackNoteDrawOverlayIfActive(stage, snapshot);
+    this.mountNativeNoteDrawSurface(stage);
   }
 
   private createDocumentWorkbenchStage(parent: HTMLElement, snapshot: DocumentSnapshot): HTMLElement {
     const stage = parent.createDiv({
-      cls: "obcc-document-stage",
+      cls: "obcc-document-stage markdown-preview-view",
       attr: { "data-note-draw-source-path": snapshot.file.path }
     });
     return stage;
+  }
+
+  private mountNativeNoteDrawSurface(stage: HTMLElement): void {
+    if (!stage.isConnected) return;
+    const runtime = this.noteDrawRuntime();
+    const resolveController = runtime?.resolveLivePreviewController;
+    if (!runtime || typeof resolveController !== "function") return;
+    try {
+      const controller = Reflect.apply(resolveController, runtime, [this]);
+      this.nativeNoteDrawController = isRecord(controller)
+        ? controller as NoteDrawWorkbenchController
+        : null;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.plugin.devErrors.push(`document workbench NoteDraw mount failed: ${reason}`);
+    }
   }
 
   private createIsolatedWorkbenchFrame(stage: HTMLElement, className: string, title: string): HTMLIFrameElement {
@@ -22417,9 +22500,12 @@ class CancipDocumentWorkbenchView extends FileView {
   }
 
   private noteDrawApi(): NoteDrawApi | null {
+    return this.noteDrawRuntime()?.api ?? null;
+  }
+
+  private noteDrawRuntime(): NoteDrawRuntime | null {
     const runtime = ((this.app as App & { plugins?: { plugins?: Record<string, unknown> } }).plugins?.plugins ?? {})["notedraw"];
-    if (!isRecord(runtime)) return null;
-    return isRecord(runtime.api) ? runtime.api as NoteDrawApi : null;
+    return isRecord(runtime) ? runtime as NoteDrawRuntime : null;
   }
 
   private async readNoteDrawStrokes(file: TFile): Promise<DocumentDrawingStroke[]> {
@@ -22994,46 +23080,6 @@ class CancipReviewLeafView extends ItemView {
     this.scheduleMobileReviewLayoutSync();
   }
 
-  private installReviewTreeTouchScroll(tree: HTMLElement): void {
-    let lastY: number | null = null;
-    const canScroll = (): boolean => tree.scrollHeight > tree.clientHeight + 2;
-    tree.addClass("is-touch-scrollable");
-    tree.addEventListener("touchstart", (event) => {
-      lastY = event.touches[0]?.clientY ?? null;
-    }, { passive: true });
-    tree.addEventListener("touchend", () => {
-      lastY = null;
-    }, { passive: true });
-    tree.addEventListener("touchcancel", () => {
-      lastY = null;
-    }, { passive: true });
-    tree.addEventListener("touchmove", (event) => {
-      const currentY = event.touches[0]?.clientY;
-      if (currentY === undefined || lastY === null || !canScroll()) {
-        lastY = currentY ?? null;
-        return;
-      }
-      const before = tree.scrollTop;
-      const maxScroll = Math.max(0, tree.scrollHeight - tree.clientHeight);
-      tree.scrollTop = Math.min(maxScroll, Math.max(0, before + lastY - currentY));
-      if (tree.scrollTop !== before) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-      lastY = currentY;
-    }, { passive: false });
-    tree.addEventListener("wheel", (event) => {
-      if (!canScroll()) return;
-      const before = tree.scrollTop;
-      const maxScroll = Math.max(0, tree.scrollHeight - tree.clientHeight);
-      tree.scrollTop = Math.min(maxScroll, Math.max(0, before + event.deltaY));
-      if (tree.scrollTop !== before) {
-        event.preventDefault();
-        event.stopPropagation();
-      }
-    }, { passive: false });
-  }
-
   private scheduleReviewTreeLayoutSync(tree: HTMLElement): void {
     this.syncReviewTreeLayout(tree);
     const win = tree.ownerDocument.defaultView;
@@ -23102,7 +23148,6 @@ class CancipReviewLeafView extends ItemView {
     head.createDiv({ cls: "obcc-review-title", text: this.t("reviewGatePendingFiles") });
     head.createDiv({ cls: "obcc-review-meta", text: `${this.t("reviewGateChangedCount", { count: items.filter(isReviewGateItemChanged).length })} · ${reviewGateCompactTitle(data.title)}` });
     const tree = parent.createDiv({ cls: "obcc-review-file-nav-tree" });
-    this.installReviewTreeTouchScroll(tree);
     this.renderReviewNavSections(tree, items.map((item) => ({ packagePath: data.path, item })));
     this.scheduleReviewTreeLayoutSync(tree);
   }
@@ -23297,7 +23342,6 @@ class CancipReviewLeafView extends ItemView {
     head.createDiv({ cls: "obcc-review-title", text: this.t("reviewGatePendingFiles") });
     head.createDiv({ cls: "obcc-review-meta", text: this.t("reviewPendingCount", { count: entries.length }) });
     const tree = navigation.createDiv({ cls: "obcc-review-file-nav-tree" });
-    this.installReviewTreeTouchScroll(tree);
     this.renderReviewNavSections(tree, entries.map((entry) => ({ packagePath: entry.packagePath, item: entry.item })));
     this.scheduleReviewTreeLayoutSync(tree);
   }
@@ -23863,6 +23907,7 @@ class CancipView extends ItemView {
   private autocompleteIsComposing = false;
   private autocompleteModelBusy = false;
   private autocompleteNetworkRequests = 0;
+  private autocompleteNetworkEpoch = 0;
   private autocompleteLastModelAt = 0;
   private autocompleteGenerationInFlight = false;
   private autocompleteQueuedGeneration: {
@@ -23960,6 +24005,7 @@ class CancipView extends ItemView {
   private subagentProgress = "";
   private sessionHistoryCache: { at: number; mergeFiles: boolean; entries: SessionHistoryEntry[] } | null = null;
   private sessionHistoryReadPromise: { mergeFiles: boolean; promise: Promise<SessionHistoryEntry[]> } | null = null;
+  private syncedSessionHistoryPaths = new Set<string>();
   private historyMenuRefreshTimer: number | null = null;
   private experienceHarvestTimer: number | null = null;
   private experienceRecordedSessionIds = new Set<string>();
@@ -24076,6 +24122,16 @@ class CancipView extends ItemView {
       }
     }
     if (kinds.has("sessions")) {
+      this.sessionHistoryCache = null;
+      this.sessionHistoryReadPromise = null;
+      for (const path of paths) {
+        const normalized = normalizePath(path.replace(/\\/g, "/"));
+        if (
+          normalized.startsWith(`${SESSION_HISTORY_DIR}/`)
+          && normalized.endsWith(".json")
+          && normalized !== SESSION_HISTORY_INDEX_PATH
+        ) this.syncedSessionHistoryPaths.add(normalized);
+      }
       await this.maybeReloadCurrentSessionFromVaultSync(paths);
     }
     this.syncSessionChrome();
@@ -24112,7 +24168,7 @@ class CancipView extends ItemView {
     const currentPath = normalizePath(`${SESSION_HISTORY_DIR}/${this.sessionId}.json`);
     if (!paths.some((path) => normalizePath(path.replace(/\\/g, "/")) === currentPath)) return;
     if (!this.canAutoReloadSessionFromVaultSync()) return;
-    const entry = (await this.readSessionHistoryIndex({ mergeFiles: false })).find((item) => item.id === this.sessionId && !item.eventOnly);
+    const entry = (await this.readSessionHistoryIndex({ force: true })).find((item) => item.id === this.sessionId && !item.eventOnly);
     if (!entry) return;
     await this.loadSessionHistoryEntry(entry, { saveCurrent: false, focusInput: false, markRead: false, status: this.t("sessionLoadedRunning") });
   }
@@ -25714,6 +25770,7 @@ class CancipView extends ItemView {
     this.autocompleteChoices = [];
     this.autocompleteCandidates = [];
     this.autocompleteCandidateIndex = 0;
+    this.autocompleteNetworkEpoch += 1;
     this.autocompleteNetworkRequests = 0;
     this.autocompleteModelBusy = false;
     this.autocompleteGenerationInFlight = false;
@@ -25839,15 +25896,31 @@ class CancipView extends ItemView {
     return `cancip-composer/${this.sessionId}/${stableTextHash(this.composerAutocompleteContext()).slice(0, 16)}`;
   }
 
-  private beginAutocompleteNetworkRequest(): void {
+  private beginAutocompleteNetworkRequest(): () => void {
+    const epoch = this.autocompleteNetworkEpoch;
     this.autocompleteNetworkRequests += 1;
     this.autocompleteModelBusy = true;
     this.renderAutocompleteSuggestion();
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      if (epoch !== this.autocompleteNetworkEpoch) return;
+      this.endAutocompleteNetworkRequest();
+    };
   }
 
   private endAutocompleteNetworkRequest(): void {
     this.autocompleteNetworkRequests = Math.max(0, this.autocompleteNetworkRequests - 1);
     this.autocompleteModelBusy = this.autocompleteNetworkRequests > 0;
+    this.renderAutocompleteSuggestion();
+  }
+
+  private cancelAutocompleteNetworkRequests(): void {
+    this.autocompleteNetworkEpoch += 1;
+    this.autocompleteNetworkRequests = 0;
+    this.autocompleteModelBusy = false;
+    this.autocompleteQueuedGeneration = null;
     this.renderAutocompleteSuggestion();
   }
 
@@ -25895,13 +25968,13 @@ class CancipView extends ItemView {
       this.plugin.editorPrefetchedAutocompleteCandidates(`${prefix}${root}`, path).length !== candidateCount
     ));
     if (!missing) return;
-    this.beginAutocompleteNetworkRequest();
+    const finishNetworkRequest = this.beginAutocompleteNetworkRequest();
     void this.plugin.ensureEditorAutocompleteBranches(prefix, nearbyContext, path, roots)
       .catch((error) => {
         console.debug("Cancip composer autocomplete branch prefetch unavailable", error);
       })
       .finally(() => {
-        this.endAutocompleteNetworkRequest();
+        finishNetworkRequest();
       });
   }
 
@@ -25923,6 +25996,7 @@ class CancipView extends ItemView {
     const prefix = this.autocompleteEligiblePrefix();
     if (prefix === null) {
       this.clearAutocompleteSuggestion();
+      if (!this.inputEl?.value.trim()) this.cancelAutocompleteNetworkRequests();
       return;
     }
     if ((this.autocompleteSuggestion || this.autocompleteCandidates.length) && this.autocompletePrefix !== prefix) {
@@ -26027,17 +26101,24 @@ class CancipView extends ItemView {
     try {
       let candidates = prefetched;
       if (!candidates.length) {
+        const networkLease: { finish?: () => void } = {};
         try {
           candidates = await this.plugin.editorAutocompleteCandidates(prefix, nearbyContext, path, {
             force,
             onNetworkRequestStart: () => {
+              if (requestId !== this.autocompleteRequestId || this.autocompleteEligiblePrefix() !== prefix) return;
               this.autocompleteLastModelAt = Date.now();
-              this.beginAutocompleteNetworkRequest();
+              networkLease.finish?.();
+              networkLease.finish = this.beginAutocompleteNetworkRequest();
             },
-            onNetworkRequestEnd: () => this.endAutocompleteNetworkRequest(),
+            onNetworkRequestEnd: () => {
+              networkLease.finish?.();
+              delete networkLease.finish;
+            },
             excluded: excluded ? [excluded] : []
           });
         } finally {
+          networkLease.finish?.();
           this.renderAutocompleteSuggestion();
         }
       }
@@ -32415,7 +32496,7 @@ class CancipView extends ItemView {
   }
 
   private async upsertSessionHistoryIndex(entry: SessionHistoryEntry): Promise<void> {
-    const index = (await this.readSessionHistoryIndex({ mergeFiles: false })).filter((item) => !item.eventOnly);
+    const index = (await this.readSessionHistoryIndex({ force: true })).filter((item) => !item.eventOnly);
     const entries = [entry, ...index.filter((item) => item.id !== entry.id)]
       .sort(compareSessionHistoryEntries)
       .slice(0, SESSION_HISTORY_LIMIT);
@@ -32423,7 +32504,9 @@ class CancipView extends ItemView {
   }
 
   private async writeSessionHistoryEntries(entries: SessionHistoryEntry[]): Promise<void> {
-    const persistedEntries = entries
+    const requestedIds = new Set(entries.map((entry) => entry.id));
+    const currentEntries = await this.readSessionHistoryIndexUncached(true);
+    const persistedEntries = [...entries, ...currentEntries.filter((entry) => !requestedIds.has(entry.id))]
       .filter((entry) => !entry.eventOnly)
       .sort(compareSessionHistoryEntries)
       .slice(0, SESSION_HISTORY_LIMIT);
@@ -32551,15 +32634,17 @@ class CancipView extends ItemView {
         }
       }
       if (!mergeFiles) return entries.sort(compareSessionHistoryEntries).slice(0, SESSION_HISTORY_LIMIT);
-      return await this.mergeEventOnlySessionHistory(await this.mergeSessionFilesIntoHistory(entries));
+      const syncedPaths = [...this.syncedSessionHistoryPaths];
+      this.syncedSessionHistoryPaths.clear();
+      return await this.mergeEventOnlySessionHistory(await this.mergeSessionFilesIntoHistory(entries, syncedPaths));
     } catch (error) {
       console.warn("Cancip session history index read failed", error);
       return [];
     }
   }
 
-  private async mergeSessionFilesIntoHistory(entries: SessionHistoryEntry[]): Promise<SessionHistoryEntry[]> {
-    return await mergeSessionFilesIntoHistoryWithAdapter(this.app.vault.adapter, entries);
+  private async mergeSessionFilesIntoHistory(entries: SessionHistoryEntry[], additionalPaths: string[] = []): Promise<SessionHistoryEntry[]> {
+    return await mergeSessionFilesIntoHistoryWithAdapter(this.app.vault.adapter, entries, additionalPaths);
   }
 
   private async mergeEventOnlySessionHistory(entries: SessionHistoryEntry[]): Promise<SessionHistoryEntry[]> {
@@ -48692,6 +48777,7 @@ function cancipVaultSyncKindsForPath(path: string, settings: Settings): Set<Canc
   if (isReviewGateRelatedPath(normalized)) kinds.add("review");
   if (normalized === CANCIP_CONFIG_PATH) kinds.add("config");
   if (normalized === CANCIP_FILE_PINS_PATH) kinds.add("file-pins");
+  if (normalized === PERSONALIZATION_CACHE_PATH || normalized === PERSONALIZATION_USAGE_PATH) kinds.add("personalization");
   if (
     normalized === SESSION_HISTORY_INDEX_PATH ||
     normalized === SESSION_EVENTS_PATH ||
@@ -54487,7 +54573,8 @@ function mergeSessionHistoryEntry(existing: SessionHistoryEntry | undefined, fro
 
 async function mergeSessionFilesIntoHistoryWithAdapter(
   adapter: DataAdapter,
-  entries: SessionHistoryEntry[]
+  entries: SessionHistoryEntry[],
+  additionalPaths: string[] = []
 ): Promise<SessionHistoryEntry[]> {
   const byId = new Map<string, SessionHistoryEntry>();
   for (const entry of entries) byId.set(entry.id, entry);
@@ -54497,11 +54584,17 @@ async function mergeSessionFilesIntoHistoryWithAdapter(
       return entries.sort(compareSessionHistoryEntries).slice(0, SESSION_HISTORY_LIMIT);
     }
     const listing = await adapter.list(SESSION_HISTORY_DIR);
-    const files = listing.files
+    const missingFiles = listing.files
       .filter((path) => path.endsWith(".json") && !path.endsWith("/index.json"))
       .sort((a, b) => b.localeCompare(a))
       .filter((path) => !indexedIds.has(reviewFileName(path).replace(/\.json$/i, "")))
       .slice(0, Math.max(8, SESSION_HISTORY_LIMIT - Math.min(entries.length, SESSION_HISTORY_LIMIT)));
+    const files = uniqueStrings([
+      ...additionalPaths
+        .map((path) => normalizePath(path.replace(/\\/g, "/")))
+        .filter((path) => path.startsWith(`${SESSION_HISTORY_DIR}/`) && path.endsWith(".json") && path !== SESSION_HISTORY_INDEX_PATH),
+      ...missingFiles
+    ]).slice(0, SESSION_HISTORY_LIMIT * 2);
     for (const path of files) {
       try {
         const raw = await adapter.read(path);

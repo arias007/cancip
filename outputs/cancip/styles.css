@@ -4154,6 +4154,18 @@ details.obcc-process-step-details:not([open]) > :not(summary),
   animation: obcc-spin 0.9s linear infinite;
 }
 
+.obcc-autocomplete-apply.is-loading {
+  background: transparent;
+  box-shadow: none;
+}
+
+.obcc-autocomplete-apply.is-loading::before,
+.obcc-autocomplete-apply.is-loading::after {
+  content: none;
+  display: none;
+  animation: none;
+}
+
 .obcc-editor-autocomplete-widget {
   display: inline-block;
   position: relative;
@@ -6081,6 +6093,9 @@ input.obcc-review-correction-input {
   background: var(--background-secondary);
   color: var(--text-normal);
   text-align: left;
+  contain: layout paint style;
+  content-visibility: auto;
+  contain-intrinsic-size: 44px;
 }
 
 .obcc-review-nav-file:hover,
@@ -8567,13 +8582,6 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   scroll-padding-bottom: max(14px, var(--obcc-review-mobile-bottom-clearance));
 }
 
-body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree *,
-body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree *,
-.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree *,
-.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree * {
-  touch-action: pan-y;
-}
-
 body.is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
 body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
 .is-mobile .obcc-review-leaf.has-review-detail .obcc-review-detail-view,
@@ -8700,7 +8708,7 @@ body.is-phone .obcc-review-leaf.has-review-detail .obcc-review-sources-paired,
   max-height: var(--obcc-review-file-tree-max-height, 100%);
   min-height: 0;
   overflow-x: hidden;
-  overflow-y: scroll;
+  overflow-y: auto;
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
@@ -8751,7 +8759,7 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   max-height: var(--obcc-review-file-tree-max-height, 100%);
   min-height: 0;
   overflow-x: hidden;
-  overflow-y: scroll;
+  overflow-y: auto;
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
@@ -9217,6 +9225,11 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   min-height: 0;
 }
 
+.obcc-document-stage.markdown-preview-view {
+  padding: 0;
+  overflow: visible;
+}
+
 .obcc-document-drawing-overlay {
   position: absolute;
   inset: 0;
@@ -9432,10 +9445,9 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 
 body.is-mobile .view-content.obcc-document-workbench .obcc-document-body,
 body.is-phone .view-content.obcc-document-workbench .obcc-document-body {
-  --obcc-document-bottom-clearance: max(52px, calc(var(--obcc-mobile-statusbar-height, 48px) + max(8px, env(safe-area-inset-bottom))));
   box-sizing: border-box;
-  padding-bottom: var(--obcc-document-bottom-clearance);
-  scroll-padding-bottom: var(--obcc-document-bottom-clearance);
+  padding-bottom: var(--obcc-document-bottom-clearance, max(72px, calc(var(--obcc-mobile-statusbar-height, 48px) + max(16px, env(safe-area-inset-bottom)))));
+  scroll-padding-bottom: var(--obcc-document-bottom-clearance, max(72px, calc(var(--obcc-mobile-statusbar-height, 48px) + max(16px, env(safe-area-inset-bottom)))));
 }
 
 body.is-mobile .obcc-document-search-bar,
