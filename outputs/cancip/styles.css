@@ -5257,11 +5257,57 @@ details.obcc-process-step-details:not([open]) > :not(summary),
 }
 
 .obcc-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   min-height: 0;
   padding: 0 6px 1px;
+  overflow: hidden;
   color: var(--text-muted);
   font-size: 11px;
   line-height: 1.25;
+  white-space: nowrap;
+}
+
+.obcc-status.is-empty {
+  display: none;
+}
+
+.obcc-status-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obcc-status-link {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--text-accent);
+  font: inherit;
+  line-height: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.obcc-status-link.is-changes {
+  color: var(--text-success);
+}
+
+.obcc-status-link:hover,
+.obcc-status-link:focus-visible {
+  color: var(--text-accent-hover);
+  text-decoration: underline;
+}
+
+.obcc-status-link.is-hidden {
+  display: none;
 }
 
 .obcc-simple-git-section {

@@ -734,6 +734,10 @@ if (-not $Case -or 'programmatic.automation-core-contracts'.Contains($Case)) {
   const silentActions=v.extractCancipActions('{"type":"automation","op":"add","title":"silent","prompt":"run","silent":true}');
   const now=new Date(),failedAt=new Date(now.getTime()-21*60*1000).toISOString();
   const retryDue=v.isAutomationDue({enabled:true,schedule:'hourly',intervalMinutes:120,lastRunAt:failedAt,lastStatus:'failed'},now)===true;
+  const noon=new Date(now.getFullYear(),now.getMonth(),now.getDate(),12,0,0),yesterday=new Date(noon.getTime()-24*60*60*1000).toISOString(),today=new Date(noon.getFullYear(),noon.getMonth(),noon.getDate(),0,3,0).toISOString();
+  const missedDailyDue=v.isAutomationDue({enabled:true,schedule:'daily',hour:0,minute:0,intervalMinutes:60,lastRunAt:yesterday,lastStatus:'ok'},noon)===true;
+  const completedDailyStable=v.isAutomationDue({enabled:true,schedule:'daily',hour:0,minute:0,intervalMinutes:60,lastRunAt:today,lastStatus:'ok'},noon)===false;
+  const dailyTask=tasks.find(task=>task.id==='auto-cancip-daily-care'),curationTask=tasks.find(task=>task.id==='auto-vault-curation');
   const diary=tasks.find(task=>task.id==='auto-personalized-diary-assist'),diaryTarget=v.todayDiaryTarget();
   const diarySource=await v.buildPersonalizedDiarySourcePack();
   const diaryDecision=v.normalizePersonalizedDiaryAnswer(JSON.stringify({content:'今天完成了自动化契约测试。'}),diaryTarget.path);
@@ -744,7 +748,7 @@ if (-not $Case -or 'programmatic.automation-core-contracts'.Contains($Case)) {
     p.runAutomationByIdUnlocked=async id=>{active+=1;maxActive=Math.max(maxActive,active);order.push(id+':start');await new Promise(r=>setTimeout(r,35));order.push(id+':end');active-=1;return {ok:true,status:'ok',text:id}};
     await Promise.all([p.runAutomationById('__smoke-queue-a'),p.runAutomationById('__smoke-queue-b')]);
   }finally{p.runAutomationByIdUnlocked=originalRun}
-  return JSON.stringify({id:'programmatic.automation-core-contracts',elapsedMs:Date.now()-started,count:tasks.length,daily:tasks.filter(task=>task.id==='auto-cancip-daily-care').length,deprecated:[...deprecated].filter(id=>tasks.some(task=>task.id===id)),unknown,invalid,badSessions,missingModel,silentNormalized,toolAlias:toolActions.length===1&&toolActions[0].type==='write',silentAction:silentActions.length===1&&silentActions[0].silent===true,retryDue,directIndex:!v.automationCommandNeedsModel('cancip.rebuildIndex'),modelNews:v.automationCommandNeedsModel('cancip.newsBrief'),diaryPrompt:!!diary&&String(diary.prompt).includes('Personalized Diary v2')&&String(diary.prompt).includes('CANCIP_DIARY_NO_UPDATE'),diarySource:diarySource.length>100&&diarySource.length<=9000&&diarySource.includes(JSON.stringify(diaryTarget.path)),diaryAppend:diaryActions.length===1&&diaryActions[0].type==='append'&&diaryActions[0].path===diaryTarget.path,diarySkip:diarySkip?.skipped===true,serialized:maxActive===1&&order.join('|')==='__smoke-queue-a:start|__smoke-queue-a:end|__smoke-queue-b:start|__smoke-queue-b:end'});
+  return JSON.stringify({id:'programmatic.automation-core-contracts',elapsedMs:Date.now()-started,count:tasks.length,daily:tasks.filter(task=>task.id==='auto-cancip-daily-care').length,deprecated:[...deprecated].filter(id=>tasks.some(task=>task.id===id)),unknown,invalid,badSessions,missingModel,silentNormalized,toolAlias:toolActions.length===1&&toolActions[0].type==='write',silentAction:silentActions.length===1&&silentActions[0].silent===true,retryDue,missedDailyDue,completedDailyStable,dailyMidnight:!!dailyTask&&dailyTask.hour===0&&dailyTask.minute===0,curationVisible:!!curationTask&&curationTask.silent===false&&curationTask.notifyMode==='always',directIndex:!v.automationCommandNeedsModel('cancip.rebuildIndex'),modelNews:v.automationCommandNeedsModel('cancip.newsBrief'),diaryPrompt:!!diary&&String(diary.prompt).includes('Personalized Diary v2')&&String(diary.prompt).includes('CANCIP_DIARY_NO_UPDATE'),diarySource:diarySource.length>100&&diarySource.length<=9000&&diarySource.includes(JSON.stringify(diaryTarget.path)),diaryAppend:diaryActions.length===1&&diaryActions[0].type==='append'&&diaryActions[0].path===diaryTarget.path,diarySkip:diarySkip?.skipped===true,serialized:maxActive===1&&order.join('|')==='__smoke-queue-a:start|__smoke-queue-a:end|__smoke-queue-b:start|__smoke-queue-b:end'});
   }catch(error){return JSON.stringify({id:'programmatic.automation-core-contracts',error:String(error?.stack??error)})}
 })()
 '@
@@ -753,7 +757,7 @@ if (-not $Case -or 'programmatic.automation-core-contracts'.Contains($Case)) {
     if ([int]$item.daily -ne 1 -or @($item.deprecated).Count -or @($item.unknown).Count -or @($item.invalid).Count -or @($item.badSessions).Count -or @($item.missingModel).Count) {
       throw "automation core contract failed: $($item | ConvertTo-Json -Compress -Depth 8)"
     }
-    foreach ($field in @('silentNormalized','toolAlias','silentAction','retryDue','directIndex','modelNews','diaryPrompt','diarySource','diaryAppend','diarySkip','serialized')) {
+    foreach ($field in @('silentNormalized','toolAlias','silentAction','retryDue','missedDailyDue','completedDailyStable','dailyMidnight','curationVisible','directIndex','modelNews','diaryPrompt','diarySource','diaryAppend','diarySkip','serialized')) {
       if (-not [bool]$item.$field) { throw "automation core contract failed: $field ($($item | ConvertTo-Json -Compress))" }
     }
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; count = $item.count }
@@ -1455,6 +1459,44 @@ if (Should-RunProgrammaticCase 'programmatic.personalization-autocomplete') {
   }
 }
 
+if (Should-RunProgrammaticCase 'programmatic.status-personalization-curation') {
+  try {
+    $code = @'
+(async()=>{
+  const p=app.plugins.plugins.cancip;
+  const v=app.workspace.getLeavesOfType('cancip-view').map((leaf)=>leaf.view).find((view)=>view?.inputEl?.isConnected)??await p.activateView();
+  if(!p||!v||!v.inputEl||v.activeRequest)throw new Error('idle Cancip view unavailable');
+  const input=v.inputEl,old={value:input.value,start:input.selectionStart,end:input.selectionEnd,status:v.statusEl?.textContent??'',enabled:p.settings.composerAutocompleteEnabled};
+  try{
+    p.settings.composerAutocompleteEnabled=false;
+    const compact=v.compactComposerStatusText('状态：  正在生成\n  计划 2/3  ');
+    v.setStatus('已填入');
+    input.value='';input.setSelectionRange(0,0);v.handleComposerInputChanged();
+    const tasks=await p.loadAutomations(true),curation=tasks.find((task)=>task.id==='auto-vault-curation'),greeting=tasks.find((task)=>task.id==='auto-personalized-greeting-refresh');
+    return JSON.stringify({
+      id:'programmatic.status-personalization-curation',
+      compactStatus:compact==='正在生成 计划 2/3',
+      staleStatusCleared:(v.statusEl?.textContent??'')==='',
+      recentWindow:v.isRecentPersonalizationTimestamp(Date.now()-60*60*1000)&&!v.isRecentPersonalizationTimestamp(Date.now()-72*60*60*1000),
+      dateTimeName:v.isVaultCurationDateLikeBasename('202607211220')&&!v.isVaultCurationDateLikeBasename('abcdef123456'),
+      explicitSkip:v.vaultCurationSkippedPathsFromResult('无需改动。\n<!-- cancip-curation-skip:常用/临时/测试.md -->',['常用/临时/测试.md'])[0]==='常用/临时/测试.md',
+      silentDefaults:curation?.silent===true&&curation?.notifyMode==='never'&&greeting?.silent===true&&greeting?.notifyMode==='never'
+    });
+  }finally{
+    p.settings.composerAutocompleteEnabled=old.enabled;input.value=old.value;input.setSelectionRange(old.start,old.end);v.setStatus(old.status);v.resizeInput();v.renderAutocompleteSuggestion();
+  }
+})()
+'@
+    $item = Invoke-CancipEval -Code $code -TimeoutSeconds 30
+    foreach ($field in @('compactStatus','staleStatusCleared','recentWindow','dateTimeName','explicitSkip','silentDefaults')) {
+      if (-not [bool]$item.$field) { throw "status/personalization/curation check failed: $field ($($item | ConvertTo-Json -Compress -Depth 8))" }
+    }
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true }
+  } catch {
+    Add-CaseResult -Group 'programmaticCases' -Item @{ id = 'programmatic.status-personalization-curation'; pass = $false; error = $_.Exception.Message }
+  }
+}
+
 if (-not $Case -or 'programmatic.tool-action-budget'.Contains($Case)) {
   try {
     $code = @'
@@ -1882,10 +1924,10 @@ if (-not $Case -or 'programmatic.automation-vault-curation-template'.Contains($C
     prompt:promptInfo&&promptInfo.prompt,
     hasRouteKinds:Boolean(promptInfo&&Object.prototype.hasOwnProperty.call(promptInfo,'routeKinds')),
     hasCuration:/auto-vault-curation/.test(templatesText),
-    hasNewOnly:/newly created Markdown files once|新建 Markdown 文件执行一次/.test(templatesText),
-    hasOldSkill:/specified-scope curation Skill|指定范围整理 Skill/.test(templatesText),
+    hasNewOnly:/Most newly created Markdown notes|大部分新建 Markdown 笔记/.test(templatesText),
+    hasRecoverable:/reviewable and recoverable|可审核、可恢复/.test(templatesText),
     hasCurationActions:/(beautif|refactor|美化|重构)/.test(templatesText)&&/(properties|tags|summaries|links|属性|标签|摘要|链接)/.test(templatesText)&&/(renam|重命名)/.test(templatesText),
-    hasBenefitGate:/(benefit gate|收益门)/i.test(templatesText)&&/(frequently referenced notes|高频引用笔记)/i.test(templatesText)&&/(protected|受保护)/i.test(templatesText),
+    hasProtection:/(frequently referenced notes|高频引用笔记)/i.test(templatesText)&&/(Explicit opt-outs|明确写不需要整理)/i.test(templatesText),
     hasDeprecated:/auto-vault-content-beautify|auto-vault-auto-tags|auto-vault-file-summaries/.test(templatesText),
     hasMechanicalSettings:['specialistRoutingEnabled','mechanicalTaskApiProfileId','mechanicalTaskModel','mechanicalTaskRoutes'].some((key)=>Object.prototype.hasOwnProperty.call(settings,key))
   });
@@ -1893,7 +1935,7 @@ if (-not $Case -or 'programmatic.automation-vault-curation-template'.Contains($C
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
     if (-not $item.hasCuration) { throw "unified vault curation template is missing: $($item | ConvertTo-Json -Compress)" }
-    if (-not $item.hasNewOnly -or -not $item.hasOldSkill -or -not $item.hasCurationActions -or -not $item.hasBenefitGate) { throw "vault curation template is missing new-file benefit gate, automation, or old-file Skill route: $($item | ConvertTo-Json -Compress)" }
+    if (-not $item.hasNewOnly -or -not $item.hasRecoverable -or -not $item.hasCurationActions -or -not $item.hasProtection) { throw "vault curation template is missing active new-file curation, protection, or recovery contract: $($item | ConvertTo-Json -Compress)" }
     if ($item.hasDeprecated) { throw "deprecated split vault automation templates are still listed: $($item | ConvertTo-Json -Compress)" }
     if ($item.hasMechanicalSettings) { throw "mechanical/specialist settings are still exposed: $($item | ConvertTo-Json -Compress)" }
     if ($item.hasRouteKinds) { throw "automation prompt helper still exposes routeKinds: $($item | ConvertTo-Json -Compress)" }
@@ -1938,7 +1980,7 @@ if (-not $Case -or 'programmatic.automation-vault-curation-scan-pack'.Contains($
   }
   const paths=JSON.parse(pack.match(/^- candidatePathsJson:\s*(\[[^\r\n]*\])/m)?.[1]||'[]');
   const scanned=JSON.parse(pack.match(/^- scannedPathsJson:\s*(\[[^\r\n]*\])/m)?.[1]||'[]');
-  return JSON.stringify({id:'programmatic.automation-vault-curation-scan-pack',elapsedMs:Date.now()-t,length:pack.length,silent:modelCalls===0&&v.sessionId===beforeSession&&(v.messages||[]).length===beforeMessages,contract:pack.includes('newness only triggers one scan')&&pack.includes('allowedActions=format')&&/^- protectedThisBatch:\s*1$/m.test(pack),paths:paths.length===1&&paths[0]===files[0].path,scanned:files.every(file=>scanned.includes(file.path)),skill:pack.includes('.obsidian/plugins/cancip/data/skills/vault-curation-specified-scope.skill.md')});
+  return JSON.stringify({id:'programmatic.automation-vault-curation-scan-pack',elapsedMs:Date.now()-t,length:pack.length,silent:modelCalls===0&&v.sessionId===beforeSession&&(v.messages||[]).length===beforeMessages,contract:pack.includes('newness triggers one active organization pass')&&pack.includes('allowedActions=format')&&pack.includes('explicit opt-out')&&/^- protectedThisBatch:\s*1$/m.test(pack),paths:paths.length===1&&paths[0]===files[0].path,scanned:files.every(file=>scanned.includes(file.path)),skill:pack.includes('.obsidian/plugins/cancip/data/skills/vault-curation-specified-scope.skill.md')});
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 45
@@ -1960,21 +2002,23 @@ if (-not $Case -or 'programmatic.automation-vault-curation-benefit-gate'.Contain
   const v=app.workspace.getLeavesOfType('cancip-view')[0]?.view;
   if(!p||!v||typeof v.vaultCurationDecision!=='function')throw new Error('curation benefit gate unavailable');
   const d=(path,content,reasons,backlinks=0,frontmatter={})=>v.vaultCurationDecision({path,content,curationReasons:reasons,backlinks,vaultFileCount:500,frontmatter});
-  const clean=d('Notes/Clean.md','# Clean\n\nConcise.',[]);
-  const inbox=d('Inbox/Clear.md','# Clear\n\nUseful.',['temporary or inbox location needs classification']);
-  const format=d('Notes/Broken.md','#Broken',['objective Markdown syntax defect']);
-  const rename=d('Notes/Untitled.md','# Useful',['vague or machine-generated filename']);
-  const link=d('Notes/Related.md','# Useful',['objective Markdown syntax defect','explicitly mentioned related note lacks a link']);
+  const baseline='new user note needs a lightweight organization pass';
+  const clean=d('Notes/Clean.md','# Clean\n\nConcise.',[baseline]);
+  const inbox=d('Inbox/Clear.md','# Clear\n\nUseful.',[baseline,'temporary or inbox location needs classification']);
+  const format=d('Notes/Broken.md','#Broken',[baseline,'objective Markdown syntax defect']);
+  const rename=d('Notes/Untitled.md','# Useful',[baseline,'vague or machine-generated filename']);
+  const link=d('Notes/Related.md','# Useful',[baseline,'objective Markdown syntax defect','explicitly mentioned related note lacks a link']);
+  const optedOut=d('Notes/Private.md','不需要整理',[baseline],0,{cancip_curation:false});
   const pathTemplate=d('Templates/Daily.md','#Broken',['objective Markdown syntax defect']);
   const syntaxTemplate=d('Notes/Seed.md','{{date}}',['objective Markdown syntax defect']);
   const frequent=d('Notes/Index.md','#Broken',['objective Markdown syntax defect'],8);
   const plugin=d('Notes/Dashboard.md','```dataview\nTABLE file.name\n```',['objective Markdown syntax defect']);
   const generated=d('Notes/Generated.md','#Broken',['objective Markdown syntax defect'],0,{generated_by:'reporter'});
-  return JSON.stringify({id:'programmatic.automation-vault-curation-benefit-gate',elapsedMs:Date.now()-t,clean:clean.action==='skip'&&clean.allowedActions.length===0,inbox:inbox.action==='skip'&&inbox.allowedActions.length===0,format:format.action==='curate'&&format.allowedActions.join(',')==='format',rename:rename.action==='curate'&&rename.allowedActions.join(',')==='rename',link:link.action==='curate'&&link.allowedActions.includes('format')&&link.allowedActions.includes('links'),templates:pathTemplate.action==='protected'&&syntaxTemplate.action==='protected',frequent:frequent.action==='protected'&&frequent.protections.some(x=>x.includes('frequently referenced')),plugin:plugin.action==='protected',generated:generated.action==='protected'});
+  return JSON.stringify({id:'programmatic.automation-vault-curation-benefit-gate',elapsedMs:Date.now()-t,clean:clean.action==='curate'&&clean.allowedActions.includes('properties'),inbox:inbox.action==='curate'&&inbox.allowedActions.includes('properties'),format:format.action==='curate'&&format.allowedActions.includes('properties')&&format.allowedActions.includes('format'),rename:rename.action==='curate'&&rename.allowedActions.includes('properties')&&rename.allowedActions.includes('rename'),link:link.action==='curate'&&link.allowedActions.includes('format')&&link.allowedActions.includes('links'),optedOut:optedOut.action==='protected'&&optedOut.protections.some(x=>x.includes('explicit user opt-out')),templates:pathTemplate.action==='protected'&&syntaxTemplate.action==='protected',frequent:frequent.action==='protected'&&frequent.protections.some(x=>x.includes('frequently referenced')),plugin:plugin.action==='protected',generated:generated.action==='protected'});
 })()
 '@
     $item = Invoke-CancipEval -Code $code -TimeoutSeconds 20
-    foreach ($field in @('clean','inbox','format','rename','link','templates','frequent','plugin','generated')) {
+    foreach ($field in @('clean','inbox','format','rename','link','optedOut','templates','frequent','plugin','generated')) {
       if (-not $item.$field) { throw "curation benefit gate variant failed: $field ($($item | ConvertTo-Json -Compress))" }
     }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }
@@ -2718,7 +2762,7 @@ if (Should-RunProgrammaticCase 'programmatic.context-editor-settings') {
 (()=>{const s=app.plugins.plugins.cancip?.settingTab;if(!s)throw new Error('settings unavailable');const old=s.settingsPageTabsScrollLeft,host=activeDocument.createElement('div'),makeTabs=()=>{const tabs=activeDocument.createElement('div');tabs.className='obcc-settings-page-tabs';tabs.style.width='280px';tabs.style.overflowX='auto';const content=activeDocument.createElement('div');content.style.width='960px';content.style.height='20px';content.style.flex='0 0 960px';tabs.append(content);return tabs};try{host.style.position='fixed';host.style.left='-10000px';host.style.top='0';activeDocument.body.append(host);let tabs=makeTabs();host.append(tabs);tabs.scrollLeft=120;s.rememberSettingsPageTabsScroll(tabs);const before=s.settingsPageTabsScrollLeft;tabs.remove();tabs=makeTabs();host.append(tabs);s.restoreSettingsPageTabsScroll(tabs);const after=tabs.scrollLeft,source=String(s.renderSettings||s.display),wired=source.includes('rememberSettingsPageTabsScroll')&&source.includes('restoreSettingsPageTabsScroll'),settingsPagesSeparated=source.includes('"buttons"')&&source.includes('displayButtonEditingSettings')&&source.includes('"autocomplete"')&&source.includes('displayAutocompleteSettings');return JSON.stringify({settingsTabsStable:before>0&&Math.abs(after-before)<1&&wired,settingsPagesSeparated,before,after})}finally{s.settingsPageTabsScrollLeft=old;host.remove()}})()
 '@
     $evidenceCode = @'
-(()=>{const v=app.workspace.getLeavesOfType('cancip-view').map((leaf)=>leaf.view).find((view)=>typeof view?.personalizationCacheFromModel==='function');if(!v)throw new Error('personalization parser unavailable');const fallback={schemaVersion:3,updatedAt:new Date().toISOString(),timeKey:'smoke',greeting:'上午好。可靠回退。',greetings:[{text:'上午好。可靠回退。',choices:[]}],friendlyName:'',weather:null,inferredWeatherLocation:'',diary:'',autocomplete:[],sourcePaths:[]},source='用户姓名：测试用户\n常住地：测试城市',forged=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'虚构名字',weatherLocation:'虚构市',greetings:[{text:'虚构名字，上午好。虚构市今天天气晴朗。',choices:['查看虚构市天气']}],autocomplete:[]}),fallback,[],'smoke',source),accepted=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'测试用户',weatherLocation:'测试城市',greetings:[{text:'测试用户，上午好。最近事情不少，先处理最明确的一项。',choices:['继续处理 Cancip 并核对结果']}],autocomplete:[]}),fallback,[],'smoke',source),forgedText=forged.greetings.map((item)=>`${item.text} ${item.choices.join(' ')}`).join(' ');return JSON.stringify({personalizationEvidence:forged.friendlyName===''&&forged.inferredWeatherLocation===''&&!/虚构名字|虚构市|天气晴朗/.test(forgedText)&&accepted.friendlyName==='测试用户'&&accepted.inferredWeatherLocation==='测试城市'&&accepted.greetings.some((item)=>item.text.includes('测试用户'))})})()
+(()=>{const v=app.workspace.getLeavesOfType('cancip-view').map((leaf)=>leaf.view).find((view)=>typeof view?.personalizationCacheFromModel==='function');if(!v)throw new Error('personalization parser unavailable');const fallback={schemaVersion:3,updatedAt:new Date().toISOString(),timeKey:'smoke',greeting:'上午好。可靠回退。',greetings:[{text:'上午好。可靠回退。',choices:[]}],friendlyName:'',weather:null,inferredWeatherLocation:'',diary:'',autocomplete:[],sourcePaths:[]},source='用户姓名：测试用户\n常住地：测试城市',forged=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'虚构名字',weatherLocation:'虚构市',greetings:[{text:'虚构名字，上午好。虚构市今天天气晴朗。',choices:['查看虚构市天气']}],autocomplete:[]}),fallback,[],'smoke',source),accepted=v.personalizationCacheFromModel(JSON.stringify({friendlyName:'测试用户',weatherLocation:'测试城市',greetings:[{text:'测试用户，上午好。最近事情不少，先处理最明确的一项。',choices:['继续处理 Cancip 并核对结果']}],autocomplete:[]}),fallback,[],'smoke',source),forgedText=forged.greetings.map((item)=>`${item.text} ${item.choices.join(' ')}`).join(' '),now=Date.now(),tiers=v.personalizationEvidenceTierForTimestamps([now-2*60*60*1000],now)==='24h'&&v.personalizationEvidenceTierForTimestamps([now-30*60*60*1000],now)==='72h'&&v.personalizationEvidenceTierForTimestamps([now-4*24*60*60*1000],now)==='7d'&&v.personalizationEvidenceTierForTimestamps([now-12*24*60*60*1000],now)==='latest',older=v.localPersonalizationCache(new Date(now),['较早事项.md'],'zh','',null,'','latest'),olderText=older.greetings.map(item=>item.text).join(' ');return JSON.stringify({personalizationEvidence:forged.friendlyName===''&&forged.inferredWeatherLocation===''&&!/虚构名字|虚构市|天气晴朗/.test(forgedText)&&accepted.friendlyName==='测试用户'&&accepted.inferredWeatherLocation==='测试城市'&&accepted.greetings.some((item)=>item.text.includes('测试用户')),personalizationTiers:tiers&&!/刚看到|刚动过|最近动过|有更新/.test(olderText)&&/最新线索|上次|目前/.test(olderText)})})()
 '@
     $spinnerCode = @'
 (async()=>{const p=app.plugins.plugins.cancip;if(!p)throw new Error('runtime unavailable');const before=p.editorAutocompleteActivityCount,finish=p.beginEditorAutocompleteActivity(),during=p.editorAutocompleteActivityCount===before+1&&!!p.statusBarEl?.classList.contains('is-editor-autocomplete-running')&&!!p.statusBarEl?.querySelector('.obcc-statusbar-icon-glyph svg');finish();let timedOut=false;try{await p.runEditorAutocompleteNetworkRequest(()=>new Promise(()=>{}),35)}catch{timedOut=true}const stopped=p.editorAutocompleteActivityCount===before&&!p.statusBarEl?.classList.contains('is-editor-autocomplete-running');return JSON.stringify({editorSpinner:during&&timedOut&&stopped})})()
@@ -2796,8 +2840,9 @@ if (Should-RunProgrammaticCase 'programmatic.context-editor-settings') {
       settingsTabsStable = $settingsTabs.settingsTabsStable
       settingsPagesSeparated = $settingsTabs.settingsPagesSeparated
       personalizationEvidence = $evidence.personalizationEvidence
+      personalizationTiers = $evidence.personalizationTiers
     }
-    foreach ($field in @('editorLocal','editorModel','editorWithoutChatLeaf','editorSpinner','editorExtension','autocompleteModelRoute','autocompleteModelStored','autocompleteModelCacheInvalidated','autocompleteModelOptions','autocompleteModelCredentialFallback','autocompleteModelMissingFallback','editorAutocompleteTree','editorAutocompleteRootFirst','editorAutocompleteMultilineAlias','editorAutocompleteRecursivePrefetch','editorAutocompleteReadyTwenty','editorAutocompleteBatchedPrefetch','editorAutocompleteDedupedPrefetch','editorAutocompleteSingleBatch','editorAutocompleteNoRetry','editorAutocompletePendingSettles','editorAutocompleteQuietPrefetch','editorAutocompleteNoPrefetch','editorRichMemory','editorMemoryRelevant','editorMemoryBounded','editorMemoryRedacted','editorMemoryInjected','editorModelBudget','editorRootFirstPrompt','editorBranchPrompt','editorDisabledPrefetchPrompt','editorMemoryModelCalled','editorMemoryInvalidated','currentFileSnapshot','settingsScrollStable','settingsTabsStable','settingsPagesSeparated','personalizationEvidence')) {
+    foreach ($field in @('editorLocal','editorModel','editorWithoutChatLeaf','editorSpinner','editorExtension','autocompleteModelRoute','autocompleteModelStored','autocompleteModelCacheInvalidated','autocompleteModelOptions','autocompleteModelCredentialFallback','autocompleteModelMissingFallback','editorAutocompleteTree','editorAutocompleteRootFirst','editorAutocompleteMultilineAlias','editorAutocompleteRecursivePrefetch','editorAutocompleteReadyTwenty','editorAutocompleteBatchedPrefetch','editorAutocompleteDedupedPrefetch','editorAutocompleteSingleBatch','editorAutocompleteNoRetry','editorAutocompletePendingSettles','editorAutocompleteQuietPrefetch','editorAutocompleteNoPrefetch','editorRichMemory','editorMemoryRelevant','editorMemoryBounded','editorMemoryRedacted','editorMemoryInjected','editorModelBudget','editorRootFirstPrompt','editorBranchPrompt','editorDisabledPrefetchPrompt','editorMemoryModelCalled','editorMemoryInvalidated','currentFileSnapshot','settingsScrollStable','settingsTabsStable','settingsPagesSeparated','personalizationEvidence','personalizationTiers')) {
       if (-not [bool]$item.$field) { throw "context/editor/settings check failed: $field; $($item | ConvertTo-Json -Compress -Depth 8)" }
     }
     Add-CaseResult -Group 'programmaticCases' -Item @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs; settingsOffsetError = $item.settingsOffsetError }
@@ -4619,7 +4664,7 @@ if (-not $Case -or 'programmatic.plan-manual-todo-separation'.Contains($Case)) {
   const p=app.plugins.plugins.cancip;
   const v=p&&typeof p.activateView==='function'?await p.activateView():app.workspace.getLeavesOfType('cancip-view')[0]?.view??null;
   if(!v)throw new Error('Cancip view unavailable');
-  const oldTodos=JSON.parse(JSON.stringify(v.manualTodos||[]));
+  const oldTodos=JSON.parse(JSON.stringify(v.manualTodos||[])),oldMessages=v.messages,oldActivateReview=p.activateReviewView;
   const manualId='smoke-manual-'+Date.now();
   try{
     v.manualTodos=[{id:manualId,text:'manual-smoke-todo',done:false,sendToModel:true,source:'manual',createdAt:new Date().toISOString()}];
@@ -4627,6 +4672,17 @@ if (-not $Case -or 'programmatic.plan-manual-todo-separation'.Contains($Case)) {
     const afterSet={manual:v.visibleManualTodos().length,agent:v.agentPlanTodos().length};
     await v.executeAction({type:'todo',op:'update',text:'agent-plan-step-one',done:true});
     v.renderQueueStatus();
+    const planStatusText=v.statusPlanButtonEl?.textContent?.trim()||'';
+    v.statusPlanButtonEl?.click();
+    const planStatusOpens=v.activeHeaderMenu==='plan'&&!v.headerMenuEl?.classList.contains('is-hidden');
+    v.closeHeaderMenu();
+    v.messages=[...oldMessages,{id:'status-smoke-change',role:'assistant',content:'',createdAt:Date.now(),toolRuns:[{id:'status-smoke-run',action:{type:'write',path:'Smoke/Status.md',content:'next'},summary:'write',status:'executed',createdAt:new Date().toISOString(),lineDeltas:[{path:'Smoke/Status.md',added:7,removed:3,estimated:false}]}]}];
+    let reviewOpened=0;
+    p.activateReviewView=async()=>{reviewOpened+=1};
+    v.renderQueueStatus();
+    const changeStatusText=v.statusChangesButtonEl?.textContent?.trim()||'';
+    v.statusChangesButtonEl?.click();
+    const statusLinks=planStatusText==='计划 1/2'&&planStatusOpens&&changeStatusText==='改动 +7/-3'&&reviewOpened===1;
     const livePlan={
       count:v.queueEl?.querySelectorAll('.obcc-live-plan-item').length||0,
       done:v.queueEl?.querySelectorAll('.obcc-live-plan-item.is-done').length||0,
@@ -4638,9 +4694,12 @@ if (-not $Case -or 'programmatic.plan-manual-todo-separation'.Contains($Case)) {
     const agentDone=!!v.agentPlanTodos().find((item)=>item.text==='agent-plan-step-one'&&item.done);
     await v.executeAction({type:'todo',op:'clear'});
     const afterClear={manual:v.visibleManualTodos().length,agent:v.agentPlanTodos().length,manualText:v.visibleManualTodos()[0]?.text||''};
-    return JSON.stringify({id:'programmatic.plan-manual-todo-separation',elapsedMs:Date.now()-t,afterSet,agentDone,manualDone:!!manual?.done,livePlan,afterClear});
+    return JSON.stringify({id:'programmatic.plan-manual-todo-separation',elapsedMs:Date.now()-t,afterSet,agentDone,manualDone:!!manual?.done,livePlan,statusLinks,afterClear});
   } finally {
     v.manualTodos=oldTodos;
+    v.messages=oldMessages;
+    p.activateReviewView=oldActivateReview;
+    v.renderQueueStatus();
     if(typeof v.refreshPlanPanelIfOpen==='function')v.refreshPlanPanelIfOpen();
   }
 })()
@@ -4650,6 +4709,7 @@ if (-not $Case -or 'programmatic.plan-manual-todo-separation'.Contains($Case)) {
     if ([int]$item.afterSet.agent -ne 2) { throw "agent plan count after set expected 2 got $($item.afterSet.agent)" }
     if (-not $item.agentDone) { throw 'agent plan update did not mark the target item done' }
     if ($item.manualDone) { throw 'manual todo was modified by agent todo update' }
+    if (-not $item.statusLinks) { throw "composer status links did not show or route plan/change metadata: $($item | ConvertTo-Json -Compress)" }
     if ([int]$item.livePlan.count -ne 2 -or [int]$item.livePlan.done -ne 1 -or [int]$item.livePlan.current -ne 1 -or $item.livePlan.hidden -or -not $item.livePlan.bounded) { throw "live plan strip did not reflect bounded completion state: $($item.livePlan | ConvertTo-Json -Compress)" }
     if ([int]$item.afterClear.manual -ne 1 -or [int]$item.afterClear.agent -ne 0) { throw "todo clear did not preserve manual todo: $($item.afterClear | ConvertTo-Json -Compress)" }
     Add-CaseResult 'programmaticCases' @{ id = $item.id; pass = $true; elapsedMs = $item.elapsedMs }

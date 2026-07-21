@@ -1582,6 +1582,8 @@ type PersonalizationWeather = {
   updatedAt: string;
 };
 
+type PersonalizationEvidenceTier = "24h" | "72h" | "7d" | "latest" | "none";
+
 type PersonalizationCache = {
   schemaVersion: 3;
   updatedAt: string;
@@ -2849,6 +2851,9 @@ const PERSONALIZATION_PRIORITY_REVIEW_MARKER = "cancip-personalization-priority"
 const PERSONALIZATION_SCHEMA_VERSION = 3;
 const PERSONALIZATION_USAGE_SCHEMA_VERSION = 3;
 const PERSONALIZATION_REFRESH_DEBOUNCE_MS = 18000;
+const PERSONALIZATION_RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
+const PERSONALIZATION_THREE_DAY_WINDOW_MS = 72 * 60 * 60 * 1000;
+const PERSONALIZATION_WEEK_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const PERSONALIZATION_MAX_SOURCE_FILES = 6;
 const PERSONALIZATION_MAX_SOURCE_CHARS = 4200;
 const PERSONALIZATION_WEATHER_TTL_MS = 60 * 60 * 1000;
@@ -2909,11 +2914,11 @@ const UNIVERSAL_SEARCH_MAX_DOCUMENTS = 12000;
 const UNIVERSAL_SEARCH_MAX_QUERY_CANDIDATES = 180;
 let AUTOMATION_DIR = `${CANCIP_CONFIG_DIR}/automations`;
 let AUTOMATION_STATE_PATH = `${CANCIP_CONFIG_DIR}/automations.json`;
-const AUTOMATION_SCHEMA_VERSION = 10;
+const AUTOMATION_SCHEMA_VERSION = 12;
 const AUTOMATION_NEW_FILE_DEFAULT_DEBOUNCE_SECONDS = 45;
 const AUTOMATION_NEW_FILE_MAX_BATCH = 40;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
-const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v6";
+const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v7";
 let VAULT_CURATION_NEW_FILE_STATE_PATH = `${AUTOMATION_DIR}/vault-curation-new-files.json`;
 const VAULT_CURATION_NEW_FILE_STATE_SCHEMA_VERSION = 2;
 const PERSONALIZED_DIARY_AUTOMATION_ID = "auto-personalized-diary-assist";
@@ -3336,7 +3341,7 @@ const EN = {
   queueMessage: "Queue message",
   copyDone: "Copied",
   copyFailed: "Copy failed: {reason}",
-  choiceInserted: "Suggestion inserted",
+  choiceInserted: "Inserted",
   toolJsonDetails: "Tool / command details",
   processDetails: "Process details",
   informationalActionBlocked: "Blocked because this is a read/list/explain question. Ask explicitly to create, modify, move, delete, configure, or run a write action.",
@@ -3664,7 +3669,7 @@ const EN = {
   repairNoSettingChanges: "no setting changes needed",
   repairSuccess: "/修复 completed.\n\n- Basic API probe: OK ({apiMode}, {model})\n- Safe basic chat settings: {changes}\n- Heavy automatic context is off by default now. Manual @ context, Search mode, Plan, command bus, and settings remain available.\n\nSend `测试` now.",
   repairFailed: "/修复 failed: {reason}",
-  generating: "Generating...",
+  generating: "Generating",
   done: "Done",
   callFailed: "Call failed",
   stopped: "Stopped",
@@ -4292,7 +4297,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     resumableFailed: "已失败。点继续会从最近工具/会话状态接着跑。",
     copyDone: "已复制",
     copyFailed: "复制失败：{reason}",
-    choiceInserted: "已填入推荐项",
+    choiceInserted: "已填入",
     toolJsonDetails: "工具/命令详情",
     processDetails: "过程详情",
     informationalActionBlocked: "已阻止：这是读取、清单、解释或分析类问题。只有用户明确要求新建、修改、移动、删除、配置或执行写入动作时，才会自动执行写入类工具。",
@@ -4635,7 +4640,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     repairNoSettingChanges: "无需修改设置",
     repairSuccess: "/修复 已完成。\n\n- 基础 API 探测：通过（{apiMode}，{model}）\n- 基础对话安全设置：{changes}\n- 现在默认关闭重型自动上下文；手动 @ 上下文、Search mode、Plan、命令总线和设置仍可用。\n\n现在发送 `测试`。",
     repairFailed: "/修复 失败：{reason}",
-    generating: "模型生成中...",
+    generating: "正在生成",
     done: "完成",
     callFailed: "调用失败",
     stopped: "已停止",
@@ -5053,7 +5058,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     queuedCount: "排隊 {count}",
     clearQueue: "清空佇列",
     queueCleared: "佇列已清空",
-    choiceInserted: "已填入推薦項",
+    choiceInserted: "已填入",
     resendMessage: "重發",
     resendQueued: "已重發/已加入佇列",
     charUsageLive: "字數 傳送 {input} / 接收中 {output}",
@@ -5094,7 +5099,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     placeholder: "Cancip：@檔案、搜尋、計畫、修改...",
     ready: "準備就緒",
     missingApi: "尚未設定 API URL/key/model。",
-    generating: "模型生成中...",
+    generating: "正在生成",
     done: "完成",
     callFailed: "呼叫失敗",
     stopped: "已停止",
@@ -12890,7 +12895,8 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 ## Context and retrieval
 - Do not search the whole Vault for greetings, tests, or direct chat. For identity, memory, continuation, or user-correction questions, inspect the memory index, session history, or tool index before asking the user.
 - Use current file, @ mentions, manually attached context, core memory, and recent tool feedback first.
-- Search the Vault only when the current context is insufficient. Read only the exact needed files or snippets.
+- Search only when the necessary current context is insufficient. Prefer targeted Vault notes, Skills, automations, session history, memory, plugin/command indexes, and verified experience; read only the exact needed files or snippets.
+- Use the web next only for missing external/current facts or documentation. Use model knowledge to synthesize or fill non-authoritative gaps, never to override verified local or web evidence.
 - Use the memory router: user preference, Cancip project, plugin guide, Vault maintenance, current file, and history conclusion are separate routes.
 - Send only the last useful conclusion, recent user wording, and necessary tool result summaries by default; do not send full history unless asked.
 - Keep machine-readable indexes under ${CANCIP_MACHINE_INDEX_DIR}/. Keep ${memoryIndexPath} as a readable natural directory.
@@ -12907,6 +12913,12 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 - Use cancip.skills.list/read/refresh to discover and read the exact Skill; only inject the selected Skill, not the whole Skill folder.
 - Use ${EXPERIENCE_LOG_PATH} for recent failed/successful implementation lessons. Read only relevant snippets.
 - Prefer built-in command scripts and helper commands before asking the model to hand-write long procedures.
+
+## Proactive resource reuse and self-improvement
+- Start with only the task's necessary current context. If it is insufficient, reuse the smallest relevant combination of Vault notes, Skills, automations, session history, curated memory, installed plugin commands/APIs/UI, recipes, and verified routes before the web or model prior knowledge.
+- For clear low-risk tasks, execute and verify the recoverable next step instead of stopping at suggestions or asking prose confirmation. Use backup/review/readback, and try a different bounded route after failure.
+- Record verified successes, classified failures, user adoption, stale routes, and repeated workflows. Query, create, update, merge, downgrade, or remove generated memory/recipes/Skills/automations/routes when evidence changes; refresh indexes after changes.
+- Deletion, move/rename, secrets/accounts, external publication, real trading, and other high-impact actions keep their explicit confirmation boundary.
 
 ## Execution loop
 - Treat tool results and errors as authoritative context.
@@ -13000,6 +13012,16 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 - Use cancip.skills.list/read/refresh to discover and read the exact Skill; only inject the selected Skill, not the whole Skill folder.
 - Use ${EXPERIENCE_LOG_PATH} for recent failed/successful implementation lessons. Read only relevant snippets.
 - Prefer built-in command scripts and helper commands before asking the model to hand-write long procedures.
+`;
+        }
+        if (!nextRules.includes("## Proactive resource reuse and self-improvement")) {
+          nextRules = `${nextRules.trimEnd()}
+
+## Proactive resource reuse and self-improvement
+- Start with only the task's necessary current context. If it is insufficient, reuse the smallest relevant combination of Vault notes, Skills, automations, session history, curated memory, installed plugin commands/APIs/UI, recipes, and verified routes before the web or model prior knowledge.
+- For clear low-risk tasks, execute and verify the recoverable next step instead of stopping at suggestions or asking prose confirmation. Use backup/review/readback, and try a different bounded route after failure.
+- Record verified successes, classified failures, user adoption, stale routes, and repeated workflows. Query, create, update, merge, downgrade, or remove generated memory/recipes/Skills/automations/routes when evidence changes; refresh indexes after changes.
+- Deletion, move/rename, secrets/accounts, external publication, real trading, and other high-impact actions keep their explicit confirmation boundary.
 `;
         }
         if (!nextRules.includes("## Truncation and retry")) {
@@ -17114,7 +17136,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   schedulePersonalizationRefresh(delayMs = PERSONALIZATION_REFRESH_DEBOUNCE_MS, path = ""): void {
     const normalized = normalizePath(path.replace(/\\/g, "/"));
     if (normalized && !isPersonalizationSourcePath(normalized, this.obsidianConfigDir())) return;
-    if (normalized) this.personalizationPendingPaths.add(normalized);
+    if (normalized) {
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      if (!(file instanceof TFile) || !isRecentPersonalizationTimestamp(file.stat.mtime)) return;
+      this.personalizationPendingPaths.add(normalized);
+    }
     if (this.personalizationRefreshTimer !== null) window.clearTimeout(this.personalizationRefreshTimer);
     this.personalizationRefreshTimer = window.setTimeout(() => {
       this.personalizationRefreshTimer = null;
@@ -17141,7 +17167,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       this.personalizationPendingPaths.clear();
       const current = await this.loadPersonalizationCache();
       const updatedAt = Date.parse(current.updatedAt);
-      if (!pendingPaths.length && current.timeKey === timeKey && Number.isFinite(updatedAt) && Date.now() - updatedAt < 15 * 60 * 1000) return;
+      const currentSourcesFresh = current.sourcePaths.every((path) => {
+        const file = this.app.vault.getAbstractFileByPath(path);
+        return file instanceof TFile && isValidPersonalizationTimestamp(file.stat.mtime);
+      });
+      if (!pendingPaths.length && currentSourcesFresh && current.timeKey === timeKey && Number.isFinite(updatedAt) && Date.now() - updatedAt < 15 * 60 * 1000) return;
       const source = await this.buildPersonalizationSourceContext(pendingPaths);
       const friendlyName = this.settings.personalizationFriendlyName || extractPersonalizationFriendlyName(source.text) || current.friendlyName;
       const weatherLocation = this.settings.personalizationWeatherLocation
@@ -17155,7 +17185,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         weather ? `Verified current weather: ${weather.location} · ${weather.summary} · ${weather.updatedAt}` : "Verified current weather: unavailable",
         source.text
       ].join("\n\n");
-      let next = localPersonalizationCache(now, source.paths, this.language(), friendlyName, weather, weatherLocation);
+      let next = localPersonalizationCache(now, source.paths, this.language(), friendlyName, weather, weatherLocation, source.tier);
       const profile = this.activeApiProfile();
       if (profile.apiKey && profile.apiUrl && profile.model) {
         const foreground = this.chatLeaves()
@@ -17215,20 +17245,59 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
   }
 
-  private async buildPersonalizationSourceContext(priorityPaths: string[]): Promise<{ text: string; paths: string[] }> {
+  private async buildPersonalizationSourceContext(priorityPaths: string[]): Promise<{ text: string; paths: string[]; tier: PersonalizationEvidenceTier }> {
     const now = Date.now();
-    const recent = this.app.vault.getFiles()
+    const sourceFiles = this.app.vault.getFiles()
       .filter((file) => isPersonalizationSourcePath(file.path, this.obsidianConfigDir()))
-      .filter((file) => now - Math.max(file.stat.ctime, file.stat.mtime) <= 48 * 60 * 60 * 1000)
-      .sort((a, b) => Math.max(b.stat.ctime, b.stat.mtime) - Math.max(a.stat.ctime, a.stat.mtime));
-    const selectedPaths = uniqueStrings([...priorityPaths, ...recent.map((file) => file.path)])
+      .filter((file) => isValidPersonalizationTimestamp(file.stat.mtime, now))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime);
+    const priorityFiles = priorityPaths
+      .map((path) => this.app.vault.getAbstractFileByPath(path))
+      .filter((file): file is TFile => file instanceof TFile && isPersonalizationSourcePath(file.path, this.obsidianConfigDir()))
+      .filter((file) => isValidPersonalizationTimestamp(file.stat.mtime, now));
+    const adapter = this.app.vault.adapter;
+    let sessionEntries: Array<{ title: string; updatedAt: string; timestamp: number }> = [];
+    try {
+      if (await adapter.exists(SESSION_HISTORY_INDEX_PATH)) {
+        const parsed = JSON.parse(await adapter.read(SESSION_HISTORY_INDEX_PATH)) as unknown;
+        if (isRecord(parsed) && Array.isArray(parsed.entries)) {
+          sessionEntries = parsed.entries
+            .filter(isRecord)
+            .filter((entry) => Number(entry.messageCount) > 0 && typeof entry.title === "string")
+            .map((entry) => ({
+              title: String(entry.title).trim(),
+              updatedAt: typeof entry.updatedAt === "string" ? entry.updatedAt : "",
+              timestamp: Date.parse(typeof entry.updatedAt === "string" ? entry.updatedAt : "")
+            }))
+            .filter((entry) => entry.title && !/Cancip smoke|自动化任务|automation task/i.test(entry.title))
+            .filter((entry) => isValidPersonalizationTimestamp(entry.timestamp, now))
+            .sort((a, b) => b.timestamp - a.timestamp);
+        }
+      }
+    } catch {
+      sessionEntries = [];
+    }
+    const tier = personalizationEvidenceTierForTimestamps([
+      ...priorityFiles.map((file) => file.stat.mtime),
+      ...sourceFiles.map((file) => file.stat.mtime),
+      ...sessionEntries.map((entry) => entry.timestamp)
+    ], now);
+    const selectedPaths = uniqueStrings([
+      ...priorityFiles.filter((file) => personalizationTimestampMatchesTier(file.stat.mtime, tier, now)).map((file) => file.path),
+      ...sourceFiles.filter((file) => personalizationTimestampMatchesTier(file.stat.mtime, tier, now)).map((file) => file.path)
+    ])
       .filter((path) => Boolean(this.app.vault.getAbstractFileByPath(path)))
       .slice(0, PERSONALIZATION_MAX_SOURCE_FILES);
     const fileSections: string[] = [];
     for (const path of selectedPaths) {
       const file = this.app.vault.getAbstractFileByPath(path);
       if (!(file instanceof TFile)) continue;
-      const lines = [`- path: ${file.path}`, `  changed: ${new Date(Math.max(file.stat.ctime, file.stat.mtime)).toISOString()}`];
+      const lines = [
+        `- path: ${file.path}`,
+        `  modified: ${new Date(file.stat.mtime).toISOString()}`,
+        `  ageHours: ${Math.max(0, Math.round((now - file.stat.mtime) / (60 * 60 * 1000)))}`,
+        `  timeWording: ${personalizationEvidenceWording(tier)}`
+      ];
       if (isContextTextFile(file) && file.stat.size <= 512 * 1024) {
         try {
           const text = redactSensitiveText(await this.app.vault.cachedRead(file)).replace(/\s+/g, " ").trim();
@@ -17239,7 +17308,6 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       fileSections.push(lines.join("\n"));
     }
-    const adapter = this.app.vault.adapter;
     const readShort = async (path: string, limit: number): Promise<string> => {
       try {
         return await adapter.exists(path) ? trimContext(redactSensitiveText(await adapter.read(path)), limit) : "";
@@ -17249,39 +17317,28 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     };
     const memory = await readShort(this.memoryPath("CANCIP_INDEX.md"), 1000);
     const project = await readShort(PROJECT_MEMORY_PATH, 1000);
-    let sessions = "";
-    try {
-      if (await adapter.exists(SESSION_HISTORY_INDEX_PATH)) {
-        const parsed = JSON.parse(await adapter.read(SESSION_HISTORY_INDEX_PATH)) as unknown;
-        if (isRecord(parsed) && Array.isArray(parsed.entries)) {
-          sessions = parsed.entries
-            .filter(isRecord)
-            .filter((entry) => Number(entry.messageCount) > 0 && typeof entry.title === "string")
-            .map((entry) => String(entry.title).trim())
-            .filter((title) => title && !/Cancip smoke|自动化任务|automation task/i.test(title))
-            .slice(0, 4)
-            .map((title) => `- ${trimContext(title, 100)}`)
-            .join("\n");
-        }
-      }
-    } catch {
-      sessions = "";
-    }
+    const sessions = sessionEntries
+      .filter((entry) => personalizationTimestampMatchesTier(entry.timestamp, tier, now))
+      .slice(0, 4)
+      .map((entry) => `- ${trimContext(entry.title, 100)} · ${entry.updatedAt} · ageHours=${Math.max(0, Math.round((now - entry.timestamp) / (60 * 60 * 1000)))} · ${personalizationEvidenceWording(tier)}`)
+      .join("\n");
     const text = trimContext([
       `Local time: ${new Date().toString()}`,
       `Time key: ${personalizationTimeKey(new Date())}`,
+      `Evidence tier: ${tier}`,
+      `Evidence wording rule: ${personalizationEvidenceWording(tier)}`,
       "",
-      "Recent user-facing files:",
+      "Selected user-facing files:",
       fileSections.join("\n") || "- none",
       "",
-      "Recent meaningful session titles:",
+      "Selected meaningful session titles:",
       sessions || "- none",
       "",
       `Memory index excerpt:\n${memory || "- none"}`,
       "",
       `Project memory excerpt:\n${project || "- none"}`
     ].join("\n"), PERSONALIZATION_MAX_SOURCE_CHARS);
-    return { text, paths: selectedPaths };
+    return { text, paths: selectedPaths, tier };
   }
 
   private async personalizationWeather(location: string, cached: PersonalizationWeather | null): Promise<PersonalizationWeather | null> {
@@ -19540,7 +19597,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.automationFirstRunTimer = window.setTimeout(() => {
       this.automationFirstRunTimer = null;
       void this.maybeRunDueAutomations();
-    }, 30000);
+    }, 8000);
     this.automationIntervalTimer = window.setInterval(() => {
       void this.maybeRunDueAutomations();
     }, Math.max(1, this.settings.automationCheckMinutes) * 60 * 1000);
@@ -19654,7 +19711,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (this.activeAiVaultMutationCapture()) return;
     const path = normalizePath(rawPath.replace(/\\/g, "/"));
     if (!path || isAutomationInternalPath(path, this.obsidianConfigDir())) return;
-    void this.loadAutomations().then((tasks) => {
+    void (async () => {
+      let tasks = await this.loadAutomations();
+      if (!tasks.some((task) => task.enabled && task.watchNewFiles)) {
+        await this.ensureDefaultDailyAutomations();
+        tasks = await this.loadAutomations(true);
+      }
       for (const task of tasks) {
         if (!task.enabled || !task.watchNewFiles || !automationNewFilePathMatches(task, path)) continue;
         const paths = this.automationNewFilePaths.get(task.id) ?? new Set<string>();
@@ -19668,7 +19730,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         }, Math.max(1, task.newFileDebounceSeconds) * 1000);
         this.automationNewFileTimers.set(task.id, timer);
       }
-    }).catch((error) => console.warn("Cancip new-file automation routing failed", error));
+    })().catch((error) => console.warn("Cancip new-file automation routing failed", error));
   }
 
   private async flushNewFileAutomation(taskId: string): Promise<void> {
@@ -19777,12 +19839,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             : []
         );
         let tasks = parsed.tasks.map(normalizeAutomationTask).filter((task): task is AutomationTask => task !== null);
-        if (Number(parsed.schemaVersion) < AUTOMATION_SCHEMA_VERSION) {
+        const schemaVersion = Number(parsed.schemaVersion);
+        if (schemaVersion < AUTOMATION_SCHEMA_VERSION) {
           tasks = tasks.map((task) => {
             const dedicated = automationWithDedicatedSession(task, true);
-            return task.id === VAULT_CURATION_AUTOMATION_ID
-              ? { ...dedicated, watchNewFiles: true, newFilePattern: dedicated.newFilePattern || "**/*.md" }
-              : dedicated;
+            if (task.id === VAULT_CURATION_AUTOMATION_ID) {
+              return {
+                ...dedicated,
+                watchNewFiles: true,
+                newFilePattern: dedicated.newFilePattern || "**/*.md",
+                silent: schemaVersion < 12 ? false : dedicated.silent,
+                notifyMode: schemaVersion < 12 ? "always" : dedicated.notifyMode
+              };
+            }
+            if (task.id === "auto-personalized-greeting-refresh" && schemaVersion < 11) {
+              return { ...dedicated, silent: true, notifyMode: "never" };
+            }
+            if (task.id === CANCIP_DAILY_CARE_AUTOMATION_ID && schemaVersion < 12 && dedicated.hour === 0 && dedicated.minute === 5) {
+              return { ...dedicated, minute: 0 };
+            }
+            return dedicated;
           });
           await adapter.write(AUTOMATION_STATE_PATH, `${JSON.stringify({
             schemaVersion: AUTOMATION_SCHEMA_VERSION,
@@ -20257,6 +20333,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const executionTask: AutomationTask = triggerPaths.length
       ? { ...runTask, args: { ...(runTask.args ?? {}), trigger: "new-file", paths: triggerPaths, path: triggerPaths[0] } }
       : runTask;
+    const visibleNewFileRun = !task.silent && options.trigger === "new-file";
     const finishCapture = async (): Promise<{ captured: AiVaultMutationCaptureResult; reviewPath: string } | null> => {
       if (!capture) return null;
       await this.settleAiVaultMutationCapture(capture, 5000, 9000, 300);
@@ -20265,7 +20342,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const reviewPath = view ? await view.registerCapturedAiMutationReview(captured, `Automation: ${task.title}`) : "";
       return { captured, reviewPath };
     };
-    const completedCurationPaths = (captured: AiVaultMutationCaptureResult | null, verifiedToolPaths: string[] = []): string[] => {
+    const completedCurationPaths = (
+      captured: AiVaultMutationCaptureResult | null,
+      verifiedToolPaths: string[] = [],
+      skippedPaths: string[] = []
+    ): string[] => {
       if (!curationPaths.length) return [];
       const candidates = new Set(curationCandidatePaths.map((path) => normalizePath(path)));
       const completed = curationPaths.filter((path) => !candidates.has(normalizePath(path)));
@@ -20281,11 +20362,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       for (const path of candidates) {
         if (changed.has(path)) completed.push(path);
       }
+      for (const path of skippedPaths.map((path) => normalizePath(path))) {
+        if (candidates.has(path)) completed.push(path);
+      }
       return uniqueStrings(completed);
     };
     try {
       view = await this.getAutomationRunnerView();
       if (!view) throw new Error("Cancip background automation runner unavailable");
+      if (visibleNewFileRun) new Notice(this.t("automationStarted", { title: task.title }));
       if (task.id === VAULT_CURATION_AUTOMATION_ID && !task.command) {
         curationPack = await view.buildVaultCurationSourcePack(task);
         const candidatePaths = vaultCurationCandidatePathsFromPack(curationPack);
@@ -20295,19 +20380,27 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           if (curationPaths.length) await view.completeVaultCurationNewFiles(curationPaths);
           const text = isChineseLanguage(this.language()) ? "没有符合条件的新文件，本次无需运行。" : "No eligible new files; this run was skipped.";
           await this.markAutomationRun(task.id, "skipped", text);
+          if (visibleNewFileRun) new Notice(text);
           return { ok: true, status: "skipped", text };
         }
       }
       const targetSessionId = await this.persistForegroundAutomationSession(executionTask);
       await view.prepareAutomationSession(executionTask, targetSessionId);
-      if (!task.silent && options.trigger !== "scheduled") new Notice(this.t("automationStarted", { title: task.title }));
+      if (!task.silent && options.trigger !== "scheduled" && !visibleNewFileRun) new Notice(this.t("automationStarted", { title: task.title }));
       capture = this.beginAiVaultMutationCapture(`automation:${task.id}:${task.title}`);
       if (task.command) await this.primeAiVaultMutationCaptureReviewScope(capture);
       const result = executionTask.command
         ? await view.runAutomationCommand(executionTask, eventContext)
         : await view.runAutomationPrompt(executionTask, [curationPack, eventContext].filter(Boolean).join("\n\n---\n\n"));
       const captureResult = await finishCapture();
-      const verifiedCurationPaths = completedCurationPaths(captureResult?.captured ?? null, result.changedPaths ?? []);
+      const skippedCurationPaths = result.status === "skipped"
+        ? [...curationCandidatePaths]
+        : vaultCurationSkippedPathsFromResult(result.text, curationCandidatePaths);
+      const verifiedCurationPaths = completedCurationPaths(
+        captureResult?.captured ?? null,
+        result.changedPaths ?? [],
+        skippedCurationPaths
+      );
       if (verifiedCurationPaths.length) await view.completeVaultCurationNewFiles(verifiedCurationPaths);
       if (result.status === "skipped") {
         const skippedText = result.text.trim() || (isChineseLanguage(this.language()) ? "本次没有需要处理的内容。" : "There was nothing to process in this run.");
@@ -20324,6 +20417,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         throw new Error("diary automation finished without a verified diary update");
       }
       const verifiedCurationSet = new Set(verifiedCurationPaths.map((path) => normalizePath(path)));
+      const skippedCurationSet = new Set(skippedCurationPaths.map((path) => normalizePath(path)));
+      if (curationCandidatePaths.length && curationCandidatePaths.every((path) => skippedCurationSet.has(normalizePath(path)))) {
+        const skippedText = isChineseLanguage(this.language())
+          ? `已检查 ${curationCandidatePaths.length} 个新文件，无需改动。`
+          : `Checked ${curationCandidatePaths.length} new file(s); no changes were needed.`;
+        await this.markAutomationRun(task.id, "skipped", skippedText);
+        return { ok: true, status: "skipped", text: skippedText };
+      }
       const incompleteCurationPaths = curationCandidatePaths.filter((path) => !verifiedCurationSet.has(normalizePath(path)));
       if (incompleteCurationPaths.length) {
         throw new Error(`automation did not apply a verified change to: ${incompleteCurationPaths.join(", ")}`);
@@ -24553,6 +24654,9 @@ class CancipView extends ItemView {
   private autocompleteOutsideCleanup: (() => void) | null = null;
   private attachmentInputEl: HTMLInputElement | null = null;
   private statusEl!: HTMLElement;
+  private statusTextEl: HTMLElement | null = null;
+  private statusChangesButtonEl: HTMLButtonElement | null = null;
+  private statusPlanButtonEl: HTMLButtonElement | null = null;
   private contextEl: HTMLElement | null = null;
   private queueEl: HTMLElement | null = null;
   private scrollBottomButtonEl: HTMLButtonElement | null = null;
@@ -24700,7 +24804,14 @@ class CancipView extends ItemView {
       "personalizationCacheFromModel": { configurable: true, value: personalizationCacheFromModel },
       "extractCancipActions": { configurable: true, value: extractCancipActions },
       "automationCommandNeedsModel": { configurable: true, value: automationCommandNeedsModel },
-      "isAutomationDue": { configurable: true, value: isAutomationDue }
+      "isAutomationDue": { configurable: true, value: isAutomationDue },
+      "compactComposerStatusText": { configurable: true, value: compactComposerStatusText },
+      "isRecentPersonalizationTimestamp": { configurable: true, value: isRecentPersonalizationTimestamp },
+      "personalizationEvidenceTierForTimestamps": { configurable: true, value: personalizationEvidenceTierForTimestamps },
+      "personalizationTimestampMatchesTier": { configurable: true, value: personalizationTimestampMatchesTier },
+      "localPersonalizationCache": { configurable: true, value: localPersonalizationCache },
+      "isVaultCurationDateLikeBasename": { configurable: true, value: isVaultCurationDateLikeBasename },
+      "vaultCurationSkippedPathsFromResult": { configurable: true, value: vaultCurationSkippedPathsFromResult }
     });
   }
 
@@ -24720,6 +24831,7 @@ class CancipView extends ItemView {
       "Default to Chinese. Return four distinct greetings. Each greeting has two or three short sentences and two or three concise, complete next-action choices tied to concrete evidence.",
       "Infer friendlyName and weatherLocation only from direct, repeated, user-related evidence. Return an empty string when identity, locality, or whether a place is local is ambiguous. Address the user by friendlyName only when the evidence supports it. Mention weather only when Verified current weather is available.",
       "Vary emphasis across recent files, meaningful session titles, memory, current time, and weather; do not repeat the same opening or choices across all variants.",
+      "Obey Evidence tier and every evidence line's ageHours/timeWording. Only 24h evidence may be called just changed or newly updated; 72h evidence may be called from the last few days; 7d evidence may be called from this week; latest evidence must be called the last/currently available clue and never recent. Memory and project excerpts are background context, never proof that a file or task just changed.",
       "Infer mood or tone only from clear evidence. Use restrained humor for light signals, gentle acknowledgement for difficult signals, and a neutral practical tone otherwise. When useful, vary one concrete caring cue across health-related material, workload, unfinished work, appointments, recent changes, or repeated habits, but never diagnose, moralize, or invent concern.",
       "Do not diagnose disease, invent facts, claim a feeling without evidence, use generic assistant slogans, list capabilities, or turn the greeting into a report.",
       "When reliable evidence is sparse, return a natural time-based greeting only. Do not mention missing information, insufficient evidence, unavailable clues, or what you could not infer, and do not invent a concrete topic or concern.",
@@ -25570,6 +25682,9 @@ class CancipView extends ItemView {
     this.sendButtonEl = null;
     this.modeButtons = null;
     this.footerEl = null;
+    this.statusTextEl = null;
+    this.statusChangesButtonEl = null;
+    this.statusPlanButtonEl = null;
     const root = this.contentEl;
     root.empty();
     root.addClass("obcc-root", "obcc-background-runner");
@@ -25715,6 +25830,25 @@ class CancipView extends ItemView {
     const footer = shell.createDiv({ cls: "obcc-footer" });
     this.footerEl = footer;
     this.statusEl = footer.createDiv({ cls: "obcc-status" });
+    this.statusTextEl = this.statusEl.createSpan({ cls: "obcc-status-text" });
+    this.statusChangesButtonEl = this.statusEl.createEl("button", {
+      cls: "obcc-status-link is-changes is-hidden",
+      attr: { type: "button" }
+    });
+    this.statusChangesButtonEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.toggleAuditMenu();
+    });
+    this.statusPlanButtonEl = this.statusEl.createEl("button", {
+      cls: "obcc-status-link is-plan is-hidden",
+      attr: { type: "button" }
+    });
+    this.statusPlanButtonEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.togglePlanMenu();
+    });
     const form = footer.createEl("form", { cls: "obcc-composer" });
     this.contextEl = form.createDiv({ cls: "obcc-composer-context obcc-context-strip is-hidden" });
     const inputShell = form.createDiv({ cls: "obcc-input-shell" });
@@ -26200,6 +26334,7 @@ class CancipView extends ItemView {
     const visiblePlan = planTodos.length ? planTodos : this.visibleManualTodos().filter((todo) => todo.sendToModel !== false);
     const liveFiles = this.liveChangedFileEntries();
     this.renderHeaderLiveStatus(visiblePlan, liveFiles);
+    this.renderComposerStatusMeta(visiblePlan, liveFiles);
     this.queueEl.toggleClass("is-hidden", count === 0 && visiblePlan.length === 0);
 
     if (visiblePlan.length) {
@@ -26413,6 +26548,7 @@ class CancipView extends ItemView {
     this.resizeInput();
     this.syncRequestControls();
     this.queueMentionPopupUpdate("typing");
+    if (!this.activeRequest) this.setStatus("");
     if (!this.inputEl.value.trim()) this.cancelAutocompleteNetworkRequests();
     this.scheduleAutocomplete();
   }
@@ -29082,6 +29218,36 @@ class CancipView extends ItemView {
       event.stopPropagation();
       action();
     });
+  }
+
+  private renderComposerStatusMeta(todos: ManualTodo[], files: LiveChangedFileEntry[]): void {
+    if (!this.statusChangesButtonEl || !this.statusPlanButtonEl) return;
+    const totals = this.liveChangedFileTotals(files);
+    const changedLabel = isChineseLanguage(this.plugin.language())
+      ? `改动 +${totals.added}/-${totals.removed}`
+      : `Changes +${totals.added}/-${totals.removed}`;
+    this.statusChangesButtonEl.setText(changedLabel);
+    this.statusChangesButtonEl.setAttr("title", `${this.t("reviewGate")} · ${changedLabel}`);
+    this.statusChangesButtonEl.setAttr("aria-label", `${this.t("reviewGate")} · ${changedLabel}`);
+    this.statusChangesButtonEl.toggleClass("is-hidden", files.length === 0);
+
+    const done = todos.filter((todo) => todo.done).length;
+    const planLabel = isChineseLanguage(this.plugin.language())
+      ? `计划 ${done}/${todos.length}`
+      : `Plan ${done}/${todos.length}`;
+    this.statusPlanButtonEl.setText(planLabel);
+    this.statusPlanButtonEl.setAttr("title", `${this.t("planPanelTitle")} · ${planLabel}`);
+    this.statusPlanButtonEl.setAttr("aria-label", `${this.t("planPanelTitle")} · ${planLabel}`);
+    this.statusPlanButtonEl.toggleClass("is-hidden", todos.length === 0);
+    this.syncComposerStatusVisibility();
+  }
+
+  private syncComposerStatusVisibility(): void {
+    if (!this.statusEl) return;
+    const hasText = Boolean(this.statusTextEl?.textContent?.trim() || (!this.statusTextEl && this.statusEl.textContent?.trim()));
+    const hasChanges = Boolean(this.statusChangesButtonEl && !this.statusChangesButtonEl.hasClass("is-hidden"));
+    const hasPlan = Boolean(this.statusPlanButtonEl && !this.statusPlanButtonEl.hasClass("is-hidden"));
+    this.statusEl.toggleClass("is-empty", !hasText && !hasChanges && !hasPlan);
   }
 
   private async openLatestReviewGatePanel(noticeIfEmpty = true): Promise<void> {
@@ -31937,11 +32103,21 @@ class CancipView extends ItemView {
     const skills = await this.discoverSkills(true);
     const skillSummary = this.formatSkillsList(skills.slice(0, 24));
     const autocompleteUsage = this.plugin.autocompletePreferenceAutomationSummary(days);
+    let pluginInventory = "- unavailable";
+    try {
+      pluginInventory = trimContext(await this.installedPluginsSummary({ includeDisabled: false }), 1800);
+    } catch {
+      pluginInventory = "- unavailable";
+    }
+    const commandCount = Object.keys(this.obsidianCommandApi().commands ?? {}).length;
+    const vaultFileCount = this.app.vault.getFiles().length;
     return [
       "# Cancip Memory Dream Source Pack",
       `- generatedAt: ${new Date().toISOString()}`,
       `- windowDays: ${days}`,
       `- skillCount: ${skills.length}`,
+      `- commandCount: ${commandCount}`,
+      `- vaultFileCount: ${vaultFileCount}`,
       "",
       "## Recent session events",
       events.length ? this.formatSessionEvents(events, 80) : "- none",
@@ -31965,7 +32141,15 @@ class CancipView extends ItemView {
       autocompleteUsage,
       "",
       "## Indexed Skills",
-      skillSummary || "- none"
+      skillSummary || "- none",
+      "",
+      "## Enabled plugin capability inventory",
+      pluginInventory,
+      "",
+      "## Resource maintenance contract",
+      "- Start with the minimum evidence needed for each decision. If insufficient, search targeted Vault notes, Skills, automations, session history, memory, plugin commands/APIs/UI, and recipes before using web or model prior knowledge.",
+      "- Promote only verified success; classify failures and stop retrying the same broken route. Query, create, update, merge, downgrade, or prune stale memory, generated Skills, automations, and routes; refresh indexes after changes.",
+      "- Execute low-risk recoverable improvements with backup/review/readback. Keep explicit confirmation for move/delete/secrets/accounts/external publication/real trading."
     ].join("\n");
   }
 
@@ -31975,6 +32159,8 @@ class CancipView extends ItemView {
     const rejected = countRegex(sourcePack, /· rejected\b/g);
     const events = countRegex(sourcePack, /^- \d{4}-\d{2}-\d{2}T/gm);
     const skillCount = Number(sourcePack.match(/^- skillCount:\s*(\d+)/m)?.[1] ?? 0);
+    const commandCount = Number(sourcePack.match(/^- commandCount:\s*(\d+)/m)?.[1] ?? 0);
+    const vaultFileCount = Number(sourcePack.match(/^- vaultFileCount:\s*(\d+)/m)?.[1] ?? 0);
     const lines = sourcePack.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const autocompleteSummary = sourcePack.split("## 自动补全选择习惯\n")[1]?.split(/\n## /)[0]?.trim() ?? "";
     const pickLines = (pattern: RegExp, limit = 4): string[] => uniqueStrings(lines
@@ -31999,7 +32185,8 @@ class CancipView extends ItemView {
       "5. Skill/流程候选：",
       skillLines.length ? skillLines.join("\n") : "- 本窗口无新增 Skill 候选。",
       `6. 自动补全偏好：${autocompleteSummary ? trimContext(autocompleteSummary.replace(/\s+/g, " "), 500) : "本窗口没有可用选择记录。"}`,
-      `7. 清理：${duplicateSignals > 0 ? `识别并压缩 ${duplicateSignals} 处重复兜底/套话信号` : "未发现高频重复兜底"}；稳定规则进记忆，执行经验进 experience，可复用流程进 Skill，旧噪音归档。`
+      `7. 清理：${duplicateSignals > 0 ? `识别并压缩 ${duplicateSignals} 处重复兜底/套话信号` : "未发现高频重复兜底"}；稳定规则进记忆，执行经验进 experience，可复用流程进 Skill，旧噪音归档。`,
+      `8. 资源：已核对 ${skillCount} 个 Skill、${commandCount} 条 Obsidian 命令和 ${vaultFileCount} 个 Vault 文件；后续优先复用已验证路线，失效生成资产应更新或清理。`
     ].join("\n");
   }
 
@@ -32427,9 +32614,7 @@ class CancipView extends ItemView {
       ? uniqueStrings(args.paths.filter((path): path is string => typeof path === "string").map((path) => normalizePath(path)))
       : [];
     const stateResult = await this.refreshVaultCurationNewFileState(curatableFiles);
-    const pendingPaths = new Set(stateResult.pending.map((file) => normalizePath(file.path)));
     const eventFiles = eventPaths
-      .filter((path) => pendingPaths.has(path))
       .map((path) => curatableByPath.get(path))
       .filter((file): file is TFile => Boolean(file));
     const scannedFiles = [...eventFiles, ...stateResult.pending.filter((file) => !eventPaths.includes(normalizePath(file.path)))]
@@ -32456,7 +32641,7 @@ class CancipView extends ItemView {
       `- skippedThisBatch: ${skippedCount}`,
       `- scannedPathsJson: ${JSON.stringify(scannedPaths)}`,
       `- candidatePathsJson: ${JSON.stringify(candidatePaths)}`,
-      "- safety: newness only triggers one scan. Files without a concrete high-value defect are handled without an API call; templates, frequently referenced notes, plugin syntax, and generated files are protected from automatic changes.",
+      "- safety: newness triggers one active organization pass. Most nonempty user-created notes enter the bounded candidate list; explicit opt-out, templates, frequently referenced notes, plugin syntax, generated files, and other protected content are skipped programmatically.",
       "",
       "## Meaningful candidates with bounded source text",
       formatVaultCurationCandidates(actionableCandidates, candidateLimit),
@@ -32466,8 +32651,8 @@ class CancipView extends ItemView {
       "- For each candidate, execute only its allowedActions. A formatting defect does not authorize tags, links, summaries, or renaming.",
       "- Use composition/linkRelations only for concise property enrichment: summary, link_count, link_relations, related_candidates. Do not create visible body sections for these facts.",
       "- Suggested link relations are candidates only. Verify with a focused read/search before adding a new wikilink; skip weak candidates instead of inventing relationship text.",
-      "- Pure spaces, blank lines, punctuation, heading markers, list indentation, or date-spacing edits are not meaningful and will be skipped programmatically.",
-      "- A short coherent note may remain unchanged. A date-based journal filename is valid. Missing H1/frontmatter/tag/summary/link alone is not a defect.",
+      "- Do not make cosmetic-only whitespace or punctuation churn. Prefer one small useful organization improvement grounded in the note and the existing Vault taxonomy; a genuinely already-organized note may still be skipped with the required marker.",
+      "- A date-based journal filename is valid. Do not rename it merely because it is a date; do not add unsupported tags, summaries, or links.",
       `- Existing files and folders are handled on demand through Skill ${CANCIP_BUILTIN_CURATION_SKILL_PATH}, not by this scheduled automation.`
     ];
     return trimContext(lines.join("\n"), 30000);
@@ -32543,12 +32728,13 @@ class CancipView extends ItemView {
     const text = String(content ?? "");
     const trimmed = text.trim();
     if (!trimmed) return [];
+    reasons.push("new user note needs a lightweight organization pass");
     if (cancipCurationHasMarkdownDefect(text)) reasons.push("objective Markdown syntax defect");
     if (isVaultCurationInboxLikePath(path)) reasons.push("temporary or inbox location needs classification");
     const vagueName = /^(untitled|新建|未命名|tmp|temp|draft|草稿)([\s._-]?\d*)?$/i.test(basename)
       || /^[a-f0-9]{12,}$/i.test(basename)
       || basename.length > 60;
-    const dateName = /^\d{4}[-_.]\d{1,2}[-_.]\d{1,2}([ -_.].*)?$/.test(basename) || /^\d{8}$/.test(basename);
+    const dateName = isVaultCurationDateLikeBasename(basename);
     if (vagueName && !dateName) reasons.push("vague or machine-generated filename");
     const isLong = text.length >= 3600;
     const frontmatter = cache?.frontmatter;
@@ -32585,6 +32771,11 @@ class CancipView extends ItemView {
       if (!allowedActions.includes(action)) allowedActions.push(action);
     };
     for (const reason of input.curationReasons) {
+      if (reason === "new user note needs a lightweight organization pass") {
+        allow("properties");
+        const bodyLines = input.content.split(/\r?\n/).filter((line) => line.trim()).length;
+        if (input.content.length >= 240 || bodyLines >= 4) allow("format");
+      }
       if (reason === "objective Markdown syntax defect" || reason === "long prose lacks usable structure") allow("format");
       if (reason === "long note lacks a useful summary") {
         allow("properties");
@@ -34648,6 +34839,9 @@ class CancipView extends ItemView {
           ? this.t("modePromptEdit")
           : this.t("modePromptAsk");
     const sections = [base, languagePrompt];
+    if (policy.includeToolCatalog || policy.includeMemoryIndex || policy.includeWorkingState) {
+      sections.push(this.resourceRetrievalPolicyPrompt());
+    }
     if (policy.includeAccessPrompt) sections.push(accessPrompt, this.t("vaultNoteReviewPrompt"));
     if (policy.includeToolProtocol || policy.includeToolCatalog) sections.push(toolPrompt);
     if (/(?:自动化|定时|通知|新文件触发|automation|schedule|notification|new.?file)/i.test(prompt)) sections.push(this.automationAgentPolicyPrompt());
@@ -34663,6 +34857,13 @@ class CancipView extends ItemView {
           : "Payload policy: lightweight turn. Do not request tool actions unless the user explicitly asks for implementation, file operations, commands, GitHub, automations, or plugin/self repair.");
     }
     return sections.filter(Boolean).join("\n\n");
+  }
+
+  private resourceRetrievalPolicyPrompt(): string {
+    if (isChineseLanguage(this.plugin.language())) {
+      return "信息顺序：先用当前任务必要的最小上下文；不足时按需优先查 Vault 内笔记、Skill、自动化、会话历史、记忆、插件/命令和已验证经验，只取相关片段；本地仍不足或需要最新外部事实时再联网，最后用已有知识补充且不覆盖证据。完成后按真实成功、失败、采用和时效增删改查记忆、Skill、自动化与能力路线。";
+    }
+    return "Information order: start with the minimum necessary current context; if insufficient, search targeted Vault notes, Skills, automations, session history, memory, plugins/commands, and verified experience before the web or prior knowledge. Afterward, query/create/update/merge/prune memory, Skills, automations, and routes from verified outcomes.";
   }
 
   private universalSearchPolicyPrompt(): string {
@@ -34724,6 +34925,7 @@ class CancipView extends ItemView {
         "Skill/经验路由：已注入的 Skill 是可执行说明；没注入或路线不清时，先用 cancip.skills.list/read、cancip.experience.list、cancip.tools.index 或相关记忆/插件索引找方法。",
         `记忆/规则/偏好：用户要求记住、沉淀规则或优化工作流时，按访问模式修改 ${memoryFolder} 或 ${CANCIP_CONFIG_DIR} 经验数据；不要只口头说已记住。`,
         `自我优化：重复成功的 OB 工作流要复用 ${EXPERIENCE_LOG_PATH} 和 generated Skill，成功后可调用 cancip.experience.harvest 让下次更快。`,
+        "信息顺序：先用当前任务必要上下文；不足时按需优先查 Vault 内笔记、Skill、自动化、会话历史、记忆、插件命令/API/UI 和已验证经验，只取相关片段；再查网络和用已有知识补充。路线清楚且低风险时直接执行、备份并验证。",
         "OB 插件能力：先发现插件命令、公开 API、按钮/UI、配置或 JS bridge，再把可复用步骤沉淀成经验/Skill；确认不可行前不要先说不能。"
       ].join("\n");
     }
@@ -34731,6 +34933,7 @@ class CancipView extends ItemView {
       "Skill/experience route: injected Skills are executable instructions; if no Skill is injected or the route is unclear, use cancip.skills.list/read, cancip.experience.list, cancip.tools.index, or the relevant memory/plugin index first.",
       `Memory/rules/preferences: when the user asks to remember, preserve a rule, or improve a workflow, update ${memoryFolder} or ${CANCIP_CONFIG_DIR} experience data through the current access mode; do not merely say it is remembered.`,
       `Self-optimization: reuse ${EXPERIENCE_LOG_PATH} and generated Skills for repeated successful OB workflows, and call cancip.experience.harvest after success when it will help future runs.`,
+      "Information order: start with necessary current context; if insufficient, search targeted Vault notes, Skills, automations, session history, memory, plugin commands/APIs/UI, and verified recipes before the web or model prior knowledge. When a route is clear and low-risk, execute it with backup and verification.",
       "OB plugin capability: discover plugin commands, public APIs, buttons/UI, config, or JS bridge routes before claiming a task cannot be done; turn reusable steps into experience/Skills."
     ].join("\n");
   }
@@ -46068,7 +46271,11 @@ class CancipView extends ItemView {
   }
 
   private setStatus(text: string): void {
-    if (this.statusEl) this.statusEl.setText(text);
+    if (!this.statusEl) return;
+    const compact = compactComposerStatusText(text);
+    if (this.statusTextEl?.isConnected) this.statusTextEl.setText(compact);
+    else this.statusEl.setText(compact);
+    this.syncComposerStatusVisibility();
   }
 
   debugLayout(): void {
@@ -48689,7 +48896,11 @@ function localizeUntouchedAutomationTask(task: AutomationTask, template: Automat
   const title = knownTitles.includes(task.title) ? template.title : task.title;
   const legacyMemoryDreamPrompt = task.id === MEMORY_DREAM_AUTOMATION_ID
     && task.prompt.includes("Workflow Optimizer v2");
-  const prompt = task.prompt && (knownPrompts.includes(task.prompt) || legacyMemoryDreamPrompt)
+  const legacyVaultCurationPrompt = task.id === VAULT_CURATION_AUTOMATION_ID
+    && /Vault Curation v[1-6]\b/.test(task.prompt);
+  const legacyDailyCarePrompt = task.id === CANCIP_DAILY_CARE_AUTOMATION_ID
+    && /(?:^完成每日合并维护：先整理近期记忆|^Run the combined daily maintenance: distill recent memory|Cancip Daily Care \+ Memory Dream v1|Workflow Optimizer v[1-2]\b)/.test(task.prompt);
+  const prompt = task.prompt && (knownPrompts.includes(task.prompt) || legacyMemoryDreamPrompt || legacyVaultCurationPrompt || legacyDailyCarePrompt)
     ? template.prompt?.trim() ?? ""
     : task.prompt;
   return title === task.title && prompt === task.prompt ? task : { ...task, title, prompt };
@@ -48759,22 +48970,22 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       title: local("Cancip 每日体检、记忆整理与老友提醒", "Cancip daily care"),
       description: local("合并完成 Vault 体检、记忆与经验整理、知识库 Wiki 更新、重复流程 Skill 收割和具体提醒。", "Combine Vault checkup, memory and experience distillation, knowledge Wiki updates, repeatable Skill harvesting, and specific reminders."),
       prompt: local(
-        "完成每日合并维护：先整理近期记忆、成功失败、补全偏好和可复用流程，再生成基于事实的 Vault 体检与精简提醒。只报告真实结果，不把建议写成已完成，不执行移动、删除、合并或批量改名。",
-        "Run the combined daily maintenance: distill recent memory, outcomes, autocomplete preferences, and repeatable workflows, then produce a factual Vault checkup and concise reminders. Report only verified results and do not move, delete, merge, or bulk rename files."
+        "完成每日合并维护：先看必要证据，不足时按需优先查 Vault 内笔记、Skill、自动化、会话历史、记忆、插件/命令和经验，再结合网络与已有知识；整理成功失败和补全偏好，增删改查 Wiki/Skill/自动化/经验路线，再生成事实体检与精简提醒。低风险可恢复改良直接执行并验证；不擅自移动、删除、合并或批量改名。",
+        "Run combined daily maintenance: start with necessary evidence; if insufficient, search targeted Vault notes, Skills, automations, sessions, memory, plugins/commands, and experience before web or prior knowledge. Distill outcomes and autocomplete preferences; query/create/update/merge/prune Wiki, Skills, automations, and routes; then produce a factual checkup. Execute and verify low-risk recoverable improvements, but do not move, delete, merge, or bulk rename without confirmation."
       ),
       command: "cancip.dailyCare",
       args: { days: 1, hours: 24, limit: 80, compactExperience: true },
       schedule: "daily",
       enabled: true,
       hour: 0,
-      minute: 5
+      minute: 0
     },
     {
       id: VAULT_CURATION_AUTOMATION_ID,
       title: local("Vault 新文件自动整理", "Automatic new-file curation"),
       description: local(
-        "程序化收益门只对新建 Markdown 文件执行一次有明确缺陷的美化/重构、属性、标签、摘要、链接或简短重命名；干净笔记直接跳过，模板、高频引用笔记、插件语法和生成文件受保护。现有文件和文件夹只通过指定范围整理 Skill 按需处理。",
-        "A programmatic benefit gate beautifies or refactors newly created Markdown files once only for concrete defects, with useful properties, tags, summaries, links, or concise renames. Clean notes are skipped; templates, frequently referenced notes, plugin syntax, and generated files are protected. Existing files and folders are handled on demand by the specified-scope curation Skill."
+        "大部分新建 Markdown 笔记默认执行一次小而有用的整理，可处理结构、属性、标签、摘要、链接或简短重命名；明确写不需要整理以及模板、高频引用笔记、插件语法和生成文件会跳过。所有改动可审核、可恢复。",
+        "Most newly created Markdown notes receive one small useful organization pass for structure, properties, tags, summaries, links, or concise renames. Explicit opt-outs, templates, frequently referenced notes, plugin syntax, and generated files are skipped. Every change remains reviewable and recoverable."
       ),
       prompt: `${buildVaultCurationPrompt()}\n\n${promptLanguage}`,
       schedule: "hourly",
@@ -48783,7 +48994,8 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       watchNewFiles: true,
       newFilePattern: "**/*.md",
       newFileDebounceSeconds: 60,
-      notifyMode: "always"
+      notifyMode: "always",
+      silent: false
     },
     {
       id: "auto-personalized-greeting-refresh",
@@ -48794,7 +49006,8 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       schedule: "hourly",
       enabled: true,
       intervalMinutes: 60,
-      notifyMode: "failure"
+      notifyMode: "never",
+      silent: true
     },
     {
       id: PERSONALIZED_DIARY_AUTOMATION_ID,
@@ -48965,6 +49178,8 @@ function buildMemoryDreamPrompt(): string {
     "2. 稳定规则保持短小；不保存密钥、token、隐私全文或整段聊天；压缩低价值经验前先归档，不删除用户笔记。",
     "1.5. 同步更新当前设置的核心记忆目录中的 WIKI.md：把有可靠来源、可复用、相对稳定的项目事实、插件/API 路线、工作方法和已验证避坑提炼成少量原子知识卡。每张卡写短标题、主题、结论、关键事实、来源路径、置信度和更新时间；同类知识合并更新，不重复堆积。",
     "1.6. Wiki 只维护机器区，保留人工维护区原文；临时事件、一次性任务、未经验证推断、情绪猜测、医疗细节、密钥、token、账号和整段会话不得进入 Wiki。来源不足时宁缺毋滥，不能为了凑卡片编造。",
+    "1.7. 每项先看必要证据，不够时按需优先核对 Vault 内笔记、Skill、自动化、会话历史、核心记忆、已安装插件命令/API/UI、经验 recipe 和 Obsidian 命令，再结合网络与模型已有知识；优先更新现有路线，删除或降级已经失效的生成资产，刷新索引，不创建重复能力。",
+    "1.8. 把实际成功、失败分类、后置验证和用户采用结果用于下一轮路由；低风险且可恢复的改良直接执行并验证，移动/删除/账号/密钥/外部发布/真实交易等高风险动作仍只列候选等明确确认。",
     "",
     "第二阶段：重复流程审计。",
     "1. 回顾最近 30 天工作记录；不足 30 天则查看全部可用记录。信息优先级严格为：近期会话 > 记忆记录 > 外部纪事。",
@@ -49107,7 +49322,7 @@ function upsertObsidianOrganizationMemoryContent(existing: string, block: string
 function buildVaultCurationPrompt(): string {
   return [
     `内部版本：${VAULT_CURATION_AUTOMATION_PROMPT_MARKER}。`,
-    "任务：只整理“Vault Curation Programmatic Scan Pack”列出的新建 Markdown 文件。插件已程序化维护新文件队列；不要扫描旧文件、最近修改文件或整个 Vault。",
+    "任务：主动整理“Vault Curation Programmatic Scan Pack”列出的新建 Markdown 文件。插件已程序化维护新文件队列；大部分普通新笔记默认做一次小而有用的整理，不要扫描旧文件、最近修改文件或整个 Vault。",
     "",
     "三类动作流水线：",
     "A. 美化整理重构：整理 Markdown 标题层级、段落、列表、表格、代码块、引用、待办、空行和 frontmatter 格式；可做轻量结构重构，但不改变事实含义，不删除实质内容。",
@@ -49116,14 +49331,15 @@ function buildVaultCurationPrompt(): string {
     "",
     "执行顺序：",
     "1. 只读取扫描包中的新文件候选。",
-    "2. 对每个候选按 A/B/C 判断实际需要，但只能执行 Scan Pack 中该文件 allowedActions 明确授权的类别；需要就输出 cancip-action 做 read/patch/write/move，不需要就跳过。",
+    "2. 对每个候选按 A/B/C 判断实际需要，但只能执行 Scan Pack 中该文件 allowedActions 明确授权的类别；优先做一个基于现有 Vault 分类/结构的小改良并输出 cancip-action，只有已整理完善或没有可靠改良点时才跳过。",
     "3. 每次只处理少量文件，先 read，再小步 patch/write/move，并读回验证；目标不清时只允许对该目标用一次 cancip.findTarget。",
     "4. 最终只写实际处理结果、改动文件和验证；不存在的项目不写，不解释空池或未发生的动作。",
+    "5. 某个候选确认无需改动时，必须在最终回答末尾为该路径追加一行隐藏标记：<!-- cancip-curation-skip:原始完整路径 -->。只有实际判断过且无需改动的候选才能标记。",
     "",
     "边界与审核：",
     "- 不删除实质内容，不改事实含义，不合并/拆分/删除文件，除非用户明确要求。",
-    "- 不要为了凑动作而挂 tag、摘要、链接或重命名。",
-    "- 新建只代表进入一次扫描，不代表必须整理。模板、高被引笔记、插件语法和生成文件已由程序保护，不得绕过 candidatePathsJson 处理。",
+    "- 不要为了凑动作而挂无依据的 tag、摘要、链接或重命名；普通新笔记默认积极整理，但每项改良必须能说明具体收益。",
+    "- 用户在文件中明确写“不需要整理/无需整理/不要整理”或关闭 cancip_curation 时必须跳过。模板、高被引笔记、插件语法和生成文件已由程序保护，不得绕过 candidatePathsJson 处理。",
     "- allowedActions 是逐文件硬边界：格式问题不能顺带授权 tag、摘要、链接或改名，其他类别同理。",
     "- Scan Pack 已提供 composition/linkRelations：优先使用这些程序化事实；需要补链时先核对 suggested 关系，不要把弱相关候选写成确定关系。",
     "- 摘要、链接数、链接关系、推测关联只能写进 properties/frontmatter；不要新增或改写正文里的摘要/知识关系段落。",
@@ -49335,6 +49551,12 @@ function isVaultCurationInboxLikePath(path: string): boolean {
   return /(^|\/)(inbox|收件箱|临时|暂存|草稿|drafts?|tmp|temp|未整理|待整理)(\/|$)/i.test(normalized);
 }
 
+function isVaultCurationDateLikeBasename(basename: string): boolean {
+  const normalized = basename.trim();
+  return /^\d{4}[-_.]\d{1,2}[-_.]\d{1,2}(?:[ -_.].*)?$/.test(normalized)
+    || /^\d{8}(?:[-_. ]?\d{4,6})?$/.test(normalized);
+}
+
 function vaultCurationProtectionReasons(input: {
   path: string;
   content: string;
@@ -49346,6 +49568,11 @@ function vaultCurationProtectionReasons(input: {
   const path = normalizePath(input.path.replace(/\\/g, "/"));
   const content = String(input.content ?? "");
   const frontmatter = input.frontmatter ?? {};
+  const curationFlag = frontmatter.cancip_curation ?? frontmatter.cancipCuration ?? frontmatter.auto_curation ?? frontmatter.autoCuration;
+  const explicitOptOut = curationFlag === false
+    || (typeof curationFlag === "string" && /^(?:false|off|no|skip|disabled)$/i.test(curationFlag.trim()))
+    || /(^|\n)\s*(?:<!--\s*cancip[- ]curation\s*:\s*(?:off|skip|false)\s*-->|(?:这(?:个|份|篇)?(?:文件|笔记)?\s*)?(?:不需要|无需|不要)(?:自动)?整理(?:此|本)?(?:文件|笔记)?[。.!]?|(?:do not|don't|no need to)\s+(?:auto[- ]?)?(?:organize|curate)(?:\s+this\s+(?:file|note))?)[ \t]*(?=\n|$)/im.test(content.slice(0, 4000));
+  if (explicitOptOut) protections.push("explicit user opt-out from curation");
   if (/(^|\/)(templates?|模板|模板库|模版|模版库)(\/|$)/i.test(path)) protections.push("template-like path");
   if (/<%[\s\S]{0,1200}?%>|\{\{\s*(?:title|date|time|name|content|cursor|selection|value(?::[^}]*)?|[^{}\n]{1,60})\s*\}\}|\btp\.(?:file|date|system|web|config)\b/i.test(content)) {
     protections.push("template syntax or placeholders");
@@ -49458,6 +49685,26 @@ function vaultCurationScannedPathsFromPack(pack: string): string[] {
   } catch {
     return [];
   }
+}
+
+function vaultCurationSkippedPathsFromResult(content: string, candidatePaths: string[]): string[] {
+  const candidates = new Map(candidatePaths.map((path) => {
+    const normalized = normalizePath(path.replace(/\\/g, "/"));
+    return [normalized.toLocaleLowerCase(), normalized] as const;
+  }));
+  const skipped: string[] = [];
+  for (const match of content.matchAll(/<!--\s*cancip-curation-skip:\s*([^\r\n<>]+?)\s*-->/gi)) {
+    const normalized = normalizePath((match[1] ?? "").trim().replace(/\\/g, "/"));
+    const candidate = candidates.get(normalized.toLocaleLowerCase());
+    if (candidate) skipped.push(candidate);
+  }
+  if (!skipped.length && candidatePaths.length === 1) {
+    const candidate = normalizePath(candidatePaths[0].replace(/\\/g, "/"));
+    if (content.includes(candidate) && /(?:跳过|无需(?:改动|处理|整理)|不需要(?:改动|处理|整理)|未修改|没有文件改动|no changes? needed|no file changes?|skipped)/i.test(content)) {
+      skipped.push(candidate);
+    }
+  }
+  return uniqueStrings(skipped);
 }
 
 function isVaultCurationContentFile(file: TFile, obsidianConfigDir: string, memoryFolder = DEFAULT_MEMORY_FOLDER): boolean {
@@ -54644,6 +54891,43 @@ function personalizationTimeKey(date: Date): string {
   return `${localDateKey(date)}:${period}`;
 }
 
+function isRecentPersonalizationTimestamp(timestamp: number, now = Date.now()): boolean {
+  if (!isValidPersonalizationTimestamp(timestamp, now)) return false;
+  return now - timestamp <= PERSONALIZATION_RECENT_WINDOW_MS;
+}
+
+function isValidPersonalizationTimestamp(timestamp: number, now = Date.now()): boolean {
+  return Number.isFinite(timestamp) && timestamp > 0 && timestamp <= now + 5 * 60 * 1000;
+}
+
+function personalizationEvidenceTierForTimestamps(timestamps: number[], now = Date.now()): PersonalizationEvidenceTier {
+  const ages = timestamps
+    .filter((timestamp) => isValidPersonalizationTimestamp(timestamp, now))
+    .map((timestamp) => Math.max(0, now - timestamp));
+  if (!ages.length) return "none";
+  if (ages.some((age) => age <= PERSONALIZATION_RECENT_WINDOW_MS)) return "24h";
+  if (ages.some((age) => age <= PERSONALIZATION_THREE_DAY_WINDOW_MS)) return "72h";
+  if (ages.some((age) => age <= PERSONALIZATION_WEEK_WINDOW_MS)) return "7d";
+  return "latest";
+}
+
+function personalizationTimestampMatchesTier(timestamp: number, tier: PersonalizationEvidenceTier, now = Date.now()): boolean {
+  if (!isValidPersonalizationTimestamp(timestamp, now) || tier === "none") return false;
+  const age = Math.max(0, now - timestamp);
+  if (tier === "24h") return age <= PERSONALIZATION_RECENT_WINDOW_MS;
+  if (tier === "72h") return age <= PERSONALIZATION_THREE_DAY_WINDOW_MS;
+  if (tier === "7d") return age <= PERSONALIZATION_WEEK_WINDOW_MS;
+  return true;
+}
+
+function personalizationEvidenceWording(tier: PersonalizationEvidenceTier): string {
+  if (tier === "24h") return "within 24h; may say just changed/recent";
+  if (tier === "72h") return "within 72h; say in the last few days, not just changed";
+  if (tier === "7d") return "within 7d; say this week, not recent/new";
+  if (tier === "latest") return "older fallback; say last/currently available clue, never recent/new";
+  return "no reliable activity evidence; use a natural time greeting only";
+}
+
 function personalizationPeriodLabel(date: Date, language: Language): string {
   const hour = date.getHours();
   if (!isChineseLanguage(language)) {
@@ -54664,7 +54948,8 @@ function localPersonalizationCache(
   language: Language,
   friendlyName = "",
   weather: PersonalizationWeather | null = null,
-  inferredWeatherLocation = ""
+  inferredWeatherLocation = "",
+  evidenceTier: PersonalizationEvidenceTier = sourcePaths.length ? "latest" : "none"
 ): PersonalizationCache {
   const paths = uniqueStrings(sourcePaths.map((path) => normalizePath(path)).filter(Boolean)).slice(0, PERSONALIZATION_MAX_SOURCE_FILES);
   const names = paths.map((path) => (path.split("/").pop() ?? path).replace(/\.[^.]+$/, "")).filter(Boolean);
@@ -54675,6 +54960,21 @@ function localPersonalizationCache(
   const salutation = safeName ? `${safeName}，` : "";
   const recentShort = trimContext(recentName, chinese ? 28 : 36);
   const secondShort = trimContext(names[1] ?? "", chinese ? 28 : 36);
+  const primaryEvidenceText = evidenceTier === "24h"
+    ? (chinese
+      ? `刚看到「${recentShort}」有更新，这件事看起来还在往前走。要从这里接着吗？`
+      : `“${recentShort}” was updated in the last day. Continue from there?`)
+    : evidenceTier === "72h"
+      ? (chinese
+        ? `这几天「${recentShort}」有过更新。要从上次的进度接着吗？`
+        : `“${recentShort}” changed in the last few days. Continue from that point?`)
+      : evidenceTier === "7d"
+        ? (chinese
+          ? `这周能接上的一条线索是「${recentShort}」。要继续把它往前推吗？`
+          : `One thread available from this week is “${recentShort}”. Continue it?`)
+        : (chinese
+          ? `目前能接上的最新线索是「${recentShort}」。要从上次的落点继续吗？`
+          : `The latest available thread is “${recentShort}”. Continue from the last stopping point?`);
   const specificChoice = (name: string, verb: "continue" | "review" | "connect"): string => {
     const short = trimContext(name, chinese ? 28 : 36);
     if (!short) return "";
@@ -54691,47 +54991,58 @@ function localPersonalizationCache(
   if (recentShort) {
     greetingCandidates.push({
       text: chinese
-        ? `${salutation}${period}好。刚看到「${recentShort}」有更新，这件事看起来还在往前走。要从这里接着吗？`
-        : `Good ${period}${safeName ? `, ${safeName}` : ""}. “${recentShort}” was updated recently. Continue from there?`,
+        ? `${salutation}${period}好。${primaryEvidenceText}`
+        : `Good ${period}${safeName ? `, ${safeName}` : ""}. ${primaryEvidenceText}`,
       choices: uniqueStrings([specificChoice(recentName, "continue"), specificChoice(recentName, "review"), specificChoice(names[1] ?? "", "connect")]).filter(Boolean)
     });
   }
   if (weather) {
     greetingCandidates.push({
       text: chinese
-        ? `${salutation}${period}好。${weather.location}${weather.summary}。趁状态合适，先把最近那件具体的事推进一点？`
-        : `Good ${period}${safeName ? `, ${safeName}` : ""}. It is ${weather.summary} in ${weather.location}. A good moment to move one recent task forward.`,
+        ? `${salutation}${period}好。${weather.location}${weather.summary}。先把手头最明确的一件事推进一点？`
+        : `Good ${period}${safeName ? `, ${safeName}` : ""}. It is ${weather.summary} in ${weather.location}. A good moment to move the clearest current task forward.`,
       choices: uniqueStrings([specificChoice(recentName, "continue"), specificChoice(names[1] ?? recentName, "review"), specificChoice(names[2] ?? "", "connect")]).filter(Boolean)
     });
   }
   if (secondShort) {
     greetingCandidates.push({
       text: chinese
-        ? `${salutation}${period}好。除了「${recentShort}」，「${secondShort}」也刚动过。今天更想先收住哪一头？`
-        : `Good ${period}${safeName ? `, ${safeName}` : ""}. Both “${recentShort}” and “${secondShort}” moved recently. Which one should we close out first?`,
+        ? evidenceTier === "24h"
+          ? `${salutation}${period}好。除了「${recentShort}」，「${secondShort}」今天也有动静。先收住哪一头？`
+          : `${salutation}${period}好。「${recentShort}」和「${secondShort}」是目前能接上的两条线。先继续哪一件？`
+        : evidenceTier === "24h"
+          ? `Good ${period}${safeName ? `, ${safeName}` : ""}. Both “${recentShort}” and “${secondShort}” moved today. Which one should we close out first?`
+          : `Good ${period}${safeName ? `, ${safeName}` : ""}. “${recentShort}” and “${secondShort}” are the two available threads. Which should we continue?`,
       choices: uniqueStrings([specificChoice(names[1], "continue"), specificChoice(recentName, "review"), specificChoice(names[2] ?? recentName, "connect")]).filter(Boolean)
     });
   }
   if (names.length > 2) {
     greetingCandidates.push({
       text: chinese
-        ? `${salutation}${period}好。最近几件事都有新动静，不急着全铺开，先挑一件做完整会更轻松。`
-        : `Good ${period}${safeName ? `, ${safeName}` : ""}. Several things changed recently; finishing one cleanly may be the easiest start.`,
+        ? `${salutation}${period}好。手头有几条能继续的线，不急着全铺开，先挑一件做完整。`
+        : `Good ${period}${safeName ? `, ${safeName}` : ""}. Several threads are available; finishing one cleanly may be the easiest start.`,
       choices: names.slice(0, 3).map((name, index) => specificChoice(name, index === 0 ? "continue" : index === 1 ? "review" : "connect")).filter(Boolean)
     });
   }
   if (recentShort && greetingCandidates.length < 4) {
-    const alternates = chinese
+    const alternates = chinese && evidenceTier === "24h"
       ? [
           `${salutation}${period}好。「${recentShort}」还是最近最明确的一条线索。先把最容易确认的一步做掉？`,
           `${salutation}${period}好。上次的落点还在「${recentShort}」。这回不铺开，先做一次完整核对。`,
           `${salutation}${period}好。看得出「${recentShort}」最近动过。要不要顺手把后续和遗漏一起收住？`,
           `${salutation}${period}好。今天先从「${recentShort}」开个小口子，做完一件再看下一件。`
         ]
-      : [
-          `Good ${period}${safeName ? `, ${safeName}` : ""}. “${recentShort}” is still the clearest recent thread. Start with its easiest verifiable step?`,
+      : chinese
+        ? [
+          `${salutation}${period}好。「${recentShort}」是目前最明确的一条线索。先把最容易确认的一步做掉？`,
+          `${salutation}${period}好。上次的落点还在「${recentShort}」。这回先做一次完整核对。`,
+          `${salutation}${period}好。要不要从「${recentShort}」接上，把后续和遗漏一起收住？`,
+          `${salutation}${period}好。今天先从「${recentShort}」开个小口子，做完一件再看下一件。`
+        ]
+        : [
+          `Good ${period}${safeName ? `, ${safeName}` : ""}. “${recentShort}” is the clearest available thread. Start with its easiest verifiable step?`,
           `Good ${period}${safeName ? `, ${safeName}` : ""}. The last clear stopping point is “${recentShort}”. Let us verify it end to end first.`,
-          `Good ${period}${safeName ? `, ${safeName}` : ""}. “${recentShort}” moved recently. We can close its follow-up and any omissions together.`,
+          `Good ${period}${safeName ? `, ${safeName}` : ""}. We can continue “${recentShort}” and close its follow-up and omissions together.`,
           `Good ${period}${safeName ? `, ${safeName}` : ""}. A small, complete pass on “${recentShort}” is a practical start.`
         ];
     for (let index = 0; greetingCandidates.length < 4 && index < alternates.length; index += 1) {
@@ -60616,6 +60927,15 @@ function makeExcerpt(content: string, tokens: string[]): string {
     .sort((a, b) => a - b)[0];
   const start = Math.max(0, (firstHit ?? 0) - 80);
   return normalized.slice(start, start + 320);
+}
+
+function compactComposerStatusText(content: string): string {
+  const normalized = redactSensitiveText(content)
+    .replace(/^(?:status|progress|状态|进度|提示)\s*[:：]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length <= 120) return normalized;
+  return `${normalized.slice(0, 117).trimEnd()}...`;
 }
 
 function trimContext(content: string, maxLength: number): string {
