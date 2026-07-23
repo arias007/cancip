@@ -22130,6 +22130,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       this.statusBarBadgeEl.setText(reviews > 0 ? String(Math.min(99, reviews)) : "");
       this.statusBarBadgeEl.toggleClass("is-large", reviews > 9);
     }
+    for (const leaf of this.chatLeaves()) {
+      if (leaf.view instanceof CancipView) leaf.view.setReviewAttentionCount(reviews);
+    }
+  }
+
+  currentReviewAttentionCount(): number {
+    return this.statusBarAttentionState.reviews;
   }
 
   private async activateStatusBarTarget(): Promise<void> {
@@ -26554,9 +26561,7 @@ class CancipView extends ItemView {
       this.toggleSearchPopover();
     });
 
-    this.modeButtons = {
-      plan: this.createPlanButton(headerActions)
-    };
+    this.modeButtons = {};
 
     const newButton = headerActions.createEl("button", {
       cls: "obcc-icon-button",
@@ -26615,15 +26620,6 @@ class CancipView extends ItemView {
     this.footerEl = footer;
     this.statusEl = footer.createDiv({ cls: "obcc-status" });
     this.statusTextEl = this.statusEl.createSpan({ cls: "obcc-status-text" });
-    this.statusChangesButtonEl = this.statusEl.createEl("button", {
-      cls: "obcc-status-link is-changes is-hidden",
-      attr: { type: "button" }
-    });
-    this.statusChangesButtonEl.addEventListener("click", (event) => {
-      event.preventDefault();
-      event.stopPropagation();
-      this.toggleAuditMenu();
-    });
     this.statusPlanButtonEl = this.statusEl.createEl("button", {
       cls: "obcc-status-link is-plan is-hidden",
       attr: { type: "button" }
@@ -26632,6 +26628,15 @@ class CancipView extends ItemView {
       event.preventDefault();
       event.stopPropagation();
       this.togglePlanMenu();
+    });
+    this.statusChangesButtonEl = this.statusEl.createEl("button", {
+      cls: "obcc-status-link is-changes is-hidden",
+      attr: { type: "button" }
+    });
+    this.statusChangesButtonEl.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      this.toggleAuditMenu();
     });
     const form = footer.createEl("form", { cls: "obcc-composer" });
     this.contextEl = form.createDiv({ cls: "obcc-composer-context obcc-context-strip is-hidden" });
@@ -27082,19 +27087,6 @@ class CancipView extends ItemView {
     button.addEventListener("click", () => {
       this.closeCommandMenu();
       this.setMode(mode);
-    });
-    return button;
-  }
-
-  private createPlanButton(parent: HTMLElement): HTMLButtonElement {
-    const button = parent.createEl("button", {
-      cls: "obcc-mode obcc-plan-button",
-      attr: { title: this.t("planPanelTitle"), "aria-label": this.t("planPanelTitle") }
-    });
-    setIcon(button, "list-todo");
-    button.addEventListener("click", () => {
-      this.syncModeButtons();
-      this.togglePlanMenu();
     });
     return button;
   }
@@ -29830,32 +29822,15 @@ class CancipView extends ItemView {
 
   private renderHeaderLiveStatus(todos: ManualTodo[], files: LiveChangedFileEntry[]): void {
     if (!this.headerLiveStatusEl) return;
-    void files;
-    const doneCount = todos.filter((todo) => todo.done).length;
-    const currentIndex = todos.findIndex((todo) => !todo.done);
-    const current = currentIndex >= 0 ? currentIndex + 1 : todos.length;
     const signature = JSON.stringify({
       plan: todos.map((todo) => [todo.id, todo.text, todo.done]),
+      files: files.map((file) => [file.path, file.added, file.removed]),
       active: Boolean(this.activeRequest)
     });
     if (signature === this.headerLiveStatusSignature) return;
     this.headerLiveStatusSignature = signature;
     this.headerLiveStatusEl.empty();
-    this.headerLiveStatusEl.toggleClass("is-hidden", !todos.length);
-    if (todos.length) {
-      const label = `${this.t("planProgress", { current, total: todos.length })} · ${doneCount}/${todos.length}`;
-      const button = this.headerLiveStatusEl.createEl("button", {
-        cls: "obcc-header-live-pill is-plan",
-        attr: { type: "button", title: label, "aria-label": label }
-      });
-      setIcon(button.createSpan({ cls: "obcc-header-live-icon" }), currentIndex >= 0 ? "list-checks" : "circle-check-big");
-      button.createSpan({ cls: "obcc-header-live-label", text: `${current}/${todos.length}` });
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.togglePlanMenu();
-      });
-    }
+    this.headerLiveStatusEl.addClass("is-hidden");
     if (this.activeHeaderMenu === "plan" && this.headerMenuEl && !this.headerMenuEl.hasClass("is-hidden")) {
       const scrollTop = this.headerMenuEl.scrollTop;
       this.openPlanMenu();
@@ -30044,9 +30019,10 @@ class CancipView extends ItemView {
     this.statusChangesButtonEl.toggleClass("is-hidden", files.length === 0);
 
     const done = todos.filter((todo) => todo.done).length;
-    const planLabel = isChineseLanguage(this.plugin.language())
-      ? `计划 ${done}/${todos.length}`
-      : `Plan ${done}/${todos.length}`;
+    const current = todos.length
+      ? Math.max(1, Math.min(todos.length, done + 1))
+      : 0;
+    const planLabel = this.t("planProgress", { current, total: todos.length });
     this.statusPlanButtonEl.setText(planLabel);
     this.statusPlanButtonEl.setAttr("title", `${this.t("planPanelTitle")} · ${planLabel}`);
     this.statusPlanButtonEl.setAttr("aria-label", `${this.t("planPanelTitle")} · ${planLabel}`);
@@ -30660,6 +30636,13 @@ class CancipView extends ItemView {
     closeButton.addEventListener("click", () => this.closeHeaderMenu());
 
     const body = this.headerMenuEl.createDiv({ cls: "obcc-management-body" });
+    this.renderHeaderPanelActionButton(
+      body,
+      "list-todo",
+      this.t("planPanelTitle"),
+      this.livePlanProgressLine() || this.t("realtimeTodos"),
+      () => this.openPlanMenu()
+    );
     this.renderHeaderPanelActionButton(body, "download", this.t("exportSession"), this.t("exportSession"), () => {
       this.closeHeaderMenu();
       void this.exportSession();
@@ -35100,18 +35083,17 @@ class CancipView extends ItemView {
     this.refreshHeaderAuditBadge();
   }
 
+  setReviewAttentionCount(count: number): void {
+    if (!this.headerAuditBadgeEl) return;
+    const normalized = Math.max(0, Math.floor(count));
+    this.headerAuditBadgeEl.setText(normalized > 0 ? String(Math.min(99, normalized)) : "");
+    this.headerAuditBadgeEl.toggleClass("is-visible", normalized > 0);
+    this.headerAuditBadgeEl.toggleClass("is-large", normalized > 9);
+  }
+
   private refreshHeaderAuditBadge(): void {
-    const badge = this.headerAuditBadgeEl;
-    if (!badge) return;
-    badge.empty();
-    void this.plugin.pendingReviewGateAttentionCount(50).then((count) => {
-      if (!this.headerAuditBadgeEl) return;
-      this.headerAuditBadgeEl.setText(count > 0 ? String(Math.min(99, count)) : "");
-      this.headerAuditBadgeEl.toggleClass("is-visible", count > 0);
-      this.headerAuditBadgeEl.toggleClass("is-large", count > 9);
-    }).catch((error) => {
-      console.warn("Cancip header audit badge refresh failed", error);
-    });
+    this.setReviewAttentionCount(this.plugin.currentReviewAttentionCount());
+    this.plugin.refreshStatusBarAttention();
   }
 
   private displaySessionId(): string {
@@ -37079,8 +37061,8 @@ class CancipView extends ItemView {
   private toolPromptForPolicy(policy: PromptPayloadPolicy): string {
     const routeIndex = policy.includeDetailedToolProtocol ? this.actionRouteIndexPrompt() : this.compactActionRouteIndexPrompt();
     const responseContract = isChineseLanguage(this.plugin.language())
-      ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；多步骤任务由你在同一 actions 数组先给 todo set（2-5 个具体步骤），紧接着给第一项实际动作，不能只建待办；简单任务不要建待办，后续进展用 todo update 更新。无需工具时直接给最终回答。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
-      : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. For a multi-step task, put a concrete 2-5 item todo set first in the same actions array, immediately followed by the first real action; never stop after creating todos. Do not create todos for simple tasks, and update progress later with todo update. Otherwise answer directly. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
+      ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；多步骤任务由你在同一 actions 数组先给 todo set（2-5 个具体步骤），紧接着给第一项实际动作，不能只建待办；简单任务不要建待办，后续进展用 todo update 更新。todo 只维护计划面板并立即生效，但不批准后续文件或命令动作。无需工具时直接给最终回答。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
+      : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. For a multi-step task, put a concrete 2-5 item todo set first in the same actions array, immediately followed by the first real action; never stop after creating todos. Do not create todos for simple tasks, and update progress later with todo update. Todo actions update the Plan panel immediately but never approve subsequent file or command actions. Otherwise answer directly. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
     if (policy.includeDetailedToolProtocol) return `${responseContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}\n\n${this.t("toolProtocol")}`;
     return `${responseContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}`;
   }
@@ -38728,8 +38710,8 @@ class CancipView extends ItemView {
 
     const runs = this.createBudgetedToolRuns(actions);
     if (options.readOnlyOnly) {
-      const executable = runs.filter((run) => run.status === "pending" && isReadOnlyAction(run.action));
-      const blocked = runs.filter((run) => run.status === "blocked" || (run.status === "pending" && !isReadOnlyAction(run.action)));
+      const executable = runs.filter((run) => run.status === "pending" && canExecuteWithoutApproval(run.action));
+      const blocked = runs.filter((run) => run.status === "blocked" || (run.status === "pending" && !canExecuteWithoutApproval(run.action)));
       const results: string[] = [];
       for (const run of executable) {
         results.push(await this.executeToolRun(run));
@@ -38762,8 +38744,8 @@ class CancipView extends ItemView {
       return { report: this.formatActionReport(sections), runs, executed: executable.length > 0 };
     }
     if (this.plugin.settings.accessMode !== "full-access") {
-      const executable = runs.filter((run) => run.status === "pending" && isReadOnlyAction(run.action));
-      const pending = runs.filter((run) => run.status === "pending" && !isReadOnlyAction(run.action));
+      const executable = runs.filter((run) => run.status === "pending" && canExecuteWithoutApproval(run.action));
+      const pending = runs.filter((run) => run.status === "pending" && !canExecuteWithoutApproval(run.action));
       const blocked = runs.filter((run) => run.status === "blocked");
       const results: string[] = [];
       for (const run of executable) {
@@ -38807,7 +38789,7 @@ class CancipView extends ItemView {
         results.push(run.error ?? this.t("toolRunBlocked"));
         continue;
       }
-      if (!isReadOnlyAction(run.action)) run.autoApproved = true;
+      if (!canExecuteWithoutApproval(run.action)) run.autoApproved = true;
       results.push(await this.executeToolRun(run));
     }
     void this.saveCurrentSession();
@@ -38821,18 +38803,20 @@ class CancipView extends ItemView {
   private createBudgetedToolRuns(actions: CancipAction[]): ToolRun[] {
     actions = uniqueCancipActions(actions);
     const previous = this.currentTaskToolRuns().filter((run) => run.status !== "rejected" && run.status !== "blocked");
+    const previousBudgeted = previous.filter((run) => countsTowardToolActionBudget(run.action));
     const taskLimit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
     const previousByKey = new Map(previous.map((run) => [stableCacheKey(run.action), run] as const));
     const seen = new Set(previousByKey.keys());
     const runs: ToolRun[] = [];
     let accepted = 0;
+    let acceptedBudgeted = 0;
     let firstBlocked: { action: CancipAction; reason: string } | null = null;
     for (const action of actions) {
       const key = stableCacheKey(action);
       let reason = "";
       if (seen.has(key)) reason = this.duplicateActionBlockedReason(action, previousByKey.get(key));
       else if (accepted >= MAX_TOOL_ACTIONS_PER_BATCH) reason = `Action batch limit reached (${MAX_TOOL_ACTIONS_PER_BATCH}); finish from completed results.`;
-      else if (previous.length + accepted >= taskLimit) reason = `Task action budget reached (${taskLimit}); no more tools may run in this task. Give the final answer now.`;
+      else if (countsTowardToolActionBudget(action) && previousBudgeted.length + acceptedBudgeted >= taskLimit) reason = `Task action budget reached (${taskLimit}); no more tools may run in this task. Give the final answer now.`;
       if (reason) {
         if (!firstBlocked) firstBlocked = { action, reason };
         continue;
@@ -38840,6 +38824,7 @@ class CancipView extends ItemView {
       seen.add(key);
       runs.push(this.createToolRun(action));
       accepted += 1;
+      if (countsTowardToolActionBudget(action)) acceptedBudgeted += 1;
     }
     if (firstBlocked) {
       const blocked = this.createToolRun(firstBlocked.action);
@@ -38918,7 +38903,11 @@ class CancipView extends ItemView {
 
   private currentTaskActionBudgetReached(): boolean {
     const limit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
-    return this.currentTaskToolRuns().filter((run) => run.status !== "rejected" && run.status !== "blocked").length >= limit;
+    return this.currentTaskToolRuns().filter((run) =>
+      run.status !== "rejected"
+      && run.status !== "blocked"
+      && countsTowardToolActionBudget(run.action)
+    ).length >= limit;
   }
 
   private formatActionReport(sections: ActionReportSection[]): string {
@@ -40748,14 +40737,14 @@ class CancipView extends ItemView {
         "上一步真实工具结果：",
         summary,
         `原任务：${trimContext(originalPrompt.replace(/\s+/g, " "), 240)}`,
-        "只判断一个具体下一步：若已完成或确实阻塞，直接给精简最终回答；若未完成，只输出一个明确 cancip-action。失败要换更小路线，不能重复同一失败动作；写入后必须读回验证。不要输出空泛过程话。"
+        "只判断一个具体下一步：若已完成或确实阻塞，直接给精简最终回答；若未完成，只输出一个 cancip-action 动作块。已有计划时，在同一 actions 数组先用 todo update 标记刚完成的步骤，再紧接一个实际下一动作，不能只更新计划。失败要换更小路线，不能重复同一失败动作；写入后必须读回验证。不要输出空泛过程话。"
       ].join("\n\n");
     }
     return [
       "Latest real tool result:",
       summary,
       `Original task: ${trimContext(originalPrompt.replace(/\s+/g, " "), 240)}`,
-      "Choose one concrete next step. If complete or objectively blocked, give a concise final answer; otherwise output exactly one cancip-action. On failure use a smaller route, never repeat the same failed action, and verify writes by reading back. No vague process narration."
+      "Choose one concrete next step. If complete or objectively blocked, give a concise final answer; otherwise output exactly one cancip-action block. When a plan exists, first update the completed todo and then include one real next action in the same actions array; never stop after only updating the plan. On failure use a smaller route, never repeat the same failed action, and verify writes by reading back. No vague process narration."
     ].join("\n\n");
   }
 
@@ -41687,7 +41676,7 @@ class CancipView extends ItemView {
   private isWriteLikeAction(action: CancipAction): boolean {
     if (action.type === "write" || action.type === "append" || action.type === "patch" || action.type === "mkdir" || action.type === "rename" || action.type === "move" || action.type === "copy" || action.type === "delete") return true;
     if (action.type === "config") return true;
-    if (action.type === "todo") return action.op !== "list";
+    if (action.type === "todo") return false;
     if (action.type === "automation") return action.op !== "list";
     if (action.type !== "command") return false;
     const command = normalizeCommandBusName(action.command);
@@ -41737,6 +41726,7 @@ class CancipView extends ItemView {
   }
 
   private isEffectfulNonFileAction(action: CancipAction): boolean {
+    if (action.type === "todo") return action.op !== "list";
     if (action.type !== "command") return false;
     const command = normalizeCommandBusName(action.command);
     return isVaultOpenCommandName(command)
@@ -59363,6 +59353,14 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
   return `${normalized} ${normalized.startsWith("工具协议")
     ? "执行写入、命令、插件或界面任务后，不能只信返回值；用 cancip.outcome.observe/verify 读取活动视图、DOM、文件、插件和工作区实际结果。结构化证据不足时再用 cancip.outcome.capture 截取活动区域，PDF 证据用 cancip.outcome.exportPdf。验收失败只修差异并以同一 loopId、递增 attempt 有限重试；达到 maxAttempts 后停止并保留证据交审核。"
     : "After writes, commands, plugin actions, or UI work, do not trust the return value alone. Use cancip.outcome.observe/verify to read actual active-view, DOM, file, plugin, and workspace state. Use cancip.outcome.capture for the active region only when structured evidence is insufficient, and cancip.outcome.exportPdf for PDF evidence. On failure correct only measured differences, retry with the same loopId and incremented attempt, then stop at maxAttempts with evidence for review."}`;
+}
+
+function countsTowardToolActionBudget(action: CancipAction): boolean {
+  return action.type !== "todo";
+}
+
+function canExecuteWithoutApproval(action: CancipAction): boolean {
+  return action.type === "todo" || isReadOnlyAction(action);
 }
 
 function isReadOnlyAction(action: CancipAction): boolean {

@@ -27,6 +27,7 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "activateNativeNoteDrawSurface",
   "clearPersonalizedDiaryButtons",
   "close",
+  "createPlanButton",
   "createNoteDrawWorkbenchStage",
   "globalFinalAnswerTemplatePrompt",
   "insertPersonalizedDiary",
