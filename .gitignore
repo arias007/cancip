@@ -1,5 +1,6 @@
 node_modules/
 work/
+.local-backups/
 outputs/*.zip
 outputs/build/
 outputs/cancip/*.zip

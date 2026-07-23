@@ -1,7 +1,7 @@
 {
   "id": "cancip",
   "name": "Cancip",
-  "version": "3.1.28",
+  "version": "3.1.29",
   "minAppVersion": "1.11.4",
   "description": "Mobile-first AI side panel for vault search, memory context, and safe note assistance.",
   "author": "Murat",
