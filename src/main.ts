@@ -1996,7 +1996,32 @@ type ToolFeedbackEvent = {
 
 type AcceptanceResultStatus = "pass" | "warn" | "fail" | "skip";
 type AcceptanceResultQuality = "high" | "ok" | "low";
+type AcceptanceCaseSlot = "B" | "V1" | "V2" | "V3";
 const ACCEPTANCE_REQUIRED_DISTINCT_PASSES = 4;
+const ACCEPTANCE_CASE_SLOTS: AcceptanceCaseSlot[] = ["B", "V1", "V2", "V3"];
+const ACCEPTANCE_USER_REPORT_ROOT = "Cancip验收-临时";
+const ACCEPTANCE_REPORT_META: Record<string, { code: string; name: string }> = {
+  "mobile-shell": { code: "A01", name: "移动端启动与布局" },
+  "simple-final": { code: "A02", name: "简单回答" },
+  "continue-final": { code: "A03", name: "复杂任务闭环" },
+  "process-records": { code: "A04", name: "过程记录" },
+  "context-token": { code: "A05", name: "Token与上下文" },
+  "memory-skill-search": { code: "A06", name: "记忆Skill与搜索" },
+  "read-write-review": { code: "A07", name: "读写批准与审核" },
+  "obsidian-command-plugin": { code: "A08", name: "Obsidian命令插件与JS" },
+  "plan-queue-background": { code: "A09", name: "计划排队与后台继续" },
+  "session-history-sync": { code: "A10", name: "会话历史与同步" },
+  "mention-attachment": { code: "A11", name: "输入框@选区与附件" },
+  "model-api-recovery": { code: "A12", name: "模型与API恢复" },
+  "tts-markdown-pdf": { code: "A13", name: "TTS Markdown与PDF" },
+  "automation-curation": { code: "A14", name: "自动化与整理" },
+  "button-statusbar": { code: "A15", name: "按钮与状态栏" },
+  "workbench-docs": { code: "A16", name: "工作台与联合插件" },
+  "autocomplete": { code: "A17", name: "自动补全" },
+  "github-release": { code: "A18", name: "GitHub" },
+  "resource-learning": { code: "A19", name: "Vault插件学习与能力进化" },
+  "acceptance-loop": { code: "A20", name: "验收反馈循环" }
+};
 
 type AcceptanceCapabilityClass = {
   id: string;
@@ -2009,12 +2034,14 @@ type AcceptanceCapabilityClass = {
 };
 
 type AcceptanceLedgerRecord = {
-  schemaVersion: 1;
+  schemaVersion: 1 | 2;
   at: string;
   version: string;
+  acceptanceVersion: string;
   classId: string;
   classTitle: string;
   caseId: string;
+  caseSlot: AcceptanceCaseSlot | "";
   prompt: string;
   promptHash: string;
   variant: string;
@@ -2032,6 +2059,7 @@ type AcceptanceLedgerRecord = {
   changedPaths: string[];
   evidence: string[];
   notes: string;
+  reportPath: string;
 };
 
 type ReadOnlyActionCacheEntry = {
@@ -26061,7 +26089,7 @@ class CancipView extends ItemView {
 
   private canAutoReloadSessionFromVaultSync(): boolean {
     if (!this.canRenderForVaultSync()) return false;
-    if (this.isSessionRunning(this.sessionId) && !this.ownsSessionRequest()) return true;
+    if (this.isSessionRunning(this.sessionId)) return !this.ownsSessionRequest();
     if (this.queuedPrompts.length) return false;
     if (this.draftContext.length) return false;
     return true;
@@ -32466,6 +32494,12 @@ class CancipView extends ItemView {
   }
 
   private modelPromptForTurn(rawPrompt: string, taskGoal: string): string {
+    if (isShortGreetingPrompt(rawPrompt)) {
+      return [
+        rawPrompt,
+        "Reply as a familiar person in one natural short sentence. Do not introduce yourself, restate your role or capabilities, or offer generic assistant service."
+      ].join("\n\n");
+    }
     if (!isContinuePrompt(rawPrompt) || taskGoal === rawPrompt) return rawPrompt;
     return [
       rawPrompt,
@@ -36385,7 +36419,7 @@ class CancipView extends ItemView {
         ? this.lightweightCapabilityPolicyPrompt(prompt)
         : policy.includeMemoryIndex
           ? "Payload policy: lightweight memory/info turn. If the answer depends on identity, personal profile, memory, prior session, or missing context, use only read-only actions such as memory index reads, focused reads, or cancip.sessionHistory before asking the user."
-          : "Payload policy: lightweight turn. Do not request tool actions unless the user explicitly asks for implementation, file operations, commands, GitHub, automations, or plugin/self repair.");
+          : "Payload policy: lightweight turn. Answer only what the user asked, briefly and directly. For a greeting, do not restate your identity/capabilities or make a generic customer-service offer. Do not request tool actions unless the user explicitly asks for implementation, file operations, commands, GitHub, automations, or plugin/self repair.");
     }
     return sections.filter(Boolean).join("\n\n");
   }
@@ -36538,20 +36572,24 @@ class CancipView extends ItemView {
   }
 
   private directVaultFileMutationToolPrompt(prompt = ""): string {
-    const target = explicitVaultFileReferenceCandidates(prompt)[0] ?? "";
+    const targets = explicitVaultFileReferenceCandidates(prompt).slice(0, 3);
+    const target = targets[0] ?? "";
+    const requestedPlan = /(?:计划|步骤|规划|待办|plan|todo|steps?)/i.test(prompt);
     if (this.plugin.language().startsWith("zh")) {
       return [
-        target ? `目标路径：${target}。必须原样使用；“创建/写入/新建”是句中动作时不得并入文件名。` : "",
-        "明确文件改动：用户已给出 Vault 相对路径和要求。由你判断 write、append 或 patch，直接执行最小正确动作；新建目标不要先 read/findTarget，用户已明确旧值和新值时直接 patch，只有既有内容不明确时才最小读取一次。",
-        '首轮只输出一个 <cancip-action>{"actions":[{"type":"write","path":"原路径","content":"用户要求的内容"}]}</cancip-action>，不要附加可见文字或待办。',
-        "write/append/patch 工具会在内部读回校验；工具结果确认成功后直接精简回答路径和验证，不要再重复读取或写入。"
+        target ? `明确路径：${targets.join("；")}。必须原样使用；“创建/写入/新建”是句中动作时不得并入文件名。` : "",
+        "明确文件改动：用户已给出 Vault 相对路径和要求。由你判断 write、append 或 patch，执行最小正确动作；新建目标不要先 read/findTarget，用户已明确旧值和新值时直接 patch，只有既有内容不明确时才最小读取一次。",
+      `每轮只输出当前一步：既有内容不明确时首轮只 read；多个明确路径时只读取当前判断必需的路径。拿到原文后优先用精确 patch 改最小片段，patch 必须同时给 path、find、replace；若输出完整 content，动作类型必须是 write。除非用户明确要求整体替换，否则禁止用 write 重构已有文件，禁止改写、补造或删除未要求变动的文字。新建或明确整体覆盖才用 write。${requestedPlan ? "用户明确要求计划：必须在同一 actions 数组先 todo set 2-4 项，再紧接当前第一项实际动作；不能只建计划。" : "不要附加可见文字或待办。"}`,
+        "动作格式只能是 <cancip-action>{\"actions\":[...]}</cancip-action>；不要输出 tool_call、function 或自闭合 XML。",
+        "write/append/patch 工具会在内部读回校验，并把已校验的实际改动片段交给下一轮；根据真实片段精简回答路径和验证，不要重复读取或写入。"
       ].join("\n");
     }
     return [
-      target ? `Exact target path: ${target}. Use it verbatim; surrounding create/write/new verbs are actions, not part of the filename.` : "",
+      target ? `Exact paths: ${targets.join("; ")}. Use them verbatim; surrounding create/write/new verbs are actions, not part of a filename.` : "",
       "Explicit file change: the user supplied the Vault-relative path and requirement. Choose write, append, or patch and execute the smallest correct action. Do not read/findTarget before creating a new target; patch directly when both old and new values are explicit, and read an existing target once only when its current text is needed.",
-      'First output only one <cancip-action>{"actions":[{"type":"write","path":"exact/path","content":"requested content"}]}</cancip-action>, with no visible prose or todo.',
-      "write/append/patch verify their readback internally. After a successful tool result, answer briefly with the path and verification; do not read or write it again."
+      `Output only the current step. If existing content is unknown, first output read only; read only the explicitly named paths needed for the current decision. After receiving it, prefer an exact patch of the smallest span. A patch must provide path, find, and replace; a full content payload must use write. Never reconstruct an existing file with write unless the user requested full replacement, and never invent, rewrite, or remove unrelated text. Use write only for a new file or explicit full replacement.${requestedPlan ? " The user explicitly requested a plan: you must put a 2-4 item todo set before the first real action in the same actions array; do not stop at the plan." : " Add no visible prose or todo."}`,
+      "Use only <cancip-action>{\"actions\":[...]}</cancip-action>; do not emit tool_call, function, or self-closing XML.",
+      "write/append/patch verify readback and return the verified changed excerpt to the next turn. Answer briefly from that real excerpt; do not repeat the read or write."
     ].join("\n");
   }
 
@@ -37687,8 +37725,8 @@ class CancipView extends ItemView {
   private toolPromptForPolicy(policy: PromptPayloadPolicy): string {
     const routeIndex = policy.includeDetailedToolProtocol ? this.actionRouteIndexPrompt() : this.compactActionRouteIndexPrompt();
     const responseContract = isChineseLanguage(this.plugin.language())
-      ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；多步骤任务由你在同一 actions 数组先给 todo set（2-5 个具体步骤），紧接着给第一项实际动作，不能只建待办；简单任务不要建待办，后续进展用 todo update 更新。todo 只维护计划面板并立即生效，但不批准后续文件或命令动作。无需工具时直接给最终回答。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
-      : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. For a multi-step task, put a concrete 2-5 item todo set first in the same actions array, immediately followed by the first real action; never stop after creating todos. Do not create todos for simple tasks, and update progress later with todo update. Todo actions update the Plan panel immediately but never approve subsequent file or command actions. Otherwise answer directly. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
+      ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；多步骤任务由你在同一 actions 数组先给 todo set（2-5 个具体步骤），紧接着给第一项实际动作，不能只建待办；简单任务不要建待办，后续进展用 todo update 更新。todo 只维护计划面板并立即生效，但不批准后续文件或命令动作。无需工具时直接给最终回答。简短问候要像熟人一样自然短答，不自我介绍 Cancip、不列能力、不用“有什么可以帮你”“需要我做什么”“随时准备”等客服式邀约、不复述系统定位；没有具体近况时简单打招呼或关心近况即可。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
+      : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. For a multi-step task, put a concrete 2-5 item todo set first in the same actions array, immediately followed by the first real action; never stop after creating todos. Do not create todos for simple tasks, and update progress later with todo update. Todo actions update the Plan panel immediately but never approve subsequent file or command actions. Otherwise answer directly. Keep brief greetings natural and familiar: do not introduce Cancip, list capabilities, invite the user to ask for help, say that you are ready to help, or restate the system role. Without concrete recent context, simply greet the user or ask how they are. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
     if (policy.includeDetailedToolProtocol) return `${responseContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}\n\n${this.t("toolProtocol")}`;
     return `${responseContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}`;
   }
@@ -37740,7 +37778,7 @@ class CancipView extends ItemView {
         "- TTS/朗读：先查 cancip.tts.help，再用 probe/voices/status/speak/readActive/pause/resume/seek/stop/installLocal。",
         "- GitHub：先查 github.help，再用 github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin。",
         "- 自动化/新闻/Vault/记忆维护：用 cancip.automation.templates/list/add/update/addTemplate/run/remove、cancip.newsBrief、cancip.vaultDailyReport、cancip.memoryDream。",
-        `- 验收/变异测试/回归：先用 cancip.acceptance.plan 或 status 读取能力矩阵和缺口；执行每个不同用例后，用 cancip.acceptance.record 写入 ${CANCIP_ACCEPTANCE_LEDGER_PATH}，字段包括 classId/status/quality/prompt/actual/evidence，程序会补模型、耗时、步骤、token。基准任务和三个不同变体共四条 high/pass 才算该能力类完成；失败后修根因再跑不同变异，不为单个提示词硬编码。`,
+        `- 验收/变异测试/回归：先用 cancip.acceptance.plan 或 status 读取当前版本矩阵；每次用 cancip.acceptance.record 写入 ${CANCIP_ACCEPTANCE_LEDGER_PATH}，明确 classId、caseSlot(B/V1/V2/V3)、status、quality、prompt、actual、evidence。程序补模型、耗时、步骤、token，并同步可读报告。四个槽位的最新结果均为 high/pass 才完成；失败后修通用根因再复测原槽位。`,
         "- 子 agent/并行拆分：需要分头查资料、长任务拆段或后台试探时，用 cancip.subagents.start；用 list/status 查进度，用 stop 停止，用 open 跳转子会话。",
         "- 审核/结果/历史/自修复：AI 改普通笔记会自动标记审核并备份原文；执行后用 cancip.outcome.observe/verify/capture 获取状态和视觉证据，只针对失败差异有限校正，达到上限就停止并交审核；PDF 证据走 cancip.outcome.exportPdf；手动审核数据用 cancip.reviewGate/list；历史上下文用 sessionEvents/sessionHistory。",
         "如果目标或命令不明确，先运行 cancip.findTarget；如果路线不明显，运行 cancip.capability.resolve {query,scope:'auto',limit:4}（或无 query 的 cancip.tools.index）；如果动作格式不清楚，再运行 cancip.tools.help。不要把全库泛搜当默认发现步骤；外部知识不足时可 web.search/web.fetch。"
@@ -37763,7 +37801,7 @@ class CancipView extends ItemView {
       "- TTS/read aloud: use cancip.tts.help first, then probe/voices/status/speak/readActive/pause/resume/seek/stop/installLocal as needed.",
       "- GitHub: use github.help first, then github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin.",
       "- Automation/news/vault/memory maintenance: use cancip.automation.templates/list/add/update/addTemplate/run/remove, cancip.newsBrief, cancip.vaultDailyReport, and cancip.memoryDream.",
-      `- Acceptance/variant/regression testing: call cancip.acceptance.plan or status for the capability matrix and gaps; after each observed distinct case call cancip.acceptance.record into ${CANCIP_ACCEPTANCE_LEDGER_PATH} with classId/status/quality/prompt/actual/evidence. Cancip fills model/time/steps/tokens. A class is complete only after its baseline and three distinct variants all have high/pass records; fix root causes before rerunning variants.`,
+      `- Acceptance/variant/regression testing: call cancip.acceptance.plan or status for the current version matrix. Record each observed case in ${CANCIP_ACCEPTANCE_LEDGER_PATH} with classId, caseSlot(B/V1/V2/V3), status, quality, prompt, actual, and evidence. Cancip fills model/time/steps/tokens and the readable report. A class completes only when the latest result in every slot is high/pass.`,
       "- Subagents/parallel delegation: use cancip.subagents.start for split research, long-task chunks, or background probes; list/status for progress, stop to cancel, open to jump to a child session.",
       "- Review/outcome/history/self-repair: AI note edits are review-marked with rollback. Use cancip.outcome.observe/verify/capture after execution, correct only failed differences within the attempt limit, and stop with evidence for review when the limit is reached; use cancip.outcome.exportPdf for installed-exporter PDF evidence. Use reviewGate/list and sessionEvents/sessionHistory for review/history.",
       "If the target or command is unclear, run cancip.findTarget first; if no route is obvious, run cancip.capability.resolve {query,scope:'auto',limit:4} (or cancip.tools.index without a query); if the action format is unclear, run cancip.tools.help. Do not do a broad vault search as the default discovery step; use web.search/web.fetch when external knowledge is the missing piece."
@@ -39335,7 +39373,7 @@ class CancipView extends ItemView {
   }
 
   private async handleActionBlocks(answer: string, message?: ChatMessage, options: ActionHandlingOptions = {}): Promise<ActionHandlingResult | null> {
-    const actions = uniqueCancipActions(extractCancipActions(answer));
+    let actions = uniqueCancipActions(extractCancipActions(answer));
     if (!actions.length) {
       if (!hasCancipActionMarker(answer)) return null;
       const issue = cancipActionProtocolIssue(answer) || this.t("invalidActionBlock");
@@ -39345,6 +39383,7 @@ class CancipView extends ItemView {
       return null;
     }
 
+    actions = this.currentActionExecutionStage(actions);
     const runs = this.createBudgetedToolRuns(actions);
     if (options.readOnlyOnly) {
       const executable = runs.filter((run) => run.status === "pending" && canExecuteWithoutApproval(run.action));
@@ -39435,6 +39474,28 @@ class CancipView extends ItemView {
       runs,
       executed: executable.some((run) => run.status === "executed")
     };
+  }
+
+  private currentActionExecutionStage(actions: CancipAction[]): CancipAction[] {
+    const hasObservation = actions.some((action) => isReadOnlyAction(action));
+    const hasDependentEffect = actions.some((action) => !isReadOnlyAction(action) && action.type !== "todo");
+    if (!hasObservation || !hasDependentEffect) return actions;
+    const completed = new Set(this.currentTaskToolRuns()
+      .filter((run) => run.status === "executed")
+      .map((run) => stableCacheKey(run.action)));
+    const unresolvedObservations = actions.filter((action) => isReadOnlyAction(action) && !completed.has(stableCacheKey(action)));
+    const staged = unresolvedObservations.length
+      ? actions.filter((action) => (isReadOnlyAction(action) && !completed.has(stableCacheKey(action))) || action.type === "todo")
+      : actions.filter((action) => !isReadOnlyAction(action) || action.type === "todo");
+    const deferred = actions.length - staged.length;
+    void this.recordSessionEvent({
+      kind: "prompt.protocol_retry",
+      status: "staged-actions",
+      detail: unresolvedObservations.length
+        ? `Executed ${staged.length} unresolved observation/plan action(s) before regenerating ${deferred} dependent effect action(s) from real results.`
+        : `Skipped already-observed actions and executed ${staged.length} pending effect/plan action(s).`
+    });
+    return staged;
   }
 
   private createBudgetedToolRuns(actions: CancipAction[]): ToolRun[] {
@@ -40368,14 +40429,16 @@ class CancipView extends ItemView {
     const query = stringArg(args.query || args.classId || args.class || args.filter);
     const limit = clampInt(args.limit, query ? 8 : 6, 1, 60);
     const classes = this.acceptanceClassesForQuery(query).slice(0, limit);
-    const records = await this.readAcceptanceLedger();
+    const acceptanceVersion = this.acceptanceVersionFromArgs(args);
+    const records = this.acceptanceRecordsForVersion(await this.readAcceptanceLedger(), acceptanceVersion);
     const source = await this.acceptanceChecklistSourceSummary();
     const lines = [
       "# Cancip 验收变异计划",
       "",
       `- 来源：${source}`,
+      `- 验收版本：${acceptanceVersion}`,
       `- 记录：${CANCIP_ACCEPTANCE_LEDGER_PATH}`,
-      `- 判定：同一能力类必须有基准任务和 3 个不同变体，共 ${ACCEPTANCE_REQUIRED_DISTINCT_PASSES} 条 high/pass 记录才算完成。`,
+      `- 判定：同一能力类必须有 B、V1、V2、V3 四个槽位各一条最新 high/pass 记录才算完成。`,
       "- 执行：每个用例必须先看实际状态/文件/界面，再用 cancip.acceptance.record 记录问题、模型、结果、时间、步骤、token。",
       ""
     ];
@@ -40387,7 +40450,8 @@ class CancipView extends ItemView {
         `- 路线：${item.route}`,
         `- 必看：${item.expected.join("；")}`,
         "- 变异：",
-        ...item.variants.slice(0, ACCEPTANCE_REQUIRED_DISTINCT_PASSES).map((variant, index) => `  ${index + 1}. ${index === 0 ? "基准" : `变体 ${index}`}：${variant}`),
+        ...item.variants.slice(0, ACCEPTANCE_REQUIRED_DISTINCT_PASSES).map((variant, index) => `  ${ACCEPTANCE_CASE_SLOTS[index]}：${variant}`),
+        `- 仍缺：${progress.missingSlots.length ? progress.missingSlots.join("、") : "无"}`,
         ""
       );
     }
@@ -40397,15 +40461,17 @@ class CancipView extends ItemView {
 
   private async acceptanceStatusCommand(args: Record<string, unknown>): Promise<string> {
     const query = stringArg(args.query || args.classId || args.class || args.filter);
-    const records = await this.readAcceptanceLedger();
+    const acceptanceVersion = this.acceptanceVersionFromArgs(args);
+    const records = this.acceptanceRecordsForVersion(await this.readAcceptanceLedger(), acceptanceVersion);
     const classes = this.acceptanceClassesForQuery(query);
     const verbose = Boolean(args.verbose || args.details || query);
     const lines = [
       "# Cancip 验收状态",
       "",
       `- ledger：${CANCIP_ACCEPTANCE_LEDGER_PATH}`,
+      `- 验收版本：${acceptanceVersion}`,
       `- 总记录：${records.length}`,
-      `- 完成规则：每类基准任务 + 3 个不同变体，共 ${ACCEPTANCE_REQUIRED_DISTINCT_PASSES} 条 high/pass`,
+      `- 完成规则：B、V1、V2、V3 四个槽位的最新记录均为 high/pass`,
       ""
     ];
     let done = 0;
@@ -40422,6 +40488,7 @@ class CancipView extends ItemView {
         lines.push(
           `## ${progress.complete ? "✅" : "⬜"} ${item.id} · ${item.title}`,
           `- 通过：${progress.passCount}/${ACCEPTANCE_REQUIRED_DISTINCT_PASSES}；失败/警告：${progress.failCount}`,
+          `- 槽位：已通过 ${progress.passedSlots.join("、") || "无"}；待补 ${progress.missingSlots.join("、") || "无"}`,
           `- 最近：${latest}`,
           failures ? `- 最近问题：\n${failures}` : "",
           ""
@@ -40442,6 +40509,15 @@ class CancipView extends ItemView {
     const requestedClassId = stringArg(args.classId || args.class || args.capability || args.capabilityId);
     const inferredPrompt = stringArg(args.prompt) || this.previousActionableUserPrompt();
     const classInfo = this.acceptanceClassForRecord(requestedClassId, inferredPrompt);
+    const acceptanceVersion = this.acceptanceVersionFromArgs(args);
+    const existingRecords = await this.readAcceptanceLedger();
+    const scopedExistingRecords = this.acceptanceRecordsForVersion(existingRecords, acceptanceVersion);
+    const progressBefore = acceptanceProgressForClass(scopedExistingRecords, classInfo.id);
+    const requestedCaseId = stringArg(args.caseId || args.case);
+    const caseSlot = acceptanceCaseSlotFromValue(args.caseSlot || args.slot || requestedCaseId || args.variant)
+      || progressBefore.missingSlots[0]
+      || "V3";
+    const reportPath = this.acceptanceUserReportPath(classInfo.id, acceptanceVersion);
     const status = acceptanceStatusFromArg(args.status || args.result || args.outcome);
     const quality = acceptanceQualityFromArg(args.quality, status);
     const now = new Date();
@@ -40460,13 +40536,17 @@ class CancipView extends ItemView {
       : Math.max(0, (terminalAt > latestUserAt ? terminalAt : now.getTime()) - latestUserAt);
     const prompt = trimContext(redactSensitiveText(inferredPrompt || stringArg(args.issue) || classInfo.variants[0] || classInfo.title), 4000);
     const promptHash = stableTextHash(`${classInfo.id}:${prompt}`);
+    const reportMeta = acceptanceReportMeta(classInfo.id);
+    const suppliedTokenUsage = acceptanceTokenUsageFromValue(args.tokenUsage || args.usage);
     const record: AcceptanceLedgerRecord = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       at: now.toISOString(),
       version: this.plugin.manifest.version,
+      acceptanceVersion,
       classId: classInfo.id,
       classTitle: classInfo.title,
-      caseId: stringArg(args.caseId) || `${classInfo.id}-${now.toISOString().replace(/[:.]/g, "-")}-${promptHash.slice(0, 6)}`,
+      caseId: requestedCaseId || `${reportMeta.code}-${caseSlot}`,
+      caseSlot,
       prompt,
       promptHash,
       variant: trimContext(redactSensitiveText(stringArg(args.variant)), 1200),
@@ -40479,7 +40559,7 @@ class CancipView extends ItemView {
       sessionId: stringArg(args.sessionId) || this.sessionId,
       elapsedMs,
       steps: typeof args.steps === "number" && Number.isFinite(args.steps) ? Math.max(0, Math.round(args.steps)) : taskRuns.length,
-      tokenUsage: this.turnModelUsage ? { ...this.turnModelUsage } : null,
+      tokenUsage: suppliedTokenUsage ?? (this.turnModelUsage ? { ...this.turnModelUsage } : null),
       toolRuns: taskRuns.slice(-12).map((run) => ({
         status: run.status,
         summary: trimContext(redactSensitiveText(run.summary), 220),
@@ -40488,7 +40568,8 @@ class CancipView extends ItemView {
       })),
       changedPaths: uniqueStrings(taskRuns.flatMap((run) => this.displayChangedPathsForAction(run.action))).slice(0, 24),
       evidence: acceptanceStringArray(args.evidence).slice(0, 12),
-      notes: trimContext(redactSensitiveText(stringArg(args.notes)), 1600)
+      notes: trimContext(redactSensitiveText(stringArg(args.notes)), 1600),
+      reportPath
     };
     const adapter = this.app.vault.adapter;
     await ensureFolder(adapter, CANCIP_ACCEPTANCE_DIR);
@@ -40496,7 +40577,10 @@ class CancipView extends ItemView {
     if (await adapter.exists(CANCIP_ACCEPTANCE_LEDGER_PATH)) await adapter.append(CANCIP_ACCEPTANCE_LEDGER_PATH, serialized);
     else await adapter.write(CANCIP_ACCEPTANCE_LEDGER_PATH, serialized);
     const records = await this.readAcceptanceLedger();
-    await this.writeAcceptanceMatrixSnapshot(records);
+    const scopedRecords = this.acceptanceRecordsForVersion(records, acceptanceVersion);
+    await this.writeAcceptanceMatrixSnapshot(scopedRecords, acceptanceVersion);
+    await this.appendAcceptanceUserReport(record, scopedRecords);
+    await this.writeAcceptanceUserOverview(scopedRecords, acceptanceVersion);
     await this.recordToolFeedback({
       status: status === "pass" ? "executed" : status === "fail" ? "failed" : "executed",
       summary: `acceptance ${record.classId} ${record.status}/${record.quality}`,
@@ -40504,14 +40588,16 @@ class CancipView extends ItemView {
       at: record.at,
       action: { type: "command", command: "cancip.acceptance.record", args: { classId: record.classId, status: record.status, quality: record.quality } }
     });
-    const progress = acceptanceProgressForClass(records, record.classId);
+    const progress = acceptanceProgressForClass(scopedRecords, record.classId);
     return [
-      `已记录：${record.classId} · ${record.status}/${record.quality}`,
+      `已记录：${record.caseId} · ${record.status}/${record.quality}`,
+      `验收版本：${record.acceptanceVersion}；槽位：${record.caseSlot}`,
       `会话：${record.sessionId}`,
       `模型：${record.modelSource} / ${record.model}`,
       `耗时：${formatElapsed(record.elapsedMs)}；步骤：${record.steps}；tokens：${record.tokenUsage ? `${record.tokenUsage.totalTokens}${record.tokenUsage.estimated ? " 估算" : ""}` : "未统计"}`,
       `该类进度：${progress.passCount}/${ACCEPTANCE_REQUIRED_DISTINCT_PASSES} high/pass${progress.complete ? "，已达标" : ""}`,
-      `矩阵：${CANCIP_ACCEPTANCE_MATRIX_PATH}`
+      `矩阵：${CANCIP_ACCEPTANCE_MATRIX_PATH}`,
+      `用户报告：${record.reportPath}`
     ].join("\n");
   }
 
@@ -40537,6 +40623,139 @@ class CancipView extends ItemView {
     if (exact) return exact;
     const matched = this.acceptanceClassesForQuery(`${classId} ${prompt}`.trim())[0];
     return matched ?? classes[classes.length - 1];
+  }
+
+  private acceptanceVersionFromArgs(args: Record<string, unknown>): string {
+    return trimContext(stringArg(args.acceptanceVersion || args.suiteVersion || args.targetVersion || this.plugin.manifest.version), 80)
+      || this.plugin.manifest.version;
+  }
+
+  private acceptanceRecordsForVersion(records: AcceptanceLedgerRecord[], acceptanceVersion: string): AcceptanceLedgerRecord[] {
+    return records.filter((record) => (record.acceptanceVersion || record.version) === acceptanceVersion);
+  }
+
+  private acceptanceUserReportPath(classId: string, acceptanceVersion: string): string {
+    const meta = acceptanceReportMeta(classId);
+    return `${ACCEPTANCE_USER_REPORT_ROOT}/${acceptanceVersion}/${meta.code.slice(1)}-${meta.code}-${meta.name}.md`;
+  }
+
+  private async appendAcceptanceUserReport(record: AcceptanceLedgerRecord, records: AcceptanceLedgerRecord[]): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const classInfo = this.acceptanceClassForRecord(record.classId, record.prompt);
+    const progress = acceptanceProgressForClass(records, record.classId);
+    await ensureParentFolder(adapter, record.reportPath);
+    if (!await adapter.exists(record.reportPath)) {
+      const variants = classInfo.variants.slice(0, ACCEPTANCE_REQUIRED_DISTINCT_PASSES);
+      const initial = [
+        "---",
+        `cancip_target_version: ${record.acceptanceVersion}`,
+        `case: ${acceptanceReportMeta(record.classId).code}`,
+        `priority: ${classInfo.priority}`,
+        "status: 运行中",
+        "---",
+        "",
+        `# ${acceptanceReportMeta(record.classId).code} ${acceptanceReportMeta(record.classId).name}`,
+        "",
+        "[[00-总览|返回总览]]",
+        "",
+        "## 用例",
+        "",
+        "| 用例 | 类型 | 场景 | 状态 |",
+        "| --- | --- | --- | --- |",
+        ...ACCEPTANCE_CASE_SLOTS.map((slot, index) => `| ${acceptanceReportMeta(record.classId).code}-${slot} | ${slot === "B" ? "基础" : `变异 ${index}`} | ${variants[index] ?? classInfo.title} | 待测 |`),
+        "",
+        "## 实时记录",
+        ""
+      ].join("\n");
+      await writeTextInChunks(adapter, record.reportPath, `${initial}\n`);
+    }
+    const toolLines = record.toolRuns.length
+      ? [
+        "<details>",
+        "<summary>工具与验证步骤</summary>",
+        "",
+        "```text",
+        ...record.toolRuns.map((run) => `${run.status} | ${run.action || run.summary} | ${run.detail || run.summary}`.replace(/```/g, "'''")),
+        "```",
+        "",
+        "</details>",
+        ""
+      ]
+      : [];
+    const evidence = record.evidence.length ? record.evidence.map((item) => `- ${item}`) : ["- 未提供额外证据"];
+    const changed = record.changedPaths.length ? record.changedPaths.map((item) => `- ${item}`) : ["- 无文件或结构改动"];
+    const entry = [
+      `### ${acceptanceRecordHeading(record)}`,
+      "",
+      `- 状态：${acceptanceStatusBadge(record.status)} ${record.status}/${record.quality}`,
+      `- 版本 / 槽位：${record.acceptanceVersion} / ${record.caseSlot || "未指定"}`,
+      `- 模型：${record.modelSource || "未记录"} / ${record.model || "未记录"}`,
+      `- 会话：${record.sessionId || "未记录"}`,
+      `- 耗时 / Token / 步骤：${formatElapsed(record.elapsedMs)} / ${record.tokenUsage ? String(record.tokenUsage.totalTokens) : "未统计"} / ${record.steps}`,
+      "- 原提示词：",
+      "```text",
+      record.prompt.replace(/```/g, "'''"),
+      "```",
+      "- 预期：",
+      record.expected || "未记录",
+      "- 实际：",
+      record.actual || "未记录",
+      "- 证据：",
+      ...evidence,
+      "- 改动：",
+      ...changed,
+      record.notes ? `- 根因、修复或备注：${record.notes}` : "",
+      `- 当前进度：${progress.passCount}/${ACCEPTANCE_REQUIRED_DISTINCT_PASSES}；已通过 ${progress.passedSlots.join("、") || "无"}；待补 ${progress.missingSlots.join("、") || "无"}`,
+      "",
+      ...toolLines
+    ].filter(Boolean).join("\n");
+    const existingReport = await readTextIfExists(adapter, record.reportPath, "");
+    const tableCaseId = `${acceptanceReportMeta(record.classId).code}-${record.caseSlot || "B"}`;
+    let updatedReport = updateAcceptanceReportCaseStatus(
+      existingReport,
+      tableCaseId,
+      `${acceptanceStatusBadge(record.status)} ${record.status}/${record.quality}`
+    );
+    updatedReport = updatedReport.replace(/^status:\s*.*$/m, `status: ${progress.complete ? "已完成" : "运行中"}`);
+    await writeTextInChunks(adapter, record.reportPath, `${updatedReport.trimEnd()}\n\n${entry.trimEnd()}\n`);
+  }
+
+  private async writeAcceptanceUserOverview(records: AcceptanceLedgerRecord[], acceptanceVersion: string): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    const root = `${ACCEPTANCE_USER_REPORT_ROOT}/${acceptanceVersion}`;
+    const path = `${root}/00-总览.md`;
+    await ensureFolder(adapter, root);
+    const rows = defaultAcceptanceCapabilityClasses().map((item) => {
+      const progress = acceptanceProgressForClass(records, item.id);
+      const meta = acceptanceReportMeta(item.id);
+      const report = this.acceptanceUserReportPath(item.id, acceptanceVersion).split("/").pop()?.replace(/\.md$/, "") || meta.code;
+      const status = progress.complete
+        ? "✅ 已完成"
+        : progress.latest?.status === "fail"
+          ? "❌ 失败待修"
+          : progress.latest?.status === "warn"
+            ? "⚠️ 通过待优化"
+            : progress.passCount
+              ? "🔄 进行中"
+              : "待测";
+      const result = progress.latest ? `[[${report}#${acceptanceRecordHeading(progress.latest)}|最近结果]]` : "—";
+      return `| ${meta.code} | ${meta.name} | ${item.priority} | ${status} ${progress.passCount}/${ACCEPTANCE_REQUIRED_DISTINCT_PASSES} | ${result} |`;
+    });
+    const block = [
+      "<!-- cancip-acceptance-progress:start -->",
+      "## 自动进度",
+      "",
+      `- 更新时间：${new Date().toISOString()}`,
+      `- 验收版本：${acceptanceVersion}；当前记录：${records.length}`,
+      "- 规则：每类 B、V1、V2、V3 的最新结果都必须是 high/pass。",
+      "",
+      "| ID | 能力域 | 优先级 | 进度 | 最近完成结果 |",
+      "| --- | --- | --- | --- | --- |",
+      ...rows,
+      "<!-- /cancip-acceptance-progress -->"
+    ].join("\n");
+    const existing = await readTextIfExists(adapter, path, "");
+    await writeTextInChunks(adapter, path, `${upsertMarkedTextBlock(existing, "<!-- cancip-acceptance-progress:start -->", "<!-- /cancip-acceptance-progress -->", block).trimEnd()}\n`);
   }
 
   private async acceptanceChecklistSourceSummary(): Promise<string> {
@@ -40567,12 +40786,15 @@ class CancipView extends ItemView {
       .filter((item): item is AcceptanceLedgerRecord => item !== null);
   }
 
-  private async writeAcceptanceMatrixSnapshot(records: AcceptanceLedgerRecord[]): Promise<void> {
+  private async writeAcceptanceMatrixSnapshot(records: AcceptanceLedgerRecord[], acceptanceVersion: string): Promise<void> {
     const lines = [
       "# Cancip Acceptance Matrix",
       "",
       `Updated: ${new Date().toISOString()}`,
+      `Acceptance version: ${acceptanceVersion}`,
       `Ledger: ${CANCIP_ACCEPTANCE_LEDGER_PATH}`,
+      `Records in version scope: ${records.length}`,
+      "Rule: the latest B, V1, V2, and V3 records must all be high/pass.",
       "",
       "| Capability | Priority | Pass | Latest | Route |",
       "| --- | --- | ---: | --- | --- |"
@@ -41359,7 +41581,8 @@ class CancipView extends ItemView {
     // A completed read-only batch has already produced the evidence needed by
     // the final-decision step. Do not spend another general continuation call
     // merely to restate the same result.
-    if (!shouldContinueToolLoopFromRuns(previous.runs)) return previous;
+    const needsStateChange = shouldNeedMoreActionForPrompt(originalPrompt, previous.runs);
+    if (!shouldContinueToolLoopFromRuns(previous.runs) && !needsStateChange) return previous;
     const maxIterations = Math.max(1, Math.min(10, this.plugin.settings.maxToolIterations));
     let current: ActionHandlingResult | null = previous;
     let lastHandled: ActionHandlingResult = previous;
@@ -41432,6 +41655,10 @@ class CancipView extends ItemView {
       this.renderMessages();
       if (this.hasPendingToolRuns(current.runs)) return current;
       lastHandled = current;
+      const cumulativeRuns = this.currentTaskToolRuns();
+      if (!shouldContinueToolLoopFromRuns(cumulativeRuns) && !shouldNeedMoreActionForPrompt(originalPrompt, cumulativeRuns)) {
+        return lastHandled;
+      }
     }
     return lastHandled;
   }
@@ -42023,7 +42250,9 @@ class CancipView extends ItemView {
     const base = stripStructuredChoices(stripProgrammaticRunStats(content).content).trim();
     const visible = prepareMessageDisplay(redactSensitiveText(base)).visibleContent;
     const sections: string[] = [];
-    if (!/(改动文件|Changed files|Files changed)/i.test(visible)) {
+    const alreadyListsChangedFile = /(?:改动文件|Changed files|Files changed)/i.test(visible)
+      || /(?:^|\n)\s*(?:改动|Changes?)\s*[:：]\s*\[\[/im.test(visible);
+    if (!alreadyListsChangedFile) {
       const fileLines = this.finalAnswerFileSectionLines(runs);
       if (fileLines.length) sections.push(["改动文件：", ...fileLines].join("\n"));
     }
@@ -42270,7 +42499,21 @@ class CancipView extends ItemView {
         ? `已打开并验证当前文件：${verifiedOpenPath}`
         : `未完成：当前打开的是 ${verifiedOpenPath}，与用户要求的目标不符。`;
     }
-    const lead = this.finalConclusionLead({ goal, writes, effectRuns, reads, failed, rejected, pending, pendingReview, pendingApproval, blocked, needsMoreAction, originalPrompt });
+    const success = !failed.length && !rejected.length && !pending.length && !blocked.length && !needsMoreAction;
+    const lead = this.finalConclusionLead({
+      goal: success ? "" : goal,
+      writes,
+      effectRuns,
+      reads,
+      failed,
+      rejected,
+      pending,
+      pendingReview,
+      pendingApproval,
+      blocked,
+      needsMoreAction,
+      originalPrompt
+    });
     const fileLines = changedPaths.length ? this.finalConclusionChangedFileLinks(writeRunsForFiles) : [];
     const reminders = this.finalConclusionReminders({ runs, writes: writeRunsForFiles, effectRuns, reads, failed, rejected, pending, pendingReview, pendingApproval, blocked, needsMoreAction, originalPrompt, changedPaths });
     const sections: string[] = [];
@@ -42330,8 +42573,8 @@ class CancipView extends ItemView {
     if (args.blocked.length) return `${args.goal}没有执行被阻止的写入类动作。`;
     if (args.failed.length || args.rejected.length) return args.writes.length ? `${args.goal}部分完成，但还有步骤失败。` : `${args.goal}没完成。`;
     if (args.needsMoreAction) return args.writes.length ? `${args.goal}部分完成，但还没达到目标。` : `${args.goal}没完成。`;
-    if (args.writes.length) return `${args.goal}已完成。`;
-    if (args.effectRuns.length) return `${args.goal}已执行。`;
+    if (args.writes.length) return `${args.goal}已写入并读回验证。`;
+    if (args.effectRuns.length) return `${args.goal}已执行并确认结果。`;
     if (args.reads.length) {
       return shouldExpectToolActionForPrompt(args.originalPrompt)
         ? `${args.goal}还没完成，这轮只做了读取/检查。`
@@ -42400,10 +42643,6 @@ class CancipView extends ItemView {
     }
     if (args.pendingApproval.length) {
       lines.push(`待确认：${args.pendingApproval.length} 个操作；确认后会继续执行，拒绝则会按失败/阻塞反馈。`);
-    }
-    const executedReviewCount = args.runs.filter((run) => run.status === "executed" && run.reviewPath && run.reviewRequired).length;
-    if (executedReviewCount) {
-      lines.push(`待审核标记：${executedReviewCount} 个 AI 笔记改动已执行并备份原文；通过表示接受，取消会按备份恢复，指正会回传 AI 修改。`);
     }
     if (args.blocked.length) {
       const first = args.blocked[0];
@@ -42810,11 +43049,28 @@ class CancipView extends ItemView {
     if (run.action.type === "read") {
       return compactReadResultForPrompt(detail, maxDetail);
     }
+    if (run.action.type === "write" || run.action.type === "append") {
+      const content = textWriteActionContent(run.action);
+      const budget = Math.max(160, Math.min(1200, maxDetail - 180));
+      const verified = content.length <= budget
+        ? content
+        : `${content.slice(0, Math.floor(budget * 0.65))}\n...\n${content.slice(-Math.floor(budget * 0.3))}`;
+      return trimContext(redactSensitiveText([
+        detail.replace(/\r?\n{2,}/g, "\n"),
+        `Verified readback matched this exact ${run.action.type} content (${content.length} chars):`,
+        verified
+      ].join("\n")), Math.min(maxDetail, 1800));
+    }
+    if (run.action.type === "patch") {
+      return trimContext(redactSensitiveText([
+        detail.replace(/\r?\n{2,}/g, "\n"),
+        "Verified patch readback matched:",
+        `find: ${trimContext(run.action.find, 500)}`,
+        `replace: ${trimContext(run.action.replace, 500)}`
+      ].join("\n")), Math.min(maxDetail, 1800));
+    }
     if (
-      run.action.type === "write"
-      || run.action.type === "append"
-      || run.action.type === "patch"
-      || run.action.type === "config"
+      run.action.type === "config"
       || run.action.type === "rename"
       || run.action.type === "move"
       || run.action.type === "copy"
@@ -54219,6 +54475,7 @@ function isVaultCurationContentFile(file: TFile, obsidianConfigDir: string, memo
   if (isLegacyVisibleReviewGateArtifactPath(path)) return false;
   if (isPathInVaultFolder(path, memoryFolder || DEFAULT_MEMORY_FOLDER)) return false;
   if (path.startsWith("AI/Cancip/Skills/")) return false;
+  if (isAcceptanceUserReportPath(path)) return false;
   if (isSensitiveLocalVersionPath(path)) return false;
   return true;
 }
@@ -54231,6 +54488,7 @@ function isVaultDailyReportContentFile(file: TFile, obsidianConfigDir: string, m
   if (path.startsWith("AI/Cancip/Exports/")) return false;
   if (isLegacyVisibleReviewGateArtifactPath(path)) return false;
   if (isPathInVaultFolder(path, memoryFolder || DEFAULT_MEMORY_FOLDER)) return false;
+  if (isAcceptanceUserReportPath(path)) return false;
   if (isSensitiveLocalVersionPath(path)) return false;
   return true;
 }
@@ -56984,6 +57242,19 @@ function acceptanceStringArray(value: unknown): string[] {
   return [];
 }
 
+function acceptanceTokenUsageFromValue(value: unknown): TurnModelUsage | null {
+  if (!isRecord(value)) return null;
+  return {
+    calls: clampInt(value.calls, 0, 0, 999),
+    inputChars: clampInt(value.inputChars, 0, 0, 999999999),
+    outputChars: clampInt(value.outputChars, 0, 0, 999999999),
+    inputTokens: clampInt(value.inputTokens, 0, 0, 999999999),
+    outputTokens: clampInt(value.outputTokens, 0, 0, 999999999),
+    totalTokens: clampInt(value.totalTokens, 0, 0, 999999999),
+    estimated: value.estimated === true
+  };
+}
+
 function normalizeAcceptanceLedgerRecord(raw: unknown): AcceptanceLedgerRecord | null {
   if (!isRecord(raw)) return null;
   const classId = stringArg(raw.classId);
@@ -57010,12 +57281,14 @@ function normalizeAcceptanceLedgerRecord(raw: unknown): AcceptanceLedgerRecord |
       }))
     : [];
   return {
-    schemaVersion: 1,
+    schemaVersion: raw.schemaVersion === 2 ? 2 : 1,
     at: stringArg(raw.at) || new Date().toISOString(),
     version: stringArg(raw.version),
+    acceptanceVersion: stringArg(raw.acceptanceVersion || raw.suiteVersion || raw.version),
     classId,
     classTitle: stringArg(raw.classTitle) || classId,
     caseId: stringArg(raw.caseId) || `${classId}-${stableTextHash(prompt).slice(0, 8)}`,
+    caseSlot: acceptanceCaseSlotFromValue(raw.caseSlot || raw.slot || raw.caseId || raw.variant),
     prompt,
     promptHash: stringArg(raw.promptHash) || stableTextHash(`${classId}:${prompt}`),
     variant: trimContext(redactSensitiveText(stringArg(raw.variant)), 1200),
@@ -57032,7 +57305,8 @@ function normalizeAcceptanceLedgerRecord(raw: unknown): AcceptanceLedgerRecord |
     toolRuns,
     changedPaths: acceptanceStringArray(raw.changedPaths).slice(0, 24),
     evidence: acceptanceStringArray(raw.evidence).slice(0, 12),
-    notes: trimContext(redactSensitiveText(stringArg(raw.notes)), 1600)
+    notes: trimContext(redactSensitiveText(stringArg(raw.notes)), 1600),
+    reportPath: normalizePath(stringArg(raw.reportPath))
   };
 }
 
@@ -57042,28 +57316,80 @@ function acceptanceProgressForClass(records: AcceptanceLedgerRecord[], classId: 
   complete: boolean;
   latest: AcceptanceLedgerRecord | null;
   latestFailures: AcceptanceLedgerRecord[];
+  passedSlots: AcceptanceCaseSlot[];
+  missingSlots: AcceptanceCaseSlot[];
 } {
   const selected = records
     .filter((record) => record.classId === classId)
     .sort((a, b) => a.at.localeCompare(b.at));
-  const passedPromptHashes = new Set<string>();
+  const latestBySlot = new Map<AcceptanceCaseSlot, AcceptanceLedgerRecord>();
   for (const record of selected) {
-    if (record.status === "pass" && record.quality === "high") passedPromptHashes.add(record.promptHash || stableTextHash(record.prompt));
+    if (record.caseSlot) latestBySlot.set(record.caseSlot, record);
   }
-  const failCount = selected.filter((record) => record.status === "fail" || record.status === "warn").length;
+  const passedSlots = ACCEPTANCE_CASE_SLOTS.filter((slot) => {
+    const record = latestBySlot.get(slot);
+    return record?.status === "pass" && record.quality === "high";
+  });
+  const missingSlots = ACCEPTANCE_CASE_SLOTS.filter((slot) => !passedSlots.includes(slot));
+  const failCount = ACCEPTANCE_CASE_SLOTS.filter((slot) => {
+    const record = latestBySlot.get(slot);
+    return record?.status === "fail" || record?.status === "warn";
+  }).length;
   const latestFailures = selected
     .filter((record) => record.status === "fail" || record.status === "warn")
     .slice(-3)
     .reverse();
   const latest = selected[selected.length - 1] ?? null;
-  const passCount = passedPromptHashes.size;
   return {
-    passCount,
+    passCount: passedSlots.length,
     failCount,
-    complete: passCount >= ACCEPTANCE_REQUIRED_DISTINCT_PASSES,
+    complete: passedSlots.length === ACCEPTANCE_CASE_SLOTS.length,
     latest,
-    latestFailures
+    latestFailures,
+    passedSlots,
+    missingSlots
   };
+}
+
+function acceptanceCaseSlotFromValue(value: unknown): AcceptanceCaseSlot | "" {
+  const text = String(value ?? "").trim().toUpperCase();
+  const direct = ACCEPTANCE_CASE_SLOTS.find((slot) => text === slot);
+  if (direct) return direct;
+  const match = /(?:^|[-_\s])(?:CASE)?(B|V1|V2|V3)(?:$|[-_\s])/i.exec(text);
+  return match?.[1]?.toUpperCase() as AcceptanceCaseSlot | undefined ?? "";
+}
+
+function acceptanceReportMeta(classId: string): { code: string; name: string } {
+  return ACCEPTANCE_REPORT_META[classId] ?? { code: "A00", name: classId || "未分类" };
+}
+
+function acceptanceRecordHeading(record: AcceptanceLedgerRecord): string {
+  return `${record.caseId || acceptanceReportMeta(record.classId).code} · ${record.at.replace(/[:.]/g, "-")} · ${record.status}`;
+}
+
+function acceptanceStatusBadge(status: AcceptanceResultStatus): string {
+  if (status === "pass") return "✅";
+  if (status === "warn") return "⚠️";
+  if (status === "skip") return "⏭️";
+  return "❌";
+}
+
+function upsertMarkedTextBlock(existing: string, startMarker: string, endMarker: string, block: string): string {
+  const start = existing.indexOf(startMarker);
+  if (start < 0) return [existing.trimEnd(), block].filter(Boolean).join("\n\n");
+  const end = existing.indexOf(endMarker, start + startMarker.length);
+  if (end < 0) return `${existing.slice(0, start).trimEnd()}\n\n${block}`;
+  return `${existing.slice(0, start).trimEnd()}\n\n${block}\n\n${existing.slice(end + endMarker.length).trimStart()}`.trimEnd();
+}
+
+function updateAcceptanceReportCaseStatus(content: string, caseId: string, status: string): string {
+  return content.split(/\r?\n/).map((line) => {
+    if (!line.startsWith("|")) return line;
+    const cells = line.split("|");
+    if (cells.length < 6 || cells[1]?.trim() !== caseId) return line;
+    cells[cells.length - 2] = ` ${status} `;
+    return cells.join("|");
+  }).join("\n");
 }
 
 function builtinCancipSkills(): BuiltinCancipSkill[] {
@@ -57166,7 +57492,7 @@ function builtinCancipSkills(): BuiltinCancipSkill[] {
 1. 先调用 cancip.acceptance.status 查看每个能力类缺口；需要用例时调用 cancip.acceptance.plan。
 2. 每个用例必须真实观察用户可见结果、文件内容、审核状态、会话状态或命令效果；不能把模型自称成功或函数返回成功当完成。
 3. 每次记录问题、模型源/模型、最终结果、耗时、工具步骤、token、证据和结论；用 cancip.acceptance.record 写入 ${CANCIP_ACCEPTANCE_LEDGER_PATH}。
-4. 同类能力必须完成基准任务和三个不同变体，共四个不同提示词 high/pass 才算完成；失败或警告要修通用根因，再换一个变异用例重测。
+4. 同类能力必须完成 B、V1、V2、V3 四个槽位，且每个槽位的最新记录都是 high/pass；失败或警告要修通用根因并复测同一槽位，旧通过不能覆盖新失败。
 5. 过程反馈要具体：工具是什么、目标是什么、返回什么、下一步做什么；原始收发和长工具结果折叠显示。
 6. 成功的重复路线沉淀到 ${EXPERIENCE_LOG_PATH} 或 generated Skill；失败路线记录原因，下一次不要原样重试。
 7. 高风险删除、移动、发布、密钥和外部副作用仍遵守批准/审核；普通内部验收记录可直接写入 Cancip data。
@@ -58920,7 +59246,8 @@ function isSimpleDirectVaultFileMutationTask(prompt: string): boolean {
   const text = prompt.trim();
   if (isOneClickHtmlPrompt(text)) return Boolean(oneClickHtmlTargetFromPrompt(text));
   if (!text || text.length > 1200) return false;
-  if (explicitVaultFileReferenceCandidates(text).length !== 1) return false;
+  const references = explicitVaultFileReferenceCandidates(text);
+  if (!references.length || references.length > 3) return false;
   if (/(?:模糊|相似|类似|附近|全库|所有|批量|搜索|查找|如果没有|找不到就|fuzzy|similar|search|find|all|batch)/i.test(text)) return false;
   if (/(?:删除|移动|重命名|复制|导出|转换|配置|设置|自动化|插件|命令|delete|move|rename|copy|export|convert|config|setting|automation|plugin|command)/i.test(text)) return false;
   return /(?:新建|创建|建立|写入|写成|覆盖|替换|修改|改成|改为|追加|保存|补充|更新|create|write|overwrite|replace|modify|change\s+.+\s+to|append|save|patch|update)/i.test(text);
@@ -59691,6 +60018,8 @@ function removeCancipActionBlocks(content: string): string {
   return removeLooseCancipActionJson(content
     .replace(/```cancip-action\s*[\s\S]*?```/gi, "\n\n")
     .replace(/<cancip-action\b[^>]*>[\s\S]*?<\/cancip-action>/gi, "\n\n")
+    .replace(/<cancip-action\b[^>]*\/\s*>/gi, "\n\n")
+    .replace(/<tool_call\b[^>]*>[\s\S]*?(?:<\/tool_call>|$)/gi, "\n\n")
     .replace(/<!--\s*cancip-action\b[\s\S]*?-->/gi, "\n\n")
     .replace(/\{\s*["']cancip-action["']\s*:\s*(?:null|""|''|\{\s*\}|\[\s*\])?\s*\}/gi, "\n\n")
     .replace(/^[ \t]*["']?cancip-action["']?\s*:\s*$/gim, "")
@@ -66258,9 +66587,17 @@ function extractCancipActions(answer: string): CancipAction[] {
   while ((match = xmlRegex.exec(answer)) !== null) {
     actions.push(...extractCancipActionsFromJson(match[1]));
   }
+  const declarativeXmlRegex = /<cancip-action\b([^>]*?)\/\s*>/gi;
+  while ((match = declarativeXmlRegex.exec(answer)) !== null) {
+    const action = parseCancipAction(xmlActionAttributes(match[1] ?? ""));
+    if (action) actions.push(action);
+  }
   const commentRegex = /<!--\s*cancip-action\b([\s\S]*?)-->/gi;
   while ((match = commentRegex.exec(answer)) !== null) {
     actions.push(...extractCancipActionsFromJson(match[1]));
+  }
+  if (!actions.length) {
+    actions.push(...extractCancipActionsFromXmlToolCalls(answer));
   }
   if (!actions.length) {
     const genericFenceRegex = /```(?:json|javascript|js)?[^\r\n]*(?:\r?\n)([\s\S]*?)```/gi;
@@ -66285,6 +66622,7 @@ function cancipActionBlockForActions(actions: CancipAction[]): string {
 function hasCancipActionMarker(answer: string): boolean {
   return /```cancip-action\b/i.test(answer)
     || /<cancip-action\b/i.test(answer)
+    || /<tool_call\b/i.test(answer)
     || /<!--\s*cancip-action\b/i.test(answer)
     || /["']cancip-action["']\s*:/i.test(answer)
     || /["'](?:actions|action|type|tool|command|cmd|name|function)["']\s*:/.test(answer);
@@ -66378,6 +66716,102 @@ function cancipActionBlockBodies(answer: string): string[] {
     }
   }
   return uniqueStrings(bodies);
+}
+
+/**
+ * Some compatible OpenAI endpoints return XML-like tool markup instead of the
+ * JSON action contract. Convert the small, declarative subset into the same
+ * action type so permission checks and verification are never bypassed.
+ */
+function extractCancipActionsFromXmlToolCalls(answer: string): CancipAction[] {
+  const actions: CancipAction[] = [];
+  const callRegex = /<tool_call\b[^>]*>([\s\S]*?)(?:<\/tool_call>|(?=<tool_call\b)|$)/gi;
+  let match: RegExpExecArray | null;
+  while ((match = callRegex.exec(answer)) !== null) {
+    const body = match[1] ?? "";
+    const name = xmlToolCallValue(body, "tool_name")
+      || decodeXmlToolCallText(/<function\s*=\s*([^>\s]+)\s*>/i.exec(body)?.[1] ?? "").trim();
+    if (!name) continue;
+    const parametersBody = xmlToolCallValue(body, "parameters");
+    const parameters = parametersBody
+      ? xmlToolCallParameters(parametersBody)
+      : xmlAssignedToolCallParameters(body);
+    const direct = parseCancipAction({ type: name, ...parameters });
+    if (direct) {
+      actions.push(direct);
+      continue;
+    }
+    if (isCommandBusToolActionType(name) || isObsidianExecuteCommandAlias(name) || isObsidianEvalCommandAlias(name)) {
+      const command = isObsidianExecuteCommandAlias(name)
+        ? "obsidian.execute"
+        : isObsidianEvalCommandAlias(name)
+          ? "obsidian.eval"
+          : name;
+      actions.push({ type: "command", command, args: parameters });
+    }
+  }
+  return uniqueCancipActions(actions).slice(0, 20);
+}
+
+function xmlToolCallValue(body: string, tag: string): string {
+  const escaped = escapeRegExp(tag);
+  const match = new RegExp(`<${escaped}\\b[^>]*>([\\s\\S]*?)<\\/${escaped}>`, "i").exec(body);
+  return decodeXmlToolCallText(match?.[1] ?? "").trim();
+}
+
+function xmlActionAttributes(source: string): Record<string, unknown> {
+  const attributes: Record<string, unknown> = {};
+  const attributeRegex = /([A-Za-z][A-Za-z0-9_-]*)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+  let match: RegExpExecArray | null;
+  while ((match = attributeRegex.exec(source)) !== null) {
+    const key = match[1]?.trim();
+    if (!key) continue;
+    attributes[key] = decodeXmlToolCallText(match[2] ?? match[3] ?? "");
+  }
+  return attributes;
+}
+
+function xmlToolCallParameters(body: string): Record<string, unknown> {
+  const text = body.trim();
+  if (!text) return {};
+  const parsed = parseCancipActionJson(text);
+  if (parsed.ok && isRecord(parsed.value)) return parsed.value;
+  const parameters: Record<string, unknown> = {};
+  const tagRegex = /<([A-Za-z][A-Za-z0-9_-]*)\b[^>]*>([\s\S]*?)<\/\1>/g;
+  let match: RegExpExecArray | null;
+  while ((match = tagRegex.exec(text)) !== null) {
+    const key = match[1]?.trim();
+    if (!key || key === "parameters") continue;
+    const value = decodeXmlToolCallText(match[2] ?? "").trim();
+    if (!value) continue;
+    const nested = parseCancipActionJson(value);
+    parameters[key] = nested.ok ? nested.value : value;
+  }
+  return parameters;
+}
+
+function xmlAssignedToolCallParameters(body: string): Record<string, unknown> {
+  const parameters: Record<string, unknown> = {};
+  const parameterRegex = /<parameter\s*=\s*([A-Za-z][A-Za-z0-9_-]*)\s*>([\s\S]*?)<\/parameter>/gi;
+  let match: RegExpExecArray | null;
+  while ((match = parameterRegex.exec(body)) !== null) {
+    const key = match[1]?.trim();
+    if (!key) continue;
+    const value = decodeXmlToolCallText(match[2] ?? "").trim();
+    if (!value) continue;
+    const nested = parseCancipActionJson(value);
+    parameters[key] = nested.ok ? nested.value : value;
+  }
+  return parameters;
+}
+
+function decodeXmlToolCallText(value: string): string {
+  return value
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&amp;/gi, "&");
 }
 
 function cancipActionProtocolIssue(answer: string): string {
@@ -66717,6 +67151,27 @@ function parseCancipAction(input: unknown): CancipAction | null {
   if (!actionType) return null;
   const actionKind = actionType.toLowerCase();
 
+  const directPath = typeof input.path === "string"
+    ? input.path
+    : typeof input.target === "string"
+      ? input.target
+      : typeof input.file === "string"
+        ? input.file
+        : "";
+  const legacyPatchContent = typeof input.content === "string" ? input.content : undefined;
+  const legacyPatchChunks = normalizeStringChunks(input.chunks);
+  if (actionKind === "patch" && directPath && (legacyPatchContent !== undefined || legacyPatchChunks)
+    && optionalActionString(input, "find", "old", "old_string", "oldValue", "oldText", "old_text", "from", "search") === undefined
+    && optionalActionString(input, "replace", "new", "new_string", "newValue", "newText", "new_text", "to", "replacement", "value") === undefined) {
+    return {
+      type: "write",
+      path: directPath,
+      content: legacyPatchContent,
+      chunks: legacyPatchChunks,
+      overwrite: typeof input.overwrite === "boolean" ? input.overwrite : true
+    };
+  }
+
   const directAlias = LOOSE_DIRECT_ACTION_ALIASES.get(looseActionAliasKey(actionType));
   if (directAlias) {
     const path = typeof input.path === "string"
@@ -66974,10 +67429,15 @@ function isAutomationRunStatus(value: unknown): value is AutomationRunStatus {
   return value === "ok" || value === "failed" || value === "skipped" || value === "pending";
 }
 
+function isAcceptanceUserReportPath(path: string): boolean {
+  return isPathInVaultFolder(normalizePath(path.replace(/\\/g, "/")), ACCEPTANCE_USER_REPORT_ROOT);
+}
+
 function isAutomationInternalPath(path: string, obsidianConfigDir: string): boolean {
   const normalized = normalizePath(path.replace(/\\/g, "/").replace(/^\/+/, ""));
   return isPathInVaultFolder(normalized, CANCIP_CONFIG_DIR)
     || isPathInVaultFolder(normalized, obsidianConfigDir)
+    || isAcceptanceUserReportPath(normalized)
     || isPathInVaultFolder(normalized, ".trash");
 }
 
