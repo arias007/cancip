@@ -3208,8 +3208,8 @@ const PERSONALIZED_DIARY_NO_UPDATE_MARKER = "CANCIP_DIARY_NO_UPDATE";
 const MEMORY_DREAM_AUTOMATION_ID = "auto-cancip-memory-dream";
 const MEMORY_DREAM_PROMPT_MARKER = "Workflow Optimizer v3";
 const CANCIP_DAILY_CARE_AUTOMATION_ID = "auto-cancip-daily-care";
-const CANCIP_DAILY_CARE_PROMPT_MARKER = "Daily Feedback Learning v3";
-const LEGACY_CANCIP_DAILY_CARE_PROMPT_MARKER = "Daily Feedback Learning v2";
+const CANCIP_DAILY_CARE_PROMPT_MARKER = "Daily Feedback Learning v4";
+const LEGACY_CANCIP_DAILY_CARE_PROMPT_MARKER = "Daily Feedback Learning v3";
 const DEPRECATED_AUTOMATION_IDS = new Set([
   "auto-vault-content-beautify",
   "auto-vault-auto-tags",
@@ -15189,10 +15189,16 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       ".markdown-source-view, .markdown-preview-view, .obcc-document-stage, .pdf-viewer, .pdf-container, .workspace-leaf-content"
     );
     if (!surface) return null;
-    const activeLeaf = this.activeWorkspaceLeaf();
-    if (!this.app.workspace.getActiveViewOfType(MarkdownView)
-      && !(activeLeaf?.view instanceof CancipDocumentWorkbenchView)
-      && !isPdfFile(activeFile)) return null;
+    const containingLeaves: WorkspaceLeaf[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (containingLeaves.length) return;
+      const container = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl
+        ?? (leaf as unknown as { containerEl?: HTMLElement }).containerEl;
+      if (container?.contains(element)) containingLeaves.push(leaf);
+    });
+    const containingLeaf = containingLeaves[0];
+    const fileView = containingLeaf?.view as unknown as { file?: TFile } | undefined;
+    if (!(fileView?.file instanceof TFile) || fileView.file.path !== activeFile.path) return null;
     return surface;
   }
 
@@ -33285,6 +33291,7 @@ class CancipView extends ItemView {
     const startedAt = Date.now();
     let verifiedChangedPaths: string[] = [];
     const personalizedDiary = task.id === PERSONALIZED_DIARY_AUTOMATION_ID;
+    const modelMaySkipToolActions = task.id === CANCIP_DAILY_CARE_AUTOMATION_ID;
     const diaryTargetPath = personalizedDiary ? this.todayDiaryTarget().path : "";
     if (this.activeRequest) throw new Error(this.t("todoRequestRunning"));
     const modelPromptInfo = this.plugin.automationModelPromptForTask(task, task.prompt);
@@ -33394,7 +33401,7 @@ class CancipView extends ItemView {
         return { status: "skipped", text: initialVisible };
       }
       let actionReport = await this.handleActionBlocks(answer, assistantMessage);
-      if (!actionReport && shouldExpectToolActionForPrompt(task.prompt)) {
+      if (!actionReport && shouldExpectToolActionForPrompt(task.prompt) && !modelMaySkipToolActions) {
         actionReport = await this.forceToolActionForImplementationTask(task.prompt, context, request)
           ?? await this.forceToolActionForImplementationTask(task.prompt, context, request, "hard")
           ?? await this.runImplementationDiscoveryFallback(task.prompt, request);
@@ -33447,11 +33454,11 @@ class CancipView extends ItemView {
         if (finalDecision.status !== "answered" || !this.ensureFinalConclusion(finalDecision.handling, startedAt, false, task.prompt)) {
           throw new Error("automation response did not reach structured final state");
         }
-        if (shouldExpectToolActionForPrompt(task.prompt) && shouldNeedMoreActionForPrompt(task.prompt, finalDecision.handling.runs)) {
+        if (!modelMaySkipToolActions && shouldExpectToolActionForPrompt(task.prompt) && shouldNeedMoreActionForPrompt(task.prompt, finalDecision.handling.runs)) {
           throw new Error("automation described the task but did not execute and verify the required change");
         }
       } else {
-        if (shouldExpectToolActionForPrompt(task.prompt)) {
+        if (shouldExpectToolActionForPrompt(task.prompt) && !modelMaySkipToolActions) {
           throw new Error("automation described the task but did not execute it");
         }
         if (!this.ensurePlainFinalConclusion(startedAt, task.prompt)) {
@@ -33491,6 +33498,33 @@ class CancipView extends ItemView {
     }
     if (task.id === PERSONALIZED_DIARY_AUTOMATION_ID) {
       return this.buildPersonalizedDiarySourcePack();
+    }
+    if (task.id === CANCIP_DAILY_CARE_AUTOMATION_ID) {
+      const args = task.args ?? {};
+      const profile = this.plugin.automationApiProfile(task, prompt);
+      const memoryResult = await this.runMemoryDreamCommand({
+        ...args,
+        days: clampInt(args.days, 1, 1, 30),
+        compactExperience: args.compactExperience !== false
+      }, profile);
+      const sourcePack = await this.buildVaultDailyReportSourcePack(
+        clampInt(args.hours, 24, 1, 168),
+        clampInt(args.limit, 80, 20, 200)
+      );
+      return trimContext([
+        "# Daily Care Programmatic Preparation",
+        "",
+        "## Memory, Wiki, Skill, and archive maintenance already completed",
+        memoryResult,
+        "",
+        "## File and folder organization evidence",
+        sourcePack,
+        "",
+        "## Execution contract",
+        "- The programmatic memory-maintenance phase above is already complete; do not repeat it.",
+        "- Decide from the evidence whether this run needs only concrete suggestions, low-risk recoverable file/folder actions, or review-gated high-risk candidates.",
+        "- If no reliable useful organization action exists, give the evidence-based suggestions or state that no change was warranted. Do not manufacture a tool action."
+      ].join("\n"), 32000);
     }
     return "";
   }
@@ -34213,6 +34247,14 @@ class CancipView extends ItemView {
       this.vaultDailyHealthSummary(allVaultFiles, reportFiles, recentFiles, automations, reviewGates, unresolvedIssues, isolatedCandidates.length),
       "- safety: read-only scan only; no move/delete/merge/rename/link repair/content edit executed.",
       "",
+      "## User Organization Preference Snapshot",
+      preferenceSnapshot,
+      "",
+      "## High Risk Guard",
+      "- Move/delete/merge/rename/link repair/bulk cleanup must stay candidate-only until the user confirms or Review Gate approves.",
+      "- Protect plugin syntax/data: Tasks, Dataview, Excalidraw, Spaced Repetition, Meld Encrypt, Remotely Save, Git, RunJS, QuickAdd, Cmdr.",
+      "- Friend-like reminders must be specific and evidence-based. Do not produce generic concern, filler comfort, or advice unrelated to the scan facts.",
+      "",
       "## Folder Health Signals",
       folderHealth,
       "",
@@ -34252,13 +34294,8 @@ class CancipView extends ItemView {
       "## Local Version State",
       versionState,
       "",
-      "## User Organization Preference Snapshot",
-      preferenceSnapshot,
-      "",
-      "## High Risk Guard",
-      "- Move/delete/merge/rename/link repair/bulk cleanup must stay candidate-only until the user confirms or Review Gate approves.",
-      "- Protect plugin syntax/data: Tasks, Dataview, Excalidraw, Spaced Repetition, Meld Encrypt, Remotely Save, Git, RunJS, QuickAdd, Cmdr.",
-      "- Friend-like reminders must be specific and evidence-based. Do not produce generic concern, filler comfort, or advice unrelated to the scan facts."
+      "## Scan Completion",
+      "- The sections above are bounded evidence, not authorization to invent work."
     ];
     return trimContext(lines.join("\n"), 26000);
   }
@@ -34853,7 +34890,7 @@ class CancipView extends ItemView {
         .filter((name) => name.length >= 3);
       let score = 0;
       const evidence: string[] = [];
-      const mentioned = names.find((name) => contentLower.includes(name.toLowerCase()));
+      const mentioned = names.find((name) => isDistinctVaultLinkCandidateName(name) && contentLower.includes(name.toLowerCase()));
       if (mentioned) {
         score += 8;
         evidence.push(`正文提到“${mentioned}”但未链接`);
@@ -49997,51 +50034,23 @@ class CancipView extends ItemView {
       this.renderWhenProcessStepOpen(parent, () => this.renderMarkdown(parent, detail));
       return;
     }
-    const firstSection = (group: "sent" | "received", patterns: RegExp[]): ProcessAuditSection | null => {
-      const grouped = sections.filter((section) => section.group === group);
-      for (const pattern of patterns) {
-        const match = grouped.find((section) => pattern.test(section.title.trim().toLowerCase()));
-        if (match) return match;
-      }
-      return grouped[0] ?? null;
-    };
-    const sentSections = sections.filter((section) => section.group === "sent");
-    const receivedSections = sections.filter((section) => section.group === "received");
-    const receivedFallback = receivedSections.length ? null : firstSection("received", [
-        /^parsed extractedtext$/i,
-        /^visible answer after filtering$/i
-      ]);
-    const runtime = sections.filter((section) => section.group === "runtime"
-      && !/model exchange raw contents/i.test(section.title));
     const compact: Array<{ group: "sent" | "received" | "runtime"; title: string; content: string; stateSuffix: string; raw: boolean }> = [];
-    // Each sent/received payload gets its own details node. Do not combine them:
-    // opening one original must never open the other originals with it.
-    for (const [index, section] of sentSections.entries()) {
+    const sequence = new Map<"sent" | "received" | "runtime", number>();
+    // Preserve the real request order: send 1, receive 1, send 2, receive 2.
+    // Each payload remains independent so opening one original never expands another.
+    for (const section of sections) {
+      if (section.group !== "sent" && section.group !== "received" && section.group !== "runtime") continue;
+      if (section.group === "runtime" && /model exchange raw contents/i.test(section.title)) continue;
+      const index = sequence.get(section.group) ?? 0;
+      sequence.set(section.group, index + 1);
       compact.push({
-        group: "sent",
+        group: section.group,
         title: this.localizedProcessFieldTitle(section.title),
-        content: this.processExchangeRawContent(section.content),
-        stateSuffix: `sent-${index}`,
-        raw: section.raw !== false
-      });
-    }
-    const receivedToRender = receivedSections.length ? receivedSections : receivedFallback ? [receivedFallback] : [];
-    for (const [index, section] of receivedToRender.entries()) {
-      compact.push({
-        group: "received",
-        title: this.localizedProcessFieldTitle(section.title),
-        content: this.processExchangeRawContent(section.content),
-        stateSuffix: `received-${index}`,
-        raw: section.raw !== false
-      });
-    }
-    if (runtime.length) {
-      compact.push({
-        group: "runtime",
-        title: this.t("processRuntime"),
-        content: runtime.map((section) => `${this.localizedProcessFieldTitle(section.title)}\n${section.content}`).join("\n\n"),
-        stateSuffix: "runtime",
-        raw: false
+        content: section.group === "runtime"
+          ? `${this.localizedProcessFieldTitle(section.title)}\n${section.content}`
+          : this.processExchangeRawContent(section.content),
+        stateSuffix: `${section.group}-${index}`,
+        raw: section.group === "runtime" ? false : section.raw !== false
       });
     }
     if (!compact.length) {
@@ -54244,8 +54253,10 @@ function legacyAutomationTemplatePrompts(id: string): string[] {
     ]);
   }
   if (id === CANCIP_DAILY_CARE_AUTOMATION_ID) return [
-    `${LEGACY_CANCIP_DAILY_CARE_PROMPT_MARKER}：汇总当日会话与工具结果、用户改动文件及内容线索、审核通过/取消/修正、推荐按钮与自动补全展示/采用/未采用、自动化结果等真实反馈；按内容分析稳定偏好、成功路线和失败根因，更新或合并记忆、Wiki、Skill、自动化与经验索引。归档过期、低价值、用户未采用或已失效的机器记录，减少热数据负担；低风险可恢复改良直接执行并验证，高风险文件移动/删除/合并/批量改名仍只列候选。`,
-    `${LEGACY_CANCIP_DAILY_CARE_PROMPT_MARKER}: aggregate verified daily feedback from sessions and tools, user-touched file/content clues, approved/cancelled/corrected reviews, recommendation and autocomplete shown/used/unused events, and automation outcomes. Analyze content for stable preferences, successful routes, and failure causes; update or merge memory, Wiki, Skills, automations, experience, and indexes. Archive stale, low-value, unused, or invalid machine records to reduce hot data. Execute and verify low-risk recoverable improvements; keep risky move/delete/merge/bulk rename operations as candidates.`
+    `Daily Feedback Learning v2：汇总当日会话与工具结果、用户改动文件及内容线索、审核通过/取消/修正、推荐按钮与自动补全展示/采用/未采用、自动化结果等真实反馈；按内容分析稳定偏好、成功路线和失败根因，更新或合并记忆、Wiki、Skill、自动化与经验索引。归档过期、低价值、用户未采用或已失效的机器记录，减少热数据负担；低风险可恢复改良直接执行并验证，高风险文件移动/删除/合并/批量改名仍只列候选。`,
+    `Daily Feedback Learning v2: aggregate verified daily feedback from sessions and tools, user-touched file/content clues, approved/cancelled/corrected reviews, recommendation and autocomplete shown/used/unused events, and automation outcomes. Analyze content for stable preferences, successful routes, and failure causes; update or merge memory, Wiki, Skills, automations, experience, and indexes. Archive stale, low-value, unused, or invalid machine records to reduce hot data. Execute and verify low-risk recoverable improvements; keep risky move/delete/merge/bulk rename operations as candidates.`,
+    `${LEGACY_CANCIP_DAILY_CARE_PROMPT_MARKER}：汇总当日会话与工具结果、用户改动文件及内容线索、审核通过/取消/修正、推荐按钮与自动补全展示/采用/未采用、自动化结果等真实反馈；按内容分析稳定偏好、成功路线和失败根因，更新或合并记忆、Wiki、Skill、自动化与经验索引。给出按主题/项目/生命周期分类的具体整理建议；对低风险、明确混乱、可恢复的文件或文件夹可直接整理并读回验证，高风险移动、删除、合并、批量改名进入审核。归档过期、低价值、用户未采用或已失效的机器记录，减少热数据负担。`,
+    `${LEGACY_CANCIP_DAILY_CARE_PROMPT_MARKER}: aggregate verified daily feedback from sessions and tools, user-touched file/content clues, approved/cancelled/corrected reviews, recommendation and autocomplete shown/used/unused events, and automation outcomes. Analyze content for stable preferences, successful routes, and failure causes; update or merge memory, Wiki, Skills, automations, experience, and indexes. Give concrete organization suggestions by topic, project, or lifecycle. Directly organize and read back low-risk, clearly disordered, recoverable files or folders; route risky moves, deletes, merges, and bulk renames through review. Archive stale, low-value, unused, or invalid machine records to reduce hot data.`
   ];
   if (id === PERSONALIZED_DIARY_AUTOMATION_ID) return [
     "找到今天的日记笔记，读取当前内容，并根据 Cancip 今日真实用户动作、执行结果、近期相关记忆辅助续写。用第一人称自然表达，区分已完成、失败和计划，不把文件列表当日记，不编造未发生的事。只补充有价值且尚未写入的内容；若需写回，使用正常审核流程并验证结果。",
@@ -54285,7 +54296,13 @@ function localizeUntouchedAutomationTask(task: AutomationTask, template: Automat
   const prompt = task.prompt && knownPrompts.includes(task.prompt)
     ? template.prompt?.trim() ?? ""
     : task.prompt;
-  return title === task.title && prompt === task.prompt ? task : { ...task, title, prompt };
+  const legacyCommands = task.id === CANCIP_DAILY_CARE_AUTOMATION_ID ? ["cancip.dailyCare"] : [];
+  const command = task.command && legacyCommands.includes(task.command)
+    ? template.command?.trim() || undefined
+    : task.command;
+  return title === task.title && prompt === task.prompt && command === task.command
+    ? task
+    : { ...task, title, prompt, command };
 }
 
 function newsBriefAutomationTemplates(language: Language = "en"): AutomationTemplate[] {
@@ -54355,7 +54372,6 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
         `${CANCIP_DAILY_CARE_PROMPT_MARKER}：汇总当日会话与工具结果、用户改动文件及内容线索、审核通过/取消/修正、推荐按钮与自动补全展示/采用/未采用、自动化结果等真实反馈；按内容分析稳定偏好、成功路线和失败根因，更新或合并记忆、Wiki、Skill、自动化与经验索引。给出按主题/项目/生命周期分类的具体整理建议；对低风险、明确混乱、可恢复的文件或文件夹可直接整理并读回验证，高风险移动、删除、合并、批量改名进入审核。归档过期、低价值、用户未采用或已失效的机器记录，减少热数据负担。`,
         `${CANCIP_DAILY_CARE_PROMPT_MARKER}: aggregate verified daily feedback from sessions and tools, user-touched file/content clues, approved/cancelled/corrected reviews, recommendation and autocomplete shown/used/unused events, and automation outcomes. Analyze content for stable preferences, successful routes, and failure causes; update or merge memory, Wiki, Skills, automations, experience, and indexes. Give concrete organization suggestions by topic, project, or lifecycle. Directly organize and read back low-risk, clearly disordered, recoverable files or folders; route risky moves, deletes, merges, and bulk renames through review. Archive stale, low-value, unused, or invalid machine records to reduce hot data.`
       ),
-      command: "cancip.dailyCare",
       args: { days: 1, hours: 24, limit: 80, compactExperience: true },
       schedule: "daily",
       enabled: true,
@@ -56241,6 +56257,15 @@ function tokenize(input: string): string[] {
     "你好", "您好", "测试", "試試", "在吗", "在嗎", "哈喽", "哈囉"
   ]);
   return [...new Set(matches.filter((token) => !stop.has(token)))];
+}
+
+function isDistinctVaultLinkCandidateName(input: string): boolean {
+  const compact = input.replace(/\s+/g, "").trim();
+  if (!compact || /^\d{4}(?:[-_.]\d{1,2}){0,2}$/.test(compact)) return false;
+  const latinOrNumber = compact.match(/[a-z0-9][a-z0-9_-]{3,}/i)?.[0] ?? "";
+  if (latinOrNumber.length >= 4) return true;
+  const hanCount = (compact.match(/[\u4e00-\u9fff]/g) ?? []).length;
+  return hanCount >= 5 && tokenize(compact).length >= 3;
 }
 
 function extractHistoryKeyTerms(input: string): string[] {
