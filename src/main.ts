@@ -2186,6 +2186,7 @@ type UiButtonWorkflowDirective = {
   label?: string;
   scope?: UiButtonRule["scope"];
   ruleId?: string;
+  restoreRequested?: boolean;
   expectedHidden?: boolean;
   verificationAttempt?: number;
   evidence?: string;
@@ -40710,11 +40711,11 @@ class CancipView extends ItemView {
   }
 
   private createBudgetedToolRuns(actions: CancipAction[]): ToolRun[] {
-    actions = uniqueCancipActions(actions);
     const taskRuns = this.currentTaskToolRuns();
+    const buttonDirective = this.uiButtonWorkflowDirective(taskRuns, this.previousActionableUserPrompt());
+    actions = uniqueCancipActions(actions.map((action) => this.prepareUiButtonWorkflowAction(action, buttonDirective)));
     const previous = taskRuns.filter((run) => run.status !== "rejected" && run.status !== "blocked");
     const previousBudgeted = taskRuns.filter((run) => run.status !== "rejected" && countsTowardToolActionBudget(run.action));
-    const buttonDirective = this.uiButtonWorkflowDirective(taskRuns, this.previousActionableUserPrompt());
     const taskLimit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
     const previousByKey = new Map(previous.map((run) => [stableCacheKey(run.action), run] as const));
     const seen = new Set(previousByKey.keys());
@@ -40748,6 +40749,17 @@ class CancipView extends ItemView {
       void this.recordSessionEvent({ kind: "tool.finish", runId: blocked.id, toolStatus: blocked.status, summary: blocked.summary, detail: blocked.error });
     }
     return runs;
+  }
+
+  private prepareUiButtonWorkflowAction(action: CancipAction, directive: UiButtonWorkflowDirective | null): CancipAction {
+    if (directive?.phase !== "apply" || !directive.restoreRequested || action.type !== "command") return action;
+    if (normalizeCommandBusName(action.command) !== "obsidian.ui.applyButtonRules") return action;
+    const args = action.args ?? {};
+    if (!normalizeUiButtonRules(args.rules).length) return action;
+    return {
+      ...action,
+      args: { ...args, preserveExisting: true }
+    };
   }
 
   private duplicateActionBlockedReason(action: CancipAction, previous?: ToolRun): string {
@@ -41005,6 +41017,12 @@ class CancipView extends ItemView {
     ].includes(command));
     if (!relevant.length) return null;
 
+    const planText = runs
+      .filter((run) => run.action.type === "todo")
+      .map((run) => JSON.stringify(run.action))
+      .join(" ");
+    const requestsRestore = /(恢复|还原|复原|撤销(?:本次|临时|规则)?|重置|reset|restore|revert|temporary)/i.test(`${originalPrompt}\n${planText}`);
+
     const buttonList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttons" && run.status === "executed");
     const ruleList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttonRules" && run.status === "executed");
     const mutations = relevant.filter(({ command, run }) => {
@@ -41020,6 +41038,7 @@ class CancipView extends ItemView {
       if (!ruleList) return { phase: "inspect-rules" };
       return {
         phase: "apply",
+        restoreRequested: requestsRestore,
         evidence: trimContext(buttonList.run.result || buttonList.run.error || "", 1200)
       };
     }
@@ -41030,16 +41049,21 @@ class CancipView extends ItemView {
     const incoming = normalizeUiButtonRules(args.rules);
     const resetTargets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
     const isReset = resetTargets.length > 0 && incoming.length === 0 && !args.clear;
-    const previousAppliedRule = [...mutations]
+    const previousAppliedMutation = [...mutations]
       .reverse()
-      .map(({ run }) => run.action.type === "command" ? normalizeUiButtonRules(run.action.args?.rules)[0] : undefined)
-      .find((rule): rule is UiButtonRule => Boolean(rule));
+      .find(({ run }) => run.action.type === "command" && normalizeUiButtonRules(run.action.args?.rules).length > 0);
+    const previousAppliedRule = previousAppliedMutation?.run.action.type === "command"
+      ? normalizeUiButtonRules(previousAppliedMutation.run.action.args?.rules)[0]
+      : undefined;
     const targetRule = incoming[0] ?? previousAppliedRule;
     const resetTarget = resetTargets[0];
     const selector = targetRule?.selector ?? resetTarget?.selector;
     const label = targetRule?.label ?? resetTarget?.label;
     const scope = targetRule?.scope ?? resetTarget?.scope;
-    const ruleId = targetRule?.id ?? resetTarget?.id;
+    const appliedRuleId = uiButtonRuleIdFromMutationResult(
+      (isReset ? previousAppliedMutation?.run.result : latest.run.result) || ""
+    );
+    const ruleId = appliedRuleId || resetTarget?.id || targetRule?.id;
     const expectedHidden = isReset ? false : targetRule?.hidden;
     const verificationRuns = entries.slice(latest.index + 1).filter(({ command, run }) => {
       if (command !== "obsidian.ui.buttons" || run.status !== "executed" || run.action.type !== "command") return false;
@@ -41076,11 +41100,6 @@ class CancipView extends ItemView {
     }
     if (isReset) return { phase: "done", selector, label, scope, ruleId };
 
-    const planText = runs
-      .filter((run) => run.action.type === "todo")
-      .map((run) => JSON.stringify(run.action))
-      .join(" ");
-    const requestsRestore = /(恢复|还原|复原|撤销(?:本次|临时|规则)?|重置|reset|restore|revert|temporary)/i.test(`${originalPrompt}\n${planText}`);
     return requestsRestore
       ? { phase: "reset", selector, label, scope, ruleId, expectedHidden: targetRule?.hidden }
       : { phase: "done", selector, label, scope, ruleId };
@@ -41143,7 +41162,10 @@ class CancipView extends ItemView {
     const expected = (() => {
       if (directive.phase === "inspect-buttons") return "obsidian.ui.buttons";
       if (directive.phase === "inspect-rules") return "obsidian.ui.buttonRules";
-      if (directive.phase === "apply" || directive.phase === "reset") return "obsidian.ui.applyButtonRules";
+      if (directive.phase === "apply") return "obsidian.ui.applyButtonRules";
+      if (directive.phase === "reset") return directive.ruleId
+        ? `obsidian.ui.applyButtonRules reset id=${directive.ruleId}`
+        : "obsidian.ui.applyButtonRules reset for the exact temporary selector";
       if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return "obsidian.ui.buttons with the exact selector";
       return "a final answer without tools";
     })();
@@ -41151,9 +41173,13 @@ class CancipView extends ItemView {
     if (directive.phase === "inspect-buttons") valid = command === "obsidian.ui.buttons";
     else if (directive.phase === "inspect-rules") valid = command === "obsidian.ui.buttonRules";
     else if (directive.phase === "apply") valid = command === "obsidian.ui.applyButtonRules" && normalizeUiButtonRules(args.rules).length > 0;
-    else if (directive.phase === "reset") valid = command === "obsidian.ui.applyButtonRules"
-      && normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules).length > 0
-      && !args.clear;
+    else if (directive.phase === "reset") {
+      const targets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
+      const exactTarget = directive.ruleId
+        ? targets.some((target) => target.id === directive.ruleId)
+        : targets.some((target) => target.selector === directive.selector && (!directive.scope || target.scope === directive.scope));
+      valid = command === "obsidian.ui.applyButtonRules" && targets.length > 0 && exactTarget && !args.clear;
+    }
     else if (directive.phase === "verify-apply" || directive.phase === "verify-reset") {
       const selector = typeof args.selector === "string" ? args.selector.trim() : "";
       valid = command === "obsidian.ui.buttons" && (!directive.selector || selector === directive.selector);
@@ -43491,11 +43517,34 @@ class CancipView extends ItemView {
       .flatMap((run) => [...(run.result || "").matchAll(/count\s+(\d+)\s*->\s*(\d+)/gi)])
       .map((match) => [match[1], match[2]] as const);
     const countTrace = counts.length >= 2 ? `${counts[0][0]} -> ${counts[0][1]} -> ${counts[counts.length - 1][1]}` : "";
+    const planTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
     if (isChineseLanguage(this.plugin.language())) {
+      if (planTodos.length) {
+        return planTodos.map((todo, index) => {
+          if (/(恢复|还原|复原|撤销|重置)/i.test(todo.text)) {
+            return `${index + 1}. 已撤销本次临时规则并验证按钮恢复可见${countTrace ? `；规则数 ${countTrace}` : ""}。`;
+          }
+          if (/(隐藏|应用|改动|修改)/i.test(todo.text)) {
+            return `${index + 1}. 已应用临时规则并定向验证，按钮明确显示 [hidden]。`;
+          }
+          return `${index + 1}. 已读取目标按钮和现有规则，确认后续操作只针对 ${label}按钮。`;
+        }).join("\n");
+      }
       return [
         `${label}按钮已临时隐藏并恢复。`,
         `验证：隐藏时明确显示 [hidden]，恢复后重新可见${countTrace ? `；规则数 ${countTrace}` : ""}。`
       ].join("\n");
+    }
+    if (planTodos.length) {
+      return planTodos.map((todo, index) => {
+        if (/(restore|revert|reset|undo)/i.test(todo.text)) {
+          return `${index + 1}. Removed only the temporary rule and verified that the button is visible again${countTrace ? `; rule count ${countTrace}` : ""}.`;
+        }
+        if (/(hide|apply|change|modify)/i.test(todo.text)) {
+          return `${index + 1}. Applied the temporary rule and verified the explicit [hidden] state.`;
+        }
+        return `${index + 1}. Read the target button and saved rules before changing only ${label}.`;
+      }).join("\n");
     }
     return [
       `${label} was temporarily hidden and restored.`,
@@ -43513,6 +43562,7 @@ class CancipView extends ItemView {
     if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
     const taskRuns = uniqueToolRunsById([...this.currentTaskToolRuns(), ...result.runs]);
     const terminalButtonWorkflow = this.uiButtonWorkflowDirective(taskRuns, originalPrompt)?.phase === "done";
+    if (terminalButtonWorkflow) this.completeVerifiedButtonWorkflowPlan();
     const decisionRuns = terminalButtonWorkflow ? taskRuns : result.runs;
     const terminalButtonSummary = terminalButtonWorkflow ? this.verifiedUiButtonWorkflowFinalAnswer(decisionRuns, originalPrompt) : "";
     let finalStep: ChatMessage | null = null;
@@ -43679,6 +43729,7 @@ class CancipView extends ItemView {
   private ensureFinalConclusion(result: ActionHandlingResult, startedAt?: number, needsMoreAction = false, originalPrompt = ""): boolean {
     const taskRuns = uniqueToolRunsById([...this.currentTaskToolRuns(), ...result.runs]);
     const terminalButtonWorkflow = this.uiButtonWorkflowDirective(taskRuns, originalPrompt)?.phase === "done";
+    if (terminalButtonWorkflow) this.completeVerifiedButtonWorkflowPlan();
     const effectiveResult: ActionHandlingResult = terminalButtonWorkflow
       ? { ...result, runs: taskRuns, executed: taskRuns.some((run) => run.status === "executed") }
       : result;
@@ -43711,6 +43762,19 @@ class CancipView extends ItemView {
     void this.saveCurrentSession();
     this.renderMessages();
     return true;
+  }
+
+  private completeVerifiedButtonWorkflowPlan(): void {
+    let changed = false;
+    for (const todo of this.manualTodos) {
+      if (todo.source !== "programmatic" || todo.sendToModel === false || todo.done) continue;
+      todo.done = true;
+      changed = true;
+    }
+    if (!changed) return;
+    void this.recordSessionEvent({ kind: "session.save", detail: "completed button workflow Plan from verified runtime evidence" });
+    void this.saveCurrentSession();
+    this.refreshPlanPanelIfOpen();
   }
 
   private finalAnswerRequirementFailure(text: string, originalPrompt = "", runs: ToolRun[] = []): string {
@@ -49309,6 +49373,7 @@ class CancipView extends ItemView {
   private async applyUiButtonRulesCommand(args: Record<string, unknown>): Promise<string> {
     if (args.help === true || args.action === "help") return this.uiButtonCommandHelp();
     const clear = Boolean(args.clear);
+    const preserveExisting = args.preserveExisting === true;
     const rawRules = Array.isArray(args.rules) ? args.rules : [];
     const incoming = normalizeUiButtonRules(rawRules);
     const resetTargets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
@@ -49323,11 +49388,20 @@ class CancipView extends ItemView {
         throw new Error(`invalid button CSS selector ${rule.selector}: ${reason}. Read obsidian.ui.buttons and use its exact selector.`);
       }
     }
-    const beforeCount = this.plugin.settings.uiButtonRules.length;
+    const beforeRules = this.plugin.settings.uiButtonRules;
+    const beforeCount = beforeRules.length;
+    const beforeIds = new Set(beforeRules.map((rule) => rule.id));
     const existing = resetTargets.length
-      ? this.plugin.settings.uiButtonRules.filter((rule) => !uiButtonRuleMatchesAnyResetTarget(rule, resetTargets))
-      : this.plugin.settings.uiButtonRules;
-    const next = clear ? incoming : mergeUiButtonRules(existing, incoming);
+      ? beforeRules.filter((rule) => !uiButtonRuleMatchesAnyResetTarget(rule, resetTargets))
+      : beforeRules;
+    const next = clear
+      ? incoming
+      : preserveExisting && incoming.length && !resetTargets.length
+        ? appendUiButtonRulesPreservingExisting(existing, incoming)
+        : mergeUiButtonRules(existing, incoming);
+    const appliedRuleIds = incoming.length
+      ? next.filter((rule) => !beforeIds.has(rule.id)).map((rule) => rule.id)
+      : [];
     this.plugin.settings.uiButtonRules = next;
     await this.plugin.saveSettings();
     this.plugin.applyUiButtonRules();
@@ -49335,6 +49409,7 @@ class CancipView extends ItemView {
     const targetSummary = incoming[0]?.selector || resetTargets[0]?.selector || resetTargets[0]?.id || resetTargets[0]?.label || "all";
     return [
       `button rules ${operation}; count ${beforeCount} -> ${next.length}; target ${targetSummary}`,
+      ...(incoming.length ? [`appliedRuleIds: ${appliedRuleIds.join(", ") || incoming.map((rule) => rule.id).join(", ")}`] : []),
       this.uiButtonRulesSummary({
         selector: incoming[0]?.selector || resetTargets[0]?.selector,
         label: incoming[0]?.label || resetTargets[0]?.label,
@@ -68382,6 +68457,21 @@ function extractCancipActions(answer: string): CancipAction[] {
   return actions.slice(0, 20);
 }
 
+function appendUiButtonRulesPreservingExisting(existing: UiButtonRule[], incoming: UiButtonRule[]): UiButtonRule[] {
+  const merged = [...existing];
+  for (const rule of incoming) merged.push(ensureUniqueUiButtonRuleId(rule, merged, -1));
+  return merged.slice(-200);
+}
+
+function uiButtonRuleIdFromMutationResult(result: string): string {
+  const applied = result.match(/^appliedRuleIds:\s*([^\r\n]+)/m)?.[1]
+    ?.split(",")
+    .map((value) => value.trim())
+    .find(Boolean);
+  if (applied) return applied;
+  return result.match(/^\d+\.\s+id=([^\s]+)/m)?.[1]?.trim() ?? "";
+}
+
 function cancipActionBlockForActions(actions: CancipAction[]): string {
   return `\`\`\`cancip-action\n${JSON.stringify({ actions })}\n\`\`\``;
 }
@@ -68963,7 +69053,10 @@ function parseCancipAction(input: unknown): CancipAction | null {
   }
 
   if (actionKind === "command" && looseCommand) {
-    const directAction = directActionFromCommandAlias(looseCommand, commandArgsFromLooseToolAction(input));
+    const looseArgs = commandArgsFromLooseToolAction(input);
+    const structuredAction = structuredActionFromCommandAlias(looseCommand, looseArgs);
+    if (structuredAction) return structuredAction;
+    const directAction = directActionFromCommandAlias(looseCommand, looseArgs);
     if (directAction) return directAction;
   }
 
@@ -69196,6 +69289,16 @@ function isAutomationNotifyMode(value: unknown): value is AutomationNotifyMode {
 
 function isAutomationRunStatus(value: unknown): value is AutomationRunStatus {
   return value === "ok" || value === "failed" || value === "skipped" || value === "pending";
+}
+
+function structuredActionFromCommandAlias(command: string, args?: Record<string, unknown>): CancipAction | null {
+  const match = command.trim().match(/^(?:cancip[.:/\s_-]+)?(todo|automation)[.:/\s_-]+(set|add|update|remove|list|clear|run)$/i);
+  if (!match) return null;
+  const type = match[1].toLowerCase();
+  const op = match[2].toLowerCase();
+  if (type === "todo" && !isTodoActionOperation(op)) return null;
+  if (type === "automation" && !isAutomationActionOperation(op)) return null;
+  return parseCancipAction({ ...(args ?? {}), type, op });
 }
 
 function isAcceptanceUserReportPath(path: string): boolean {
