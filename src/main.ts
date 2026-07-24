@@ -1889,6 +1889,7 @@ type OutcomeVerificationReport = {
 type ToolRunStatus = "pending" | "executing" | "executed" | "blocked" | "failed" | "rejected";
 type ReviewGateDecision = "approved" | "correction" | "cancelled";
 type ReviewGateTerminalDecision = ReviewGateDecision | "rejected";
+type FinalReviewStatus = "complete" | "awaiting-approval" | "blocked" | "failed";
 
 type ToolRun = {
   id: string;
@@ -3602,6 +3603,7 @@ const EN = {
   speakMessage: "Read aloud",
   speakSession: "Read session",
   moreMenu: "More",
+  showMore: "Show remaining message",
   skillsPanel: "Skills",
   automationPanel: "Automations",
   openSkillPicker: "Open @Skill",
@@ -4563,6 +4565,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     speakMessage: "朗读",
     speakSession: "朗读会话",
     moreMenu: "更多",
+    showMore: "展开剩余内容",
     skillsPanel: "Skill",
     automationPanel: "自动化",
     openSkillPicker: "打开 @Skill",
@@ -42021,12 +42024,6 @@ class CancipView extends ItemView {
     depth = 0
   ): Promise<boolean> {
     if (request.signal.aborted || !this.isCurrentRequest(request)) return false;
-    const directResult = this.programmaticCommandFallbackFromToolRuns(result.runs, originalPrompt);
-    if (directResult) {
-      this.addMessage("assistant", directResult);
-      this.renderMessages();
-      return true;
-    }
       const answerStatus = this.informationalAnswerStatusFromRuns(result.runs, originalPrompt);
       this.setStatus(answerStatus);
       let continueStep: ChatMessage | null = null;
@@ -42039,8 +42036,9 @@ class CancipView extends ItemView {
       };
       const prompt = [
         `Original question: ${originalPrompt}`,
-        "Use the tool result to answer directly. Keep it concise and useful.",
-        "If the answer is present, answer now even if the source was truncated. Only when required evidence is absent, output one smallest read-only action."
+        "Use the actual tool result to answer directly. Before replying, compare it with the original question.",
+        "If required evidence is absent, output one smallest read-only action and no final marker.",
+        "Otherwise append exactly one hidden marker such as <!-- cancip-final {\"status\":\"complete\"} -->. Use complete, blocked, or failed as appropriate, then give a concise answer with the useful result or exact blocker."
       ].join("\n");
       this.primeModelCharStats(prompt, continuationContext, originalPrompt, true);
       continueStep = this.addProgressStep(this.modelCharProgressSummary(answerStatus));
@@ -42057,17 +42055,23 @@ class CancipView extends ItemView {
       );
       if (request.signal.aborted || !this.isCurrentRequest(request)) return false;
       this.updateProgressStep(continueStep, this.generationStepSummary(answerStatus, this.currentModelCharUsageText()), this.t("done"));
-      const rawVisibleAnswer = visibleAssistantAnswer(answer, true);
+      const hasActions = extractCancipActions(answer).length > 0;
+      const protocolIssue = cancipActionProtocolIssue(answer);
+      const reviewStatus = finalReviewStatusFromAnswer(answer);
+      const rawVisibleAnswer = hasActions || protocolIssue ? "" : visibleAssistantAnswer(answer, true);
       const visibleAnswer = isToolPrefaceOnlyAnswer(rawVisibleAnswer) ? "" : rawVisibleAnswer;
-      const assistantMessage = visibleAnswer
-        ? this.addMessage("assistant", hasFinalConclusion(visibleAnswer) ? visibleAnswer : this.t("finalConclusionFallback", { summary: visibleAnswer }))
+      const reviewFailure = hasActions
+        ? (reviewStatus ? "response mixes a read-only action with a terminal final-review marker" : "")
+        : this.finalReviewStatusRequirementFailure(reviewStatus, result.runs);
+      const acceptedVisibleAnswer = !protocolIssue && !reviewFailure ? visibleAnswer : "";
+      const assistantMessage = acceptedVisibleAnswer
+        ? this.addMessage("assistant", hasFinalConclusion(acceptedVisibleAnswer) ? acceptedVisibleAnswer : this.t("finalConclusionFallback", { summary: acceptedVisibleAnswer }))
         : undefined;
       if (assistantMessage) {
         this.attachChoiceSource(assistantMessage, answer);
         this.renderMessages();
         return true;
       }
-      const hasActions = extractCancipActions(answer).length > 0;
       const followup = hasActions && depth < 1
         ? await this.handleActionBlocks(answer, undefined, { readOnlyOnly: true })
         : null;
@@ -42077,17 +42081,17 @@ class CancipView extends ItemView {
         const combined = this.mergeActionHandlingResults(result, followup);
         return await this.answerInformationTaskFromToolRuns(context, combined, request, originalPrompt, depth + 1);
       }
-      this.addMessage("assistant", this.informationalFallbackFromToolRuns(result.runs, originalPrompt));
+      this.addMessage("assistant", `最终复核未形成可用结论：${protocolIssue || reviewFailure || "模型没有给出可用的最终答案"}。未将本次问题标记为完成。`);
       this.renderMessages();
-      return true;
+      return false;
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       this.updateProgressStep(continueStep, this.generationStepSummary(answerStatus, this.currentModelCharUsageText()), reason, this.t("toolRunFailed"));
       void this.recordSessionEvent({ kind: "prompt.recoverable_error", detail: reason, status: "model-continuation-failed" });
       if (request.signal.aborted || !this.isCurrentRequest(request)) return false;
-      this.addMessage("assistant", this.informationalFallbackFromToolRuns(result.runs, originalPrompt, reason));
+      this.addMessage("assistant", `最终复核失败：${trimContext(redactSensitiveText(reason), 220)}。未将本次问题标记为完成。`);
       this.renderMessages();
-      return true;
+      return false;
     } finally {
       if (continueStep) this.stopProgressStepTimer(continueStep.id);
     }
@@ -42318,20 +42322,6 @@ class CancipView extends ItemView {
   ): Promise<ActionHandlingResult | "answered" | "failed"> {
     if (this.hasPendingToolRuns(result.runs)) return result;
     if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
-    const boundary = this.latestProcessOrToolMessageIndex();
-    const existing = this.latestVisibleAssistantAfter(boundary);
-    if (existing && !this.isActionOnlyFallbackMessage(existing.content)) {
-      const visible = prepareMessageDisplay(redactSensitiveText(existing.content)).visibleContent.trim();
-      if (!this.finalAnswerRequirementFailure(visible, originalPrompt, result.runs)) return "answered";
-    }
-
-    const directResult = this.programmaticCommandFallbackFromToolRuns(result.runs, originalPrompt);
-    if (directResult) {
-      this.addMessage("assistant", directResult);
-      this.renderMessages();
-      return "answered";
-    }
-
     let finalStep: ChatMessage | null = null;
     const directFileReadFinal = isSimpleDirectVaultFileReadTask(originalPrompt)
       && result.runs.length > 0
@@ -42345,30 +42335,37 @@ class CancipView extends ItemView {
       && result.runs.length > 0
       && result.runs.every((run) => isReadOnlyAction(run.action));
     const compactFileFinal = directFileReadFinal || directFileMutationFinal || compactInformationalFinal;
+    const relevantContext = trimPromptPayload(context.contextText, 1400);
+    const reviewInstruction = [
+      "Final review: silently compare the original request, relevant context, and actual tool results.",
+      "If available work can still advance the request, return exactly one executable cancip-action and no final marker.",
+      "Otherwise include exactly one hidden marker such as <!-- cancip-final {\"status\":\"complete\"} -->. Valid status values are complete, awaiting-approval, blocked, and failed; mark complete only when every requested result is verified.",
+      "Then give at most four concise lines: result and verification, or the exact blocker and necessary user action. Do not repeat process narration or programmatic changed-file cards."
+    ].join("\n");
     const goalState = this.toolGoalStateForModel(result.runs, originalPrompt);
     const basePrompt = compactFileFinal
       ? [
-          `User question: ${trimContext(originalPrompt, 600)}`,
-          "Tool result:",
+          `Original user request:\n${originalPrompt}`,
+          relevantContext ? `Relevant context:\n${relevantContext}` : "",
+          "Actual tool results:",
           this.toolRunsForPrompt(result.runs, compactInformationalFinal ? 2600 : 1400, compactInformationalFinal ? 4 : 2),
           directFileMutationFinal
-            ? "The file action already performed readback verification. Answer now with only the changed path and verified outcome; do not output another action or process narration."
-            : "Answer the question now from these verified read-only results. Do not output actions or process narration."
+            ? "The file action already performed readback verification."
+            : "Use only these verified results for the decision.",
+          reviewInstruction
         ].join("\n\n")
       : [
           `Original user request:\n${originalPrompt}`,
+          "",
+          relevantContext ? `Relevant context:\n${relevantContext}` : "",
           "",
           result.runs.length ? "Latest tool results:" : "Current model response is process-only, empty, or has not finished the task.",
           result.runs.length ? this.toolRunsForPrompt(result.runs, 4200, 6) : "",
           goalState,
           "",
-          "Decide and produce the next response now.",
-          "- If more work can advance the original request, output exactly one executable cancip-action. Visible prose is optional and should be concrete process context, not a final answer.",
           "- If opening a file produced multiple candidates, use conversation/current-file/recent-activity/path evidence to choose the strongest exact path and open it. Ask the user only when those signals genuinely cannot distinguish candidates.",
           "- For a generic create-file/create-note request with no target, let the model choose the smallest sensible default action from current context; do not stall on a missing name/path/content.",
-          "- If the request is complete, objectively blocked, failed with a concrete reason, waiting for approval/review, or needs user action, write the useful visible final answer.",
-          "- Keep the final answer concrete and brief: result first, changed targets when useful, verification or one exact blocker. Omit process narration, generic advice, empty sections, and repeated tool detail.",
-          "- Do not output a plan as a final answer, raw action JSON outside cancip-action, process-only text, or a generic no-final-answer message."
+          reviewInstruction
         ].filter(Boolean).join("\n");
     let correction = "";
     const finalContext = {
@@ -42398,11 +42395,15 @@ class CancipView extends ItemView {
         if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
         const hasActions = extractCancipActions(answer).length > 0;
         const protocolIssue = cancipActionProtocolIssue(answer);
+        const reviewStatus = finalReviewStatusFromAnswer(answer);
         const rawVisible = hasActions || protocolIssue ? "" : visibleAssistantAnswer(answer, false);
         const visibleAnswer = isToolPrefaceOnlyAnswer(rawVisible) || isPromptishProgressNoteLine(rawVisible) ? "" : rawVisible;
         this.updateModelProcessAuditSections(finalStep, answer, visibleAnswer);
         this.updateProgressStep(finalStep, this.generationStepSummary(finalDecisionStatus, this.currentModelCharUsageText()), this.formatGenerationAuditDetail(prompt, finalContext, this.activeRequestApiProfile ?? this.plugin.activeApiProfile(), answer, visibleAnswer, originalPrompt));
-        const requirementFailure = protocolIssue || (visibleAnswer
+        const reviewFailure = hasActions
+          ? (reviewStatus ? "response mixes an executable action with a terminal final-review marker" : "")
+          : this.finalReviewStatusRequirementFailure(reviewStatus, result.runs);
+        const requirementFailure = protocolIssue || reviewFailure || (visibleAnswer
           ? this.finalAnswerRequirementFailure(visibleAnswer, originalPrompt, result.runs)
           : "missing visible final answer");
         const acceptedVisibleAnswer = requirementFailure ? "" : visibleAnswer;
@@ -42419,7 +42420,7 @@ class CancipView extends ItemView {
         });
         correction = protocolIssue
           ? `${trimContext(protocolIssue, 220)}. Preserve the intended next step and return one corrected executable cancip-action. The next tool result will be returned for another decision; do not use unresolved then placeholders.`
-          : `${trimContext(requirementFailure, 220)}. Next output must be one executable cancip-action, or one concrete final answer only if it matches verified results.`;
+          : `${trimContext(requirementFailure, 220)}. Next output must be one executable cancip-action, or a concrete final answer with exactly one valid hidden cancip-final status marker that matches verified results.`;
       }
       return "failed";
     } catch (error) {
@@ -42528,6 +42529,16 @@ class CancipView extends ItemView {
         }
       }
     }
+    return "";
+  }
+
+  private finalReviewStatusRequirementFailure(status: FinalReviewStatus | "", runs: ToolRun[]): string {
+    if (!status) return "missing hidden final-review status";
+    const pending = runs.some((run) => run.status === "pending" || run.status === "executing");
+    const terminalFailure = runs.some((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected");
+    if (status === "complete" && pending) return "final review marked complete while work is still pending";
+    if (status === "complete" && terminalFailure) return "final review marked complete despite failed or blocked work";
+    if (status === "awaiting-approval" && !pending) return "final review marked awaiting approval without pending work";
     return "";
   }
 
@@ -42725,10 +42736,10 @@ class CancipView extends ItemView {
     originalPrompt: string
   ): Promise<{ status: "answered" | "pending" | "failed"; handling: ActionHandlingResult }> {
     let handling = result;
-    for (let attempt = 0; attempt < 2; attempt += 1) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
       const decision = await this.requestModelFinalAfterToolRuns(context, handling, request, originalPrompt);
       if (decision === "answered") return { status: "answered", handling };
-      if (decision === "failed") continue;
+      if (decision === "failed") break;
       this.addActionReportMessage(decision);
       this.renderMessagesAfterMutation();
       let merged = this.mergeActionHandlingResults(handling, decision);
@@ -42739,16 +42750,10 @@ class CancipView extends ItemView {
       handling = merged;
     }
     if (!request.signal.aborted && this.isCurrentRequest(request)) {
-      const fallback = this.humanFinalConclusion(
-        handling.runs,
-        false,
-        originalPrompt
-      ).trim();
-      if (fallback) {
-        this.addMessage("assistant", fallback);
-        this.renderMessages();
-        return { status: "answered", handling };
-      }
+      const completed = handling.runs.filter((run) => run.status === "executed").length;
+      const failed = handling.runs.filter((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected").length;
+      this.addMessage("assistant", `最终复核未形成可用结论：模型在 ${completed || failed ? "已有工具结果后" : "当前上下文中"} 连续返回了非终态内容，未将任务标记为完成。已执行 ${completed} 项、失败或阻塞 ${failed} 项；需要继续模型复核后再结束此请求。`);
+      this.renderMessages();
     }
     return { status: "failed", handling };
   }
@@ -44350,7 +44355,14 @@ class CancipView extends ItemView {
     const newPath = normalizeActionPath(action.newPath);
     action.newPath = newPath;
     await ensureParentFolder(adapter, newPath);
-    await adapter.copy(sourcePath, newPath);
+    const sourceStat = await adapter.stat(sourcePath);
+    if (!sourceStat) throw new Error(`copy source not found: ${sourcePath}`);
+    if (sourceStat.type === "folder") {
+      await copyApprovedReviewPath(adapter, sourcePath, newPath);
+    } else {
+      await adapter.copy(sourcePath, newPath);
+    }
+    if (!(await adapter.exists(newPath))) throw new Error(`copy verification failed: ${newPath}`);
     return this.withSelfPatchNotice(newPath, this.t("actionCopy", { path: sourcePath, newPath }));
   }
 
@@ -49291,7 +49303,7 @@ class CancipView extends ItemView {
         void this.copyMessage(message);
       });
       const contentEl = item.createDiv({ cls: "obcc-content obcc-plain-content" });
-      this.renderPlainMessage(contentEl, display.visibleContent);
+      this.renderUserMessageContent(contentEl, display.visibleContent);
       return;
     }
     const head = item.createDiv({ cls: "obcc-message-head" });
@@ -49332,6 +49344,35 @@ class CancipView extends ItemView {
   private renderPlainMessage(parent: HTMLElement, content: string): void {
     const text = content.trim();
     parent.createDiv({ cls: "obcc-plain-text", text: text || " " });
+  }
+
+  private renderUserMessageContent(parent: HTMLElement, content: string): void {
+    const text = content.trim();
+    const lines = text.split(/\r?\n/);
+    const charLimit = 700;
+    const lineLimit = 14;
+    if (text.length <= charLimit && lines.length <= lineLimit) {
+      this.renderPlainMessage(parent, text);
+      return;
+    }
+
+    let preview = text.slice(0, charLimit);
+    let remainder = text.slice(charLimit);
+    if (lines.length > lineLimit) {
+      const linePreview = lines.slice(0, lineLimit).join("\n");
+      if (linePreview.length < charLimit) {
+        preview = linePreview;
+        remainder = text.slice(linePreview.length);
+      }
+    }
+    if (!remainder.trim()) {
+      this.renderPlainMessage(parent, text);
+      return;
+    }
+    parent.createDiv({ cls: "obcc-plain-text obcc-user-message-preview", text: preview.trimEnd() });
+    const overflow = parent.createEl("details", { cls: "obcc-user-message-overflow" });
+    overflow.createEl("summary", { text: this.t("showMore") });
+    overflow.createDiv({ cls: "obcc-plain-text obcc-user-message-remainder", text: remainder.trimStart() });
   }
 
   private renderRunStats(parent: HTMLElement, text: string): void {
@@ -64089,7 +64130,7 @@ function prepareMessageDisplay(content: string): MessageDisplay {
     || baseContent.includes(PROCESS_MESSAGE_MARKER)
     || isLegacyProgressStatusMessage(baseContent);
   let processOnly = explicitlyProcessOnly || isModelFailureVisibleText(baseContent);
-  let visibleContent = stripModelRunStatsLines(baseContent).replace(/(`{3,})([^\n`]*)\n?([\s\S]*?)\1/g, (full: string, _fence: string, rawLang: string, body: string) => {
+  let visibleContent = stripFinalReviewMetadata(stripModelRunStatsLines(baseContent)).replace(/(`{3,})([^\n`]*)\n?([\s\S]*?)\1/g, (full: string, _fence: string, rawLang: string, body: string) => {
     const lang = rawLang.replace(/^`+/, "").trim().toLowerCase();
     const trimmed = body.trim();
     if (trimmed && shouldFoldCodeBlock(lang, trimmed)) {
@@ -65848,11 +65889,34 @@ function extractStructuredChoiceTexts(content: string): string[] {
 function visibleAssistantAnswer(answer: string, suppressToolActions = false): string {
   void suppressToolActions;
   const withoutActions = removeCancipActionBlocks(answer);
-  const rawVisible = stripModelReasoningArtifacts(stripModelRunStatsLines(stripTailChoiceSection(withoutActions))).trim();
+  const rawVisible = stripFinalReviewMetadata(stripModelReasoningArtifacts(stripModelRunStatsLines(stripTailChoiceSection(withoutActions)))).trim();
   const display = prepareMessageDisplay(rawVisible);
   const visible = display.visibleContent.trim();
   if (display.processOnly) return "";
   return isToolPrefaceOnlyAnswer(visible) ? "" : visible;
+}
+
+function finalReviewStatusFromAnswer(answer: string): FinalReviewStatus | "" {
+  const markerCount = [...answer.matchAll(/<!--\s*cancip-final\b[\s\S]*?-->|<cancip-final\b[^>]*\/?\s*>/gi)].length;
+  if (markerCount !== 1) return "";
+  const comment = answer.match(/<!--\s*cancip-final\s+(\{[\s\S]*?\})\s*-->/i);
+  if (comment) {
+    try {
+      const parsed = JSON.parse(comment[1]) as { status?: unknown };
+      const status = typeof parsed.status === "string" ? parsed.status.trim().toLowerCase() : "";
+      if (status === "complete" || status === "awaiting-approval" || status === "blocked" || status === "failed") return status;
+    } catch {
+      return "";
+    }
+  }
+  const attribute = answer.match(/<cancip-final\b[^>]*\bstatus=["'](complete|awaiting-approval|blocked|failed)["'][^>]*\/?\s*>/i);
+  return attribute?.[1]?.toLowerCase() as FinalReviewStatus | undefined ?? "";
+}
+
+function stripFinalReviewMetadata(content: string): string {
+  return content
+    .replace(/<!--\s*cancip-final\s+\{[\s\S]*?\}\s*-->/gi, "\n\n")
+    .replace(/<cancip-final\b[^>]*\/?\s*>/gi, "\n\n");
 }
 
 function isToolPrefaceOnlyAnswer(text: string): boolean {
@@ -68086,7 +68150,7 @@ async function applyApprovedReviewGateItem(app: App, item: ReviewGateManifestIte
     const oldPath = normalizeActionPath(change.old_path || textPath);
     const newPath = normalizeActionPath(change.new_path || textPath);
     if (!isReviewableVaultPath(oldPath, obsidianConfigDir, memoryFolder) && !isReviewableVaultPath(newPath, obsidianConfigDir, memoryFolder)) continue;
-    if (change.kind === "folder" && oldPath === newPath) {
+    if (change.kind === "folder" && oldPath === newPath && !(item.changes ?? []).includes("delete")) {
       if (!(await adapter.exists(newPath))) {
         await ensureFolder(adapter, newPath);
         applied.push(`mkdir: ${newPath}`);

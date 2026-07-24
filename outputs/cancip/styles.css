@@ -1522,6 +1522,26 @@ body .obcc-view-tts-action {
   white-space: pre-wrap;
 }
 
+.obcc-user-message-overflow {
+  width: 100%;
+  margin-top: 6px;
+  color: var(--text-muted);
+}
+
+.obcc-user-message-overflow > summary {
+  cursor: pointer;
+  font-size: var(--font-ui-smaller);
+  line-height: 1.4;
+}
+
+.obcc-user-message-overflow[open] > summary {
+  margin-bottom: 6px;
+}
+
+.obcc-user-message-remainder {
+  color: var(--text-normal);
+}
+
 .obcc-content > :first-child {
   margin-top: 0;
 }
