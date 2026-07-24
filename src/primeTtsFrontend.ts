@@ -61,6 +61,9 @@ const PRIME_TTS_DIGIT_PHONES: Record<string, string[]> = {
 const PRIME_TTS_CJK_LETTER_READINGS: Record<string, string> = {
   a: "诶", e: "易", i: "一", o: "哦", u: "优", v: "微"
 };
+const PRIME_TTS_CONTEXTUAL_PINYIN_EXCLUSIONS = new Set([
+  "can", "fan", "go", "he", "in", "it", "long", "man", "me", "men", "no", "on", "or", "pan", "she", "so", "song", "ten", "we"
+]);
 
 function cjkLetterWordReading(word: string, text: string, start: number, end: number): string {
   if (!word || word.length > 8) return "";
@@ -69,6 +72,19 @@ function cjkLetterWordReading(word: string, text: string, start: number, end: nu
   const after = text.slice(end, end + 6);
   if (!/[\u3400-\u9fff]/.test(before + after)) return "";
   return word.toLowerCase().split("").map((char) => PRIME_TTS_CJK_LETTER_READINGS[char] ?? "").join("");
+}
+
+function contextualPinyinUnits(word: string, text: string, start: number, end: number): { symbols: string[]; tone: number } | null {
+  const lower = word.toLowerCase();
+  if (!lower || lower !== word || lower.length < 2 || lower.length > 8 || !/^[a-zv]+$/.test(lower)) return null;
+  if (PRIME_TTS_WORD_PHONES[lower] || PRIME_TTS_CONTEXTUAL_PINYIN_EXCLUSIONS.has(lower)) return null;
+  const before = text.slice(Math.max(0, start - 8), start);
+  const after = text.slice(end, end + 8);
+  const hasCjkContext = /[\u3400-\u9fff]/.test(before + after);
+  const looksDistinctivelyPinyin = /^(?:zh|ch|sh|[jqx])/.test(lower) || /(?:iao|iong|iang|uang|uai|uan|uo|üe|ue|ui|iu|ong)$/.test(lower);
+  if (!hasCjkContext && !looksDistinctivelyPinyin) return null;
+  const units = pinyinSyllableToZhuyin(`${lower}1`);
+  return units.symbols.length && !units.symbols.includes("UNK") ? units : null;
 }
 
 const CHINESE_DIGITS = ["零", "一", "二", "三", "四", "五", "六", "七", "八", "九"] as const;
@@ -138,6 +154,12 @@ export function primeTtsTextToIds(input: string): PrimeTtsIds {
       let end = index + 1;
       while (end < normalized.length && /[A-Za-z']/.test(normalized[end])) end += 1;
       const word = normalized.slice(index, end).replace(/^'+|'+$/g, "");
+      const pinyinUnits = contextualPinyinUnits(word, normalized, index, end);
+      if (pinyinUnits) {
+        for (const unit of pinyinUnits.symbols) push(unit, pinyinUnits.tone, 0);
+        index = end;
+        continue;
+      }
       const cjkLetterReading = cjkLetterWordReading(word, normalized, index, end);
       if (cjkLetterReading) {
         const syllables = primeTtsPinyinArray(cjkLetterReading);

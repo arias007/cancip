@@ -1,9 +1,9 @@
 import * as ort from "onnxruntime-web/wasm";
 import { primeTtsTextToIds } from "./primeTtsFrontend";
 
-const PRIME_TTS_FADE_IN_MS = 4;
-const PRIME_TTS_FADE_OUT_MS = 8;
-const PRIME_TTS_TAIL_SILENCE_MS = 2;
+const PRIME_TTS_FADE_IN_MS = 6;
+const PRIME_TTS_FADE_OUT_MS = 10;
+const PRIME_TTS_TAIL_SILENCE_MS = 4;
 
 const workerSelf = self as unknown as {
   onmessage: ((event: MessageEvent<PrimeTtsWorkerMessage>) => void) | null;
@@ -202,9 +202,12 @@ function finalizePrimeTtsSamples(samples: Float32Array, sampleRate: number): Flo
   let sum = 0;
   for (const sample of samples) sum += sample;
   const dc = sum / samples.length;
+  let centeredPeak = 0;
+  for (const sample of samples) centeredPeak = Math.max(centeredPeak, Math.abs(sample - dc));
+  const gain = centeredPeak > 0.96 ? 0.94 / centeredPeak : 1;
   const normalized = new Float32Array(samples.length);
   for (let index = 0; index < samples.length; index += 1) {
-    normalized[index] = Math.max(-1, Math.min(1, samples[index] - dc));
+    normalized[index] = Math.max(-1, Math.min(1, (samples[index] - dc) * gain));
   }
   const voiced = trimPrimeTtsEdgeSilence(normalized, sampleRate);
   const tailSamples = Math.max(0, Math.round(sampleRate * PRIME_TTS_TAIL_SILENCE_MS / 1000));
@@ -219,14 +222,14 @@ function trimPrimeTtsEdgeSilence(samples: Float32Array, sampleRate: number): Flo
   let peak = 0;
   for (const sample of samples) peak = Math.max(peak, Math.abs(sample));
   if (peak <= 0.0001) return samples;
-  const threshold = Math.max(0.0025, peak * 0.018);
+  const threshold = Math.max(0.0012, peak * 0.006);
   let start = 0;
   while (start < samples.length && Math.abs(samples[start]) < threshold) start += 1;
   let end = samples.length - 1;
   while (end > start && Math.abs(samples[end]) < threshold) end -= 1;
   if (start <= 0 && end >= samples.length - 1) return samples;
-  const startPad = Math.round(sampleRate * 0.003);
-  const endPad = Math.round(sampleRate * 0.005);
+  const startPad = Math.round(sampleRate * 0.008);
+  const endPad = Math.round(sampleRate * 0.01);
   const from = Math.max(0, start - startPad);
   const to = Math.min(samples.length, end + endPad + 1);
   if (to - from < Math.min(samples.length, Math.round(sampleRate * 0.025))) return samples;
