@@ -173,7 +173,7 @@ const VERY_LARGE_LIVE_SESSION_SAVE_MIN_INTERVAL_MS = 45000;
 const LARGE_LIVE_SESSION_BYTES = 1024 * 1024;
 const VERY_LARGE_LIVE_SESSION_BYTES = 4 * 1024 * 1024;
 const MAX_TOOL_ACTIONS_PER_BATCH = 8;
-const MAX_TOOL_ACTIONS_PER_TASK = 14;
+const MAX_TOOL_ACTIONS_PER_TASK = 12;
 const MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK = 18;
 const STARTUP_MAINTENANCE_IDLE_TIMEOUT_MS = 1600;
 const TTS_CAPTURE_MAX_CHARS = 300000;
@@ -2178,6 +2178,17 @@ type UiButtonRuleResetTarget = {
   selector?: string;
   scope?: UiButtonRule["scope"];
   label?: string;
+};
+
+type UiButtonWorkflowDirective = {
+  phase: "inspect-buttons" | "inspect-rules" | "apply" | "verify-apply" | "reset" | "verify-reset" | "done";
+  selector?: string;
+  label?: string;
+  scope?: UiButtonRule["scope"];
+  ruleId?: string;
+  expectedHidden?: boolean;
+  verificationAttempt?: number;
+  evidence?: string;
 };
 
 type UiButtonCommandOption = {
@@ -38906,6 +38917,7 @@ class CancipView extends ItemView {
         "- Obsidian 命令：找候选用 obsidian.listCommands，必须传 args={query:'用户给的名称、ID 片段或用途',limit:8}；解析一个明确候选用 obsidian.resolveCommand；只有用户要求执行时才用 obsidian.execute，执行后核对可见状态。",
         "- 会话历史：列最近/全部会话用 cancip.sessionHistory，args={all:true,mode:'summary',limit:12}；读指定旧会话用 args={sessionId:'完整 session-... ID',mode:'full'}，只有确需当时上下文时才加 includeContext:true。省略 all/sessionId 只会读取当前会话。",
         "- 改：最小读取 -> patch/write/config/command -> outcome.verify；权限由 UI 处理。",
+        "- 运行时 UI/按钮：用 obsidian.ui.buttons 和 obsidian.ui.buttonRules 读当前状态，用 obsidian.ui.applyButtonRules 修改；这是权威入口，不搜 Vault、不猜配置文件或源码。拿到按钮和规则后直接 apply，再按同 selector 定向读回；需要恢复时只 reset 本次规则后再读回。",
         "- 插件、Skill、附件、自动化、GitHub、TTS：先查对应 help/list，再按需读取具体入口。",
         `- 总导航：${navigationPath}；详细参数：cancip.tools.help。`
       ].join("\n");
@@ -38917,6 +38929,7 @@ class CancipView extends ItemView {
       "- Obsidian commands: find candidates with obsidian.listCommands and args={query:'user name, ID fragment, or purpose',limit:8}; resolve one candidate with obsidian.resolveCommand; use obsidian.execute only when execution was requested, then verify visible state.",
       "- Session history: list recent/all sessions with cancip.sessionHistory args={all:true,mode:'summary',limit:12}; read one saved session with args={sessionId:'full session-... ID',mode:'full'}, adding includeContext:true only when its original context is required. Omitting both all and sessionId reads only the current session.",
       "- Change: focused read -> patch/write/config/command -> outcome.verify; UI handles access.",
+      "- Runtime UI/buttons: read current state with obsidian.ui.buttons and obsidian.ui.buttonRules, mutate with obsidian.ui.applyButtonRules. These runtime commands are authoritative: do not search the Vault or guess config/source files. After button and rule evidence, apply directly, verify with the same selector, and reset only the new rule when restoration is required.",
       "- Plugins, Skills, attachments, automations, GitHub, and TTS start with the matching help/list entry.",
       `- Navigation: ${navigationPath}; detailed parameters: cancip.tools.help.`
     ].join("\n");
@@ -38935,7 +38948,7 @@ class CancipView extends ItemView {
         "- 动作可以写 action 或 type；findTarget、openFile 等常见能力简写由 Cancip 规范化。每轮只执行当前一步，结果会回传模型继续选择，禁止用未解析占位符一次串完多步。",
         "- 编辑/新建/修复/配置/大文件：用户已给出新文件名或路径时直接 write，不要用 findTarget 推测命名习惯；只有编辑既有目标且目标不明确时才先定位。其余情况先读最小相关片段，再用 patch/write/append/config；大内容用 chunks；最后读回验证。用户只说新建/创建一个文件且没给目标时，让模型按当前上下文选择最小可行默认动作，不要先卡在补名、补路径或搜索旧文件。",
         "- 移动/重命名/复制/删除：用文件动作；delete 默认进系统回收站或 Cancip 回收目录，只有用户明确永久删除才用 permanent:true。",
-        "- Obsidian UI/按钮/标签页/标签/命令/JS：先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.ui.buttons、obsidian.tabs、obsidian.tags 检查；执行后用 cancip.outcome.verify 对照视图/DOM/文件/插件/工作区预期验收，结构证据不足才 capture 截活动视图；命令名不确定先 resolveCommand，明确后按需 execute/click/input/apply rules；需要 app/workspace/vault/plugin API 时先查 obsidian.js.help/probe，再用 obsidian.eval/js.eval，经访问模式批准后执行。",
+        "- Obsidian UI/按钮/标签页/标签/命令/JS：运行时按钮状态只用 obsidian.ui.buttons 和 obsidian.ui.buttonRules，修改只用 obsidian.ui.applyButtonRules；不得搜 Vault、猜配置文件或源码。按钮和规则证据齐全后直接 apply，按同 selector 定向读回；要求恢复时只 reset 本次规则并再次读回。其他 UI 先用 obsidian.currentView、obsidian.dom.snapshot、obsidian.listCommands/resolveCommand、obsidian.tabs、obsidian.tags 检查；执行后用 cancip.outcome.verify 对照视图/DOM/文件/插件/工作区预期验收，结构证据不足才 capture 截活动视图；命令名不确定先 resolveCommand，明确后按需 execute/click/input；需要 app/workspace/vault/plugin API 时先查 obsidian.js.help/probe，再用 obsidian.eval/js.eval，经访问模式批准后执行。",
         `- 插件/未知能力/新插件/Skills/MCP：插件功能词或插件名先用 cancip.pluginCapabilities 或 cancip.pluginRoute 查命令、运行时 API、按钮/UI、data.json 和插件文件入口；明确命令或公开 API 后用 cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch 执行；笔记/PDF 高亮涂鸦优先 cancip.annotate.help/note/pdf，间隔重复优先 cancip.study.help/review；API 用法不明再 web.search/fetch。Skills/MCP 用 cancip.skills.list/read/refresh 和 ${CANCIP_CONFIG_DIR}/mcp.json、${CANCIP_CONFIG_DIR}/plugins 索引。`,
         `- 记忆/经验/自我优化：用户要求记住、沉淀规则、复用成功经验或让 Cancip 优化自己时，先读 CANCIP_INDEX/RULES、cancip.experience.list 或相关 Skill；需要写入时按访问模式修改 ${memoryFolder} 或 ${EXPERIENCE_LOG_PATH}，成功重复流程可 cancip.experience.harvest 生成经验 Skill。`,
         "- 附件/PDF/Office/图片/库外文件：库内文件优先用 cancip.documents.help/open/convert 统一预览、按 Markdown 打开和转换；附件解析查 cancip.attachment.help，库外访问查 cancip.externalFiles.help。",
@@ -38958,7 +38971,7 @@ class CancipView extends ItemView {
       "- Actions may use action or type; common concise capabilities such as findTarget/openFile are normalized by Cancip. Execute only the current step and use the returned result for the next model decision; do not chain unresolved placeholders.",
       "- Edit/create/fix/config/large files: when the user supplied a new filename/path, write it directly and never use findTarget to infer naming conventions; locate first only when an existing target is genuinely ambiguous. Otherwise inspect the smallest relevant snippet, then patch/write/append/config with chunks when large, then verify by reading state back. For generic create-file with no target, let the model choose the smallest sensible default action from current context; do not stall on a missing name/path/content.",
       "- Move/rename/copy/delete: use file actions; delete uses trash/Cancip trash unless permanent:true is explicitly requested.",
-      "- Obsidian UI/buttons/tabs/tags/commands/JS: inspect with currentView/dom.snapshot/listCommands/resolveCommand/ui.buttons/tabs/tags; after execution use cancip.outcome.verify for view/DOM/file/plugin/workspace expectations and capture only when structured evidence is insufficient. Resolve fuzzy commands before execute/click/input/apply rules. Use obsidian.js.help/probe then obsidian.eval/js.eval for API gaps.",
+      "- Obsidian UI/buttons/tabs/tags/commands/JS: runtime button state comes only from obsidian.ui.buttons and obsidian.ui.buttonRules, and persistent changes only from obsidian.ui.applyButtonRules; never search the Vault or guess config/source files for it. Once button and rule evidence exists, apply directly, verify the same selector, and reset only the new rule when restoration is required. Inspect other UI with currentView/dom.snapshot/listCommands/resolveCommand/tabs/tags; verify effects with cancip.outcome.verify and capture only when structured evidence is insufficient. Use obsidian.js.help/probe then obsidian.eval/js.eval for API gaps.",
       `- Plugins/unknown capabilities/new plugins/Skills/MCP: for plugin feature words or plugin names, call cancip.pluginCapabilities or cancip.pluginRoute to inspect commands, runtime API, buttons/UI, data.json, and plugin file entry points; after a command/API is clear use cancip.pluginAction/obsidian.execute/obsidian.ui/dom/obsidian.eval/config/read/patch; use cancip.annotate.help/note/pdf for note/PDF highlight/doodle and cancip.study.help/review for spaced repetition; use web.search/fetch only when API usage is unclear. Use cancip.skills.list/read/refresh and ${CANCIP_CONFIG_DIR}/mcp.json plus ${CANCIP_CONFIG_DIR}/plugins indexes for Skills/MCP.`,
       `- Memory/experience/self-optimization: when the user asks to remember, preserve rules, reuse successful workflows, or improve Cancip itself, read CANCIP_INDEX/RULES, cancip.experience.list, or relevant Skills first; when writing is needed, use the access-mode route for ${memoryFolder} or ${EXPERIENCE_LOG_PATH}, and call cancip.experience.harvest after repeatable success.`,
       "- Attachments/PDF/Office/images/external files: for Vault files use cancip.documents.help/open/convert for preview, Markdown opening, and conversion; use cancip.attachment.help for attachment parsing and cancip.externalFiles.help for outside-Vault access.",
@@ -38990,7 +39003,12 @@ class CancipView extends ItemView {
     ].join("\n");
   }
 
-  private toolHelpPrompt(): string {
+  private toolHelpPrompt(args: Record<string, unknown> = {}): string {
+    const requested = [args.command, args.tool, args.query, args.topic]
+      .find((value): value is string => typeof value === "string" && value.trim().length > 0)
+      ?.trim() ?? "";
+    if (/button|toolbar|ui\.|按钮|工具栏/i.test(requested)) return this.uiButtonCommandHelp();
+    if (requested) return this.describeCommandMention(normalizeCommandBusName(requested));
     return [
       this.actionRouteIndexPrompt(),
       "",
@@ -39000,6 +39018,28 @@ class CancipView extends ItemView {
       "",
       `Compatibility notes: Skills are Vault Markdown capabilities discovered by cancip.skills.*. Plugin compatibility starts from cancip.pluginCapabilities, then ${CANCIP_CONFIG_DIR}/mcp.json, ${CANCIP_CONFIG_DIR}/plugins, installed Obsidian plugins, web.search/web.fetch docs, and bridge commands; mobile Obsidian should expose command/UI/API/config/JS bridges instead of claiming unavailable before checking these indexes.`
     ].join("\n");
+  }
+
+  private uiButtonCommandHelp(): string {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const examples = [
+      `list: {"actions":[{"type":"command","command":"obsidian.ui.buttons","args":{"scope":"active","limit":80}}]}`,
+      `rules: {"actions":[{"type":"command","command":"obsidian.ui.buttonRules","args":{"selector":"button[aria-label='朗读']"}}]}`,
+      `hide: {"actions":[{"type":"command","command":"obsidian.ui.applyButtonRules","args":{"rules":[{"selector":"button[aria-label='朗读']","label":"朗读","hidden":true,"scope":"active"}]}}]}`,
+      `restore: {"actions":[{"type":"command","command":"obsidian.ui.applyButtonRules","args":{"reset":[{"selector":"button[aria-label='朗读']","scope":"active"}]}}]}`,
+      `click: {"actions":[{"type":"command","command":"obsidian.dom.click","args":{"scope":"active","selector":"button[aria-label='朗读']","index":0}}]}`
+    ];
+    return chinese
+      ? [
+          "按钮工具参数：ui.buttons 只读列出按钮，绝不点击；buttonRules 只读列出已保存规则；applyButtonRules 才负责持久化隐藏、显示、排序、改名和换图标。",
+          "隐藏/恢复闭环：先 list，apply rules 后再 list 验证 [hidden]；恢复只 reset 本次 selector+scope，再 list 验证可见。不要 clear 全部规则。点击必须用 obsidian.dom.click。",
+          ...examples
+        ].join("\n")
+      : [
+          "Button tool parameters: ui.buttons only lists buttons and never clicks; buttonRules only lists saved rules; applyButtonRules persists hide/show/order/title/icon changes.",
+          "Hide/restore loop: list first, apply rules, list for [hidden], reset only this selector+scope, then list for visible. Never clear all rules for a single target. Use obsidian.dom.click for clicks.",
+          ...examples
+        ].join("\n");
   }
 
   private async addMemoryContext(): Promise<void> {
@@ -39665,7 +39705,9 @@ class CancipView extends ItemView {
       commandTarget("command:obsidian.js.probe", "obsidian.js.probe", ["eval", "javascript", "js", "probe", "status", "app", "workspace", "vault", "plugin", "api", "脚本", "js命令", "探测", "状态", "工作区", "库对象"], 86),
       commandTarget("command:obsidian.eval", "obsidian.eval", ["eval", "javascript", "js", "app", "workspace", "vault", "plugin", "api", "ob api", "script", "脚本", "js", "js命令", "命令", "插件api", "工作区", "库对象"], 84),
       commandTarget("command:js.eval", "js.eval", ["eval", "javascript", "js", "app", "workspace", "vault", "plugin", "api", "script", "脚本", "js命令", "插件api", "工作区", "库对象"], 83),
+      commandTarget("command:obsidian.ui.help", "obsidian.ui.help", ["button", "buttons", "ui", "help", "schema", "按钮", "界面", "帮助", "参数", "用法"], 87),
       commandTarget("command:obsidian.ui.buttons", "obsidian.ui.buttons", ["button", "buttons", "toolbar", "more", "pdf", "note", "ui", "按钮", "顶部按钮", "更多按钮", "排序", "隐藏"], 85),
+      commandTarget("command:obsidian.ui.buttonRules", "obsidian.ui.buttonRules", ["button", "rules", "saved", "ui", "按钮", "规则", "已保存"], 84),
       commandTarget("command:obsidian.ui.applyButtonRules", "obsidian.ui.applyButtonRules", ["button", "buttons", "toolbar", "hide", "show", "order", "ui", "按钮", "隐藏", "显示", "排序"], 83),
       commandTarget("command:obsidian.tags", "obsidian.tags", ["tag", "tags", "right", "sidebar", "fixed", "pin", "标签", "右侧栏", "固定", "删除"], 84),
       commandTarget("command:obsidian.tags.pin", "obsidian.tags.pin", ["tag", "pin", "fixed", "right", "sidebar", "标签", "固定", "右侧栏"], 82),
@@ -39959,7 +40001,9 @@ class CancipView extends ItemView {
       "obsidian.js.probe": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.js.probe\"}]}",
       "obsidian.eval": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.eval\",\"args\":{\"code\":\"return app.workspace.getActiveFile()?.path || ''\"}}]}",
       "js.eval": "{\"actions\":[{\"type\":\"command\",\"command\":\"js.eval\",\"args\":{\"expression\":\"app.workspace.getActiveFile()?.path || ''\"}}]}",
+      "obsidian.ui.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.help\"}]}",
       "obsidian.ui.buttons": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.buttons\",\"args\":{\"scope\":\"active\",\"limit\":80}}]}",
+      "obsidian.ui.buttonRules": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.buttonRules\",\"args\":{\"selector\":\"button[aria-label='More options']\"}}]}",
       "obsidian.ui.applyButtonRules": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.ui.applyButtonRules\",\"args\":{\"rules\":[{\"selector\":\"button[aria-label='More options']\",\"label\":\"More options\",\"hidden\":false,\"order\":1,\"title\":\"更多\",\"icon\":\"more-horizontal\",\"scope\":\"active\"}]}}]}",
       "obsidian.tags": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags\",\"args\":{\"limit\":80}}]}",
       "obsidian.tags.pin": "{\"actions\":[{\"type\":\"command\",\"command\":\"obsidian.tags.pin\",\"args\":{\"tags\":[\"important\"],\"hideUnpinned\":true}}]}",
@@ -40667,8 +40711,10 @@ class CancipView extends ItemView {
 
   private createBudgetedToolRuns(actions: CancipAction[]): ToolRun[] {
     actions = uniqueCancipActions(actions);
-    const previous = this.currentTaskToolRuns().filter((run) => run.status !== "rejected" && run.status !== "blocked");
-    const previousBudgeted = previous.filter((run) => countsTowardToolActionBudget(run.action));
+    const taskRuns = this.currentTaskToolRuns();
+    const previous = taskRuns.filter((run) => run.status !== "rejected" && run.status !== "blocked");
+    const previousBudgeted = taskRuns.filter((run) => run.status !== "rejected" && countsTowardToolActionBudget(run.action));
+    const buttonDirective = this.uiButtonWorkflowDirective(taskRuns, this.previousActionableUserPrompt());
     const taskLimit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
     const previousByKey = new Map(previous.map((run) => [stableCacheKey(run.action), run] as const));
     const seen = new Set(previousByKey.keys());
@@ -40679,7 +40725,9 @@ class CancipView extends ItemView {
     for (const action of actions) {
       const key = stableCacheKey(action);
       let reason = "";
-      if (seen.has(key)) reason = this.duplicateActionBlockedReason(action, previousByKey.get(key));
+      const workflowReason = this.uiButtonWorkflowActionBlockReason(action, buttonDirective);
+      if (workflowReason) reason = workflowReason;
+      else if (seen.has(key)) reason = this.duplicateActionBlockedReason(action, previousByKey.get(key));
       else if (accepted >= MAX_TOOL_ACTIONS_PER_BATCH) reason = `Action batch limit reached (${MAX_TOOL_ACTIONS_PER_BATCH}); finish from completed results.`;
       else if (countsTowardToolActionBudget(action) && previousBudgeted.length + acceptedBudgeted >= taskLimit) reason = `Task action budget reached (${taskLimit}); no more tools may run in this task. Give the final answer now.`;
       if (reason) {
@@ -40770,7 +40818,6 @@ class CancipView extends ItemView {
     const limit = this.activeAutomationTaskId ? MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK : MAX_TOOL_ACTIONS_PER_TASK;
     return this.currentTaskToolRuns().filter((run) =>
       run.status !== "rejected"
-      && run.status !== "blocked"
       && countsTowardToolActionBudget(run.action)
     ).length >= limit;
   }
@@ -40944,6 +40991,185 @@ class CancipView extends ItemView {
     return "";
   }
 
+  private uiButtonWorkflowDirective(runs: ToolRun[], originalPrompt: string): UiButtonWorkflowDirective | null {
+    if (classifyPromptIntent(originalPrompt) !== "implementation") return null;
+    const entries = runs.map((run, index) => {
+      const command = run.action.type === "command" ? normalizeCommandBusName(run.action.command) : "";
+      return { run, index, command };
+    });
+    const relevant = entries.filter(({ command }) => [
+      "obsidian.ui.help",
+      "obsidian.ui.buttons",
+      "obsidian.ui.buttonRules",
+      "obsidian.ui.applyButtonRules"
+    ].includes(command));
+    if (!relevant.length) return null;
+
+    const buttonList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttons" && run.status === "executed");
+    const ruleList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttonRules" && run.status === "executed");
+    const mutations = relevant.filter(({ command, run }) => {
+      if (command !== "obsidian.ui.applyButtonRules" || run.status !== "executed" || run.action.type !== "command") return false;
+      const args = run.action.args ?? {};
+      return Boolean(args.clear)
+        || normalizeUiButtonRules(args.rules).length > 0
+        || normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules).length > 0;
+    });
+
+    if (!mutations.length) {
+      if (!buttonList) return { phase: "inspect-buttons" };
+      if (!ruleList) return { phase: "inspect-rules" };
+      return {
+        phase: "apply",
+        evidence: trimContext(buttonList.run.result || buttonList.run.error || "", 1200)
+      };
+    }
+
+    const latest = mutations[mutations.length - 1];
+    if (latest.run.action.type !== "command") return null;
+    const args = latest.run.action.args ?? {};
+    const incoming = normalizeUiButtonRules(args.rules);
+    const resetTargets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
+    const isReset = resetTargets.length > 0 && incoming.length === 0 && !args.clear;
+    const previousAppliedRule = [...mutations]
+      .reverse()
+      .map(({ run }) => run.action.type === "command" ? normalizeUiButtonRules(run.action.args?.rules)[0] : undefined)
+      .find((rule): rule is UiButtonRule => Boolean(rule));
+    const targetRule = incoming[0] ?? previousAppliedRule;
+    const resetTarget = resetTargets[0];
+    const selector = targetRule?.selector ?? resetTarget?.selector;
+    const label = targetRule?.label ?? resetTarget?.label;
+    const scope = targetRule?.scope ?? resetTarget?.scope;
+    const ruleId = targetRule?.id ?? resetTarget?.id;
+    const expectedHidden = isReset ? false : targetRule?.hidden;
+    const verificationRuns = entries.slice(latest.index + 1).filter(({ command, run }) => {
+      if (command !== "obsidian.ui.buttons" || run.status !== "executed" || run.action.type !== "command") return false;
+      const requestedSelector = typeof run.action.args?.selector === "string" ? run.action.args.selector.trim() : "";
+      const result = run.result || "";
+      if (selector) return requestedSelector === selector || result.includes(selector);
+      return label ? result.includes(label) : true;
+    });
+    const verifiedAfterMutation = verificationRuns.some(({ run }) => {
+      const result = run.result || "";
+      const targetFound = selector ? result.includes(selector) : label ? result.includes(label) : !/^\s*(?:none|无|没有)\b/i.test(result);
+      if (!targetFound) return false;
+      const reportedHidden = /\[hidden\]|data-cancip-ui-(?:rule-)?hidden\s*=\s*["']?true/i.test(result);
+      if (expectedHidden === true) return reportedHidden;
+      if (expectedHidden === false) return !reportedHidden;
+      return true;
+    });
+    const verificationAttempt = entries.filter(({ command, run }) => {
+      if (command !== "obsidian.ui.buttons" || run.action.type !== "command") return false;
+      const requestedSelector = typeof run.action.args?.selector === "string" ? run.action.args.selector.trim() : "";
+      return Boolean(selector && requestedSelector === selector);
+    }).length + 1;
+
+    if (!verifiedAfterMutation) {
+      return {
+        phase: isReset ? "verify-reset" : "verify-apply",
+        selector,
+        label,
+        scope,
+        ruleId,
+        expectedHidden,
+        verificationAttempt
+      };
+    }
+    if (isReset) return { phase: "done", selector, label, scope, ruleId };
+
+    const planText = runs
+      .filter((run) => run.action.type === "todo")
+      .map((run) => JSON.stringify(run.action))
+      .join(" ");
+    const requestsRestore = /(恢复|还原|复原|撤销(?:本次|临时|规则)?|重置|reset|restore|revert|temporary)/i.test(`${originalPrompt}\n${planText}`);
+    return requestsRestore
+      ? { phase: "reset", selector, label, scope, ruleId, expectedHidden: targetRule?.hidden }
+      : { phase: "done", selector, label, scope, ruleId };
+  }
+
+  private uiButtonWorkflowStateForModel(runs: ToolRun[], originalPrompt: string): string {
+    const directive = this.uiButtonWorkflowDirective(runs, originalPrompt);
+    if (!directive) return "";
+    const chinese = isChineseLanguage(this.plugin.language());
+    const selectorJson = JSON.stringify(directive.selector ?? "<exact selector from buttons>");
+    const scopeJson = JSON.stringify(directive.scope ?? "active");
+    const verificationAttempt = directive.verificationAttempt ?? 1;
+    const resetTarget = directive.ruleId
+      ? `{\"id\":${JSON.stringify(directive.ruleId)}}`
+      : `{\"selector\":${selectorJson},\"scope\":${scopeJson}}`;
+    if (chinese) {
+      if (directive.phase === "inspect-buttons") {
+        return "按钮工具链状态：模型已经选择运行时 UI 路线。下一步只执行 obsidian.ui.buttons 读取当前按钮；不要搜 Vault、猜配置文件、读源码或重复 help。";
+      }
+      if (directive.phase === "inspect-rules") {
+        return "按钮工具链状态：当前按钮已读取。下一步只执行 obsidian.ui.buttonRules 读取已保存规则；不要再列按钮、搜索 Vault 或读 help。";
+      }
+      if (directive.phase === "apply") {
+        return [
+          "按钮工具链状态：按钮与已保存规则都已读取，发现阶段结束。",
+          `目标证据：\n${directive.evidence || "使用上方真实按钮列表中的 selector。"}`,
+          "下一步必须输出 obsidian.ui.applyButtonRules，args.rules 只包含本次目标 selector，并按原任务填写 hidden/order/title/icon/mediaPath/effect；不得再 search/read/list/help，也不得猜文件。"
+        ].join("\n");
+      }
+      if (directive.phase === "verify-apply" || directive.phase === "verify-reset") {
+        const expected = directive.phase === "verify-reset"
+          ? "恢复后的实际可见状态"
+          : directive.expectedHidden === true ? "[hidden]" : "改动后的实际状态";
+        return [
+          `按钮工具链状态：${directive.phase === "verify-reset" ? "本次规则已恢复" : "规则已应用"}，尚缺 UI 读回证据。`,
+          `下一步只执行 obsidian.ui.buttons args={\"selector\":${selectorJson},\"limit\":8,\"refresh\":${verificationAttempt}}，确认 ${expected}；只有结果明确出现目标且状态符合才算通过，不要 search/help/buttonRules 或重复 apply。`
+        ].join("\n");
+      }
+      if (directive.phase === "reset") {
+        return [
+          "按钮工具链状态：本次规则已应用且 UI 已定向验证；原任务还要求恢复。",
+          `下一步只执行 obsidian.ui.applyButtonRules args={\"reset\":[${resetTarget}]}；只移除本次规则，不得 clear、不得再读取或搜索。`
+        ].join("\n");
+      }
+      return "按钮工具链状态：应用、定向验证、所需恢复和恢复后验证均已完成。直接根据真实前后状态回答，不再调用工具。";
+    }
+    if (directive.phase === "inspect-buttons") return "Button workflow: the model selected the runtime UI route. Next, only call obsidian.ui.buttons; do not search the Vault, guess files, inspect source, or repeat help.";
+    if (directive.phase === "inspect-rules") return "Button workflow: current buttons are known. Next, only call obsidian.ui.buttonRules; do not list buttons again, search the Vault, or read help.";
+    if (directive.phase === "apply") return `Button workflow: button and saved-rule discovery is complete. Evidence:\n${directive.evidence || "Use the exact selector above."}\nNext, only call obsidian.ui.applyButtonRules with one rule for the exact target selector and the requested hidden/order/title/icon/mediaPath/effect field. Do not search/read/list/help.`;
+    if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return `Button workflow: the ${directive.phase === "verify-reset" ? "reset" : "change"} ran but lacks matching UI evidence. Next, only call obsidian.ui.buttons with args={"selector":${selectorJson},"limit":8,"refresh":${verificationAttempt}}. The target must exist and its hidden/visible state must match; do not search, read help/rules, or repeat the mutation.`;
+    if (directive.phase === "reset") return `Button workflow: the change is applied and verified, and restoration remains. Next, only call obsidian.ui.applyButtonRules with args={"reset":[${resetTarget}]}; remove only this rule and never clear all rules.`;
+    return "Button workflow: change, focused verification, required restoration, and post-reset verification are complete. Answer from the real states without another tool call.";
+  }
+
+  private uiButtonWorkflowActionBlockReason(action: CancipAction, directive: UiButtonWorkflowDirective | null): string {
+    if (!directive || action.type === "todo") return "";
+    const command = action.type === "command" ? normalizeCommandBusName(action.command) : "";
+    const args = action.type === "command" ? action.args ?? {} : {};
+    const chinese = isChineseLanguage(this.plugin.language());
+    const expected = (() => {
+      if (directive.phase === "inspect-buttons") return "obsidian.ui.buttons";
+      if (directive.phase === "inspect-rules") return "obsidian.ui.buttonRules";
+      if (directive.phase === "apply" || directive.phase === "reset") return "obsidian.ui.applyButtonRules";
+      if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return "obsidian.ui.buttons with the exact selector";
+      return "a final answer without tools";
+    })();
+    let valid = false;
+    if (directive.phase === "inspect-buttons") valid = command === "obsidian.ui.buttons";
+    else if (directive.phase === "inspect-rules") valid = command === "obsidian.ui.buttonRules";
+    else if (directive.phase === "apply") valid = command === "obsidian.ui.applyButtonRules" && normalizeUiButtonRules(args.rules).length > 0;
+    else if (directive.phase === "reset") valid = command === "obsidian.ui.applyButtonRules"
+      && normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules).length > 0
+      && !args.clear;
+    else if (directive.phase === "verify-apply" || directive.phase === "verify-reset") {
+      const selector = typeof args.selector === "string" ? args.selector.trim() : "";
+      valid = command === "obsidian.ui.buttons" && (!directive.selector || selector === directive.selector);
+    }
+    if (valid) return "";
+    return chinese
+      ? `按钮工具链不能倒退：当前阶段只接受 ${expected}。已有真实运行时证据，不能再搜索 Vault、猜配置文件、重复 list/help 或执行无关动作。`
+      : `Button workflow cannot move backward: this phase accepts only ${expected}. Runtime evidence already exists; do not search the Vault, guess files, repeat list/help, or run unrelated actions.`;
+  }
+
+  private uiButtonWorkflowContinuationSystemPrompt(): string {
+    return isChineseLanguage(this.plugin.language())
+      ? "你是 Cancip。只根据本轮原任务、真实工具结果和按钮工具链状态决定当前一步。需要动作时只输出一个 ```cancip-action JSON 块，格式为 {\"actions\":[{\"type\":\"command\",\"command\":\"状态指定的命令\",\"args\":{}}]}；严格执行状态指定的唯一下一命令，不搜索 Vault、不猜文件、不重复 list/help。工具结果会再次返回；不要提前声称完成。工具链明确 done 时才输出带 <!-- cancip-final {\"status\":\"complete\"} --> 的精简事实回答。"
+      : "You are Cancip. Decide only the current step from the original task, real tool result, and button-workflow state. For an action, output one ```cancip-action JSON block shaped as {\"actions\":[{\"type\":\"command\",\"command\":\"the command required by the state\",\"args\":{}}]}. Run only the state's required command; never search the Vault, guess files, or repeat list/help. Tool results return for the next decision. Only a done workflow may produce a concise factual final with <!-- cancip-final {\"status\":\"complete\"} -->.";
+  }
+
   private toolGoalStateForModel(runs: ToolRun[], originalPrompt: string): string {
     const verifiedOpenPath = promptRequestsVaultTargetOpen(originalPrompt) ? verifiedOpenedPathFromRuns(runs) : "";
     if (verifiedOpenPath && vaultOpenPathMatchesPromptTarget(verifiedOpenPath, originalPrompt)) {
@@ -40962,6 +41188,8 @@ class CancipView extends ItemView {
         ? `当前任务状态：findTarget 没有找到与“${target || "用户目标"}”可信匹配的文件，也没有打开候选。直接给出具体未找到结论，不要继续搜索或打开无关文件。`
         : `Current task state: findTarget found no credible match for "${target || "the requested target"}" and no candidate was opened. Return a concrete not-found result without opening unrelated files.`;
     }
+    const buttonState = this.uiButtonWorkflowStateForModel(runs, originalPrompt);
+    if (buttonState) return buttonState;
     const resolvedOpenPath = this.resolvedVaultOpenPathFromRuns(runs, originalPrompt);
     if (!resolvedOpenPath) return "";
     if (isChineseLanguage(this.plugin.language())) {
@@ -42750,7 +42978,9 @@ class CancipView extends ItemView {
     // the final-decision step. Do not spend another general continuation call
     // merely to restate the same result.
     const needsStateChange = shouldNeedMoreActionForPrompt(originalPrompt, previous.runs);
-    if (!shouldContinueToolLoopFromRuns(previous.runs) && !needsStateChange) return previous;
+    const buttonDirective = this.uiButtonWorkflowDirective(this.currentTaskToolRuns(), originalPrompt);
+    const buttonNeedsAction = Boolean(buttonDirective && buttonDirective.phase !== "done");
+    if (!shouldContinueToolLoopFromRuns(previous.runs) && !needsStateChange && !buttonNeedsAction) return previous;
     const maxIterations = Math.max(1, Math.min(10, this.plugin.settings.maxToolIterations));
     let current: ActionHandlingResult | null = previous;
     let lastHandled: ActionHandlingResult = previous;
@@ -42758,18 +42988,32 @@ class CancipView extends ItemView {
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
       if (!current || request.signal.aborted || !this.isCurrentRequest(request)) return lastHandled;
       if (this.currentTaskActionBudgetReached()) return lastHandled;
+      const automaticVerification = await this.runDeterministicUiButtonVerification(originalPrompt, request);
+      if (automaticVerification) {
+        this.addActionReportMessage(automaticVerification);
+        this.renderMessagesAfterMutation();
+        lastHandled = automaticVerification;
+        current = automaticVerification;
+        const verifiedDirective = this.uiButtonWorkflowDirective(this.currentTaskToolRuns(), originalPrompt);
+        if (verifiedDirective?.phase === "done") return lastHandled;
+        continue;
+      }
       const continuationStatus = this.toolContinuationStatusFromRuns(current.runs, originalPrompt);
       this.setStatus(continuationStatus);
+      const buttonWorkflowActive = Boolean(this.uiButtonWorkflowDirective(this.currentTaskToolRuns(), originalPrompt));
+      const continuationSystem = buttonWorkflowActive
+        ? this.uiButtonWorkflowContinuationSystemPrompt()
+        : this.modePrompt(originalPrompt);
       let continueStep: ChatMessage | null = null;
       const outcomeImages = this.takeOutcomeEvidenceImages(current.runs);
       let continuationContext: { system: string; contextText: string; images?: ImageAttachmentContext[] } = {
-        system: this.modePrompt(originalPrompt),
+        system: continuationSystem,
         contextText: "",
         images: outcomeImages
       };
       try {
         continuationContext = {
-          system: this.modePrompt(originalPrompt),
+          system: continuationSystem,
           // Tool results are the continuation state. Re-sending the original
           // context duplicates evidence and can bury the latest result.
           contextText: "",
@@ -42824,11 +43068,44 @@ class CancipView extends ItemView {
       if (this.hasPendingToolRuns(current.runs)) return current;
       lastHandled = current;
       const cumulativeRuns = this.currentTaskToolRuns();
-      if (!shouldContinueToolLoopFromRuns(cumulativeRuns) && !shouldNeedMoreActionForPrompt(originalPrompt, cumulativeRuns)) {
+      const cumulativeButtonDirective = this.uiButtonWorkflowDirective(cumulativeRuns, originalPrompt);
+      const cumulativeButtonNeedsAction = Boolean(cumulativeButtonDirective && cumulativeButtonDirective.phase !== "done");
+      if (!shouldContinueToolLoopFromRuns(cumulativeRuns) && !shouldNeedMoreActionForPrompt(originalPrompt, cumulativeRuns) && !cumulativeButtonNeedsAction) {
         return lastHandled;
       }
     }
     return lastHandled;
+  }
+
+  private async runDeterministicUiButtonVerification(
+    originalPrompt: string,
+    request: AbortController
+  ): Promise<ActionHandlingResult | null> {
+    if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
+    const directive = this.uiButtonWorkflowDirective(this.currentTaskToolRuns(), originalPrompt);
+    if (!directive || (directive.phase !== "verify-apply" && directive.phase !== "verify-reset") || !directive.selector) return null;
+    if ((directive.verificationAttempt ?? 1) > 3) return null;
+    const answer = [
+      "```cancip-action",
+      JSON.stringify({
+        actions: [{
+          type: "command",
+          command: "obsidian.ui.buttons",
+          args: {
+            selector: directive.selector,
+            limit: 8,
+            refresh: directive.verificationAttempt ?? 1
+          }
+        }]
+      }),
+      "```"
+    ].join("\n");
+    void this.recordSessionEvent({
+      kind: "prompt.protocol_retry",
+      status: "deterministic-ui-verification",
+      detail: `${directive.phase} ${directive.selector} refresh=${directive.verificationAttempt ?? 1}`
+    });
+    return await this.handleActionBlocks(answer);
   }
 
   private toolContinuationPromptForModel(summary: string, originalPrompt: string): string {
@@ -43193,6 +43470,39 @@ class CancipView extends ItemView {
     };
   }
 
+  private verifiedUiButtonWorkflowFinalAnswer(runs: ToolRun[], originalPrompt: string): string {
+    const directive = this.uiButtonWorkflowDirective(runs, originalPrompt);
+    if (directive?.phase !== "done" || !directive.selector) return "";
+    const selectorLabel = directive.selector.match(/aria-label\s*=\s*["']([^"']+)["']/i)?.[1]?.trim() ?? "";
+    const promptLabel = originalPrompt.match(/[“"']([^”"']{1,32})[”"']\s*(?:按钮|button)/i)?.[1]?.trim() ?? "";
+    const label = directive.label && directive.label !== directive.selector ? directive.label : selectorLabel || promptLabel || "目标";
+    const executed = runs.filter((run) => run.status === "executed");
+    const hiddenEvidence = executed.some((run) => run.action.type === "command"
+      && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
+      && (run.result || "").includes(directive.selector!)
+      && /\[hidden\]/i.test(run.result || ""));
+    const restoredEvidence = [...executed].reverse().some((run) => run.action.type === "command"
+      && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
+      && (run.result || "").includes(directive.selector!)
+      && !/\[hidden\]/i.test(run.result || ""));
+    if (!hiddenEvidence || !restoredEvidence) return "";
+    const counts = executed
+      .filter((run) => run.action.type === "command" && normalizeCommandBusName(run.action.command) === "obsidian.ui.applyButtonRules")
+      .flatMap((run) => [...(run.result || "").matchAll(/count\s+(\d+)\s*->\s*(\d+)/gi)])
+      .map((match) => [match[1], match[2]] as const);
+    const countTrace = counts.length >= 2 ? `${counts[0][0]} -> ${counts[0][1]} -> ${counts[counts.length - 1][1]}` : "";
+    if (isChineseLanguage(this.plugin.language())) {
+      return [
+        `${label}按钮已临时隐藏并恢复。`,
+        `验证：隐藏时明确显示 [hidden]，恢复后重新可见${countTrace ? `；规则数 ${countTrace}` : ""}。`
+      ].join("\n");
+    }
+    return [
+      `${label} was temporarily hidden and restored.`,
+      `Verified: the hidden state reported [hidden], then the button became visible again${countTrace ? `; rule count ${countTrace}` : ""}.`
+    ].join("\n");
+  }
+
   private async requestModelFinalAfterToolRuns(
     context: { system: string; contextText: string; images?: ImageAttachmentContext[] },
     result: ActionHandlingResult,
@@ -43201,18 +43511,22 @@ class CancipView extends ItemView {
   ): Promise<ActionHandlingResult | "answered" | "failed"> {
     if (this.hasPendingToolRuns(result.runs)) return result;
     if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
+    const taskRuns = uniqueToolRunsById([...this.currentTaskToolRuns(), ...result.runs]);
+    const terminalButtonWorkflow = this.uiButtonWorkflowDirective(taskRuns, originalPrompt)?.phase === "done";
+    const decisionRuns = terminalButtonWorkflow ? taskRuns : result.runs;
+    const terminalButtonSummary = terminalButtonWorkflow ? this.verifiedUiButtonWorkflowFinalAnswer(decisionRuns, originalPrompt) : "";
     let finalStep: ChatMessage | null = null;
     const directFileReadFinal = isSimpleDirectVaultFileReadTask(originalPrompt)
-      && result.runs.length > 0
-      && result.runs.every((run) => isReadOnlyAction(run.action))
-      && missingRequestedFieldEvidence(originalPrompt, result.runs).length === 0;
+      && decisionRuns.length > 0
+      && decisionRuns.every((run) => isReadOnlyAction(run.action))
+      && missingRequestedFieldEvidence(originalPrompt, decisionRuns).length === 0;
     const directFileMutationFinal = isSimpleDirectVaultFileMutationTask(originalPrompt)
-      && result.runs.length > 0
-      && result.runs.every((run) => run.status === "executed")
-      && !hasUnverifiedWriteAction(result.runs);
+      && decisionRuns.length > 0
+      && decisionRuns.every((run) => run.status === "executed")
+      && !hasUnverifiedWriteAction(decisionRuns);
     const compactInformationalFinal = classifyPromptIntent(originalPrompt) === "informational"
-      && result.runs.length > 0
-      && result.runs.every((run) => isReadOnlyAction(run.action));
+      && decisionRuns.length > 0
+      && decisionRuns.every((run) => isReadOnlyAction(run.action));
     const compactFileFinal = directFileReadFinal || directFileMutationFinal || compactInformationalFinal;
     const relevantContext = trimPromptPayload(context.contextText, 1400);
     const planState = this.agentPlanTodos()
@@ -43221,21 +43535,23 @@ class CancipView extends ItemView {
       .join("\n");
     const reviewInstruction = [
       "Final review: silently compare the original request, relevant context, and actual tool results.",
-      "If available work can still advance the request, return exactly one executable cancip-action and no final marker.",
+      terminalButtonWorkflow
+        ? `The verified button workflow is complete. Do not output cancip-action or call any tool; return the final answer now. The visible answer must agree with this authoritative verified conclusion: ${terminalButtonSummary}`
+        : "If available work can still advance the request, return exactly one executable cancip-action and no final marker.",
       "Otherwise include exactly one hidden marker such as <!-- cancip-final {\"status\":\"complete\"} -->. Valid status values are complete, awaiting-approval, blocked, and failed; mark complete only when every requested result is verified.",
       planState
         ? "A Plan exists. Before marking complete, every item must be done from verified results. The visible final answer must keep the same numbering and order, with one concise but specific result and verification per item; for a blocked/failed item, give its exact blocker and necessary measure."
         : "Then give at most four concise lines: result and verification, or the exact blocker and necessary user action.",
       "Do not repeat process narration or programmatic changed-file cards."
     ].join("\n");
-    const goalState = this.toolGoalStateForModel(result.runs, originalPrompt);
+    const goalState = this.toolGoalStateForModel(decisionRuns, originalPrompt);
     const basePrompt = compactFileFinal
       ? [
           `Original user request:\n${originalPrompt}`,
           relevantContext ? `Relevant context:\n${relevantContext}` : "",
           planState ? `Current Plan:\n${planState}` : "",
           "Actual tool results:",
-          this.toolRunsForPrompt(result.runs, compactInformationalFinal ? 2600 : 1400, compactInformationalFinal ? 4 : 2),
+          this.toolRunsForPrompt(decisionRuns, compactInformationalFinal ? 2600 : 1400, compactInformationalFinal ? 4 : 2),
           directFileMutationFinal
             ? "The file action already performed readback verification."
             : "Use only these verified results for the decision.",
@@ -43248,9 +43564,10 @@ class CancipView extends ItemView {
           "",
           planState ? `Current Plan:\n${planState}` : "",
           "",
-          result.runs.length ? "Latest tool results:" : "Current model response is process-only, empty, or has not finished the task.",
-          result.runs.length ? this.toolRunsForPrompt(result.runs, 4200, 6) : "",
+          decisionRuns.length ? (terminalButtonWorkflow ? "Complete verified tool chain:" : "Latest tool results:") : "Current model response is process-only, empty, or has not finished the task.",
+          decisionRuns.length ? this.toolRunsForPrompt(decisionRuns, 4200, terminalButtonWorkflow ? 8 : 6) : "",
           goalState,
+          terminalButtonSummary ? `Authoritative verified conclusion:\n${terminalButtonSummary}` : "",
           "",
           "- If opening a file produced multiple candidates, use conversation/current-file/recent-activity/path evidence to choose the strongest exact path and open it. Ask the user only when those signals genuinely cannot distinguish candidates.",
           "- For a generic create-file/create-note request with no target, let the model choose the smallest sensible default action from current context; do not stall on a missing name/path/content.",
@@ -43258,12 +43575,12 @@ class CancipView extends ItemView {
         ].filter(Boolean).join("\n");
     let correction = "";
     const finalContext = {
-      system: compactFileFinal ? this.informationalAnswerSystemPrompt() : this.modePrompt(originalPrompt),
+      system: compactFileFinal || terminalButtonWorkflow ? this.informationalAnswerSystemPrompt() : this.modePrompt(originalPrompt),
       contextText: "",
       images: context.images
     };
     try {
-      const finalDecisionStatus = this.finalDecisionStatusFromRuns(result.runs, originalPrompt);
+      const finalDecisionStatus = this.finalDecisionStatusFromRuns(decisionRuns, originalPrompt);
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const prompt = correction
           ? `${basePrompt}\n\nCorrection from previous attempt: ${correction}`
@@ -43291,15 +43608,22 @@ class CancipView extends ItemView {
         this.updateProgressStep(finalStep, this.generationStepSummary(finalDecisionStatus, this.currentModelCharUsageText()), this.formatGenerationAuditDetail(prompt, finalContext, this.activeRequestApiProfile ?? this.plugin.activeApiProfile(), answer, visibleAnswer, originalPrompt));
         const reviewFailure = hasActions
           ? (reviewStatus ? "response mixes an executable action with a terminal final-review marker" : "")
-          : this.finalReviewStatusRequirementFailure(reviewStatus, result.runs);
-        const requirementFailure = protocolIssue || reviewFailure || (visibleAnswer
-          ? this.finalAnswerRequirementFailure(visibleAnswer, originalPrompt, result.runs)
+          : this.finalReviewStatusRequirementFailure(reviewStatus, decisionRuns);
+        const terminalButtonAnswerFailure = terminalButtonWorkflow && visibleAnswer
+          ? (/(?:还没|還沒|未|没有|沒有|并未|並未|not\s+(?:done|complete)|did\s+not).{0,24}(?:完成|改动|改動|执行|執行|done|complete|change|execute)|(?:只|仅|僅|only).{0,18}(?:读取|讀取|检查|檢查|read|inspect)/i.test(visibleAnswer)
+              ? "final answer contradicts the verified completed button workflow"
+              : !/(隐藏|隱藏|hidden|hide)/i.test(visibleAnswer) || !/(恢复|恢復|还原|還原|重新可见|重新可見|restor|visible)/i.test(visibleAnswer)
+                ? "final answer must state both the verified hidden and restored states"
+                : "")
+          : "";
+        const requirementFailure = protocolIssue || reviewFailure || terminalButtonAnswerFailure || (visibleAnswer
+          ? this.finalAnswerRequirementFailure(visibleAnswer, originalPrompt, decisionRuns)
           : "missing visible final answer");
         const acceptedVisibleAnswer = requirementFailure ? "" : visibleAnswer;
         const assistantMessage = acceptedVisibleAnswer ? this.addMessage("assistant", acceptedVisibleAnswer) : undefined;
         if (assistantMessage) this.attachChoiceSource(assistantMessage, answer);
         if (assistantMessage) this.renderMessages();
-        const next = await this.handleActionBlocks(answer, assistantMessage);
+        const next = terminalButtonWorkflow && hasActions ? null : await this.handleActionBlocks(answer, assistantMessage);
         if (next) return next;
         if (acceptedVisibleAnswer.trim()) return "answered";
         void this.recordSessionEvent({
@@ -43307,14 +43631,24 @@ class CancipView extends ItemView {
           detail: protocolIssue || (hasActions ? "response had actions but no executable action was parsed" : requirementFailure),
           status: "retry"
         });
-        correction = protocolIssue
+        correction = terminalButtonWorkflow
+          ? "The button workflow is already verified complete. Do not output any action or tool call. Output exactly one complete cancip-final marker and a concise final answer from the supplied before/hidden/restored evidence."
+          : protocolIssue
           ? `${trimContext(protocolIssue, 220)}. Preserve the intended next step and return one corrected executable cancip-action. The next tool result will be returned for another decision; do not use unresolved then placeholders.`
           : `${trimContext(requirementFailure, 220)}. Next output must be one executable cancip-action, or a concrete final answer with exactly one valid hidden cancip-final status marker that matches verified results.`;
+      }
+      if (terminalButtonWorkflow) {
+        const fallback = this.verifiedUiButtonWorkflowFinalAnswer(decisionRuns, originalPrompt);
+        if (fallback) {
+          this.addMessage("assistant", `${fallback}\n\n<!-- cancip-final {"status":"complete"} -->`);
+          this.renderMessages();
+          return "answered";
+        }
       }
       return "failed";
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      this.updateProgressStep(finalStep, this.generationStepSummary(this.finalDecisionStatusFromRuns(result.runs, originalPrompt), this.currentModelCharUsageText()), reason, this.t("toolRunFailed"));
+      this.updateProgressStep(finalStep, this.generationStepSummary(this.finalDecisionStatusFromRuns(decisionRuns, originalPrompt), this.currentModelCharUsageText()), reason, this.t("toolRunFailed"));
       void this.recordSessionEvent({ kind: "prompt.recoverable_error", detail: reason, status: "final-decision-failed" });
       return "failed";
     } finally {
@@ -43343,32 +43677,37 @@ class CancipView extends ItemView {
   }
 
   private ensureFinalConclusion(result: ActionHandlingResult, startedAt?: number, needsMoreAction = false, originalPrompt = ""): boolean {
-    if (!result.runs.length) return true;
-    if (this.hasPendingToolRuns(result.runs)) return true;
+    const taskRuns = uniqueToolRunsById([...this.currentTaskToolRuns(), ...result.runs]);
+    const terminalButtonWorkflow = this.uiButtonWorkflowDirective(taskRuns, originalPrompt)?.phase === "done";
+    const effectiveResult: ActionHandlingResult = terminalButtonWorkflow
+      ? { ...result, runs: taskRuns, executed: taskRuns.some((run) => run.status === "executed") }
+      : result;
+    if (!effectiveResult.runs.length) return true;
+    if (this.hasPendingToolRuns(effectiveResult.runs)) return true;
     const processBoundary = this.latestProcessOrToolMessageIndex();
     const visibleAfterTools = this.latestVisibleAssistantAfter(processBoundary);
-    const replaceVisible = visibleAfterTools && hasFinalConclusion(visibleAfterTools.content) && this.shouldReplaceFinalConclusion(visibleAfterTools, result);
+    const replaceVisible = visibleAfterTools && hasFinalConclusion(visibleAfterTools.content) && this.shouldReplaceFinalConclusion(visibleAfterTools, effectiveResult);
     const replaceActionOnlyFallback = visibleAfterTools && this.isActionOnlyFallbackMessage(visibleAfterTools.content);
     const visibleAfterToolsText = visibleAfterTools
       ? prepareMessageDisplay(redactSensitiveText(visibleAfterTools.content)).visibleContent.trim()
       : "";
-    if (visibleAfterTools && !replaceVisible && !replaceActionOnlyFallback && !this.finalAnswerRequirementFailure(visibleAfterToolsText, originalPrompt, result.runs)) {
-      const enriched = this.ensureFinalAnswerAuditSections(visibleAfterTools.content, result.runs, originalPrompt, visibleAfterToolsText);
+    if (visibleAfterTools && !replaceVisible && !replaceActionOnlyFallback && !this.finalAnswerRequirementFailure(visibleAfterToolsText, originalPrompt, effectiveResult.runs)) {
+      const enriched = this.ensureFinalAnswerAuditSections(visibleAfterTools.content, effectiveResult.runs, originalPrompt, visibleAfterToolsText);
       visibleAfterTools.content = this.withInlineChoiceMetadata(this.appendFinalRunStats(enriched, startedAt), originalPrompt || enriched);
-      visibleAfterTools.changedFileRuns = this.finalConclusionChangedFileRuns(result.runs);
+      visibleAfterTools.changedFileRuns = this.finalConclusionChangedFileRuns(effectiveResult.runs);
       void this.saveCurrentSession();
       this.renderMessages();
       return true;
     }
-    const fallback = this.humanFinalConclusion(result.runs, needsMoreAction, originalPrompt).trim();
+    const fallback = this.humanFinalConclusion(effectiveResult.runs, needsMoreAction, originalPrompt).trim();
     if (!fallback) return false;
     const summary = this.appendFinalRunStats(fallback, startedAt);
     const content = this.withInlineChoiceMetadata(this.t("finalConclusionFallback", { summary }), originalPrompt || summary);
     const existingTurnFinal = visibleAfterTools ?? this.latestVisibleAssistantAfter(this.latestUserMessageIndex());
     const message = existingTurnFinal ?? this.addMessage("assistant", content);
     message.content = content;
-    message.toolRuns = result.runs.filter((run) => run.status === "pending" || run.status === "executing");
-    message.changedFileRuns = this.finalConclusionChangedFileRuns(result.runs);
+    message.toolRuns = effectiveResult.runs.filter((run) => run.status === "pending" || run.status === "executing");
+    message.changedFileRuns = this.finalConclusionChangedFileRuns(effectiveResult.runs);
     void this.saveCurrentSession();
     this.renderMessages();
     return true;
@@ -46084,12 +46423,16 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: this.domInput(args) });
     }
 
+    if (normalized === "obsidian.ui.help") {
+      return this.t("commandExecuted", { command: normalized, result: this.uiButtonCommandHelp() });
+    }
+
     if (normalized === "obsidian.ui.buttons") {
       return this.t("commandExecuted", { command: normalized, result: this.uiButtonsSummary(args) });
     }
 
     if (normalized === "obsidian.ui.buttonRules") {
-      return this.t("commandExecuted", { command: normalized, result: this.uiButtonRulesSummary() });
+      return this.t("commandExecuted", { command: normalized, result: this.uiButtonRulesSummary(args) });
     }
 
     if (normalized === "obsidian.ui.applyButtonRules") {
@@ -46255,7 +46598,7 @@ class CancipView extends ItemView {
     }
 
     if (normalized === "cancip.tools.help") {
-      return this.t("commandExecuted", { command: normalized, result: this.toolHelpPrompt() });
+      return this.t("commandExecuted", { command: normalized, result: this.toolHelpPrompt(args) });
     }
 
     if (normalized === "web.search") {
@@ -48907,6 +49250,14 @@ class CancipView extends ItemView {
   }
 
   private uiButtonsSummary(args: Record<string, unknown>): string {
+    if (args.help === true || args.action === "help") return this.uiButtonCommandHelp();
+    const requestedAction = typeof args.action === "string" ? args.action.trim().toLowerCase() : "";
+    if (requestedAction && !["list", "read", "inspect", "status"].includes(requestedAction)) {
+      throw new Error(`obsidian.ui.buttons is read-only and cannot ${requestedAction}; use obsidian.dom.click to click or obsidian.ui.applyButtonRules to change a button`);
+    }
+    if (typeof args.click === "string" && args.click.trim()) {
+      throw new Error("obsidian.ui.buttons is read-only; use obsidian.dom.click with args.selector and args.index");
+    }
     const scope = typeof args.scope === "string" ? args.scope : "active";
     const root = this.domActionRoot({ scope });
     const limit = clampInt(args.limit, 80, 1, 200);
@@ -48914,30 +49265,65 @@ class CancipView extends ItemView {
       ? args.selector.trim()
       : ".view-header button, .view-header .clickable-icon, .view-actions button, .view-actions .clickable-icon, .workspace-tab-header, .mod-right-split button, .mod-right-split .clickable-icon, .menu .menu-item, .menu-item, .document-search-button, .pdf-toolbar button, .pdf-toolbar .clickable-icon";
     const elements = Array.from(root.querySelectorAll<HTMLElement>(selector)).slice(0, limit);
-    if (!elements.length) return this.t("none");
-    return elements.map((el, index) => {
+    if (!elements.length) return `${this.t("none")}\n${this.uiButtonCommandHelp()}`;
+    const rows = elements.map((el, index) => {
       const label = uiElementLabel(el);
       const stable = stableSelectorForElement(el);
-      const hidden = el.offsetParent === null || getComputedStyle(el).display === "none";
-      const order = getComputedStyle(el).order;
+      const style = el.ownerDocument.defaultView?.getComputedStyle(el) ?? getComputedStyle(el);
+      const hidden = el.dataset.cancipUiHidden === "true"
+        || el.dataset.cancipUiRuleHidden === "true"
+        || el.offsetParent === null
+        || style.display === "none"
+        || style.visibility === "hidden";
+      const order = style.order;
       return `${index}. ${label || el.tagName.toLowerCase()}${hidden ? " [hidden]" : ""}${order !== "0" ? ` order=${order}` : ""}\n   selector: ${stable}`;
-    }).join("\n");
+    });
+    const hint = isChineseLanguage(this.plugin.language())
+      ? "只读列表；隐藏/恢复用 obsidian.ui.applyButtonRules，点击用 obsidian.dom.click。参数不清用 cancip.tools.help {command:'obsidian.ui.applyButtonRules'}。"
+      : "Read-only list; use obsidian.ui.applyButtonRules to hide/restore and obsidian.dom.click to click. For parameters call cancip.tools.help {command:'obsidian.ui.applyButtonRules'}.";
+    return [...rows, "", hint].join("\n");
   }
 
-  private uiButtonRulesSummary(): string {
-    const rules = this.plugin.settings.uiButtonRules;
-    if (!rules.length) return this.t("none");
-    return rules.map((rule, index) => {
+  private uiButtonRulesSummary(args: Record<string, unknown> = {}): string {
+    if (args.help === true || args.action === "help") return this.uiButtonCommandHelp();
+    const selector = typeof args.selector === "string" ? args.selector.trim() : "";
+    const label = typeof args.label === "string" ? normalizeUiButtonLabel(args.label) : "";
+    const scope = args.scope === "active" || args.scope === "cancip" || args.scope === "global" ? args.scope : "";
+    const limit = clampInt(args.limit, 80, 1, 200);
+    const rules = this.plugin.settings.uiButtonRules
+      .filter((rule) => !selector || rule.selector === selector)
+      .filter((rule) => !label || normalizeUiButtonLabel(rule.label) === label)
+      .filter((rule) => !scope || rule.scope === scope)
+      .slice(0, limit);
+    if (!rules.length) return `${this.t("none")}\n${this.uiButtonCommandHelp()}`;
+    const rows = rules.map((rule, index) => {
       const custom = rule.kind === "custom" ? ` custom command=${rule.commandId ?? ""} anchor=${rule.anchorSelector ?? ""}` : "";
-      return `${index + 1}. ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope}${custom} ${rule.label}${rule.title ? ` title=${rule.title}` : ""}${rule.icon ? ` icon=${rule.icon}` : ""}${rule.mediaPath ? ` media=${rule.mediaPath}` : ""}${rule.effect ? ` effect=${rule.effect}` : ""}\n   ${rule.selector}`;
-    }).join("\n");
+      return `${index + 1}. id=${rule.id} ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope}${custom} ${rule.label}${rule.title ? ` title=${rule.title}` : ""}${rule.icon ? ` icon=${rule.icon}` : ""}${rule.mediaPath ? ` media=${rule.mediaPath}` : ""}${rule.effect ? ` effect=${rule.effect}` : ""}\n   ${rule.selector}`;
+    });
+    const hint = isChineseLanguage(this.plugin.language())
+      ? "恢复单条规则：obsidian.ui.applyButtonRules args={reset:[{id:'上方 id'}]}，不要 clear 全部规则。"
+      : "Restore one rule with obsidian.ui.applyButtonRules args={reset:[{id:'id above'}]}; do not clear all rules.";
+    return [...rows, "", hint].join("\n");
   }
 
   private async applyUiButtonRulesCommand(args: Record<string, unknown>): Promise<string> {
+    if (args.help === true || args.action === "help") return this.uiButtonCommandHelp();
     const clear = Boolean(args.clear);
     const rawRules = Array.isArray(args.rules) ? args.rules : [];
     const incoming = normalizeUiButtonRules(rawRules);
     const resetTargets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
+    if (!clear && !incoming.length && !resetTargets.length) {
+      throw new Error("obsidian.ui.applyButtonRules requires args.rules or args.reset; call cancip.tools.help with args.command='obsidian.ui.applyButtonRules'");
+    }
+    for (const rule of incoming) {
+      try {
+        this.domActionRoot({ scope: rule.scope }).querySelectorAll(rule.selector);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`invalid button CSS selector ${rule.selector}: ${reason}. Read obsidian.ui.buttons and use its exact selector.`);
+      }
+    }
+    const beforeCount = this.plugin.settings.uiButtonRules.length;
     const existing = resetTargets.length
       ? this.plugin.settings.uiButtonRules.filter((rule) => !uiButtonRuleMatchesAnyResetTarget(rule, resetTargets))
       : this.plugin.settings.uiButtonRules;
@@ -48945,7 +49331,17 @@ class CancipView extends ItemView {
     this.plugin.settings.uiButtonRules = next;
     await this.plugin.saveSettings();
     this.plugin.applyUiButtonRules();
-    return this.uiButtonRulesSummary();
+    const operation = clear ? "cleared" : resetTargets.length ? `reset ${resetTargets.length}` : `applied ${incoming.length}`;
+    const targetSummary = incoming[0]?.selector || resetTargets[0]?.selector || resetTargets[0]?.id || resetTargets[0]?.label || "all";
+    return [
+      `button rules ${operation}; count ${beforeCount} -> ${next.length}; target ${targetSummary}`,
+      this.uiButtonRulesSummary({
+        selector: incoming[0]?.selector || resetTargets[0]?.selector,
+        label: incoming[0]?.label || resetTargets[0]?.label,
+        scope: incoming[0]?.scope || resetTargets[0]?.scope,
+        limit: 12
+      })
+    ].join("\n");
   }
 
   private obsidianTagsSummary(args: Record<string, unknown>): string {
@@ -59384,6 +59780,7 @@ const CANONICAL_COMMAND_BUS_NAMES = new Map([
   "obsidian.dom.snapshot",
   "obsidian.dom.click",
   "obsidian.dom.input",
+  "obsidian.ui.help",
   "obsidian.ui.buttons",
   "obsidian.ui.buttonRules",
   "obsidian.ui.applyButtonRules",
@@ -59534,6 +59931,11 @@ const COMMAND_BUS_ALIASES = new Map<string, string>([
   ["obsidian.commands.resolve", "obsidian.resolveCommand"],
   ["obsidian.command.list", "obsidian.listCommands"],
   ["obsidian.commands.list", "obsidian.listCommands"],
+  ["cancip.currentview", "obsidian.currentView"],
+  ["cancip.current.view", "obsidian.currentView"],
+  ["obsidian.ui.buttonhelp", "obsidian.ui.help"],
+  ["obsidian.ui.buttons.help", "obsidian.ui.help"],
+  ["obsidian.ui.rules.help", "obsidian.ui.help"],
   ["obsidian.open", "obsidian.openFile"],
   ["obsidian.openfile", "obsidian.openFile"],
   ["obsidian.open.path", "obsidian.openPath"],
@@ -60847,7 +61249,10 @@ function hasExplicitExecutionDirective(prompt: string): boolean {
 }
 
 function promptExplicitlyRequestsReadOnly(prompt: string): boolean {
-  return /(?:只读|只讀|仅查看|僅查看|不要修改|别修改|別修改|不修改|不要改动|不要改動|不执行|不執行|不要执行|不要執行|不写入|不寫入|不要写入|不要寫入|read[ -]?only|no\s*(?:change|modify|write|execution)|without\s+(?:changing|modifying|writing|executing))/i.test(prompt);
+  const unscoped = prompt
+    .replace(/(?:不要|別|别|不得|不)\s*(?:修改|改动|改動|写入|寫入|执行|執行)\s*(?:其他|其余|其餘|无关|無關|未指定|本次以外)[^，。；;!?！？\n]{0,48}/gi, "")
+    .replace(/(?:do\s+not|don't|never)\s+(?:change|modify|write|execute)\s+(?:other|unrelated|unspecified|anything\s+else)[^,.;!?\n]{0,48}/gi, "");
+  return /(?:只读|只讀|仅查看|僅查看|不要修改|别修改|別修改|不修改|不要改动|不要改動|不执行|不執行|不要执行|不要執行|不写入|不寫入|不要写入|不要寫入|read[ -]?only|no\s*(?:change|modify|write|execution)|without\s+(?:changing|modifying|writing|executing))/i.test(unscoped);
 }
 
 function isImplementationChangePrompt(prompt: string): boolean {
@@ -61350,6 +61755,7 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "cancip.outcome.observe",
     "cancip.outcome.verify",
     "cancip.outcome.capture",
+    "obsidian.ui.help",
     "obsidian.ui.buttons",
     "obsidian.ui.buttonRules",
     "obsidian.tags",
@@ -62284,6 +62690,7 @@ function isReadOnlyAction(action: CancipAction): boolean {
     "cancip.outcome.observe",
     "cancip.outcome.verify",
     "cancip.outcome.capture",
+    "obsidian.ui.help",
     "obsidian.ui.buttons",
     "obsidian.ui.buttonRules",
     "obsidian.tags",
@@ -62735,6 +63142,12 @@ function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
       if (!selector) return null;
       const scope = item.scope === "active" || item.scope === "cancip" ? item.scope : "global";
       const rawId = typeof item.id === "string" && item.id.trim() ? item.id.trim() : "";
+      const requestedAction = typeof item.action === "string" ? item.action.trim().toLowerCase() : "";
+      const hidden = ["hide", "hidden", "remove", "隐藏", "隱藏"].includes(requestedAction)
+        ? true
+        : ["show", "visible", "restore", "显示", "顯示", "恢复", "恢復"].includes(requestedAction)
+          ? false
+          : Boolean(item.hidden);
       const order = Number.isFinite(Number(item.order)) ? Math.max(-999, Math.min(999, Math.round(Number(item.order)))) : 0;
       const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : undefined;
       const icon = typeof item.icon === "string" && item.icon.trim() ? item.icon.trim() : undefined;
@@ -62769,7 +63182,7 @@ function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
       const id = rawId && (kind === "custom" || !selectorChanged)
         ? rawId
         : stableRuleId(uiButtonRuleStableIdInput(scope, selector, label));
-      return { id, selector, label, hidden: Boolean(item.hidden), order, title, icon, mediaPath: mediaPath || undefined, effect, scope, kind, anchorSelector, anchorLabel, commandId, commandName, fallbackSelector, insertPosition, viewType, commandGuard, iconGuard, menuGroupGuard, targetKey, legacyTargetKey, createdAt, updatedAt };
+      return { id, selector, label, hidden, order, title, icon, mediaPath: mediaPath || undefined, effect, scope, kind, anchorSelector, anchorLabel, commandId, commandName, fallbackSelector, insertPosition, viewType, commandGuard, iconGuard, menuGroupGuard, targetKey, legacyTargetKey, createdAt, updatedAt };
     })
     .filter((item): item is UiButtonRule => item !== null);
   return mergeUiButtonRules([], rules).slice(0, 200);
