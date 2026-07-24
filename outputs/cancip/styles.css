@@ -4862,6 +4862,14 @@ details.obcc-process-step {
   gap: 6px;
 }
 
+.obcc-button-edit-icon-grid {
+  max-height: 116px;
+  margin: 4px 0 10px;
+  padding: 2px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
 .obcc-button-icon-choice {
   display: inline-flex;
   align-items: center;
@@ -4885,6 +4893,180 @@ details.obcc-process-step {
   border-color: var(--interactive-accent);
   background: var(--interactive-accent);
   color: var(--text-on-accent);
+}
+
+.obcc-button-edit-media-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  margin: 0 0 8px;
+  padding: 5px 8px;
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--obcc-radius-control);
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.obcc-button-edit-media-path {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-button-edit-media-gallery {
+  margin: 0 0 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--obcc-radius-control);
+}
+
+.obcc-button-edit-media-gallery > summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.obcc-button-edit-media-search {
+  width: 100%;
+  margin: 8px 0 6px;
+}
+
+.obcc-button-edit-media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(76px, 1fr));
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.obcc-button-edit-media-choice {
+  display: grid;
+  grid-template-rows: 38px auto;
+  align-items: center;
+  justify-items: center;
+  min-width: 0;
+  min-height: 62px;
+  padding: 4px;
+  overflow: hidden;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--obcc-radius-control);
+  background: var(--background-primary);
+  color: var(--text-normal);
+}
+
+.obcc-button-edit-media-choice.is-selected {
+  border-color: var(--interactive-accent);
+  box-shadow: 0 0 0 1px var(--interactive-accent);
+}
+
+.obcc-button-edit-media-choice > span:last-child {
+  width: 100%;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-button-edit-media-empty {
+  grid-column: 1 / -1;
+  padding: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.obcc-ui-button-media,
+.obcc-ui-button-media-placeholder {
+  display: block;
+  width: 22px;
+  height: 22px;
+  max-width: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.obcc-button-edit-media-preview .obcc-ui-button-media,
+.obcc-button-edit-media-preview .obcc-ui-button-media-placeholder,
+.obcc-button-edit-media-choice .obcc-ui-button-media,
+.obcc-button-edit-media-choice .obcc-ui-button-media-placeholder {
+  width: 34px;
+  height: 34px;
+}
+
+.obcc-ui-button-effect.is-pulse > :is(svg, .obcc-ui-button-media, .menu-item-icon),
+.obcc-ui-button-effect.is-pulse:is(button, .clickable-icon) > :is(svg, .obcc-ui-button-media) {
+  animation: obcc-ui-button-pulse 1.8s ease-in-out infinite;
+}
+
+.obcc-ui-button-effect.is-spin > :is(svg, .obcc-ui-button-media, .menu-item-icon),
+.obcc-ui-button-effect.is-spin:is(button, .clickable-icon) > :is(svg, .obcc-ui-button-media) {
+  animation: obcc-ui-button-spin 2.4s linear infinite;
+}
+
+.obcc-ui-button-effect.is-float > :is(svg, .obcc-ui-button-media, .menu-item-icon),
+.obcc-ui-button-effect.is-float:is(button, .clickable-icon) > :is(svg, .obcc-ui-button-media) {
+  animation: obcc-ui-button-float 1.8s ease-in-out infinite;
+}
+
+.obcc-ui-button-effect.is-bounce > :is(svg, .obcc-ui-button-media, .menu-item-icon),
+.obcc-ui-button-effect.is-bounce:is(button, .clickable-icon) > :is(svg, .obcc-ui-button-media) {
+  animation: obcc-ui-button-bounce 1.5s ease-in-out infinite;
+}
+
+.obcc-ui-button-effect.is-glow {
+  animation: obcc-ui-button-glow 1.8s ease-in-out infinite;
+}
+
+.obcc-ui-button-effect.is-tilt,
+.obcc-ui-button-effect.is-press {
+  transition: transform 120ms ease, filter 120ms ease;
+}
+
+.obcc-ui-button-effect.is-tilt:hover {
+  transform: rotate(8deg) scale(1.08);
+}
+
+.obcc-ui-button-effect.is-press:active {
+  transform: scale(0.82);
+  filter: brightness(1.25);
+}
+
+@keyframes obcc-ui-button-pulse {
+  0%, 100% { transform: scale(0.9); opacity: 0.72; }
+  50% { transform: scale(1.08); opacity: 1; }
+}
+
+@keyframes obcc-ui-button-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes obcc-ui-button-float {
+  0%, 100% { transform: translateY(1px); }
+  50% { transform: translateY(-3px); }
+}
+
+@keyframes obcc-ui-button-bounce {
+  0%, 100% { transform: translateY(0); }
+  45% { transform: translateY(-4px); }
+  65% { transform: translateY(1px); }
+}
+
+@keyframes obcc-ui-button-glow {
+  0%, 100% { filter: drop-shadow(0 0 0 transparent); }
+  50% { filter: drop-shadow(0 0 5px var(--interactive-accent)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .obcc-ui-button-effect,
+  .obcc-ui-button-effect > * {
+    animation: none !important;
+    transition: none !important;
+  }
 }
 
 .obcc-button-edit-actions {

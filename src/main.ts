@@ -1917,6 +1917,22 @@ type ContextualEditProposal = {
   items: ReviewGateManifestItem[];
 };
 
+type ContextualEditAnchor = {
+  file: TFile;
+  surface: HTMLElement;
+  kind: "selection" | "blank-caret" | "position";
+  selectedText?: string;
+  startLine?: number;
+  endLine?: number;
+  cursorLine?: number;
+  nearbyText?: string;
+  pageIndex?: number;
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+};
+
 type AiVaultMutationKind = "write" | "append" | "process" | "rename" | "move" | "copy" | "delete";
 
 type AiVaultMutationSnapshot = {
@@ -2096,6 +2112,8 @@ type UiButtonRule = {
   order: number;
   title?: string;
   icon?: string;
+  mediaPath?: string;
+  effect?: UiButtonVisualEffect;
   scope: "global" | "active" | "cancip";
   kind?: "custom";
   anchorSelector?: string;
@@ -2152,7 +2170,9 @@ const UI_BUTTON_ACTIVE_MORE_SELECTOR = [
   ".view-actions button[aria-label=\"More options\"]"
 ].join(", ");
 
-type UiButtonRuleChange = "custom" | "hidden" | "order" | "title" | "icon";
+type UiButtonVisualEffect = "pulse" | "spin" | "float" | "glow" | "bounce" | "tilt" | "press";
+
+type UiButtonRuleChange = "custom" | "hidden" | "order" | "title" | "icon" | "media" | "effect";
 
 type UiButtonRuleResetTarget = {
   id?: string;
@@ -2173,6 +2193,8 @@ type UiButtonClipboardPayload = {
   label: string;
   title?: string;
   icon?: string;
+  mediaPath?: string;
+  effect?: UiButtonVisualEffect;
   commandId: string;
   commandName?: string;
   fallbackSelector?: string;
@@ -2397,6 +2419,9 @@ type UiButtonSortSnapshotItem = {
 class CancipButtonEditModal extends Modal {
   private nameInput: HTMLInputElement | null = null;
   private iconInput: HTMLInputElement | null = null;
+  private mediaPathInput: HTMLInputElement | null = null;
+  private mediaPreviewEl: HTMLElement | null = null;
+  private editIconButtons: HTMLButtonElement[] = [];
   private verifyEl: HTMLElement | null = null;
   private verifyTimer: number | null = null;
   private addCommandSelect: HTMLSelectElement | null = null;
@@ -2453,7 +2478,62 @@ class CancipButtonEditModal extends Modal {
       .addText((text) => {
         this.iconInput = text.inputEl;
         text.setValue(this.descriptor.rule?.icon ?? "");
-        text.setPlaceholder("settings, history, bot, shield-check");
+        text.setPlaceholder(uiElementIconName(this.descriptor.target) || "settings, history, bot, shield-check");
+        text.onChange(() => this.refreshEditIconButtons());
+      })
+      .addExtraButton((button) => {
+        button
+          .setIcon("rotate-ccw")
+          .setTooltip(this.plugin.t("buttonEditUseOriginalIcon"))
+          .onClick(() => this.setSelectedEditIcon(""));
+      });
+
+    const editIconGrid = this.contentEl.createDiv({ cls: "obcc-button-icon-grid obcc-button-edit-icon-grid" });
+    for (const icon of this.plugin.uiButtonIconOptions()) {
+      const button = editIconGrid.createEl("button", {
+        cls: "obcc-button-icon-choice",
+        attr: { type: "button", title: icon, "aria-label": icon }
+      });
+      setIcon(button, icon);
+      button.addEventListener("click", () => this.setSelectedEditIcon(icon));
+      this.editIconButtons.push(button);
+    }
+    this.refreshEditIconButtons();
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditMedia"))
+      .setDesc(this.plugin.t("buttonEditMediaDesc"))
+      .addText((text) => {
+        this.mediaPathInput = text.inputEl;
+        text.setValue(this.descriptor.rule?.mediaPath ?? "");
+        text.setPlaceholder(this.plugin.t("buttonEditMediaPlaceholder"));
+        text.onChange(() => this.refreshEditMediaPreview());
+      })
+      .addExtraButton((button) => {
+        button
+          .setIcon("rotate-ccw")
+          .setTooltip(this.plugin.t("buttonEditMediaReset"))
+          .onClick(() => this.setSelectedEditMedia(""));
+      });
+    this.mediaPreviewEl = this.contentEl.createDiv({ cls: "obcc-button-edit-media-preview" });
+    this.refreshEditMediaPreview();
+    this.renderEditMediaGallery();
+
+    new Setting(this.contentEl)
+      .setName(this.plugin.t("buttonEditEffect"))
+      .setDesc(this.plugin.t("buttonEditEffectDesc"))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption("", this.plugin.t("buttonEditEffectNone"))
+          .addOption("pulse", this.plugin.t("buttonEditEffectPulse"))
+          .addOption("spin", this.plugin.t("buttonEditEffectSpin"))
+          .addOption("float", this.plugin.t("buttonEditEffectFloat"))
+          .addOption("glow", this.plugin.t("buttonEditEffectGlow"))
+          .addOption("bounce", this.plugin.t("buttonEditEffectBounce"))
+          .addOption("tilt", this.plugin.t("buttonEditEffectTilt"))
+          .addOption("press", this.plugin.t("buttonEditEffectPress"))
+          .setValue(this.descriptor.rule?.effect ?? "");
+        dropdown.selectEl.dataset.cancipButtonEffect = "true";
       });
 
     new Setting(this.contentEl)
@@ -2553,6 +2633,9 @@ class CancipButtonEditModal extends Modal {
   private async saveRule(): Promise<void> {
     const title = this.nameInput?.value.trim() || "";
     const icon = this.iconInput?.value.trim() || "";
+    const mediaPath = normalizeUiButtonMediaPath(this.mediaPathInput?.value ?? "");
+    const effectSelect = this.contentEl.querySelector<HTMLSelectElement>("select[data-cancip-button-effect='true']");
+    const effect = normalizeUiButtonVisualEffect(effectSelect?.value);
     const order = this.descriptor.rule?.order ?? 0;
     const selector = this.descriptor.selector;
     const id = this.descriptor.rule?.id ?? stableRuleId(uiButtonRuleStableIdInput(this.buttonScope, selector, this.descriptor.label || selector));
@@ -2564,6 +2647,8 @@ class CancipButtonEditModal extends Modal {
       order,
       title: title && title !== this.descriptor.label ? title : undefined,
       icon: icon || undefined,
+      mediaPath: mediaPath || undefined,
+      effect,
       scope: this.buttonScope
     });
     new Notice(this.plugin.t("buttonEditSaved"));
@@ -2579,6 +2664,79 @@ class CancipButtonEditModal extends Modal {
     const text = JSON.stringify(payload);
     const copied = await copyTextToClipboard(text, this.plugin.t("buttonEditCopiedInfo"), (key, vars) => this.plugin.t(key, vars));
     if (!copied) await promptTextModal(this.app, this.plugin.t("buttonEditCopyInfoPrompt"), text);
+  }
+
+  private setSelectedEditIcon(icon: string): void {
+    if (this.iconInput) this.iconInput.value = icon;
+    this.refreshEditIconButtons();
+  }
+
+  private refreshEditIconButtons(): void {
+    const selected = this.iconInput?.value.trim() ?? "";
+    for (const button of this.editIconButtons) {
+      button.toggleClass("is-selected", Boolean(selected) && button.getAttribute("aria-label") === selected);
+    }
+  }
+
+  private setSelectedEditMedia(path: string): void {
+    if (this.mediaPathInput) this.mediaPathInput.value = path;
+    this.refreshEditMediaPreview();
+  }
+
+  private refreshEditMediaPreview(): void {
+    const preview = this.mediaPreviewEl;
+    if (!preview) return;
+    preview.empty();
+    const path = normalizeUiButtonMediaPath(this.mediaPathInput?.value ?? "");
+    for (const button of Array.from(this.contentEl.querySelectorAll<HTMLElement>(".obcc-button-edit-media-choice"))) {
+      button.toggleClass("is-selected", Boolean(path) && button.getAttribute("aria-label") === path);
+    }
+    if (!path) {
+      preview.setText(this.plugin.t("buttonEditMediaNone"));
+      return;
+    }
+    const file = this.plugin.uiButtonMediaFile(path);
+    if (!file) {
+      preview.setText(this.plugin.t("buttonEditMediaMissing"));
+      return;
+    }
+    preview.createSpan({ cls: "obcc-button-edit-media-path", text: file.path });
+    this.plugin.renderUiButtonMedia(preview, file, true);
+  }
+
+  private renderEditMediaGallery(): void {
+    const details = this.contentEl.createEl("details", { cls: "obcc-button-edit-media-gallery" });
+    details.createEl("summary", { text: this.plugin.t("buttonEditMediaGallery") });
+    const search = details.createEl("input", {
+      cls: "obcc-button-edit-media-search",
+      attr: { type: "search", placeholder: this.plugin.t("buttonEditMediaSearch"), "aria-label": this.plugin.t("buttonEditMediaSearch") }
+    });
+    const grid = details.createDiv({ cls: "obcc-button-edit-media-grid" });
+    let timer: number | null = null;
+    const render = () => {
+      grid.empty();
+      const files = this.plugin.uiButtonMediaFiles(search.value, 30);
+      for (const file of files) {
+        const button = grid.createEl("button", {
+          cls: "obcc-button-edit-media-choice",
+          attr: { type: "button", title: file.path, "aria-label": file.path }
+        });
+        this.plugin.renderUiButtonMedia(button, file, false);
+        button.createSpan({ text: file.basename });
+        button.addEventListener("click", () => this.setSelectedEditMedia(file.path));
+      }
+      if (!files.length) grid.createDiv({ cls: "obcc-button-edit-media-empty", text: this.plugin.t("buttonEditMediaEmpty") });
+    };
+    details.addEventListener("toggle", () => {
+      if (details.open) render();
+    });
+    search.addEventListener("input", () => {
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        render();
+      }, 100);
+    });
   }
 
   private renderAddSiblingSection(): void {
@@ -2683,6 +2841,8 @@ class CancipButtonEditModal extends Modal {
       commandName: payload.commandName || payload.label || payload.commandId,
       title: payload.title || payload.label || payload.commandName || payload.commandId,
       icon: payload.icon || guessUiButtonCommandIcon(payload.commandId, payload.commandName || payload.label),
+      mediaPath: payload.mediaPath,
+      effect: payload.effect,
       fallbackSelector: payload.fallbackSelector,
       insertPosition: payload.insertPosition
     });
@@ -3816,6 +3976,26 @@ const EN = {
   buttonEditTitle: "Button settings",
   buttonEditName: "Name",
   buttonEditIcon: "Icon",
+  buttonEditUseOriginalIcon: "Use original icon",
+  buttonEditMedia: "Vault media",
+  buttonEditMediaDesc: "Optional image, GIF, or video. The original button action remains unchanged.",
+  buttonEditMediaPlaceholder: "Assets/button.gif",
+  buttonEditMediaReset: "Remove media",
+  buttonEditMediaNone: "Using the icon above",
+  buttonEditMediaMissing: "Media file not found",
+  buttonEditMediaGallery: "Choose from Vault media",
+  buttonEditMediaSearch: "Search media paths",
+  buttonEditMediaEmpty: "No matching image, GIF, or video",
+  buttonEditEffect: "Motion effect",
+  buttonEditEffectDesc: "A lightweight visual or pointer interaction. Reduced-motion settings are respected.",
+  buttonEditEffectNone: "None",
+  buttonEditEffectPulse: "Pulse",
+  buttonEditEffectSpin: "Spin",
+  buttonEditEffectFloat: "Float",
+  buttonEditEffectGlow: "Glow",
+  buttonEditEffectBounce: "Bounce",
+  buttonEditEffectTilt: "Hover tilt",
+  buttonEditEffectPress: "Press response",
   buttonEditOrder: "Order",
   buttonEditSort: "Sort",
   buttonEditSortDesc: "Close this panel and show drag handles on sibling buttons.",
@@ -4796,6 +4976,26 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     buttonEditTitle: "按钮设置",
     buttonEditName: "名称",
     buttonEditIcon: "图标",
+    buttonEditUseOriginalIcon: "恢复原图标",
+    buttonEditMedia: "Vault 媒体",
+    buttonEditMediaDesc: "可选图片、GIF 或视频；目标按钮原来的功能保持不变。",
+    buttonEditMediaPlaceholder: "附件/按钮.gif",
+    buttonEditMediaReset: "移除媒体",
+    buttonEditMediaNone: "当前使用上方图标",
+    buttonEditMediaMissing: "找不到这个媒体文件",
+    buttonEditMediaGallery: "从 Vault 媒体图库选择",
+    buttonEditMediaSearch: "搜索媒体路径",
+    buttonEditMediaEmpty: "没有匹配的图片、GIF 或视频",
+    buttonEditEffect: "动态效果",
+    buttonEditEffectDesc: "轻量视觉或指针交互效果；会遵守系统的减少动态效果设置。",
+    buttonEditEffectNone: "无",
+    buttonEditEffectPulse: "呼吸",
+    buttonEditEffectSpin: "旋转",
+    buttonEditEffectFloat: "浮动",
+    buttonEditEffectGlow: "发光",
+    buttonEditEffectBounce: "弹跳",
+    buttonEditEffectTilt: "悬停倾斜",
+    buttonEditEffectPress: "按压反馈",
     buttonEditOrder: "排序",
     buttonEditSort: "排序",
     buttonEditSortDesc: "关闭面板并回到按钮位置，在同级按钮上显示拖拽排序图标。",
@@ -8120,7 +8320,7 @@ export default class CancipPlugin extends Plugin {
   private buttonEditLongPressTarget: HTMLElement | null = null;
   private buttonEditBubbleEl: HTMLButtonElement | null = null;
   private selectionSendBubbleEl: HTMLButtonElement | null = null;
-  private contextEditLongPressTarget: HTMLElement | null = null;
+  private contextEditLongPressTarget: ContextualEditAnchor | null = null;
   private contextEditBubbleEl: HTMLElement | null = null;
   private uiButtonSortCleanup: (() => void) | null = null;
   private startupUiEnhancementsInstalled = false;
@@ -13546,7 +13746,7 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 - Do not apply tag, summary, link, and rename to every note by default. Choose the smallest useful action per note and verify.
 
 ## User-facing output
-- Lead with the result. Include only useful facts that exist: completed actions, actually changed paths, actual verification, concrete blockers, or new rules.
+- Lead with the result. Include only useful facts that exist: completed actions, actual verification, concrete blockers, or new rules. Changed-file cards are rendered programmatically, so do not list read or changed paths in the prose.
 - Omit empty, none, not-applicable, unchanged, read-only-file, and hypothetical sections. Do not explain reasoning or process unless the user asks.
 - Put commands, code, raw action JSON, large tool results, and process logs in folded details.
 - Recommendation buttons should use only the model-provided choices from this same final reply: show 1 to 3 short, concrete next-step actions when useful, and show none if no real choices were provided. Never synthesize or auto-fill template fallback choices.
@@ -13570,10 +13770,13 @@ Detailed operating rules that should not live in the system prompt. Read this fi
           "- Plan feature/panel only adds planning/todos. It does not change write permission."
         ).replace(
           "- The visible answer should summarize the user's task, list what was done, list changed/read files when useful, show verification, then note blockers or memory/rule updates.",
-          "- Lead with the result. Include only useful facts that exist: completed actions, actually changed paths, actual verification, concrete blockers, or new rules.\n- Omit empty, none, not-applicable, unchanged, read-only-file, and hypothetical sections. Do not explain reasoning or process unless the user asks."
+          "- Lead with the result. Include only useful facts that exist: completed actions, actual verification, concrete blockers, or new rules. Changed-file cards are rendered programmatically, so do not list read or changed paths in the prose.\n- Omit empty, none, not-applicable, unchanged, read-only-file, and hypothetical sections. Do not explain reasoning or process unless the user asks."
         ).replace(
           "- Keep the visible final answer focused on the user question: done/not done, changed paths, verification, failure reason, next step.",
-          "- Lead with the result. Include only useful facts that exist: completed actions, actually changed paths, actual verification, concrete blockers, or new rules.\n- Omit empty, none, not-applicable, unchanged, read-only-file, and hypothetical sections. Do not explain reasoning or process unless the user asks."
+          "- Lead with the result. Include only useful facts that exist: completed actions, actual verification, concrete blockers, or new rules. Changed-file cards are rendered programmatically, so do not list read or changed paths in the prose.\n- Omit empty, none, not-applicable, unchanged, read-only-file, and hypothetical sections. Do not explain reasoning or process unless the user asks."
+        ).replace(
+          "- Lead with the result. Include only useful facts that exist: completed actions, actually changed paths, actual verification, concrete blockers, or new rules.",
+          "- Lead with the result. Include only useful facts that exist: completed actions, actual verification, concrete blockers, or new rules. Changed-file cards are rendered programmatically, so do not list read or changed paths in the prose."
         );
         if (!nextRules.includes("## Memory routing")) {
           nextRules = `${nextRules.trimEnd()}
@@ -13668,7 +13871,7 @@ Detailed operating rules that should not live in the system prompt. Read this fi
 
 ## Final answer contract
 - Every turn must end with a visible conclusion if the model stops. Process logs are not a substitute.
-- Lead with the result. Include only useful facts that exist: completed actions, actually changed paths, actual verification, concrete blockers, or new rules.
+- Lead with the result. Include only useful facts that exist: completed actions, actual verification, concrete blockers, or new rules. Changed-file cards are rendered programmatically, so do not list read or changed paths in the prose.
 - Omit empty, none, not-applicable, unchanged, read-only-file, and hypothetical sections. Do not explain reasoning or process unless the user asks.
 - Do not write elapsed time, token count, or character count in the answer body. The app adds those programmatically.
 - If there are useful concrete next-step choices, generate them together with the final answer in the hidden cancip-choices HTML comment; do not show numbered recommendation text in the body.
@@ -13933,6 +14136,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       if (kind === "hidden") return this.t("buttonRuleChangeHidden");
       if (kind === "order") return this.t("buttonRuleChangeOrder", { order: rule.order });
       if (kind === "title") return this.t("buttonRuleChangeTitle");
+      if (kind === "media") return this.t("buttonEditMedia");
+      if (kind === "effect") return this.t("buttonEditEffect");
       return this.t("buttonRuleChangeIcon");
     });
   }
@@ -13967,6 +14172,45 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   uiButtonIconOptions(): string[] {
     return [...PRESET_UI_BUTTON_ICONS];
+  }
+
+  uiButtonMediaFile(path: string): TFile | null {
+    const normalized = normalizeUiButtonMediaPath(path);
+    if (!normalized) return null;
+    const file = this.app.vault.getAbstractFileByPath(normalized);
+    return file instanceof TFile && isUiButtonMediaFile(file) ? file : null;
+  }
+
+  uiButtonMediaFiles(query = "", limit = 48): TFile[] {
+    const normalizedQuery = query.trim().toLowerCase();
+    return this.app.vault.getFiles()
+      .filter(isUiButtonMediaFile)
+      .filter((file) => !normalizedQuery || file.path.toLowerCase().includes(normalizedQuery))
+      .sort((a, b) => b.stat.mtime - a.stat.mtime || a.path.localeCompare(b.path))
+      .slice(0, Math.max(1, Math.min(100, limit)));
+  }
+
+  renderUiButtonMedia(parent: HTMLElement, file: TFile, animated: boolean): HTMLElement {
+    const resourcePath = this.app.vault.getResourcePath(file);
+    if (isUiButtonVideoFile(file)) {
+      if (!animated) {
+        const placeholder = parent.createSpan({ cls: "obcc-ui-button-media-placeholder" });
+        setIcon(placeholder, "file-video-2");
+        return placeholder;
+      }
+      const video = parent.createEl("video", {
+        cls: "obcc-ui-button-media",
+        attr: { src: resourcePath, muted: "true", loop: "true", autoplay: "true", playsinline: "true", preload: "metadata", "aria-hidden": "true" }
+      });
+      video.muted = true;
+      video.defaultMuted = true;
+      void video.play().catch(() => undefined);
+      return video;
+    }
+    return parent.createEl("img", {
+      cls: "obcc-ui-button-media",
+      attr: { src: resourcePath, alt: "", loading: "lazy", decoding: "async", "aria-hidden": "true" }
+    });
   }
 
   uiButtonCommandOptions(): UiButtonCommandOption[] {
@@ -14060,6 +14304,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       label: label || commandName || command.id,
       title: rule?.title || label || commandName || command.id,
       icon: rule?.icon || (target ? uiElementIconName(target) : "") || command.icon || guessUiButtonCommandIcon(command.id, commandName),
+      mediaPath: rule?.mediaPath,
+      effect: rule?.effect,
       commandId: command.id,
       commandName,
       fallbackSelector,
@@ -14217,7 +14463,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   async addSiblingUiButton(
     descriptor: UiButtonEditDescriptor,
-    options: { commandId: string; commandName: string; title: string; icon: string; fallbackSelector?: string; insertPosition?: "before" | "after" }
+    options: { commandId: string; commandName: string; title: string; icon: string; mediaPath?: string; effect?: UiButtonVisualEffect; fallbackSelector?: string; insertPosition?: "before" | "after" }
   ): Promise<void> {
     const requestedCommandId = options.commandId.trim();
     const resolvedCommand = this.resolveMigratableCustomCommand(
@@ -14240,6 +14486,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       label: options.title || commandName || commandId,
       title: options.title || commandName || commandId,
       icon,
+      mediaPath: normalizeUiButtonMediaPath(options.mediaPath ?? "") || undefined,
+      effect: normalizeUiButtonVisualEffect(options.effect),
       commandId,
       commandName,
       fallbackSelector: options.fallbackSelector?.trim() || undefined,
@@ -14988,6 +15236,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         order: (index + 1) * 10,
         title: existing?.title,
         icon: existing?.icon,
+        mediaPath: existing?.mediaPath,
+        effect: existing?.effect,
         scope,
         kind: existing?.kind,
         anchorSelector: existing?.anchorSelector,
@@ -15038,6 +15288,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private installButtonEditLongPress(): void {
     const doc = activeDocument;
     let pointerStart: { x: number; y: number } | null = null;
+    let contextEditLongPressOpened = false;
     const showSelectionBubbleSoon = (x?: number, y?: number) => {
       window.setTimeout(() => {
         const selectionText = this.documentSelectionText();
@@ -15045,25 +15296,52 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         else this.hideSelectionSendBubble();
       }, 0);
     };
+    const armContextEditLongPress = (anchor: ContextualEditAnchor, x: number, y: number) => {
+      this.clearButtonEditLongPress();
+      pointerStart = { x, y };
+      this.contextEditLongPressTarget = anchor;
+      this.buttonEditLongPressTimer = window.setTimeout(() => {
+        this.buttonEditLongPressTimer = null;
+        if (this.contextEditLongPressTarget !== anchor) return;
+        const latestTarget = anchor.surface.ownerDocument.elementFromPoint(x, y);
+        const refreshed = this.contextEditAnchorForTarget(latestTarget, x, y);
+        if (!refreshed && anchor.kind === "blank-caret") {
+          this.contextEditLongPressTarget = null;
+          return;
+        }
+        const latest = refreshed ?? anchor;
+        contextEditLongPressOpened = true;
+        this.showContextEditBubble(latest, x, y);
+      }, 620);
+    };
     const start = (event: PointerEvent) => {
       if (event.button !== 0 && event.pointerType === "mouse") return;
-      if (this.documentSelectionText()) return;
-      const target = this.editableButtonTarget(event.target);
-      if (!target) {
-        const surface = this.contextEditSurfaceTarget(event.target);
-        if (!surface) return;
-        this.clearButtonEditLongPress();
+      contextEditLongPressOpened = false;
+      const contextAnchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY);
+      if (contextAnchor?.kind === "selection") {
+        armContextEditLongPress(contextAnchor, event.clientX, event.clientY);
+        return;
+      }
+      const rawElement = event.target as Element | null;
+      const editorSurface = rawElement?.closest?.(".markdown-source-view, textarea.obcc-document-editor");
+      if (editorSurface) {
+        const rawTarget = event.target;
         const x = event.clientX;
         const y = event.clientY;
         pointerStart = { x, y };
-        this.contextEditLongPressTarget = surface;
-        this.buttonEditLongPressTimer = window.setTimeout(() => {
-          this.buttonEditLongPressTimer = null;
-          if (this.contextEditLongPressTarget !== surface) return;
-          this.showContextEditBubble(surface, x, y);
-        }, 620);
+        window.setTimeout(() => {
+          if (!pointerStart) return;
+          const delayedAnchor = this.contextEditAnchorForTarget(rawTarget, x, y);
+          if (delayedAnchor) armContextEditLongPress(delayedAnchor, x, y);
+        }, 0);
         return;
       }
+      if (contextAnchor) {
+        armContextEditLongPress(contextAnchor, event.clientX, event.clientY);
+        return;
+      }
+      const target = this.editableButtonTarget(event.target);
+      if (!target) return;
       if (!this.settings.uiButtonManagementEnabled) return;
       this.clearButtonEditLongPress();
       const x = event.clientX;
@@ -15081,31 +15359,33 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const cancel = () => {
       pointerStart = null;
       this.clearButtonEditLongPress();
+      contextEditLongPressOpened = false;
     };
     const end = (event: PointerEvent) => {
       const x = event.clientX;
       const y = event.clientY;
-      cancel();
-      showSelectionBubbleSoon(x, y);
+      const opened = contextEditLongPressOpened;
+      pointerStart = null;
+      this.clearButtonEditLongPress();
+      if (!opened) showSelectionBubbleSoon(x, y);
+      contextEditLongPressOpened = false;
     };
     const move = (event: PointerEvent) => {
       if (!pointerStart) return;
       if (Math.abs(event.clientX - pointerStart.x) > 12 || Math.abs(event.clientY - pointerStart.y) > 12) cancel();
     };
     const context = (event: MouseEvent) => {
-      const selectionText = this.documentSelectionText();
-      if (selectionText) {
-        this.showSelectionSendBubble(selectionText, event.clientX, event.clientY);
+      const contextAnchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY);
+      if (contextAnchor) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.clearButtonEditLongPress();
+        contextEditLongPressOpened = true;
+        this.showContextEditBubble(contextAnchor, event.clientX, event.clientY);
         return;
       }
       const target = this.editableButtonTarget(event.target);
       if (!target) {
-        const surface = this.contextEditSurfaceTarget(event.target);
-        if (!surface) return;
-        event.preventDefault();
-        event.stopPropagation();
-        this.clearButtonEditLongPress();
-        this.showContextEditBubble(surface, event.clientX, event.clientY);
         return;
       }
       if (!this.settings.uiButtonManagementEnabled) return;
@@ -15169,6 +15449,91 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     });
   }
 
+  registerContextEditFrame(frame: HTMLIFrameElement, file: TFile): () => void {
+    let documentCleanup: (() => void) | null = null;
+    const bind = () => {
+      documentCleanup?.();
+      documentCleanup = null;
+      let doc: Document | null = null;
+      try {
+        doc = frame.contentDocument;
+      } catch {
+        doc = null;
+      }
+      if (!doc?.defaultView) return;
+      let pointerStart: { x: number; y: number } | null = null;
+      let opened = false;
+      const parentPoint = (x: number, y: number) => {
+        const rect = frame.getBoundingClientRect();
+        return { x: rect.left + x, y: rect.top + y };
+      };
+      const arm = (anchor: ContextualEditAnchor, x: number, y: number) => {
+        this.clearButtonEditLongPress();
+        pointerStart = { x, y };
+        this.contextEditLongPressTarget = anchor;
+        const point = parentPoint(x, y);
+        this.buttonEditLongPressTimer = window.setTimeout(() => {
+          this.buttonEditLongPressTimer = null;
+          if (this.contextEditLongPressTarget !== anchor) return;
+          const latestTarget = doc?.elementFromPoint(x, y);
+          const latest = this.contextEditAnchorForTarget(latestTarget, x, y, file, doc?.body) ?? anchor;
+          opened = true;
+          this.showContextEditBubble(latest, point.x, point.y);
+        }, 620);
+      };
+      const start = (event: PointerEvent) => {
+        if (event.button !== 0 && event.pointerType === "mouse") return;
+        opened = false;
+        const anchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY, file, doc?.body);
+        if (!anchor) return;
+        arm(anchor, event.clientX, event.clientY);
+      };
+      const move = (event: PointerEvent) => {
+        if (!pointerStart) return;
+        if (Math.abs(event.clientX - pointerStart.x) <= 12 && Math.abs(event.clientY - pointerStart.y) <= 12) return;
+        pointerStart = null;
+        this.clearButtonEditLongPress();
+      };
+      const end = () => {
+        pointerStart = null;
+        this.clearButtonEditLongPress();
+        opened = false;
+      };
+      const context = (event: MouseEvent) => {
+        const anchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY, file, doc?.body);
+        if (!anchor) return;
+        event.preventDefault();
+        event.stopPropagation();
+        this.clearButtonEditLongPress();
+        opened = true;
+        const point = parentPoint(event.clientX, event.clientY);
+        this.showContextEditBubble(anchor, point.x, point.y);
+      };
+      doc.addEventListener("pointerdown", start, true);
+      doc.addEventListener("pointermove", move, true);
+      doc.addEventListener("pointerup", end, true);
+      doc.addEventListener("pointercancel", end, true);
+      doc.addEventListener("scroll", end, true);
+      doc.addEventListener("contextmenu", context, true);
+      documentCleanup = () => {
+        doc?.removeEventListener("pointerdown", start, true);
+        doc?.removeEventListener("pointermove", move, true);
+        doc?.removeEventListener("pointerup", end, true);
+        doc?.removeEventListener("pointercancel", end, true);
+        doc?.removeEventListener("scroll", end, true);
+        doc?.removeEventListener("contextmenu", context, true);
+        if (opened) this.clearButtonEditLongPress();
+      };
+    };
+    frame.addEventListener("load", bind);
+    window.setTimeout(bind, 0);
+    return () => {
+      frame.removeEventListener("load", bind);
+      documentCleanup?.();
+      documentCleanup = null;
+    };
+  }
+
   private clearButtonEditLongPress(): void {
     if (this.buttonEditLongPressTimer !== null) {
       window.clearTimeout(this.buttonEditLongPressTimer);
@@ -15178,40 +15543,197 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.contextEditLongPressTarget = null;
   }
 
-  private contextEditSurfaceTarget(rawTarget: EventTarget | null): HTMLElement | null {
+  private contextEditAnchorForTarget(
+    rawTarget: EventTarget | null,
+    clientX?: number,
+    clientY?: number,
+    fallbackFile?: TFile,
+    fallbackSurface?: HTMLElement
+  ): ContextualEditAnchor | null {
     const element = rawTarget as Element | null;
-    const win = activeDocument.defaultView;
-    if (!win || !element?.instanceOf?.(win.Element)) return null;
-    if (element.closest("button, input, textarea, select, a, summary, .menu, .suggestion-container, .obcc-context-edit-bubble")) return null;
-    const activeFile = this.app.workspace.getActiveFile();
-    if (!activeFile) return null;
+    const doc = element?.ownerDocument;
+    const win = doc?.defaultView;
+    if (!doc || !win || !element?.instanceOf?.(win.Element)) return null;
+    const workbenchEditor = element.closest<HTMLTextAreaElement>("textarea.obcc-document-editor");
     const surface = element.closest<HTMLElement>(
-      ".markdown-source-view, .markdown-preview-view, .obcc-document-stage, .pdf-viewer, .pdf-container, .workspace-leaf-content"
-    );
+      ".markdown-source-view, .markdown-preview-view, .obcc-document-stage, .obcc-document-editor, .pdf-viewer, .pdf-container, .pdfViewer, .textLayer, .workspace-leaf-content, body"
+    ) ?? fallbackSurface;
     if (!surface) return null;
     const containingLeaves: WorkspaceLeaf[] = [];
-    this.app.workspace.iterateAllLeaves((leaf) => {
-      if (containingLeaves.length) return;
-      const container = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl
-        ?? (leaf as unknown as { containerEl?: HTMLElement }).containerEl;
-      if (container?.contains(element)) containingLeaves.push(leaf);
-    });
+    if (!fallbackFile) {
+      this.app.workspace.iterateAllLeaves((leaf) => {
+        if (containingLeaves.length) return;
+        const container = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl
+          ?? (leaf as unknown as { containerEl?: HTMLElement }).containerEl;
+        if (container?.contains(element)) containingLeaves.push(leaf);
+      });
+    }
     const containingLeaf = containingLeaves[0];
     const fileView = containingLeaf?.view as unknown as { file?: TFile } | undefined;
-    if (!(fileView?.file instanceof TFile) || fileView.file.path !== activeFile.path) return null;
-    return surface;
+    const file = fallbackFile ?? fileView?.file;
+    if (!(file instanceof TFile)) return null;
+
+    if (containingLeaf?.view instanceof MarkdownView && element.closest(".markdown-source-view")) {
+      const editor = containingLeaf.view.editor;
+      const selectedText = editor.getSelection();
+      const from = editor.getCursor("from");
+      const to = editor.getCursor("to");
+      if (selectedText.trim()) {
+        return {
+          file,
+          surface,
+          kind: "selection",
+          selectedText,
+          startLine: from.line + 1,
+          endLine: to.line + 1,
+          nearbyText: this.contextualEditEditorLines(editor, from.line, to.line)
+        };
+      }
+      const cursor = editor.getCursor();
+      if (editor.getLine(cursor.line).trim()) return null;
+      return {
+        file,
+        surface,
+        kind: "blank-caret",
+        cursorLine: cursor.line + 1,
+        nearbyText: this.contextualEditEditorLines(editor, cursor.line, cursor.line)
+      };
+    }
+
+    if (workbenchEditor) {
+      const start = workbenchEditor.selectionStart ?? 0;
+      const end = workbenchEditor.selectionEnd ?? start;
+      const selectedText = workbenchEditor.value.slice(start, end);
+      const lines = workbenchEditor.value.split(/\r?\n/);
+      const startLine = workbenchEditor.value.slice(0, start).split(/\r?\n/).length;
+      const endLine = workbenchEditor.value.slice(0, end).split(/\r?\n/).length;
+      const nearbyText = this.contextualEditTextLines(lines, startLine - 1, endLine - 1);
+      if (selectedText.trim()) {
+        return { file, surface, kind: "selection", selectedText, startLine, endLine, nearbyText };
+      }
+      if ((lines[startLine - 1] ?? "").trim()) return null;
+      return { file, surface, kind: "blank-caret", cursorLine: startLine, nearbyText };
+    }
+
+    const selection = win.getSelection();
+    if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+      const insideSurface = Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index))
+        .some((range) => surface.contains(range.commonAncestorContainer));
+      const selectedText = selection.toString();
+      if (insideSurface && selectedText.trim()) {
+        const anchorElement = selection.anchorNode?.nodeType === Node.ELEMENT_NODE
+          ? selection.anchorNode as Element
+          : selection.anchorNode?.parentElement;
+        const nearbyText = anchorElement?.closest<HTMLElement>("p, li, blockquote, pre, td, th, h1, h2, h3, h4, h5, h6, .textLayer, .page")?.innerText ?? "";
+        const range = selection.getRangeAt(0);
+        return {
+          file,
+          surface,
+          kind: "selection",
+          selectedText,
+          nearbyText: trimContext(nearbyText || selectedText, 1600),
+          ...this.contextualEditDomGeometry(surface, anchorElement ?? null, range.getBoundingClientRect())
+        };
+      }
+    }
+
+    if (element.closest("button, input, textarea, select, a, summary, .menu, .suggestion-container, .obcc-context-edit-bubble")) return null;
+    const caret = this.contextualEditCaretFromPoint(doc, clientX, clientY);
+    const caretElement = caret?.node.nodeType === Node.ELEMENT_NODE
+      ? caret.node as Element
+      : caret?.node.parentElement;
+    const nearbyElement = caretElement?.closest<HTMLElement>("p, li, blockquote, pre, td, th, h1, h2, h3, h4, h5, h6, figcaption, caption, .textLayer, .page")
+      ?? element.closest<HTMLElement>("p, li, blockquote, pre, td, th, h1, h2, h3, h4, h5, h6, figcaption, caption, .textLayer, .page");
+    const nearbyText = trimContext(nearbyElement?.innerText || surface.innerText || "", 1600);
+    if (!nearbyText.trim() && file.extension.toLowerCase() !== "pdf") return null;
+    const rect = caret?.rect ?? nearbyElement?.getBoundingClientRect() ?? element.getBoundingClientRect();
+    return {
+      file,
+      surface,
+      kind: "position",
+      nearbyText,
+      ...this.contextualEditDomGeometry(surface, nearbyElement ?? element, rect)
+    };
   }
 
-  private showContextEditBubble(surface: HTMLElement, x: number, y: number): void {
+  private contextualEditCaretFromPoint(doc: Document, x?: number, y?: number): { node: Node; offset: number; rect: DOMRect } | null {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    const caretDoc = doc as Document & {
+      caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+      caretRangeFromPoint?: (x: number, y: number) => Range | null;
+    };
+    const position = caretDoc.caretPositionFromPoint?.(Number(x), Number(y));
+    if (position?.offsetNode) {
+      const range = doc.createRange();
+      try {
+        range.setStart(position.offsetNode, position.offset);
+        range.collapse(true);
+        return { node: position.offsetNode, offset: position.offset, rect: range.getBoundingClientRect() };
+      } catch {
+        return null;
+      }
+    }
+    const range = caretDoc.caretRangeFromPoint?.(Number(x), Number(y));
+    return range ? { node: range.startContainer, offset: range.startOffset, rect: range.getBoundingClientRect() } : null;
+  }
+
+  private contextualEditDomGeometry(surface: HTMLElement, element: Element | null, rect: DOMRect): Pick<ContextualEditAnchor, "pageIndex" | "x" | "y" | "width" | "height"> {
+    const page = element?.closest<HTMLElement>(".page, .pdf-page, [data-page-number], [data-page-index]") ?? surface;
+    const pageRect = page.getBoundingClientRect();
+    const rawPageNumber = page.getAttribute("data-page-number");
+    const rawPageIndex = page.getAttribute("data-page-index");
+    const pageNumber = rawPageNumber === null ? Number.NaN : Number(rawPageNumber);
+    const pageIndexValue = rawPageIndex === null ? Number.NaN : Number(rawPageIndex);
+    const pageIndex = Number.isFinite(pageIndexValue)
+      ? Math.max(0, Math.round(pageIndexValue))
+      : Number.isFinite(pageNumber) && pageNumber > 0
+        ? Math.max(0, Math.round(pageNumber) - 1)
+        : undefined;
+    if (pageRect.width <= 0 || pageRect.height <= 0) return { pageIndex };
+    const left = Number.isFinite(rect.left) ? rect.left : pageRect.left + pageRect.width * 0.12;
+    const top = Number.isFinite(rect.top) ? rect.top : pageRect.top + pageRect.height * 0.18;
+    const width = rect.width > 0 ? rect.width : Math.min(20, pageRect.width * 0.04);
+    const height = rect.height > 0 ? rect.height : Math.min(20, pageRect.height * 0.03);
+    return {
+      pageIndex,
+      x: clampNumber((left - pageRect.left) / pageRect.width, 0.12, 0, 1),
+      y: clampNumber((top - pageRect.top) / pageRect.height, 0.18, 0, 1),
+      width: clampNumber(width / pageRect.width, 0.08, 0.001, 1),
+      height: clampNumber(height / pageRect.height, 0.04, 0.001, 1)
+    };
+  }
+
+  private contextualEditEditorLines(editor: Editor, startLine: number, endLine: number): string {
+    const lines: string[] = [];
+    const start = Math.max(0, startLine - 2);
+    const end = Math.min(editor.lineCount() - 1, endLine + 2);
+    for (let line = start; line <= end; line += 1) lines.push(`${line + 1}: ${editor.getLine(line)}`);
+    return lines.join("\n");
+  }
+
+  private contextualEditTextLines(lines: string[], startLine: number, endLine: number): string {
+    const result: string[] = [];
+    const start = Math.max(0, startLine - 2);
+    const end = Math.min(lines.length - 1, endLine + 2);
+    for (let line = start; line <= end; line += 1) result.push(`${line + 1}: ${lines[line] ?? ""}`);
+    return result.join("\n");
+  }
+
+  private showContextEditBubble(anchor: ContextualEditAnchor, x: number, y: number): void {
     this.hideContextEditBubble();
     const doc = activeDocument;
     const win = doc.defaultView;
-    const file = this.app.workspace.getActiveFile();
+    const { file, surface } = anchor;
     if (!win || !file) return;
+    const placeholder = anchor.kind === "selection"
+      ? "修改或追加到选中文字..."
+      : anchor.kind === "blank-caret"
+        ? "在空白光标处修改或追加..."
+        : "在长按位置修改或追加...";
     const bubble = doc.body.createDiv({ cls: "obcc-context-edit-bubble" });
     const input = bubble.createEl("input", {
       cls: "obcc-context-edit-input",
-      attr: { type: "text", placeholder: "让 Cancip 修改或追加...", "aria-label": "让 Cancip 修改或追加" }
+      attr: { type: "text", placeholder, "aria-label": placeholder }
     });
     const cancip = bubble.createEl("button", { cls: "obcc-context-edit-brand obcc-context-edit-action is-secondary", attr: { type: "button", title: "Cancip", "aria-label": "Cancip" } });
     setIcon(cancip, "bot");
@@ -15244,7 +15766,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       setIcon(submit, "loader-circle");
       bubble.addClass("is-loading");
       try {
-        const proposal = await this.submitContextualEdit(file, instruction);
+        const proposal = await this.submitContextualEdit(anchor, instruction);
         if (!bubble.isConnected) return;
         if (proposal) {
           this.showContextEditProposal(bubble, input, cancip, submit, close, proposal, instruction);
@@ -15385,17 +15907,59 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.contextEditBubbleEl = null;
   }
 
-  private async submitContextualEdit(file: TFile, instruction: string): Promise<ContextualEditProposal | null> {
+  private async submitContextualEdit(anchor: ContextualEditAnchor, instruction: string): Promise<ContextualEditProposal | null> {
     const view = await this.activateView();
     if (!view) return null;
+    const { file } = anchor;
     const startedAt = Date.now();
     await view.addFileOrFolderContext(file);
+    const scope = anchor.kind === "selection"
+      ? [
+          `编辑锚点：选中文字${anchor.startLine ? `，第 ${anchor.startLine}${anchor.endLine && anchor.endLine !== anchor.startLine ? `-${anchor.endLine}` : ""} 行` : ""}`,
+          `选中文字（原样）：\n${trimContext(anchor.selectedText ?? "", 5000)}`,
+          "优先按用户要求改写、删除或在这段选区附近追加；不要把同名的其他段落当成目标。"
+        ]
+      : anchor.kind === "blank-caret"
+        ? [
+            `编辑锚点：第 ${anchor.cursorLine ?? "?"} 行空白光标位置`,
+            "把用户要求的新增或修改内容放在这个光标位置，保留前后原文。"
+          ]
+        : [
+            "编辑锚点：用户长按的预览位置",
+            "根据附近原文锁定这一位置，在这里修改或补充；不要改动同名的其他段落。"
+          ];
+    const geometry = [
+      Number.isFinite(anchor.pageIndex) ? `pageIndex=${anchor.pageIndex}` : "",
+      Number.isFinite(anchor.x) ? `x=${anchor.x}` : "",
+      Number.isFinite(anchor.y) ? `y=${anchor.y}` : "",
+      Number.isFinite(anchor.width) ? `width=${anchor.width}` : "",
+      Number.isFinite(anchor.height) ? `height=${anchor.height}` : ""
+    ].filter(Boolean).join(", ");
+    const extension = file.extension.toLowerCase();
+    const route = extension === "pdf"
+      ? [
+          "这是 PDF 局部编辑。保留 PDF 原件，通过 cancip.annotate.pdf 写入 Pdftion 可同步批注。",
+          "根据要求先生成 replacementText。选区替换用 applyPlan：按给定 pageIndex/x/y/width/height 添加白色 cover，再在同位置 addText；位置补充只 addText。",
+          "命令 args 必须同时带 path、originalText、replacementText 和几何信息，供红删绿增预览；不要直接 write/patch PDF 二进制。"
+        ]
+      : !isDocumentSourceEditable(file)
+        ? [
+            "这是工作台解析出的文档文字。用 cancip.documents.editText {path, originalText, editedText} 写回；Office 优先改原件，其他受保护格式写入同步的持久编辑层。",
+            "originalText 必须取锚点附近唯一原文，editedText 是按用户要求得到的完整替换段，供红删绿增预览。"
+          ]
+        : [
+            "这是可直接编辑的文字源文件。优先用一次精确 patch；空白光标插入可使用最小范围 patch/write，并读回锚点附近验证。"
+          ];
     await view.submitExternalPrompt([
       `直接处理当前文件：${file.path}`,
+      ...scope,
+      geometry ? `预览位置：${geometry}` : "",
+      anchor.nearbyText ? `锚点附近原文：\n${trimContext(anchor.nearbyText, 3000)}` : "",
       `用户要求：${trimContext(instruction, 1200)}`,
-      "请按现有审核/全权模式执行真实修改或追加；修改后读回验证，返回简短结果。"
-    ].join("\n"));
-    return await view.contextualEditProposalForPath(file.path, startedAt);
+      ...route,
+      "请按现有审核/全权模式执行真实修改或追加；锚点是主要编辑范围，修改后读回验证，返回简短结果。"
+    ].filter(Boolean).join("\n\n"));
+    return await view.contextualEditProposalForPath(file.path, startedAt, this.settings.accessMode === "ask-for-approval");
   }
 
   private workspaceTabHeaderTarget(rawTarget: EventTarget | null): HTMLElement | null {
@@ -19752,7 +20316,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
     }
     if (rule.title?.trim()) this.applyUiRuleTitle(el, rule.title.trim());
-    if (rule.icon?.trim()) this.applyUiRuleIcon(el, rule.icon.trim());
+    if (rule.mediaPath?.trim()) this.applyUiRuleMedia(el, rule.mediaPath.trim());
+    else if (rule.icon?.trim()) this.applyUiRuleIcon(el, rule.icon.trim());
+    if (rule.effect) this.applyUiRuleEffect(el, rule.effect);
   }
 
   private applyUiButtonRulesToMutationRecords(mutations: MutationRecord[]): void {
@@ -19865,10 +20431,33 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private applyUiRuleIcon(el: HTMLElement, icon: string): void {
-    if (!el.dataset.cancipUiIcon) el.dataset.cancipUiIcon = icon;
     const iconTarget = el.querySelector<HTMLElement>(".menu-item-icon, .clickable-icon, .nav-action-button, .view-action-icon") ?? el;
-    if (!iconTarget.dataset.cancipUiIconTargetOriginalText) iconTarget.dataset.cancipUiIconTargetOriginalText = iconTarget.textContent ?? "";
+    this.rememberUiRuleIconTarget(el, iconTarget);
+    el.dataset.cancipUiIcon = icon;
     setIcon(iconTarget, icon);
+  }
+
+  private applyUiRuleMedia(el: HTMLElement, path: string): void {
+    const file = this.uiButtonMediaFile(path);
+    if (!file) return;
+    const iconTarget = el.querySelector<HTMLElement>(".menu-item-icon, .clickable-icon, .nav-action-button, .view-action-icon") ?? el;
+    this.rememberUiRuleIconTarget(el, iconTarget);
+    if (el.dataset.cancipUiMedia === file.path && iconTarget.querySelector(".obcc-ui-button-media")) return;
+    el.dataset.cancipUiMedia = file.path;
+    iconTarget.empty();
+    this.renderUiButtonMedia(iconTarget, file, true);
+  }
+
+  private applyUiRuleEffect(el: HTMLElement, effect: UiButtonVisualEffect): void {
+    el.dataset.cancipUiEffect = effect;
+    el.addClass("obcc-ui-button-effect", `is-${effect}`);
+  }
+
+  private rememberUiRuleIconTarget(el: HTMLElement, iconTarget: HTMLElement): void {
+    if (el.dataset.cancipUiIcon !== undefined || el.dataset.cancipUiMedia !== undefined) return;
+    const originalIcon = uiElementIconName(iconTarget);
+    if (originalIcon) iconTarget.dataset.cancipUiIconTargetOriginalIcon = originalIcon;
+    iconTarget.dataset.cancipUiIconTargetOriginalText = iconTarget.textContent ?? "";
   }
 
   private applyCustomUiButtonRule(rule: UiButtonRule): void {
@@ -19956,6 +20545,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       setIcon(button, icon);
       button.addClass("clickable-icon");
     }
+    if (rule.mediaPath?.trim()) this.applyUiRuleMedia(button, rule.mediaPath.trim());
+    if (rule.effect) this.applyUiRuleEffect(button, rule.effect);
     let lastRunAt = 0;
     const run = (event: Event) => {
       const actionId = rule.commandId?.trim() ?? "";
@@ -20160,7 +20751,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-custom-button]"))) {
       el.remove();
     }
-    for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-rule-hidden], [data-cancip-ui-order], [data-cancip-ui-title], [data-cancip-ui-icon], [data-cancip-tag-hidden], .obcc-ui-rule-hidden, .obcc-ui-rule-inline-flex-parent"))) {
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>("[data-cancip-ui-hidden], [data-cancip-ui-rule-hidden], [data-cancip-ui-order], [data-cancip-ui-title], [data-cancip-ui-icon], [data-cancip-ui-media], [data-cancip-ui-effect], [data-cancip-tag-hidden], .obcc-ui-rule-hidden, .obcc-ui-rule-inline-flex-parent"))) {
       delete el.dataset.cancipUiHidden;
       delete el.dataset.cancipUiRuleHidden;
       delete el.dataset.cancipTagHidden;
@@ -20194,14 +20785,22 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         delete el.dataset.cancipUiOriginalAria;
         delete el.dataset.cancipUiOriginalText;
       }
-      if (el.dataset.cancipUiIcon !== undefined) {
+      if (el.dataset.cancipUiIcon !== undefined || el.dataset.cancipUiMedia !== undefined) {
         const iconTarget = el.querySelector<HTMLElement>(".menu-item-icon, .clickable-icon, .nav-action-button, .view-action-icon") ?? el;
+        const originalIcon = iconTarget.dataset.cancipUiIconTargetOriginalIcon ?? "";
         const originalIconText = iconTarget.dataset.cancipUiIconTargetOriginalText ?? "";
         iconTarget.empty();
-        if (originalIconText) iconTarget.setText(originalIconText);
+        if (originalIcon) setIcon(iconTarget, originalIcon);
+        else if (originalIconText) iconTarget.setText(originalIconText);
+        delete iconTarget.dataset.cancipUiIconTargetOriginalIcon;
         delete iconTarget.dataset.cancipUiIconTargetOriginalText;
       }
       delete el.dataset.cancipUiIcon;
+      delete el.dataset.cancipUiMedia;
+      if (el.dataset.cancipUiEffect !== undefined) {
+        el.removeClass("obcc-ui-button-effect", "is-pulse", "is-spin", "is-float", "is-glow", "is-bounce", "is-tilt", "is-press");
+        delete el.dataset.cancipUiEffect;
+      }
     }
     for (const el of Array.from(doc.querySelectorAll<HTMLElement>(".obcc-ui-rule-flex-parent, .obcc-ui-rule-inline-flex-parent, .obcc-ui-rule-menu-section-contents, .obcc-ui-rule-menu-complete-sort-parent"))) {
       const originalDisplay = el.dataset.cancipUiOriginalDisplay ?? "";
@@ -23120,6 +23719,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return leaf.view;
   }
 
+  async refreshDocumentWorkbenchFile(path: string): Promise<void> {
+    const normalized = normalizePath(path);
+    const views = this.app.workspace.getLeavesOfType(CANCIP_DOCUMENT_VIEW_TYPE)
+      .map((leaf) => leaf.view)
+      .filter((view): view is CancipDocumentWorkbenchView => view instanceof CancipDocumentWorkbenchView && view.matchesFile(normalized));
+    await Promise.all(views.map((view) => view.refreshAfterExternalEdit()));
+  }
+
   async loadDocumentSnapshot(fileOrPath: TFile | string): Promise<DocumentSnapshot> {
     const file = typeof fileOrPath === "string" ? this.app.vault.getAbstractFileByPath(normalizePath(fileOrPath)) : fileOrPath;
     if (!(file instanceof TFile)) throw new Error(`File not found: ${typeof fileOrPath === "string" ? fileOrPath : fileOrPath.path}`);
@@ -23489,6 +24096,7 @@ class CancipDocumentWorkbenchView extends FileView {
   private noteDrawTextStrokes: DocumentDrawingTextStroke[] = [];
   private htmlPreviewCleanup: (() => void) | null = null;
   private htmlPreviewFrame: HTMLIFrameElement | null = null;
+  private contextEditFrameCleanup: (() => void) | null = null;
   private noteDrawDraftOverlay: HTMLElement | null = null;
   private noteDrawDraftObserver: MutationObserver | null = null;
   private noteDrawMarkdownEditMode = false;
@@ -23588,6 +24196,10 @@ class CancipDocumentWorkbenchView extends FileView {
 
   matchesFile(path: string): boolean {
     return normalizePath(path) === this.filePath;
+  }
+
+  async refreshAfterExternalEdit(): Promise<void> {
+    await this.loadAndRender(false);
   }
 
   async openFile(file: TFile, mode: DocumentWorkbenchMode = this.plugin.settings.documentWorkbenchDefaultMode): Promise<void> {
@@ -24117,6 +24729,8 @@ class CancipDocumentWorkbenchView extends FileView {
   private clearHtmlPreviewBridge(): void {
     this.htmlPreviewCleanup?.();
     this.htmlPreviewCleanup = null;
+    this.contextEditFrameCleanup?.();
+    this.contextEditFrameCleanup = null;
     this.htmlPreviewFrame = null;
   }
 
@@ -24233,6 +24847,7 @@ class CancipDocumentWorkbenchView extends FileView {
       iframe.setAttr("data-note-draw-source-path", snapshot.file.path);
       this.htmlPreviewFrame = iframe;
       this.installHtmlPreviewBridge(stage, iframe, snapshot);
+      this.contextEditFrameCleanup = this.plugin.registerContextEditFrame(iframe, snapshot.file);
       iframe.srcdoc = previewHtml;
       this.mountNativeNoteDrawSurface(stage);
       return;
@@ -24240,6 +24855,7 @@ class CancipDocumentWorkbenchView extends FileView {
     if (snapshot.previewKind === "pdf") {
       parent.addClass("is-native-preview");
       const iframe = this.createIsolatedWorkbenchFrame(stage, "obcc-document-native-preview", snapshot.file.name);
+      this.contextEditFrameCleanup = this.plugin.registerContextEditFrame(iframe, snapshot.file);
       iframe.setAttr("src", resourcePath);
       iframe.setAttr("data-note-draw-source-path", snapshot.file.path);
       this.installNoteDrawDraftBridge(stage, snapshot);
@@ -32198,19 +32814,25 @@ class CancipView extends ItemView {
     await this.sendPromptNow(normalized);
   }
 
-  async contextualEditProposalForPath(path: string, since: number): Promise<ContextualEditProposal | null> {
+  async contextualEditProposalForPath(path: string, since: number, waitForQueuedPrompt = false): Promise<ContextualEditProposal | null> {
     const normalizedPath = normalizeActionPath(path);
-    for (let index = this.messages.length - 1; index >= 0; index -= 1) {
-      const message = this.messages[index];
-      if (message.createdAt < since) break;
-      const runs = message.toolRuns ?? [];
-      for (let runIndex = runs.length - 1; runIndex >= 0; runIndex -= 1) {
-        const run = runs[runIndex];
-        if (run.status !== "pending" || !this.contextualEditActionTouchesPath(run.action, normalizedPath)) continue;
-        const items = await this.reviewItemsForPendingAction(run.action);
-        if (items.length) return { messageId: message.id, runId: run.id, items };
+    const deadline = Date.now() + 90_000;
+    do {
+      for (let index = this.messages.length - 1; index >= 0; index -= 1) {
+        const message = this.messages[index];
+        if (message.createdAt < since) break;
+        const runs = message.toolRuns ?? [];
+        for (let runIndex = runs.length - 1; runIndex >= 0; runIndex -= 1) {
+          const run = runs[runIndex];
+          if (run.status !== "pending" || !this.contextualEditActionTouchesPath(run.action, normalizedPath)) continue;
+          const items = await this.reviewItemsForPendingAction(run.action);
+          const previewItems = items.length ? items : this.contextualEditPreviewItems(run.action, normalizedPath);
+          if (previewItems.length) return { messageId: message.id, runId: run.id, items: previewItems };
+        }
       }
-    }
+      if (!waitForQueuedPrompt || (!this.activeRequest && !this.queuedPrompts.some((item) => !item.held))) break;
+      await sleep(120);
+    } while (Date.now() < deadline);
     return null;
   }
 
@@ -32226,6 +32848,12 @@ class CancipView extends ItemView {
     const candidates: string[] = [];
     if ("path" in action && typeof action.path === "string") candidates.push(action.path);
     if ((action.type === "rename" || action.type === "move" || action.type === "copy") && action.newPath) candidates.push(action.newPath);
+    if (action.type === "command" && action.args) {
+      for (const key of ["path", "pdfPath", "filePath"]) {
+        const value = action.args[key];
+        if (typeof value === "string") candidates.push(value);
+      }
+    }
     return candidates.some((candidate) => {
       try {
         return reviewGatePathsTouch(normalizeActionPath(candidate), path);
@@ -32233,6 +32861,34 @@ class CancipView extends ItemView {
         return false;
       }
     });
+  }
+
+  private contextualEditPreviewItems(action: CancipAction, path: string): ReviewGateManifestItem[] {
+    if (action.type !== "command") return [];
+    const command = normalizeCommandBusName(action.command);
+    if (command !== "cancip.annotate.pdf" && command !== "cancip.documents.editText") return [];
+    const args = action.args ?? {};
+    const oldText = typeof args.originalText === "string"
+      ? args.originalText
+      : typeof args.selectedText === "string"
+        ? args.selectedText
+        : "";
+    let newText = typeof args.replacementText === "string"
+      ? args.replacementText
+      : typeof args.editedText === "string"
+        ? args.editedText
+        : typeof args.text === "string"
+          ? args.text
+          : "";
+    if (!newText && Array.isArray(args.operations)) {
+      newText = args.operations.flatMap((operation) => {
+        if (!isRecord(operation)) return [];
+        const input = isRecord(operation.input) ? operation.input : operation;
+        return typeof input.text === "string" ? [input.text] : [];
+      }).join("\n");
+    }
+    if (!oldText && !newText) return [];
+    return [this.makeReviewGateItem(path, oldText, newText, command === "cancip.annotate.pdf" ? "pdf-annotation" : "document-edit")];
   }
 
   async startOneClickHtml(requirementOverride = ""): Promise<void> {
@@ -39038,6 +39694,7 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.documents.help", "cancip.documents.help", ["document", "office", "preview", "convert", "markdown", "文档", "办公文件", "预览", "转换", "按markdown打开"], 88),
       commandTarget("command:cancip.documents.open", "cancip.documents.open", ["document", "file", "open", "preview", "markdown", "edit", "文档", "文件", "打开", "预览", "编辑"], 90),
       commandTarget("command:cancip.documents.convert", "cancip.documents.convert", ["document", "file", "convert", "markdown", "html", "docx", "xlsx", "pptx", "pdf", "文档", "转换", "转markdown"], 90),
+      commandTarget("command:cancip.documents.editText", "cancip.documents.editText", ["document", "office", "selected text", "replace", "edit", "文档", "办公文件", "选中文字", "替换", "局部编辑"], 92),
       commandTarget("command:cancip.tts.help", "cancip.tts.help", ["tts", "speech", "speak", "read aloud", "朗读", "语音", "无障碍", "读出来"], 80),
       commandTarget("command:cancip.tts.probe", "cancip.tts.probe", ["tts", "speech", "probe", "test", "android", "朗读", "语音", "探测", "测试", "安卓"], 82),
       commandTarget("command:cancip.tts.installLocal", "cancip.tts.installLocal", ["tts", "speech", "install", "download", "prime", "local", "朗读", "语音", "安装", "下载", "本地包", "依赖"], 83),
@@ -39328,6 +39985,7 @@ class CancipView extends ItemView {
       "cancip.documents.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.help\"}]}",
       "cancip.documents.open": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.open\",\"args\":{\"path\":\"资料/文件.docx\",\"mode\":\"preview\"}}]}",
       "cancip.documents.convert": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.convert\",\"args\":{\"path\":\"资料/文件.docx\",\"format\":\"md\"}}]}",
+      "cancip.documents.editText": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.documents.editText\",\"args\":{\"path\":\"资料/文件.docx\",\"originalText\":\"原文\",\"editedText\":\"新内容\"}}]}",
       "cancip.tts.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.help\"}]}",
       "cancip.tts.probe": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.probe\"}]}",
       "cancip.tts.voices": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.voices\"}]}",
@@ -40235,7 +40893,7 @@ class CancipView extends ItemView {
     if (this.isFileChangeAction(action)) {
       return hasUnverifiedWriteAction(runs)
         ? chinese ? "读回或核对改动是否生效" : "read back or verify the change"
-        : chinese ? "说明改动文件和验证结果" : "summarize changed files and verification";
+        : chinese ? "说明完成结果和验证结果，文件清单由界面显示" : "summarize the result and verification; the UI shows the file list";
     }
     if (action.type === "read") {
       return shouldExpectToolActionForPrompt(originalPrompt)
@@ -43216,6 +43874,7 @@ class CancipView extends ItemView {
       || command === "cancip.importCodexMemory"
       || command === "cancip.importCapabilityPack"
       || command === "cancip.documents.convert"
+      || command === "cancip.documents.editText"
       || command === "cancip.tts.installLocal"
       || command === "cancip.automation.add"
       || command === "cancip.automation.update"
@@ -45686,6 +46345,7 @@ class CancipView extends ItemView {
             "- 一键 HTML：在 Cancip 输入需求后点 file-code 图标，或运行 Obsidian 命令“一键写交互 HTML”；写入、读回验证后自动用工作台预览。",
             "- 打开：cancip.documents.open {path, mode=preview|markdown|edit}",
             "- 转换：cancip.documents.convert {path, format=md|html}",
+            "- 局部文字写回：cancip.documents.editText {path, originalText, editedText}；Office 优先写回原件，其他受保护格式写入持久编辑层并读回验证。",
             "- Text/HTML/MHTML 可原位编辑；保存成功必须再读取原 path，或用 cancip.outcome.verify 检查文件内容，不能只信保存按钮提示。",
             "- PDF/Office/媒体/二进制原件默认受保护；编辑稿导出为 Markdown/HTML。DOCX 保留标题、强调和表格；XLSX 保留工作表与单元格位置；PPTX 保留幻灯片和备注。",
             "- 预览涂鸦/文字编辑使用工作台内嵌的 NoteDraw 工具栏；能力不清时先查 cancip.annotate.help，再按文件类型走 cancip.annotate.note 或 cancip.annotate.pdf。",
@@ -45696,6 +46356,7 @@ class CancipView extends ItemView {
             "- One-click HTML: enter requirements in Cancip and press the file-code button, or run the One-click interactive HTML command; the verified file opens automatically in the workbench.",
             "- Open: cancip.documents.open {path, mode=preview|markdown|edit}",
             "- Convert: cancip.documents.convert {path, format=md|html}",
+            "- Partial text writeback: cancip.documents.editText {path, originalText, editedText}; Office writes back to the original when possible, otherwise a persistent edit layer is verified.",
             "- Text/HTML/MHTML can be edited in place. After save, read the original path or use cancip.outcome.verify; do not trust the save notice alone.",
             "- PDF/Office/media/binary originals are protected and edits export to Markdown/HTML. DOCX preserves headings/emphasis/tables; XLSX preserves sheets/cells; PPTX preserves slides/notes.",
             "- Preview drawing and text editing use the embedded NoteDraw toolbar. Query cancip.annotate.help, then cancip.annotate.note or cancip.annotate.pdf when the route is unclear.",
@@ -45721,6 +46382,31 @@ class CancipView extends ItemView {
       if (!path) throw new Error("cancip.documents.convert requires args.path or an active file");
       const outputPath = await this.plugin.convertDocumentPath(path, format);
       return this.t("commandExecuted", { command: normalized, result: outputPath });
+    }
+
+    if (normalized === "cancip.documents.editText") {
+      const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+      const path = normalizePath(typeof args.path === "string" ? args.path : activePath);
+      const originalText = typeof args.originalText === "string" ? args.originalText : "";
+      const editedText = typeof args.editedText === "string"
+        ? args.editedText
+        : typeof args.replacementText === "string"
+          ? args.replacementText
+          : "";
+      if (!path) throw new Error("cancip.documents.editText requires args.path or an active file");
+      if (!originalText) throw new Error("cancip.documents.editText requires exact args.originalText");
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile)) throw new Error(`Document not found: ${path}`);
+      if (file.extension.toLowerCase() === "pdf") throw new Error("Use cancip.annotate.pdf for PDF text replacement");
+      const snapshot = await this.plugin.loadDocumentSnapshot(file);
+      const stored = await this.plugin.persistDocumentPreviewTextEdit(snapshot, originalText, editedText);
+      const verified = await this.plugin.loadDocumentSnapshot(file);
+      const applied = editedText
+        ? normalizedDocumentTextIncludes(verified.markdown, editedText)
+        : !normalizedDocumentTextIncludes(verified.markdown, originalText);
+      if (!applied) throw new Error(`Document text edit verification failed: ${path}`);
+      await this.plugin.refreshDocumentWorkbenchFile(path);
+      return this.t("commandExecuted", { command: normalized, result: `${path}\nstorage=${stored}\nverified=true` });
     }
 
     if (normalized === "cancip.tts.help") {
@@ -47218,61 +47904,79 @@ class CancipView extends ItemView {
   }
 
   private async executePdfAnnotationCommand(args: Record<string, unknown>): Promise<string> {
-    const op = String(args.op ?? args.action ?? args.mode ?? "status").trim().toLowerCase();
-    if (op === "help" || op === "status") return await this.pdfAnnotationStatus(args);
-    if (op === "toggle") {
+    const requestedOp = String(args.op ?? args.action ?? args.mode ?? "").trim();
+    const originalText = typeof args.originalText === "string" ? args.originalText : typeof args.selectedText === "string" ? args.selectedText : "";
+    const replacementText = typeof args.replacementText === "string" ? args.replacementText : typeof args.editedText === "string" ? args.editedText : "";
+    if (originalText || replacementText) {
+      args.originalText = originalText;
+      args.replacementText = replacementText;
+      if (!Array.isArray(args.operations)) {
+        const x = clampNumber(args.x, 0.12, 0, 1);
+        const y = clampNumber(args.y, 0.18, 0, 1);
+        const width = clampNumber(args.width, 0.5, 0.001, 1);
+        const height = clampNumber(args.height, 0.08, 0.001, 1);
+        const pageIndex = clampInt(args.pageIndex ?? args.page, 0, 0, 9999);
+        args.operations = [
+          ...(originalText ? [{ action: "addCover", input: { pageIndex, x, y, width, height, color: "#ffffff", opacity: 1, source: "contextual-edit" } }] : []),
+          ...(replacementText ? [{ action: "addText", input: { pageIndex, x, y, text: replacementText, color: "#111827", opacity: 1 } }] : [])
+        ];
+      }
+      if (!requestedOp) args.op = "applyPlan";
+    }
+    const resolvedOp = String(args.op ?? args.action ?? args.mode ?? "status").trim().toLowerCase();
+    if (resolvedOp === "help" || resolvedOp === "status") return await this.pdfAnnotationStatus(args);
+    if (resolvedOp === "toggle") {
       return ["route: Pdftion command toggle", await this.executeObsidianCommand("pdftion:toggle")].join("\n");
     }
-    if (op === "navigator" || op === "pages" || op === "page") {
+    if (resolvedOp === "navigator" || resolvedOp === "pages" || resolvedOp === "page") {
       return ["route: Pdftion page navigator", await this.executeObsidianCommand("pdftion:show-pdf-page-navigator")].join("\n");
     }
-    if (op === "exportmarkdown" || op === "export-md" || op === "markdown") {
+    if (resolvedOp === "exportmarkdown" || resolvedOp === "export-md" || resolvedOp === "markdown") {
       return ["route: Pdftion export annotations markdown", await this.executeObsidianCommand("pdftion:export-annotations-markdown")].join("\n");
     }
-    if (op === "exportpdf" || op === "export-pdf" || op === "burn") {
+    if (resolvedOp === "exportpdf" || resolvedOp === "export-pdf" || resolvedOp === "burn") {
       return ["route: Pdftion export annotated pdf", await this.executeObsidianCommand("pdftion:export-annotated-pdf")].join("\n");
     }
-    if (op === "convert" || op === "convertpdf") {
+    if (resolvedOp === "convert" || resolvedOp === "convertpdf") {
       return ["route: Pdftion convert pdf/markdown/docx", await this.executeObsidianCommand("pdftion:convert-pdf-markdown-docx")].join("\n");
     }
-
     const api = this.pdftionApi();
     const targetFile = this.pdfAnnotationFile(args, false);
     const currentApiFile = api ? normalizePath(String(api.getCurrentFile?.() ?? "")) : "";
     const apiMatchesTarget = Boolean(api && (!targetFile || (currentApiFile && normalizePath(targetFile.path) === currentApiFile)));
     if (!api || !apiMatchesTarget) {
-      if (targetFile) return await this.executePdfAnnotationFileCommand(args, targetFile, op);
+      if (targetFile) return await this.executePdfAnnotationFileCommand(args, targetFile, resolvedOp);
       throw new Error("PdftionAI API is not available for the target. Open a PDF, or pass args.path/pdfPath for non-visual Pdftion JSON annotation.");
     }
     const before = this.pdftionStats(api);
     let result: unknown;
-    if (op === "applyplan" || op === "plan") {
+    if (resolvedOp === "applyplan" || resolvedOp === "plan") {
       const operations = Array.isArray(args.operations) ? args.operations : Array.isArray(args.plan) ? args.plan : [];
       result = await Promise.resolve(api.applyPlan?.(operations));
-    } else if (op === "addstroke" || op === "stroke" || op === "highlight" || op === "高亮") {
-      result = api.addStroke?.(this.pdfStrokeFromArgs(args, /highlight|高亮/.test(op)));
-    } else if (op === "addcover" || op === "cover") {
+    } else if (resolvedOp === "addstroke" || resolvedOp === "stroke" || resolvedOp === "highlight" || resolvedOp === "高亮") {
+      result = api.addStroke?.(this.pdfStrokeFromArgs(args, /highlight|高亮/.test(resolvedOp)));
+    } else if (resolvedOp === "addcover" || resolvedOp === "cover") {
       result = api.addCover?.(this.pdfCoverFromArgs(args));
-    } else if (op === "addtext" || op === "text") {
+    } else if (resolvedOp === "addtext" || resolvedOp === "text") {
       result = api.addText?.(this.pdfTextFromArgs(args));
-    } else if (op === "coverselection" || op === "highlightselection") {
+    } else if (resolvedOp === "coverselection" || resolvedOp === "highlightselection") {
       result = api.coverNativeSelection?.();
-    } else if (op === "replaceselection") {
+    } else if (resolvedOp === "replaceselection") {
       const text = typeof args.text === "string" ? args.text : "";
       result = api.replaceNativeText?.(text);
-    } else if (op === "jumptopage" || op === "jump") {
+    } else if (resolvedOp === "jumptopage" || resolvedOp === "jump") {
       result = api.jumpToPage?.(clampInt(args.pageIndex ?? args.page, 0, 0, 9999));
-    } else if (op === "select") {
+    } else if (resolvedOp === "select") {
       result = api.selectElements?.(Array.isArray(args.ids) ? args.ids : []);
-    } else if (op === "delete") {
+    } else if (resolvedOp === "delete") {
       result = api.deleteElements?.(Array.isArray(args.ids) ? args.ids : []);
     } else {
-      throw new Error(`Unknown Pdftion annotation op: ${op}. Use cancip.annotate.help first.`);
+      throw new Error(`Unknown Pdftion annotation op: ${resolvedOp}. Use cancip.annotate.help first.`);
     }
     const after = this.pdftionStats(api);
     return [
       "route: PdftionAI",
-      `operation: ${op}`,
+      `operation: ${resolvedOp}`,
       `file: ${String(api.getCurrentFile?.() ?? "")}`,
       `before: ${safeJsonishDisplay(before)}`,
       `result: ${safeJsonishDisplay(result)}`,
@@ -48198,7 +48902,7 @@ class CancipView extends ItemView {
     if (!rules.length) return this.t("none");
     return rules.map((rule, index) => {
       const custom = rule.kind === "custom" ? ` custom command=${rule.commandId ?? ""} anchor=${rule.anchorSelector ?? ""}` : "";
-      return `${index + 1}. ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope}${custom} ${rule.label}${rule.title ? ` title=${rule.title}` : ""}${rule.icon ? ` icon=${rule.icon}` : ""}\n   ${rule.selector}`;
+      return `${index + 1}. ${rule.hidden ? "hidden" : "shown"} order=${rule.order} scope=${rule.scope}${custom} ${rule.label}${rule.title ? ` title=${rule.title}` : ""}${rule.icon ? ` icon=${rule.icon}` : ""}${rule.mediaPath ? ` media=${rule.mediaPath}` : ""}${rule.effect ? ` effect=${rule.effect}` : ""}\n   ${rule.selector}`;
     }).join("\n");
   }
 
@@ -54656,7 +55360,7 @@ function buildBuiltInVaultCurationSkillContent(): string {
     "1. Resolve target paths.",
     "2. Read the smallest relevant files.",
     "3. Apply one focused patch/write/move batch.",
-    "4. Read back and summarize changed files, line deltas, review status, and skipped items.",
+    "4. Read back and verify. Leave changed paths and line deltas to Cancip's programmatic cards; summarize only the result, review status, and meaningful skipped items.",
     ""
   ].join("\n");
 }
@@ -58720,6 +59424,7 @@ const CANONICAL_COMMAND_BUS_NAMES = new Map([
   "cancip.documents.help",
   "cancip.documents.open",
   "cancip.documents.convert",
+  "cancip.documents.editText",
   "cancip.tts.help",
   "cancip.tts.probe",
   "cancip.tts.voices",
@@ -61397,6 +62102,15 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
       : "Never claim completion from a successful function return alone. Read back actual state; for UI work also verify the active view, DOM/layout, or visual evidence. Correct measured differences while attempts remain, then hand off with evidence at the limit."}`;
   }
   if (key === "toolContinuationPrompt") {
+    template = template
+      .replace(
+        "Include only actions performed, changed files, verification/result, exact blockers, and memory/rule updates when useful.",
+        "Include only actions performed, verification/result, exact blockers, and memory/rule updates when useful. Do not list read or changed files in the prose because Cancip renders changed-file cards programmatically."
+      )
+      .replace(
+        "最终回答直接给结果，只写真实存在的已完成动作、实际改动文件、实际验证、具体阻塞或新增规则；空项、未发生项、仅读取文件和过程解释全部省略。",
+        "最终回答直接给结果，只写真实存在的已完成动作、实际验证、具体阻塞或新增规则；改动文件由 Cancip 程序化卡片显示，正文不要列改/读文件；空项、未发生项和过程解释全部省略。"
+      );
     return `${template}\n\n${template.startsWith("上一步工具执行结果")
       ? "结果验收规则：若 cancip.outcome.verify 返回未通过且轮次未到上限，只修正列出的差异，然后使用相同 loopId、递增 attempt 再验收；不得重复完全相同的失败动作。达到上限时停止自动重试，保留证据并给出可审核结论。"
       : "Outcome rule: when cancip.outcome.verify reports failed below the attempt limit, correct only the listed differences and verify again with the same loopId and an incremented attempt; never repeat the identical failed action. At the limit, stop automatic retries, preserve evidence, and give a reviewable conclusion."}`;
@@ -61957,6 +62671,32 @@ function normalizeTagList(raw: unknown): string[] {
     .slice(0, 200);
 }
 
+const UI_BUTTON_IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "avif", "bmp", "ico", "svg"]);
+const UI_BUTTON_VIDEO_EXTENSIONS = new Set(["mp4", "webm", "mov", "m4v", "ogv"]);
+const UI_BUTTON_VISUAL_EFFECTS = new Set<UiButtonVisualEffect>(["pulse", "spin", "float", "glow", "bounce", "tilt", "press"]);
+
+function normalizeUiButtonMediaPath(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const normalized = normalizePath(raw.trim().replace(/^\[\[|\]\]$/g, "").replace(/^\/+/, ""));
+  if (!normalized || normalized === "." || normalized.split("/").includes("..")) return "";
+  const extension = normalized.split(".").pop()?.toLowerCase() ?? "";
+  return UI_BUTTON_IMAGE_EXTENSIONS.has(extension) || UI_BUTTON_VIDEO_EXTENSIONS.has(extension) ? normalized : "";
+}
+
+function normalizeUiButtonVisualEffect(raw: unknown): UiButtonVisualEffect | undefined {
+  const value = typeof raw === "string" ? raw.trim().toLowerCase() as UiButtonVisualEffect : undefined;
+  return value && UI_BUTTON_VISUAL_EFFECTS.has(value) ? value : undefined;
+}
+
+function isUiButtonMediaFile(file: TFile): boolean {
+  const extension = file.extension.toLowerCase();
+  return UI_BUTTON_IMAGE_EXTENSIONS.has(extension) || UI_BUTTON_VIDEO_EXTENSIONS.has(extension);
+}
+
+function isUiButtonVideoFile(file: TFile): boolean {
+  return UI_BUTTON_VIDEO_EXTENSIONS.has(file.extension.toLowerCase());
+}
+
 function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
   if (!Array.isArray(raw)) return [];
   const rules = raw
@@ -61971,6 +62711,8 @@ function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
       const order = Number.isFinite(Number(item.order)) ? Math.max(-999, Math.min(999, Math.round(Number(item.order)))) : 0;
       const title = typeof item.title === "string" && item.title.trim() ? item.title.trim() : undefined;
       const icon = typeof item.icon === "string" && item.icon.trim() ? item.icon.trim() : undefined;
+      const mediaPath = normalizeUiButtonMediaPath(item.mediaPath);
+      const effect = normalizeUiButtonVisualEffect(item.effect);
       const rawCommandId = typeof item.commandId === "string" && item.commandId.trim() ? item.commandId.trim() : undefined;
       const commandId = rawCommandId?.startsWith("uiclick:")
         ? `uiclick:${migrateUiButtonRuleSelector(rawCommandId.slice("uiclick:".length).trim()) || rawCommandId.slice("uiclick:".length).trim()}`
@@ -62000,7 +62742,7 @@ function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
       const id = rawId && (kind === "custom" || !selectorChanged)
         ? rawId
         : stableRuleId(uiButtonRuleStableIdInput(scope, selector, label));
-      return { id, selector, label, hidden: Boolean(item.hidden), order, title, icon, scope, kind, anchorSelector, anchorLabel, commandId, commandName, fallbackSelector, insertPosition, viewType, commandGuard, iconGuard, menuGroupGuard, targetKey, legacyTargetKey, createdAt, updatedAt };
+      return { id, selector, label, hidden: Boolean(item.hidden), order, title, icon, mediaPath: mediaPath || undefined, effect, scope, kind, anchorSelector, anchorLabel, commandId, commandName, fallbackSelector, insertPosition, viewType, commandGuard, iconGuard, menuGroupGuard, targetKey, legacyTargetKey, createdAt, updatedAt };
     })
     .filter((item): item is UiButtonRule => item !== null);
   return mergeUiButtonRules([], rules).slice(0, 200);
@@ -62093,6 +62835,8 @@ function uiButtonRuleChangeKinds(rule: UiButtonRule): UiButtonRuleChange[] {
   if (Number.isFinite(rule.order) && rule.order !== 0) kinds.push("order");
   if (rule.title?.trim()) kinds.push("title");
   if (rule.icon?.trim()) kinds.push("icon");
+  if (rule.mediaPath?.trim()) kinds.push("media");
+  if (rule.effect) kinds.push("effect");
   return kinds;
 }
 
@@ -67605,6 +68349,8 @@ function parseUiButtonClipboardPayload(text: string): UiButtonClipboardPayload |
       label: label || commandId,
       title: typeof parsed.title === "string" && parsed.title.trim() ? parsed.title.trim() : undefined,
       icon: typeof parsed.icon === "string" && parsed.icon.trim() ? parsed.icon.trim() : undefined,
+      mediaPath: normalizeUiButtonMediaPath(parsed.mediaPath) || undefined,
+      effect: normalizeUiButtonVisualEffect(parsed.effect),
       commandId,
       commandName: typeof parsed.commandName === "string" && parsed.commandName.trim() ? parsed.commandName.trim() : undefined,
       fallbackSelector: typeof parsed.fallbackSelector === "string" && parsed.fallbackSelector.trim() ? parsed.fallbackSelector.trim() : undefined,

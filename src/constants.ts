@@ -12,7 +12,7 @@ export function defaultSystemPromptForNavigationPath(navigationPath = DEFAULT_CA
 - 插件/OB/JS：cancip.pluginCapabilities 查命令/UI/API/配置/文档；obsidian.listCommands/resolveCommand/execute；必要时 obsidian.ui.*、obsidian.dom.* 小步操作；JS 先 obsidian.js.help/probe，再 obsidian.eval/js.eval。
 - Skill/文档：cancip.skills.list/read；PDF/Office/附件用 cancip.documents.help 或 cancip.attachment.help；外部资料用 web.search/fetch。
 - 会话/自动化：cancip.sessionHistory/sessionEvents/subagents.*；cancip.automation.list/run/add/update。复杂会话列待办，结束后总结成功失败经验并沉淀可复用 Skill。
-- 最终回答写做了什么、实际动作、改/读文件、验证、提醒或记忆更新；过程、命令、JSON、长代码折叠。
+- 最终回答只写具体结果、验证、阻塞和必要提醒/记忆更新；改动文件由界面程序化显示，正文不重复列改/读文件；过程、命令、JSON、长代码折叠。
 - 有具体下一步时生成 1-3 个隐藏推荐：<!-- cancip-choices {"choices":["具体动作1","具体动作2","具体动作3"]} -->。`;
 }
 
@@ -53,7 +53,15 @@ export function isBundledSystemPrompt(value: string): boolean {
   if (!normalized) return true;
   if (normalized === DEFAULT_SYSTEM_PROMPT.trim() || normalized === LEGACY_SYSTEM_PROMPT.trim()) return true;
   const currentNavigationMatch = normalized.match(/总导航：\s*(.+?\/CANCIP_NAV\.md)，按需查/);
-  if (currentNavigationMatch?.[1] && normalized === defaultSystemPromptForNavigationPath(currentNavigationMatch[1]).trim()) return true;
+  if (currentNavigationMatch?.[1]) {
+    const current = defaultSystemPromptForNavigationPath(currentNavigationMatch[1]).trim();
+    if (normalized === current) return true;
+    const previousCurrent = current.replace(
+      "- 最终回答只写具体结果、验证、阻塞和必要提醒/记忆更新；改动文件由界面程序化显示，正文不重复列改/读文件；过程、命令、JSON、长代码折叠。",
+      "- 最终回答写做了什么、实际动作、改/读文件、验证、提醒或记忆更新；过程、命令、JSON、长代码折叠。"
+    );
+    if (normalized === previousCurrent) return true;
+  }
   const routeNavigationMatch = normalized.match(/自动化总入口：\s*(.+?\/CANCIP_NAV\.md)。/);
   if (routeNavigationMatch?.[1] && normalized === previousRouteSystemPromptForNavigationPath(routeNavigationMatch[1]).trim()) return true;
   const previousNavigationMatch = normalized.match(/缺资料先查\s+(.+?\/CANCIP_NAV\.md)，路线不明查 cancip\.tools\.index/);
