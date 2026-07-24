@@ -41021,7 +41021,7 @@ class CancipView extends ItemView {
       .filter((run) => run.action.type === "todo")
       .map((run) => JSON.stringify(run.action))
       .join(" ");
-    const requestsRestore = /(恢复|还原|复原|撤销(?:本次|临时|规则)?|重置|reset|restore|revert|temporary)/i.test(`${originalPrompt}\n${planText}`);
+    const requestsRestore = buttonWorkflowRequestsRestore(`${originalPrompt}\n${planText}`);
 
     const buttonList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttons" && run.status === "executed");
     const ruleList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttonRules" && run.status === "executed");
@@ -43503,21 +43503,40 @@ class CancipView extends ItemView {
     const promptLabel = originalPrompt.match(/[“"']([^”"']{1,32})[”"']\s*(?:按钮|button)/i)?.[1]?.trim() ?? "";
     const label = directive.label && directive.label !== directive.selector ? directive.label : selectorLabel || promptLabel || "目标";
     const executed = runs.filter((run) => run.status === "executed");
-    const hiddenEvidence = executed.some((run) => run.action.type === "command"
+    const planTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
+    const requestsRestore = buttonWorkflowRequestsRestore(`${originalPrompt}\n${planTodos.map((todo) => todo.text).join("\n")}`);
+    const applyIndex = executed.findIndex((run) => run.action.type === "command"
+      && normalizeCommandBusName(run.action.command) === "obsidian.ui.applyButtonRules"
+      && normalizeUiButtonRules(run.action.args?.rules).length > 0);
+    let resetIndex = -1;
+    for (let index = executed.length - 1; index >= 0; index -= 1) {
+      const run = executed[index];
+      if (run.action.type !== "command" || normalizeCommandBusName(run.action.command) !== "obsidian.ui.applyButtonRules") continue;
+      const args = run.action.args ?? {};
+      if (normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules).length > 0) {
+        resetIndex = index;
+        break;
+      }
+    }
+    const hiddenEvidence = applyIndex >= 0 && executed.some((run, index) => index > applyIndex
+      && (resetIndex < 0 || index < resetIndex)
+      && run.action.type === "command"
       && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
       && (run.result || "").includes(directive.selector!)
       && /\[hidden\]/i.test(run.result || ""));
-    const restoredEvidence = [...executed].reverse().some((run) => run.action.type === "command"
+    const restoredEvidence = resetIndex > applyIndex && executed.some((run, index) => index > resetIndex
+      && run.action.type === "command"
       && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
       && (run.result || "").includes(directive.selector!)
       && !/\[hidden\]/i.test(run.result || ""));
-    if (!hiddenEvidence || !restoredEvidence) return "";
+    if (!hiddenEvidence || (requestsRestore && !restoredEvidence)) return "";
     const counts = executed
       .filter((run) => run.action.type === "command" && normalizeCommandBusName(run.action.command) === "obsidian.ui.applyButtonRules")
       .flatMap((run) => [...(run.result || "").matchAll(/count\s+(\d+)\s*->\s*(\d+)/gi)])
       .map((match) => [match[1], match[2]] as const);
-    const countTrace = counts.length >= 2 ? `${counts[0][0]} -> ${counts[0][1]} -> ${counts[counts.length - 1][1]}` : "";
-    const planTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
+    const countTrace = counts.length >= 2
+      ? `${counts[0][0]} -> ${counts[0][1]} -> ${counts[counts.length - 1][1]}`
+      : counts.length === 1 ? `${counts[0][0]} -> ${counts[0][1]}` : "";
     if (isChineseLanguage(this.plugin.language())) {
       if (planTodos.length) {
         return planTodos.map((todo, index) => {
@@ -43530,9 +43549,21 @@ class CancipView extends ItemView {
           return `${index + 1}. 已读取目标按钮和现有规则，确认后续操作只针对 ${label}按钮。`;
         }).join("\n");
       }
+      if (!requestsRestore) {
+        return [
+          `${label}按钮已隐藏。`,
+          `验证：变更后明确显示 [hidden]${countTrace ? `；规则数 ${countTrace}` : ""}。`
+        ].join("\n");
+      }
       return [
         `${label}按钮已临时隐藏并恢复。`,
         `验证：隐藏时明确显示 [hidden]，恢复后重新可见${countTrace ? `；规则数 ${countTrace}` : ""}。`
+      ].join("\n");
+    }
+    if (!requestsRestore) {
+      return [
+        `${label} is hidden.`,
+        `Verified: the post-change state reported [hidden]${countTrace ? `; rule count ${countTrace}` : ""}.`
       ].join("\n");
     }
     if (planTodos.length) {
@@ -43659,11 +43690,16 @@ class CancipView extends ItemView {
         const reviewFailure = hasActions
           ? (reviewStatus ? "response mixes an executable action with a terminal final-review marker" : "")
           : this.finalReviewStatusRequirementFailure(reviewStatus, decisionRuns);
+        const buttonRestoreRequired = buttonWorkflowRequestsRestore(`${originalPrompt}\n${this.agentPlanTodos().map((todo) => todo.text).join("\n")}`);
         const terminalButtonAnswerFailure = terminalButtonWorkflow && visibleAnswer
           ? (/(?:还没|還沒|未|没有|沒有|并未|並未|not\s+(?:done|complete)|did\s+not).{0,24}(?:完成|改动|改動|执行|執行|done|complete|change|execute)|(?:只|仅|僅|only).{0,18}(?:读取|讀取|检查|檢查|read|inspect)/i.test(visibleAnswer)
               ? "final answer contradicts the verified completed button workflow"
-              : !/(隐藏|隱藏|hidden|hide)/i.test(visibleAnswer) || !/(恢复|恢復|还原|還原|重新可见|重新可見|restor|visible)/i.test(visibleAnswer)
-                ? "final answer must state both the verified hidden and restored states"
+              : !/(隐藏|隱藏|hidden|hide)/i.test(visibleAnswer)
+                ? "final answer must state the verified hidden state"
+                : buttonRestoreRequired && !/(恢复|恢復|还原|還原|撤回后|重新可见|重新可見|restor|visible)/i.test(visibleAnswer)
+                  ? "final answer must state both the verified hidden and restored states"
+                  : !buttonRestoreRequired && /(已恢复|已恢復|恢复后|恢復後|重新可见|重新可見|was restored|became visible|visible again)/i.test(visibleAnswer)
+                    ? "final answer claims a restore that has no post-reset evidence"
                 : "")
           : "";
         const requirementFailure = protocolIssue || reviewFailure || terminalButtonAnswerFailure || (visibleAnswer
@@ -68470,6 +68506,10 @@ function uiButtonRuleIdFromMutationResult(result: string): string {
     .find(Boolean);
   if (applied) return applied;
   return result.match(/^\d+\.\s+id=([^\s]+)/m)?.[1]?.trim() ?? "";
+}
+
+function buttonWorkflowRequestsRestore(text: string): boolean {
+  return /(恢复|还原|复原|撤销|撤回|回退|退回|取消(?:本次|临时|规则|改动)?|重置|reset|restore|revert|roll\s*back|undo|temporary)/i.test(text);
 }
 
 function cancipActionBlockForActions(actions: CancipAction[]): string {
