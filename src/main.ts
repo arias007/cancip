@@ -1964,6 +1964,7 @@ type ContextualEditAnchor = {
   width?: number;
   height?: number;
   screenRect?: { left: number; top: number; width: number; height: number };
+  screenRects?: Array<{ left: number; top: number; width: number; height: number }>;
 };
 
 type AiVaultMutationKind = "write" | "append" | "process" | "rename" | "move" | "copy" | "delete";
@@ -2452,6 +2453,7 @@ type Settings = {
   ttsCustomUrl: string;
   ttsShowViewActions: boolean;
   ttsAutoReadFinalAnswer: boolean;
+  ttsPrimeDefaultMigrated: boolean;
   ttsOverlayCollapsed: boolean;
   ttsOverlayPosition: { left: number; top: number } | null;
   systemPrompt: string;
@@ -3304,7 +3306,7 @@ const DEFAULT_SETTINGS: Settings = {
   ntfyToken: "",
   ntfyOnSessionComplete: true,
   ntfyOnSessionFail: true,
-  ttsProvider: "auto",
+  ttsProvider: "builtin-prime-tts",
   ttsQualityMode: "quality-first",
   ttsVoice: "zh-CN-XiaoxiaoNeural",
   ttsRate: 1,
@@ -3313,6 +3315,7 @@ const DEFAULT_SETTINGS: Settings = {
   ttsCustomUrl: "",
   ttsShowViewActions: true,
   ttsAutoReadFinalAnswer: false,
+  ttsPrimeDefaultMigrated: false,
   ttsOverlayCollapsed: true,
   ttsOverlayPosition: null,
   systemPrompt: DEFAULT_SYSTEM_PROMPT
@@ -3421,7 +3424,7 @@ const CANCIP_ARCHIVE_SESSION_SCAN_BATCH = 36;
 const CANCIP_ARCHIVE_SESSION_MOVE_BATCH = 12;
 let UNIVERSAL_SEARCH_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/universal-search.json`;
 let UNIVERSAL_SEARCH_INDEX_DIR = `${CANCIP_MACHINE_INDEX_DIR}/universal-search`;
-const UNIVERSAL_SEARCH_SCHEMA_VERSION = 2;
+const UNIVERSAL_SEARCH_SCHEMA_VERSION = 3;
 const UNIVERSAL_SEARCH_INDEX_KINDS: readonly UniversalSearchDocumentKind[] = ["memory", "note", "session", "file", "pdf", "image", "office", "archive", "config"];
 const UNIVERSAL_SEARCH_BLOOM_BITS = 4096;
 const UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT = 900;
@@ -3572,6 +3575,7 @@ const REVIEW_GATE_MAX_FILES = 80;
 const REVIEW_GATE_MAX_FILE_CHARS = 120000;
 const CONTEXT_STEP_TIMEOUT_MS = 3500;
 const VAULT_SEARCH_TIME_BUDGET_MS = 2200;
+const VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS = 1800;
 const VAULT_ATTACHMENT_SEARCH_MAX_FILES = 10;
 const VAULT_ATTACHMENT_SEARCH_MAX_BYTES = 5 * 1024 * 1024;
 const MENTION_TARGET_TIME_BUDGET_MS = 1800;
@@ -8842,7 +8846,7 @@ export default class CancipPlugin extends Plugin {
       if (file instanceof TFile) this.scheduleDefaultDocumentWorkbench(file);
     }));
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
-      this.rememberContentWorkspaceLeaf(this.app.workspace.getLeaf(false));
+      this.rememberContentWorkspaceLeaf(this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf());
       this.ensureDocumentWorkbenchExtensions();
       this.scheduleTtsViewActionRefresh();
       if (file instanceof TFile) this.scheduleDefaultDocumentWorkbench(file);
@@ -9966,7 +9970,9 @@ export default class CancipPlugin extends Plugin {
     for (const item of inventory) {
       const existing = previousByPath.get(normalizePath(item.path));
       const staleBinaryExtraction = previous.schemaVersion < 2 && universalSearchBinaryDocumentKind(item.kind);
+      const protectedContent = universalSearchProtectedContentPath(item.path);
       if (existing
+        && !protectedContent
         && !staleBinaryExtraction
         && existing.kind === item.kind
         && existing.mtime === item.mtime
@@ -10009,7 +10015,7 @@ export default class CancipPlugin extends Plugin {
     for (const item of pending) {
       if (processedPaths.has(normalizePath(item.path))) continue;
       const existing = previousByPath.get(normalizePath(item.path));
-      if (existing) documents.push(existing);
+      if (existing && !universalSearchProtectedContentPath(item.path)) documents.push(existing);
       else documents.push({ ...item, indexedAt: "", textChars: 0, bloom: "" });
     }
     const complete = pending.length <= batch.length;
@@ -10582,7 +10588,7 @@ export default class CancipPlugin extends Plugin {
 
   activeWorkspaceLeaf(): WorkspaceLeaf | null {
     const workspace = this.app.workspace;
-    const current = workspace.getLeaf(false);
+    const current = workspace.activeLeaf ?? workspace.getMostRecentLeaf();
     this.rememberContentWorkspaceLeaf(current);
     const leaves: WorkspaceLeaf[] = [];
     workspace.iterateAllLeaves((leaf) => leaves.push(leaf));
@@ -13646,6 +13652,10 @@ export default class CancipPlugin extends Plugin {
       nextSettings.documentWorkbenchWildcardMigrated = true;
     }
     nextSettings = await this.importNtfySettingsFromInstalledPlugin(nextSettings);
+    if (!nextSettings.ttsPrimeDefaultMigrated && nextSettings.ttsProvider === "auto") {
+      nextSettings.ttsProvider = "builtin-prime-tts";
+    }
+    nextSettings.ttsPrimeDefaultMigrated = true;
 
     this.settings = nextSettings;
     await this.saveData(this.settings);
@@ -15799,6 +15809,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
               top: frameRect.top + latest.screenRect.top
             };
           }
+          if (latest.screenRects?.length) {
+            const frameRect = frame.getBoundingClientRect();
+            latest.screenRects = latest.screenRects.map((rect) => ({
+              ...rect,
+              left: frameRect.left + rect.left,
+              top: frameRect.top + rect.top
+            }));
+          }
           opened = true;
           this.showContextEditBubble(latest, point.x, point.y);
         }, 620);
@@ -15838,6 +15856,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             left: frameRect.left + anchor.screenRect.left,
             top: frameRect.top + anchor.screenRect.top
           };
+        }
+        if (anchor.screenRects?.length) {
+          const frameRect = frame.getBoundingClientRect();
+          anchor.screenRects = anchor.screenRects.map((rect) => ({
+            ...rect,
+            left: frameRect.left + rect.left,
+            top: frameRect.top + rect.top
+          }));
         }
         this.showContextEditBubble(anchor, point.x, point.y);
       };
@@ -15895,6 +15921,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       kind: "selection",
       selectedText: selection.toString(),
       screenRect: this.contextualEditScreenRect(element, undefined, undefined, rect),
+      screenRects: this.contextualEditScreenRects(element, Array.from(range.getClientRects())),
       ...this.contextualEditDomGeometry(anchor.surface, element, rect)
     };
   }
@@ -15948,7 +15975,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           startLine: from.line + 1,
           endLine: to.line + 1,
           nearbyText: this.contextualEditEditorLines(editor, from.line, to.line),
-          screenRect: this.contextualEditScreenRect(element, clientX, clientY, domRect && domRect.width > 0 ? domRect : undefined)
+          screenRect: this.contextualEditScreenRect(element, clientX, clientY, domRect && domRect.width > 0 ? domRect : undefined),
+          screenRects: domRange
+            ? this.contextualEditScreenRects(element, Array.from(domRange.getClientRects()))
+            : undefined
         };
       }
       const cursor = editor.getCursor();
@@ -15994,6 +16024,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           selectedText,
           nearbyText: trimContext(nearbyText || selectedText, 1600),
           screenRect: this.contextualEditScreenRect(anchorElement ?? element, clientX, clientY, range.getBoundingClientRect()),
+          screenRects: this.contextualEditScreenRects(anchorElement ?? element, Array.from(range.getClientRects())),
           ...this.contextualEditDomGeometry(surface, anchorElement ?? null, range.getBoundingClientRect())
         };
       }
@@ -16078,6 +16109,20 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     };
   }
 
+  private contextualEditScreenRects(element: Element, sourceRects: DOMRect[]): NonNullable<ContextualEditAnchor["screenRects"]> {
+    const rects = sourceRects
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+      .map((rect) => ({
+        left: rect.left,
+        top: rect.top,
+        width: Math.max(3, rect.width),
+        height: Math.max(18, rect.height)
+      }));
+    return rects.length
+      ? rects
+      : [this.contextualEditScreenRect(element) as NonNullable<ContextualEditAnchor["screenRects"]>[number]];
+  }
+
   private contextualEditEditorLines(editor: Editor, startLine: number, endLine: number): string {
     const lines: string[] = [];
     const start = Math.max(0, startLine - 2);
@@ -16159,7 +16204,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       setIcon(submit, "ellipsis");
       bubble.addClass("is-loading");
       const effectiveAnchor = this.contextEditBubbleAnchor ?? anchor;
-      this.showContextEditMarker(effectiveAnchor, true, isChineseLanguage(this.language()) ? "正在生成..." : "Generating...");
+      this.showContextEditMarker(effectiveAnchor, true);
       try {
         const proposal = await this.submitContextualEdit(effectiveAnchor, instruction);
         if (!bubble.isConnected) {
@@ -16229,17 +16274,21 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   private showContextEditMarker(anchor: ContextualEditAnchor, loading: boolean, previewText = ""): void {
     this.contextEditMarkerEl?.remove();
-    const rect = anchor.screenRect;
-    if (!rect) return;
-    const marker = activeDocument.body.createDiv({ cls: `obcc-context-edit-marker${anchor.kind === "selection" ? " is-selection" : " is-caret"}${loading ? " is-loading" : " is-ready"}` });
-    marker.setCssStyles({
-      left: `${Math.round(rect.left)}px`,
-      top: `${Math.round(rect.top)}px`,
-      width: `${Math.round(rect.width)}px`,
-      height: `${Math.round(rect.height)}px`
+    const rects = anchor.screenRects?.length ? anchor.screenRects : anchor.screenRect ? [anchor.screenRect] : [];
+    if (!rects.length) return;
+    const marker = activeDocument.body.createDiv({ cls: `obcc-context-edit-marker-group${anchor.kind === "selection" ? " is-selection" : " is-caret"}${loading ? " is-loading" : " is-ready"}` });
+    const segments = rects.map((rect, index) => {
+      const segment = marker.createDiv({ cls: `obcc-context-edit-marker${anchor.kind === "selection" ? " is-selection" : " is-caret"}${index === rects.length - 1 ? " is-anchor" : ""}` });
+      segment.setCssStyles({
+        left: `${Math.round(rect.left)}px`,
+        top: `${Math.round(rect.top)}px`,
+        width: `${Math.round(rect.width)}px`,
+        height: `${Math.round(rect.height)}px`
+      });
+      return segment;
     });
     const preview = previewText.trim();
-    if (preview) marker.createDiv({ cls: "obcc-context-edit-inline-preview", text: trimContext(preview, 700) });
+    if (preview) segments[segments.length - 1].createDiv({ cls: "obcc-context-edit-inline-preview", text: trimContext(preview, 700) });
     this.contextEditMarkerEl = marker;
   }
 
@@ -16276,8 +16325,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
     const marker = this.contextEditMarkerEl;
     marker?.addClass("has-proposal");
+    const anchorSegment = marker?.querySelector<HTMLElement>(".obcc-context-edit-marker.is-anchor") ?? marker;
     const preview = marker?.querySelector<HTMLElement>(".obcc-context-edit-inline-preview");
-    const controls = (preview ?? marker ?? bubble).createDiv({ cls: "obcc-context-edit-proposal-actions" });
+    const controls = (preview ?? anchorSegment ?? bubble).createDiv({ cls: "obcc-context-edit-proposal-actions" });
     const accept = controls.createEl("button", { cls: "obcc-context-edit-action", attr: { type: "button", title: "接受", "aria-label": "接受" } });
     setIcon(accept, "check");
     const reject = controls.createEl("button", { cls: "obcc-context-edit-action is-secondary", attr: { type: "button", title: "拒绝", "aria-label": "拒绝" } });
@@ -16352,9 +16402,19 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.contextEditMarkerEl = null;
   }
 
+  private async waitForContextualEditRunner(): Promise<CancipView | null> {
+    const deadline = Date.now() + MODEL_CALL_TIMEOUT_MS;
+    do {
+      const view = await this.getAutomationRunnerView();
+      if (view && !view.automationSessionBusy()) return view;
+      await sleep(180);
+    } while (Date.now() < deadline);
+    return null;
+  }
+
   private async submitContextualEdit(anchor: ContextualEditAnchor, instruction: string): Promise<ContextualEditProposal | null> {
-    const view = await this.getAutomationRunnerView();
-    if (!view || view.automationSessionBusy()) throw new Error("Cancip 后台执行器正忙，请稍后重试");
+    const view = await this.waitForContextualEditRunner();
+    if (!view) throw new Error("局部补充请求超时");
     const { file } = anchor;
     const scope = anchor.kind === "selection"
       ? [
@@ -19523,6 +19583,20 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     } catch {
       sessionEntries = [];
     }
+    const longTermPreferenceSections: string[] = [];
+    const preferencePaths = uniqueStrings([
+      this.memoryPath("CANCIP_INDEX.md"),
+      PROJECT_MEMORY_PATH
+    ]);
+    for (const path of preferencePaths) {
+      try {
+        if (!(await adapter.exists(path))) continue;
+        const raw = redactSensitiveText(await adapter.read(path)).replace(/\r/g, "").trim();
+        if (raw) longTermPreferenceSections.push(`- ${path}\n${trimContext(raw, path === PROJECT_MEMORY_PATH ? 700 : 1000)}`);
+      } catch {
+        // Greeting personalization remains usable when memory is temporarily unavailable.
+      }
+    }
     const tier = personalizationEvidenceTierForTimestamps([
       ...priorityFiles.map((file) => file.stat.mtime),
       ...sourceFiles.map((file) => file.stat.mtime),
@@ -19577,6 +19651,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       "",
       "Selected meaningful session titles:",
       sessions || "- none",
+      "",
+      "Long-term preference context (background only; never call it a new or recently changed file):",
+      longTermPreferenceSections.join("\n\n") || "- none",
       "",
       "Frequently used buttons (behavioral evidence; use only when relevant to the current topic):",
       commonButtons || "- none",
@@ -20685,7 +20762,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private rightSidebarActiveTabInfo(): WorkspaceTabInfo | null {
     const tabs = this.workspaceTabInfos({ scope: "right" });
     if (!tabs.length) return null;
-    const active = this.app.workspace.getLeaf(false);
+    const active = this.app.workspace.activeLeaf;
     const activeTab = tabs.find((tab) => tab.leaf === active);
     if (activeTab) return activeTab;
     const domActive = tabs.find((tab) => workspaceLeafIsDomActive(tab.leaf));
@@ -23002,7 +23079,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const legacyLeaves = this.app.workspace.getLeavesOfType(LEGACY_CANCIP_CHAT_VIEW_TYPE);
     for (const leaf of legacyLeaves) {
       try {
-        const active = leaf === this.app.workspace.getLeaf(false);
+        const active = leaf === this.app.workspace.activeLeaf;
         await leaf.setViewState({ type: VIEW_TYPE, active });
       } catch (error) {
         console.warn("Cancip failed to migrate legacy chat view", error);
@@ -23871,17 +23948,29 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private async activateReviewViewNow(path = "", itemPath = ""): Promise<CancipReviewLeafView | null> {
+    const foregroundLeaf = this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf();
     let leaf = this.app.workspace.getLeavesOfType(CANCIP_REVIEW_VIEW_TYPE)[0];
     const created = !leaf;
     if (!leaf) {
       leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: true });
+    }
+    // Obsidian does not attach a new tab to its parent when the first view
+    // state is inactive. Activate once, then restore the foreground while the
+    // review data loads so the user never lands on an empty detached tab.
+    await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: true });
+    if (foregroundLeaf && foregroundLeaf !== leaf) {
+      this.app.workspace.setActiveLeaf(foregroundLeaf, { focus: false });
     }
     if (leaf.isDeferred) await leaf.loadIfDeferred();
     if (!(leaf.view instanceof CancipReviewLeafView)) {
       await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: true });
+      if (foregroundLeaf && foregroundLeaf !== leaf) {
+        this.app.workspace.setActiveLeaf(foregroundLeaf, { focus: false });
+      }
       if (leaf.isDeferred) await leaf.loadIfDeferred();
-      await sleep(60);
+    }
+    for (let attempt = 0; attempt < 30 && !(leaf.view instanceof CancipReviewLeafView); attempt += 1) {
+      await sleep(50);
     }
     if (!(leaf.view instanceof CancipReviewLeafView)) {
       if (created) leaf.detach();
@@ -23899,7 +23988,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async activateView(): Promise<CancipView | null> {
-    this.rememberContentWorkspaceLeaf(this.app.workspace.getLeaf(false));
+    this.rememberContentWorkspaceLeaf(this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf());
     const leaf = await this.ensureCancipLeaf(true);
     if (!leaf) return null;
     await this.app.workspace.revealLeaf(leaf);
@@ -23911,7 +24000,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       window.clearTimeout(this.automationRunnerCleanupTimer);
       this.automationRunnerCleanupTimer = null;
     }
-    const foregroundLeaf = this.app.workspace.getLeaf(false);
+    const foregroundLeaf = this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf();
     let leaf = this.automationRunnerLeaf;
     if (!leaf || leaf.view?.getViewType?.() !== CANCIP_AUTOMATION_RUNNER_VIEW_TYPE) {
       leaf = this.app.workspace.getLeavesOfType(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE)[0] ?? null;
@@ -23925,7 +24014,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     if (!(leaf.view instanceof CancipView)) return null;
     this.automationRunnerLeaf = leaf;
-    const currentLeaf = this.app.workspace.getLeaf(false);
+    const currentLeaf = this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf();
     if (foregroundLeaf && currentLeaf !== foregroundLeaf) {
       const workspaceWithFocus = this.app.workspace as unknown as {
         setActiveLeaf?: (leaf: WorkspaceLeaf, params?: { focus?: boolean } | boolean) => void;
@@ -23940,7 +24029,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const views = this.chatLeaves()
       .map((leaf) => leaf.view)
       .filter((view): view is CancipView => view instanceof CancipView);
-    const activeView = this.app.workspace.getLeaf(false).view;
+    const activeView = (this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf())?.view ?? null;
     const source = fixedSessionId
       ? views.find((view) => view.automationSessionId() === fixedSessionId)
       : task.sessionMode === "current"
@@ -24615,7 +24704,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private async ensureCancipLeaf(active: boolean): Promise<WorkspaceLeaf | null> {
-    if (active) this.rememberContentWorkspaceLeaf(this.app.workspace.getLeaf(false));
+    if (active) this.rememberContentWorkspaceLeaf(this.app.workspace.activeLeaf ?? this.app.workspace.getMostRecentLeaf());
     let leaf: WorkspaceLeaf | null = this.chatLeaves().find((candidate) => candidate.view instanceof CancipView)
       ?? this.chatLeaves()[0];
     if (!leaf) {
@@ -27738,6 +27827,7 @@ class CancipView extends ItemView {
       "Infer friendlyName and weatherLocation only from direct, repeated, user-related evidence. Return an empty string when identity, locality, or whether a place is local is ambiguous. Address the user by friendlyName only when the evidence supports it. Mention weather only when Verified current weather is available.",
       "Vary emphasis across recent files, meaningful session titles, current time, weather, and approved recommendations; do not repeat the same opening or choices across all variants.",
       "For new or changed files, infer a greeting topic from the supplied excerpt and its concrete meaning, not merely from the filename. Mention it only when the excerpt supports the claim.",
+      "Use the supplied long-term preference context to address the user naturally and respect language, name, routine, and stable preferences. It is background memory, not new-file evidence; never describe it as recently changed or newly added.",
       "Frequently used buttons are behavioral evidence. When one directly helps with the current file or session topic, put its concrete action first in choices; otherwise omit it. Never insert a common button just because its count is high.",
       "For an evening or late-night time key, make one variant a natural wind-down reminder: optionally finish today's diary, close one unfinished todo, wash up, or rest earlier. Keep it friendly and optional, not a lecture or a repeated checklist.",
       "Obey Evidence tier and every evidence line's ageHours/timeWording. Only 24h evidence may be called just changed or newly updated; 72h evidence may be called from the last few days; 7d evidence may be called from this week; latest evidence must be called the last/currently available clue and never recent.",
@@ -34232,7 +34322,10 @@ class CancipView extends ItemView {
         );
         if (request.signal.aborted || !this.hasRequest(request)) return;
         if (!responseCreatesTrackedPlan(answer, 3)) {
-          throw new Error("模型未创建至少 3 项真实计划待办");
+          // A malformed plan response must not terminate the user's task. Keep
+          // the model's useful steps when possible, then create a real Plan
+          // action so the normal continuation loop can execute the work.
+          answer = fallbackPlanActionResponse(rawPrompt, answer);
         }
       }
       const requestSessionId = this.requestSessionId(request);
@@ -41227,9 +41320,14 @@ class CancipView extends ItemView {
     const includeAttachments = options.includeAttachments !== false;
     const searchKinds = universalSearchKindsForQuery(normalizedQuery, { includeArchived, includeConfigs, includeAttachments });
     let index = await this.plugin.readUniversalSearchIndex(searchKinds);
-    if (!index.documents.length || !index.complete || index.documents.some((document) => !document.bloom)) {
+    const hasUsableIndex = index.documents.some((document) => Boolean(document.bloom));
+    if (!hasUsableIndex) {
       await this.plugin.rebuildUniversalSearchIndex(false);
       index = await this.plugin.readUniversalSearchIndex(searchKinds);
+    } else if (!index.complete || index.documents.some((document) => !document.bloom)) {
+      void this.plugin.rebuildUniversalSearchIndex(false).catch((error) => {
+        console.warn("Cancip universal search background continuation failed", error);
+      });
     }
     const documents = index.documents.filter((document) => {
       if (!includeArchived && normalizePath(document.path).startsWith(`${CANCIP_ARCHIVE_DIR}/`)) return false;
@@ -41262,7 +41360,11 @@ class CancipView extends ItemView {
         let content = "";
         if (document.bloom || candidate.pathScore <= 0) {
           try {
-            content = redactSensitiveText(await this.plugin.universalSearchDocumentText(document.path, document.kind, 30000));
+            content = redactSensitiveText(await withTimeout(
+              this.plugin.universalSearchDocumentText(document.path, document.kind, 30000),
+              VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
+              "search document read timed out"
+            ));
           } catch {
             content = "";
           }
@@ -41356,6 +41458,27 @@ class CancipView extends ItemView {
       path: trimContext(hit.path, 100),
       excerpt: trimContext(hit.excerpt.replace(/^\[[^\n]+\]\s*/u, ""), 120)
     }));
+    let memoryEvidence = "";
+    try {
+      memoryEvidence = trimContext(await this.readMemoryIndex(), 900);
+    } catch {
+      memoryEvidence = "";
+    }
+    let vaultEvidence = "";
+    try {
+      const index = await this.plugin.readUniversalSearchIndex();
+      const terms = universalSearchQueryTerms(query);
+      vaultEvidence = index.documents
+        .filter((document) => {
+          const text = `${document.title} ${document.path}`.toLocaleLowerCase();
+          return !terms.length || terms.some((term) => text.includes(term.toLocaleLowerCase()));
+        })
+        .slice(0, 12)
+        .map((document) => `${document.title} · ${document.path}`)
+        .join("\n");
+    } catch {
+      vaultEvidence = "";
+    }
     const system = [
       "Expand one Vault search query semantically.",
       "Return one strict JSON object only: {\"queries\":[\"...\"],\"intent\":\"...\"}.",
@@ -41364,7 +41487,7 @@ class CancipView extends ItemView {
     ].join(" ");
     try {
       const raw = await withTimeout(
-        this.callLightweightModel(JSON.stringify({ query, hardCandidates: candidates }), system, 180),
+        this.callLightweightModel(JSON.stringify({ query, hardCandidates: candidates, memoryEvidence, vaultEvidence }), system, 180),
         8000,
         "AI search expansion timed out"
       );
@@ -41415,12 +41538,12 @@ class CancipView extends ItemView {
         const textCandidateBoost = isContextTextFile(file) && file.stat.size <= (Platform.isMobileApp ? 384 * 1024 : 1024 * 1024) ? 8 : 0;
         return { file, kind, pathScore, rank: pathScore * 10 + recency + textCandidateBoost };
       })
-      .filter((item) => item.pathScore > 0 || isContextTextFile(item.file))
+      .filter((item) => item.pathScore > 0 || isContextTextFile(item.file) || (options.includeAttachments && isVaultParseableAttachmentPath(item.file.path)))
       .sort((a, b) => b.rank - a.rank || b.file.stat.mtime - a.file.stat.mtime || a.file.path.localeCompare(b.file.path))
       .slice(0, maxCandidates);
     const hits: SearchHit[] = [];
     for (const item of files) {
-        if (Date.now() - Date.now() > VAULT_SEARCH_TIME_BUDGET_MS) break;
+      if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
       const file = item.file;
       let content = "";
       if (isContextTextFile(file)) {
@@ -41430,8 +41553,16 @@ class CancipView extends ItemView {
           content = "";
         }
       } else if (options.includeAttachments && item.pathScore > 0) {
-        const parsed = await this.readVaultAttachmentText(file, Platform.isMobileApp ? 6000 : 12000);
-        content = parsed.text;
+        try {
+          const parsed = await withTimeout(
+            this.readVaultAttachmentText(file, Platform.isMobileApp ? 6000 : 12000),
+            VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
+            "attachment search read timed out"
+          );
+          content = parsed.text;
+        } catch {
+          content = "";
+        }
       }
       const contentScore = content ? scoreSearchText(file.path, file.basename, trimContext(content, Platform.isMobileApp ? 12000 : 30000), tokens) : 0;
       if (item.pathScore <= 0 && contentScore <= 0) continue;
@@ -41614,7 +41745,7 @@ class CancipView extends ItemView {
   }
 
   private async attachmentContentSearchHits(query: string, limit: number, startedAt = Date.now()): Promise<SearchHit[]> {
-    const tokens = tokenize(query);
+    const tokens = uniqueStrings([...tokenize(query), ...universalSearchQueryTerms(query)]);
     if (!tokens.length) return [];
     const files = this.app.vault.getFiles()
       .filter((file) => isVaultParseableAttachmentPath(file.path))
@@ -41623,13 +41754,22 @@ class CancipView extends ItemView {
         pathScore: scoreVaultTargetPath(file.path, file.basename, "attachment", query, tokens)
       }))
       .sort((a, b) => b.pathScore - a.pathScore || a.file.stat.size - b.file.stat.size || a.file.path.localeCompare(b.file.path))
-      .slice(0, Math.max(VAULT_ATTACHMENT_SEARCH_MAX_FILES, Math.min(24, limit * 2)));
+      .slice(0, Math.max(24, Math.min(64, limit * 4)));
     const hits: SearchHit[] = [];
     for (const item of files) {
       if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
       const file = item.file;
       if (file.stat.size > VAULT_ATTACHMENT_SEARCH_MAX_BYTES && item.pathScore <= 0) continue;
-      const parsed = await this.readVaultAttachmentText(file, 12000);
+      let parsed: ParsedAttachmentResult;
+      try {
+        parsed = await withTimeout(
+          this.readVaultAttachmentText(file, 12000),
+          VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
+          "attachment search read timed out"
+        );
+      } catch {
+        continue;
+      }
       if (!parsed.text.trim()) continue;
       const score = scoreSearchText(file.path, file.basename, parsed.text, tokens);
       if (score <= 0) continue;
@@ -48855,7 +48995,11 @@ class CancipView extends ItemView {
       openPath: async (path: string) => {
         const target = this.app.vault.getAbstractFileByPath(normalizePath(String(path)));
         if (!(target instanceof TFile)) throw new Error(`helpers.openPath target is not a file: ${path}`);
-        await this.app.workspace.getLeaf(false).openFile(target);
+        const leaf = this.plugin.activeWorkspaceLeaf()
+          ?? this.app.workspace.activeLeaf
+          ?? this.app.workspace.getMostRecentLeaf()
+          ?? this.app.workspace.getLeaf("tab");
+        await leaf.openFile(target);
         return target.path;
       },
       notice: (text: string, timeoutValue?: number) => {
@@ -53310,6 +53454,9 @@ class CancipView extends ItemView {
     if (isModelFailureVisibleText(content)) return;
     const choiceContent = [message.choiceSourceText, content].filter(Boolean).join("\n\n");
     if (isModelFailureVisibleText(choiceContent)) return;
+    if (this.shouldGenerateModelChoiceOptions(message, content)) {
+      void this.ensureModelChoiceOptions(message, content);
+    }
     const localChoices = this.choiceOptionsForMessage(choiceContent);
     const deterministicChoices = this.deterministicChoiceOptionsForMessage(message, choiceContent);
     const userPrompt = this.lastUserPromptBeforeMessage(message.id);
@@ -53390,9 +53537,12 @@ class CancipView extends ItemView {
   }
 
   private shouldGenerateModelChoiceOptions(message: ChatMessage, content: string): boolean {
-    void message;
-    void content;
-    return false;
+    if (message.role !== "assistant" || !content.trim() || this.activeRequest) return false;
+    if (message.choiceOptionsStatus) return false;
+    if (isModelFailureVisibleText(content)) return false;
+    const choiceContent = [message.choiceSourceText, content].filter(Boolean).join("\n\n");
+    if (hasSpecificChoiceOptions(this.choiceOptionsForMessage(choiceContent))) return false;
+    return Boolean(this.lastUserPromptBeforeMessage(message.id).trim());
   }
 
   private async ensureModelChoiceOptions(message: ChatMessage, content: string): Promise<void> {
@@ -53407,7 +53557,8 @@ class CancipView extends ItemView {
         CHOICE_SUGGESTION_TIMEOUT_MS,
         "choice suggestion timed out"
       );
-      const modelChoices = choiceOptionsFromTexts(parseChoiceSuggestionResponse(raw));
+      const modelChoices = choiceOptionsFromTexts(parseChoiceSuggestionResponse(raw))
+        .filter((choice) => choiceOptionRelevantToReply(choice.text, userPrompt, content));
       message.choiceOptions = this.mergeChoiceOptions([...modelChoices, ...this.choiceOptionsForMessage(content)]);
       message.choiceOptionsStatus = message.choiceOptions.length ? "ready" : "failed";
     } catch {
@@ -54368,12 +54519,12 @@ class CancipView extends ItemView {
       }
       status.setText(this.t("searchSearching"));
       try {
-        const searchOptions = {
+        const hardOptions = {
           includeArchived: archived.checked,
           includeConfigs: configs.checked,
           includeAttachments: true
         };
-        const hardHits = await this.searchVault(query, 12, searchOptions);
+        const hardHits = await this.searchVault(query, 12, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const exactHits = hardHits.filter((hit) => hit.route !== "soft");
         renderHits(hardResults, exactHits);
@@ -54388,7 +54539,12 @@ class CancipView extends ItemView {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const expandedHits = expansion.queries.length
           ? await this.searchVault(query, 24, {
-              ...searchOptions,
+              // AI search may use memory/index/config as semantic evidence;
+              // the hard-search checkbox still controls whether those sources
+              // appear in the direct results.
+              includeArchived: true,
+              includeConfigs: true,
+              includeAttachments: true,
               softQueries: expansion.queries,
               alwaysRunSoft: true,
               preserveRouteDuplicates: true
@@ -56686,7 +56842,14 @@ function isLocalVersionCandidate(file: TFile, maxBytes: number, obsidianConfigDi
 function isSensitiveLocalVersionPath(path: string): boolean {
   const lower = path.toLowerCase();
   if (lower.endsWith("config.json") || lower.includes(".config.")) return true;
-  return /(^|[/._-])(secret|secrets|password|passwd|token|tokens|credential|credentials|recovery|codes|config|apikey|api-key|api_key|private-key|private_key|ssh-key|ssh_key)([/._-]|$)/i.test(lower);
+  if (/(^|[^a-z0-9])config(?=$|[^a-z0-9])/i.test(lower)) return true;
+  return isSecretBearingVaultPath(lower);
+}
+
+function isSecretBearingVaultPath(path: string): boolean {
+  const lower = normalizePath(path).toLowerCase();
+  if (/(?:恢复码|备用码|密钥|凭据|令牌|密码)/.test(lower)) return true;
+  return /(^|[^a-z0-9])(?:secrets?|passwords?|passwd|tokens?|credentials?|recovery|codes|api(?:keys?|[-_\s]+keys?)|private[-_\s]+keys?|ssh[-_\s]+keys?)(?=$|[^a-z0-9])/i.test(lower);
 }
 
 function localDateKey(date: Date): string {
@@ -57825,7 +57988,7 @@ function currentPageTranslationRoot(app: App): HTMLElement | null {
   const modalRoots = Array.from(activeDocument.querySelectorAll<HTMLElement>(".modal.mod-settings, .modal:not(.obcc-button-edit-modal), .modal"))
     .filter((el) => isVisibleElement(el) && !el.closest(".obcc-button-edit-bubble, .obcc-selection-send-bubble, .obcc-ui-sort-overlay"));
   if (modalRoots.length) return modalRoots[modalRoots.length - 1];
-  return app.workspace.getLeaf(false)?.view?.containerEl ?? activeDocument.body;
+  return (app.workspace.activeLeaf ?? app.workspace.getMostRecentLeaf())?.view?.containerEl ?? activeDocument.body;
 }
 
 function normalizeTranslatableUiText(text: string): string {
@@ -58741,7 +58904,8 @@ function universalSearchKindsForQuery(
 
 function universalSearchProtectedContentPath(path: string): boolean {
   const normalized = normalizePath(path).toLowerCase();
-  return /(^|\/)(?:encript|encrypt|encrypted|encryption|加密|密钥|secrets?)(\/|$)/i.test(normalized);
+  return /(^|\/)(?:encript|encrypt|encrypted|encryption|加密)(\/|$)/i.test(normalized)
+    || isSecretBearingVaultPath(normalized);
 }
 
 function universalSearchDocumentKind(path: string, memoryFolder: string, obsidianConfigDir: string): UniversalSearchDocumentKind {
@@ -66327,6 +66491,7 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     ttsCustomUrl: typeof merged.ttsCustomUrl === "string" ? merged.ttsCustomUrl : DEFAULT_SETTINGS.ttsCustomUrl,
     ttsShowViewActions: typeof merged.ttsShowViewActions === "boolean" ? merged.ttsShowViewActions : DEFAULT_SETTINGS.ttsShowViewActions,
     ttsAutoReadFinalAnswer: typeof merged.ttsAutoReadFinalAnswer === "boolean" ? merged.ttsAutoReadFinalAnswer : DEFAULT_SETTINGS.ttsAutoReadFinalAnswer,
+    ttsPrimeDefaultMigrated: typeof merged.ttsPrimeDefaultMigrated === "boolean" ? merged.ttsPrimeDefaultMigrated : DEFAULT_SETTINGS.ttsPrimeDefaultMigrated,
     ttsOverlayCollapsed: typeof merged.ttsOverlayCollapsed === "boolean" ? merged.ttsOverlayCollapsed : DEFAULT_SETTINGS.ttsOverlayCollapsed,
     ttsOverlayPosition: isTtsOverlayPosition(merged.ttsOverlayPosition) ? merged.ttsOverlayPosition : DEFAULT_SETTINGS.ttsOverlayPosition,
     systemPrompt: typeof merged.systemPrompt === "string" ? merged.systemPrompt : DEFAULT_SETTINGS.systemPrompt
@@ -70404,6 +70569,46 @@ function responseCreatesTrackedPlan(answer: string, minimumItems: number): boole
     && (action.items ?? []).filter((item) => item.text.trim()).length >= minimumItems
   );
   return createsPlan;
+}
+
+function fallbackPlanActionResponse(prompt: string, previousAnswer: string): string {
+  const texts: string[] = [];
+  const add = (value: unknown): void => {
+    if (typeof value !== "string") return;
+    const text = value.replace(/\s+/g, " ").trim();
+    if (text.length >= 4 && !texts.includes(text)) texts.push(text);
+  };
+  for (const action of extractCancipActions(previousAnswer)) {
+    if (action.type !== "todo") continue;
+    for (const item of action.items ?? []) add(item.text);
+  }
+  const parsed = parseFirstJsonObject(previousAnswer);
+  const collect = (value: unknown): void => {
+    if (!Array.isArray(value)) return;
+    for (const item of value) {
+      if (typeof item === "string") add(item);
+      else if (isRecord(item)) add(item.text ?? item.title ?? item.name ?? item.task);
+    }
+  };
+  if (isRecord(parsed)) {
+    collect(parsed.steps);
+    collect(parsed.todos);
+    collect(parsed.plan);
+    collect(parsed.items);
+  }
+  for (const line of stripStructuredChoices(visibleAssistantAnswer(previousAnswer, false)).split(/\r?\n/)) {
+    const match = line.match(/^\s*(?:\d+[.)、]|[-*])\s+(.{4,})$/);
+    if (match) add(match[1]);
+  }
+  const goal = prompt.replace(/\s+/g, " ").trim();
+  const defaults = [
+    `定位并核对：${trimContext(goal, 120)}`,
+    "执行用户要求的实际修改或操作",
+    "读回结果并按原问题逐项验收"
+  ];
+  for (const value of defaults) add(value);
+  const items = texts.slice(0, 6).map((text, index) => ({ id: `step-${index + 1}`, text }));
+  return `<!-- cancip-action ${JSON.stringify({ actions: [{ type: "todo", op: "set", items }] })} -->`;
 }
 
 function contextualEditProposalOnlyEchoesInstruction(items: ReviewGateManifestItem[], instruction: string): boolean {
