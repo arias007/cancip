@@ -10,6 +10,7 @@ import {
   Menu,
   MarkdownRenderer,
   MarkdownView,
+  loadPdfJs,
   Modal,
   Notice,
   normalizePath,
@@ -3414,7 +3415,7 @@ const CANCIP_ARCHIVE_SESSION_SCAN_BATCH = 36;
 const CANCIP_ARCHIVE_SESSION_MOVE_BATCH = 12;
 let UNIVERSAL_SEARCH_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/universal-search.json`;
 let UNIVERSAL_SEARCH_INDEX_DIR = `${CANCIP_MACHINE_INDEX_DIR}/universal-search`;
-const UNIVERSAL_SEARCH_SCHEMA_VERSION = 1;
+const UNIVERSAL_SEARCH_SCHEMA_VERSION = 2;
 const UNIVERSAL_SEARCH_INDEX_KINDS: readonly UniversalSearchDocumentKind[] = ["memory", "note", "session", "file", "pdf", "image", "office", "archive", "config"];
 const UNIVERSAL_SEARCH_BLOOM_BITS = 4096;
 const UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT = 900;
@@ -9914,7 +9915,9 @@ export default class CancipPlugin extends Plugin {
       if (this.universalSearchBuildPromise === task) this.universalSearchBuildPromise = null;
       const rebuildRequested = this.universalSearchBuildRequested;
       this.universalSearchBuildRequested = false;
-      if (!this.universalSearchUnloaded && !Platform.isMobileApp && rebuildRequested) {
+      if (!this.universalSearchUnloaded && result && !result.complete) {
+        this.scheduleUniversalSearchBuild(Platform.isMobileApp ? UNIVERSAL_SEARCH_MOBILE_BACKGROUND_DELAY_MS : 8000);
+      } else if (!this.universalSearchUnloaded && !Platform.isMobileApp && rebuildRequested) {
         this.scheduleUniversalSearchBuild(UNIVERSAL_SEARCH_BACKGROUND_DELAY_MS);
       }
     }
@@ -9926,7 +9929,11 @@ export default class CancipPlugin extends Plugin {
     const collectedInventory = await this.collectUniversalSearchInventory();
     const inventory = full ? collectedInventory : trimUniversalSearchBackgroundInventory(collectedInventory);
     const inventoryHash = stableTextHash(inventory.map((item) => `${item.kind}:${item.path}:${item.mtime}:${item.size}`).join("\n"));
-    if (!full && previous.complete && previous.inventoryHash === inventoryHash && previous.documents.length > 0) {
+    if (!full
+      && previous.schemaVersion === UNIVERSAL_SEARCH_SCHEMA_VERSION
+      && previous.complete
+      && previous.inventoryHash === inventoryHash
+      && previous.documents.length > 0) {
       return {
         indexed: previous.documents.filter((document) => Boolean(document.bloom)).length,
         total: previous.documents.length,
@@ -9938,7 +9945,13 @@ export default class CancipPlugin extends Plugin {
     const pending: UniversalSearchInventoryItem[] = [];
     for (const item of inventory) {
       const existing = previousByPath.get(normalizePath(item.path));
-      if (existing && existing.kind === item.kind && existing.mtime === item.mtime && existing.size === item.size && existing.bloom) {
+      const staleBinaryExtraction = previous.schemaVersion < 2 && universalSearchBinaryDocumentKind(item.kind);
+      if (existing
+        && !staleBinaryExtraction
+        && existing.kind === item.kind
+        && existing.mtime === item.mtime
+        && existing.size === item.size
+        && existing.bloom) {
         documents.push(existing);
       } else {
         pending.push(item);
@@ -9957,8 +9970,6 @@ export default class CancipPlugin extends Plugin {
       let text = "";
       try {
         text = !full && item.kind === "session"
-          ? `${item.title}\n${item.path}`
-          : Platform.isMobileApp && !full && universalSearchBinaryDocumentKind(item.kind)
           ? `${item.title}\n${item.path}`
           : await this.universalSearchDocumentText(item.path, item.kind, maxTextChars);
       } catch (error) {
@@ -10126,7 +10137,7 @@ export default class CancipPlugin extends Plugin {
     if (!isContextTextPath(normalized)) return "";
     const raw = await adapter.read(normalized);
     if (resolvedKind === "session") return searchTextFromSessionSnapshot(raw, maxChars);
-    return trimContext(raw, maxChars);
+    return searchableVaultText(normalized, raw, maxChars);
   }
 
   async universalSearchIndexStatus(): Promise<{ indexed: number; total: number; complete: boolean; updatedAt: string; archived: number }> {
@@ -11937,11 +11948,11 @@ export default class CancipPlugin extends Plugin {
     if (this.shouldAutoTryBuiltinPrimeTts(text)) {
       if (!this.builtinPrimeTtsRuntime || !this.builtinPrimeTtsWarmupSynthDone) {
         void this.prewarmBuiltinPrimeTts();
-        return ["web-speech", "android-system", "custom-url", "builtin-prime-tts"];
+        return ["android-system", "web-speech", "custom-url", "builtin-prime-tts"];
       }
-      return ["builtin-prime-tts", "web-speech", "android-system", "custom-url"];
+      return ["builtin-prime-tts", "android-system", "web-speech", "custom-url"];
     }
-    return ["web-speech", "android-system", "custom-url"];
+    return ["android-system", "web-speech", "custom-url"];
   }
 
   private setActiveTtsParts(parts: string[], provider?: TtsProvider): void {
@@ -12025,8 +12036,8 @@ export default class CancipPlugin extends Plugin {
     this.activeTtsPartIndex = Math.max(0, Math.min(playChunks.length - 1, startIndex));
     this.syncTtsOverlay();
     void this.prepareTtsAudioOutput();
-    const runtime = await this.loadBuiltinPrimeTtsForPlayback(runId);
-    if (!runtime) return false;
+    const runtime = await this.loadBuiltinPrimeTtsForPlayback(runId, text, playChunks, this.activeTtsPartIndex);
+    if (!runtime) return true;
     if (this.activeTtsPrimeCacheRunId !== this.activeTtsPrimeCacheSessionId) {
       this.activeTtsPrimeCache.clear();
       this.activeTtsPrimeCacheRunId = this.activeTtsPrimeCacheSessionId;
@@ -12100,7 +12111,7 @@ export default class CancipPlugin extends Plugin {
     return true;
   }
 
-  private async loadBuiltinPrimeTtsForPlayback(runId: number): Promise<PrimeTtsRuntime | null> {
+  private async loadBuiltinPrimeTtsForPlayback(runId: number, text: string, chunks: string[], startIndex: number): Promise<PrimeTtsRuntime | null> {
     if (this.builtinPrimeTtsRuntime) return this.builtinPrimeTtsRuntime;
     const runtimePromise = this.loadBuiltinPrimeTts();
     const result = await Promise.race<PrimeTtsRuntime | "stall">([
@@ -12108,9 +12119,19 @@ export default class CancipPlugin extends Plugin {
       sleep(PRIME_TTS_RUNTIME_STALL_MS).then(() => "stall" as const)
     ]);
     if (result !== "stall") return result;
-    this.activeTtsLastError = "PrimeTTS runtime did not become ready in time.";
-    void runtimePromise.catch((error) => {
-      if (this.activeTtsRunId === runId) this.activeTtsLastError = error instanceof Error ? error.message : String(error);
+    this.activeTtsLastError = "PrimeTTS runtime is still loading; playback will resume automatically.";
+    void runtimePromise.then(() => {
+      if (this.activeTtsRunId !== runId || this.activeTtsStartedAudio) return;
+      if (this.activeTtsMode === "stopped" || this.activeTtsMode === "idle") return;
+      this.activeTtsProvider = "builtin-prime-tts";
+      this.activeTtsMode = "playing";
+      this.activeTtsParts = chunks.slice();
+      this.activeTtsPartIndex = Math.max(0, Math.min(chunks.length - 1, startIndex));
+      void this.startBuiltinPrimeTts(text, chunks, this.activeTtsPartIndex);
+    }).catch((error) => {
+      if (this.activeTtsRunId !== runId) return;
+      this.activeTtsLastError = error instanceof Error ? error.message : String(error);
+      this.syncTtsOverlay();
     });
     this.syncTtsOverlay();
     return null;
@@ -21551,7 +21572,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
   }
 
-  private async readSessionHistoryIndexForPlugin(mergeFiles = true): Promise<SessionHistoryEntry[]> {
+  private async readSessionHistoryIndexForPlugin(mergeFiles = false): Promise<SessionHistoryEntry[]> {
     try {
       const adapter = this.app.vault.adapter;
       let entries: SessionHistoryEntry[] = [];
@@ -23792,21 +23813,21 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const created = !leaf;
     if (!leaf) {
       leaf = this.app.workspace.getLeaf("tab");
-      await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: true });
+      await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: false });
     }
     if (leaf.isDeferred) await leaf.loadIfDeferred();
     if (!(leaf.view instanceof CancipReviewLeafView)) {
-      await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: true });
+      await leaf.setViewState({ type: CANCIP_REVIEW_VIEW_TYPE, active: false });
       if (leaf.isDeferred) await leaf.loadIfDeferred();
       await sleep(30);
     }
     if (!(leaf.view instanceof CancipReviewLeafView)) return null;
+    await leaf.view.openPackage(path, itemPath, !created);
     await this.app.workspace.revealLeaf(leaf);
     const workspaceWithFocus = this.app.workspace as unknown as {
       setActiveLeaf?: (leaf: WorkspaceLeaf, params?: { focus?: boolean } | boolean) => void;
     };
     workspaceWithFocus.setActiveLeaf?.(leaf, { focus: true });
-    await leaf.view.openPackage(path, itemPath, !created);
     return leaf.view;
   }
 
@@ -26303,7 +26324,7 @@ class CancipReviewLeafView extends ItemView {
 
   async onOpen(): Promise<void> {
     this.renderReviewSessionLoading();
-    void this.refreshReviewSession(false);
+    await this.refreshReviewSession(false);
   }
 
   async openPackage(path = "", itemPath = "", refreshSession = true): Promise<void> {
@@ -26316,14 +26337,12 @@ class CancipReviewLeafView extends ItemView {
     this.selectedItemPath = itemPath.trim() ? normalizePath(itemPath.replace(/\\/g, "/")) : "";
     this.sourceMode = "render";
     this.reviewViewMode = "diff";
-    if (this.reviewSessionEntries) {
-      await this.render();
-    } else {
-      this.renderReviewSessionLoading();
-    }
     if (refreshSession || this.reviewSessionStale || !this.reviewSessionEntries) {
-      void this.refreshReviewSession(refreshSession);
+      this.renderReviewSessionLoading();
+      await this.refreshReviewSession(refreshSession);
+      return;
     }
+    await this.render();
   }
 
   private async refreshReviewSession(force: boolean): Promise<void> {
@@ -27568,6 +27587,7 @@ class CancipView extends ItemView {
   private liveSessionSaveLastAt = 0;
   private sessionSaveLastAt = 0;
   private sessionLoadSequence = 0;
+  private sessionLoadingId = "";
   private immediateLiveBroadcast: Promise<void> | null = null;
   private currentSessionSavePromise: Promise<void> | null = null;
   private currentSessionSaveQueued = false;
@@ -28590,7 +28610,6 @@ class CancipView extends ItemView {
     titleWrap.createDiv({ cls: "obcc-kicker", text: this.t("agentKicker") });
     this.headerSessionTitleEl = titleWrap.createDiv({ cls: "obcc-session-title" });
     const titleLine = titleWrap.createDiv({ cls: "obcc-title-line" });
-    this.headerLiveStatusEl = titleLine.createDiv({ cls: "obcc-header-live-status is-hidden" });
     const sessionIdWrap = titleLine.createEl("button", {
       cls: "obcc-session-id-copy",
       attr: { type: "button", title: this.t("copySessionId"), "aria-label": this.t("copySessionId") }
@@ -28690,6 +28709,7 @@ class CancipView extends ItemView {
     const footer = shell.createDiv({ cls: "obcc-footer" });
     this.footerEl = footer;
     this.statusEl = footer.createDiv({ cls: "obcc-status" });
+    this.headerLiveStatusEl = this.statusEl.createDiv({ cls: "obcc-header-live-status is-hidden" });
     this.statusTextEl = this.statusEl.createSpan({ cls: "obcc-status-text" });
     this.statusPlanButtonEl = this.statusEl.createEl("button", {
       cls: "obcc-status-link is-plan is-hidden",
@@ -28709,6 +28729,7 @@ class CancipView extends ItemView {
       event.stopPropagation();
       this.toggleAuditMenu();
     });
+    this.syncHeaderSessionTimer();
     this.composerStatusMetaSignature = "";
     const form = footer.createEl("form", { cls: "obcc-composer" });
     this.contextEl = form.createDiv({ cls: "obcc-composer-context obcc-context-strip is-hidden" });
@@ -31196,10 +31217,8 @@ class CancipView extends ItemView {
     await sleep(0);
     if (loadId !== this.headerMenuLoadId || this.activeHeaderMenu !== "history" || !this.headerMenuEl || this.headerMenuEl.hasClass("is-hidden")) return;
     const liveRequests = this.activeRequests.size > 0;
-    const hotEntries = await this.readSessionHistoryIndex();
-    const coldEntries = liveRequests ? [] : await this.plugin.coldArchivedSessionEntries();
-    const hotIds = new Set(hotEntries.map((entry) => entry.id));
-    const entries = [...hotEntries, ...coldEntries.filter((entry) => !hotIds.has(entry.id))].sort(compareSessionHistoryEntries);
+    const hotEntries = await this.readSessionHistoryIndex({ mergeFiles: false });
+    const entries = [...hotEntries].sort(compareSessionHistoryEntries);
     if (loadId !== this.headerMenuLoadId || this.activeHeaderMenu !== "history" || !this.headerMenuEl || this.headerMenuEl.hasClass("is-hidden")) return;
     if (hadRenderedHistory) renderShell(false);
     else loadingEl?.remove();
@@ -31447,6 +31466,52 @@ class CancipView extends ItemView {
         }
       });
     }
+    if (!liveRequests) {
+      const coldDetails = this.headerMenuEl.createEl("details", { cls: "obcc-session-archive obcc-session-cold-archive" });
+      coldDetails.createEl("summary", {
+        text: isChineseLanguage(this.plugin.language()) ? "更多归档会话" : "More archived sessions"
+      });
+      const coldBody = coldDetails.createDiv({ cls: "obcc-session-archive-body" });
+      let coldLoaded = false;
+      coldDetails.addEventListener("toggle", () => {
+        if (!coldDetails.open || coldLoaded) return;
+        coldLoaded = true;
+        coldBody.createDiv({ cls: "obcc-mention-empty", text: this.t("preparingContext") });
+        void this.plugin.coldArchivedSessionEntries().then((coldEntries) => {
+          if (!coldDetails.isConnected) return;
+          coldBody.empty();
+          const knownIds = new Set(entries.map((entry) => entry.id));
+          const uniqueCold = coldEntries.filter((entry) => !knownIds.has(entry.id));
+          entries.push(...uniqueCold);
+          const coldRoots = uniqueCold.filter((entry) => !hasParentInPool(entry, uniqueCold));
+          if (!coldRoots.length) {
+            coldBody.createDiv({ cls: "obcc-mention-empty", text: this.t("sessionNoHistory") });
+            return;
+          }
+          let rendered = 0;
+          const renderNext = (): void => {
+            loadMore?.remove();
+            rendered = renderRootBatch(coldRoots, uniqueCold, coldBody, rendered);
+            if (rendered < coldRoots.length) {
+              loadMore = coldBody.createEl("button", {
+                cls: "obcc-link-button obcc-session-load-more",
+                attr: { type: "button" },
+                text: this.t("showMore")
+              });
+              loadMore.addEventListener("click", renderNext);
+            }
+          };
+          let loadMore: HTMLButtonElement | null = null;
+          renderNext();
+          this.placeHeaderMenu();
+        }).catch((error) => {
+          if (!coldDetails.isConnected) return;
+          const reason = error instanceof Error ? error.message : String(error);
+          coldBody.empty();
+          coldBody.createDiv({ cls: "obcc-mention-empty", text: reason });
+        });
+      });
+    }
     this.headerMenuEl.onscroll = () => {
       const menu = this.headerMenuEl;
       if (!menu || this.activeHeaderMenu !== "history" || menu.hasClass("is-hidden")) return;
@@ -31500,7 +31565,7 @@ class CancipView extends ItemView {
     try {
       const manualOrderById = new Map(orderedIds.map((id, index) => [id, index + 1]));
       const metadataUpdatedAt = new Date().toISOString();
-      const index = (await this.readSessionHistoryIndex({ force: true, refreshFiles: true })).filter((item) => !item.eventOnly);
+      const index = (await this.readSessionHistoryIndex({ force: true, mergeFiles: false })).filter((item) => !item.eventOnly);
       const nextEntries = index.map((entry): SessionHistoryEntry => {
         const manualOrder = manualOrderById.get(entry.id);
         return typeof manualOrder === "number" ? { ...entry, manualOrder, metadataUpdatedAt } : entry;
@@ -31521,7 +31586,7 @@ class CancipView extends ItemView {
 
   private async updateSessionHistoryEntry(id: string, patch: SessionHistoryEntryPatch): Promise<void> {
     try {
-      const index = (await this.readSessionHistoryIndex({ force: true, refreshFiles: true })).filter((item) => !item.eventOnly);
+      const index = (await this.readSessionHistoryIndex({ force: true, mergeFiles: false })).filter((item) => !item.eventOnly);
       const existing = index.find((entry) => entry.id === id);
       if (!existing) return;
       const metadataUpdatedAt = patch.metadataUpdatedAt ?? new Date().toISOString();
@@ -33009,6 +33074,9 @@ class CancipView extends ItemView {
   }
 
   async loadSessionHistoryEntry(entry: SessionHistoryEntry, options: { saveCurrent?: boolean; focusInput?: boolean; markRead?: boolean; status?: string } = {}): Promise<boolean> {
+    if (this.sessionLoadingId === entry.id) return false;
+    const loadingId = entry.id;
+    this.sessionLoadingId = loadingId;
     const loadSequence = ++this.sessionLoadSequence;
     try {
       const switchingSession = entry.id !== this.sessionId;
@@ -33140,6 +33208,8 @@ class CancipView extends ItemView {
       new Notice(this.t("sessionLoadFailed", { reason }));
       this.setStatus(this.t("sessionLoadFailed", { reason }));
       return false;
+    } finally {
+      if (this.sessionLoadingId === loadingId) this.sessionLoadingId = "";
     }
   }
 
@@ -34571,11 +34641,20 @@ class CancipView extends ItemView {
         return;
       }
       current.content = this.formatProgressStep(this.resolveProgressStepSummary(summary), detail, status, Date.now() - current.createdAt);
-      this.scheduleLiveSessionSave();
-      this.scheduleRenderMessages();
+      this.refreshLiveMessageContent(current);
     };
     tick();
     this.progressStepTimers.set(message.id, window.setInterval(tick, 1000));
+  }
+
+  private refreshLiveMessageContent(message: ChatMessage): void {
+    if (!this.messagesEl) return;
+    const item = this.messagesEl.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(message.id)}"]`);
+    const content = item?.querySelector<HTMLElement>(".obcc-content");
+    if (!content) return;
+    const display = prepareMessageDisplay(redactSensitiveText(message.content));
+    content.empty();
+    this.renderMarkdown(content, display.visibleContent);
   }
 
   private resolveProgressStepSummary(summary: ProgressStepSummary): string {
@@ -37493,7 +37572,7 @@ class CancipView extends ItemView {
 
   private async readSessionHistoryIndex(options: { force?: boolean; mergeFiles?: boolean; refreshFiles?: boolean } = {}): Promise<SessionHistoryEntry[]> {
     const maxAgeMs = 3000;
-    const mergeFiles = options.mergeFiles !== false;
+    const mergeFiles = options.mergeFiles === true || options.refreshFiles === true;
     const cache = this.sessionHistoryCache;
     const cacheCanServe = cache
       && Date.now() - cache.at < maxAgeMs
@@ -41045,7 +41124,7 @@ class CancipView extends ItemView {
     }
     const documents = index.documents.filter((document) => {
       if (!includeArchived && normalizePath(document.path).startsWith(`${CANCIP_ARCHIVE_DIR}/`)) return false;
-      if (!includeConfigs && document.kind === "config") return false;
+      if (!includeConfigs && (document.kind === "config" || document.kind === "memory")) return false;
       if (!includeAttachments && universalSearchBinaryDocumentKind(document.kind)) return false;
       return true;
     });
@@ -41121,10 +41200,13 @@ class CancipView extends ItemView {
     const onDemandHits = hardHits.length + softHits.length < neededHardHits
       ? await this.onDemandVaultSearchHits(normalizedQuery, Math.max(limit, 8), startedAt, { includeArchived, includeConfigs, includeAttachments })
       : [];
+    const attachmentHits = includeAttachments && hardHits.length + softHits.length + onDemandHits.length < neededHardHits
+      ? await this.attachmentContentSearchHits(normalizedQuery, Math.max(limit, 8), Date.now())
+      : [];
     if (options.preserveRouteDuplicates) {
       const hardByPath = new Map<string, SearchHit>();
       const softByPath = new Map<string, SearchHit>();
-      for (const hit of [...hardHits, ...onDemandHits]) {
+      for (const hit of [...hardHits, ...onDemandHits, ...attachmentHits]) {
         const key = normalizePath(hit.path);
         const previous = hardByPath.get(key);
         if (!previous || hit.score > previous.score) hardByPath.set(key, { ...hit, route: "hard" });
@@ -41140,7 +41222,7 @@ class CancipView extends ItemView {
       ].slice(0, Math.max(1, limit));
     }
     const byPath = new Map<string, SearchHit>();
-    for (const hit of [...hardHits, ...softHits, ...onDemandHits]) {
+    for (const hit of [...hardHits, ...softHits, ...onDemandHits, ...attachmentHits]) {
       const key = normalizePath(hit.path);
       const previous = byPath.get(key);
       if (!previous || (previous.route === "soft" && hit.route === "hard") || (previous.route === hit.route && hit.score > previous.score)) {
@@ -41211,7 +41293,7 @@ class CancipView extends ItemView {
         if (!shouldIndexUniversalSearchPath(path, this.plugin.obsidianConfigDir())) return false;
         const kind = universalSearchDocumentKind(path, this.plugin.settings.memoryFolder, this.plugin.obsidianConfigDir());
         if (!options.includeArchived && isPathInVaultFolder(path, CANCIP_ARCHIVE_DIR)) return false;
-        if (!options.includeConfigs && kind === "config") return false;
+        if (!options.includeConfigs && (kind === "config" || kind === "memory")) return false;
         if (!options.includeAttachments && universalSearchBinaryDocumentKind(kind)) return false;
         return true;
       })
@@ -41442,11 +41524,14 @@ class CancipView extends ItemView {
       if (score <= 0) continue;
       const parser = parsed.kind ? `Parsed as ${parsed.kind}. ` : "";
       const cappedScore = Math.min(18, score) + Math.max(1, Math.round(Math.min(120, item.pathScore) / 40));
+      const kind = universalSearchDocumentKind(file.path, this.plugin.settings.memoryFolder, this.plugin.obsidianConfigDir());
       hits.push({
         path: file.path,
         title: file.basename,
-        excerpt: `${parser}${makeExcerpt(parsed.text, tokens)}`,
-        score: cappedScore
+        excerpt: `[${universalSearchRouteLabel("hard", this.plugin.language())} · ${universalSearchKindLabel(kind, this.plugin.language())}]\n${parser}${makeExcerpt(parsed.text, tokens)}`,
+        score: cappedScore,
+        kind,
+        route: "hard"
       });
       if (hits.length >= limit) break;
     }
@@ -43021,8 +43106,8 @@ class CancipView extends ItemView {
         this.stopToolRunTimer(run.id);
         return;
       }
-      this.upsertToolFeedbackMessage(run, startedAt, false);
-      this.scheduleRenderMessages();
+      const message = this.upsertToolFeedbackMessage(run, startedAt, false);
+      this.refreshLiveMessageContent(message);
     };
     tick();
     this.toolRunTimers.set(run.id, window.setInterval(tick, 1000));
@@ -54196,13 +54281,24 @@ class CancipView extends ItemView {
             })
           : [];
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
-        const aiHits = expandedHits.filter((hit) => hit.route === "soft").slice(0, 12);
+        let aiHits = expandedHits.filter((hit) => hit.route === "soft").slice(0, 12);
+        const reusedHardEvidence = !aiHits.length && exactHits.length > 0;
+        if (reusedHardEvidence) {
+          aiHits = exactHits.slice(0, 6).map((hit) => ({
+            ...hit,
+            route: "soft" as const,
+            excerpt: `${isChineseLanguage(this.plugin.language()) ? "AI 相关性回退" : "AI relevance fallback"}\n${hit.excerpt}`
+          }));
+        }
         renderHits(aiResults, aiHits);
         aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${aiHits.length}`);
         const terms = expansion.queries.length
           ? (isChineseLanguage(this.plugin.language()) ? `扩展：${expansion.queries.join("、")}` : `Expanded: ${expansion.queries.join(", ")}`)
           : "";
-        aiExplanation.setText([expansion.intent, terms].filter(Boolean).join(" · "));
+        const fallbackNote = reusedHardEvidence
+          ? (isChineseLanguage(this.plugin.language()) ? "未找到额外语义命中，显示与查询最相关的可追溯原始证据" : "No extra semantic hit; showing the most relevant traceable source evidence")
+          : "";
+        aiExplanation.setText([expansion.intent, terms, fallbackNote].filter(Boolean).join(" · "));
         status.setText(this.t("hitCount", { count: aiHits.length + exactHits.length }));
       } catch (error) {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
@@ -57021,9 +57117,10 @@ function localizeUntouchedAutomationTask(task: AutomationTask, template: Automat
     ...variants.map((item) => item.prompt ?? "")
   ]);
   const title = knownTitles.includes(task.title) ? template.title : task.title;
+  const nativeLocalizedPrompt = localizeNativeAutomationPrompt(task.id, task.prompt, template);
   const prompt = task.prompt && knownPrompts.includes(task.prompt)
     ? template.prompt?.trim() ?? ""
-    : task.prompt;
+    : nativeLocalizedPrompt;
   const legacyCommands = task.id === CANCIP_DAILY_CARE_AUTOMATION_ID ? ["cancip.dailyCare"] : [];
   const command = task.command && legacyCommands.includes(task.command)
     ? template.command?.trim() || undefined
@@ -57097,7 +57194,7 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       title: local("Cancip 每日体检、记忆整理与老友提醒", "Cancip daily care"),
       description: local("汇总会话、文件变化、审核决定、推荐与补全采用情况，更新记忆/Wiki/Skill/经验，并归档过期低价值记录。", "Aggregate sessions, file changes, review decisions, recommendation and autocomplete adoption; update memory, Wiki, Skills, and experience while archiving stale low-value records."),
       prompt: local(
-        `${CANCIP_DAILY_CARE_PROMPT_MARKER}：汇总当日会话与工具结果、用户改动文件及内容线索、审核通过/取消/修正、推荐按钮与自动补全展示/采用/未采用、自动化结果等真实反馈；按内容分析稳定偏好、成功路线和失败根因，更新或合并记忆、Wiki、Skill、自动化与经验索引。给出按主题/项目/生命周期分类的具体整理建议；对低风险、明确混乱、可恢复的文件或文件夹可直接整理并读回验证，高风险移动、删除、合并、批量改名进入审核。归档过期、低价值、用户未采用或已失效的机器记录，减少热数据负担。`,
+        `每日反馈学习 v4：汇总当日会话与工具结果、用户改动文件及内容线索、审核通过/取消/修正、推荐按钮与自动补全展示/采用/未采用、自动化结果等真实反馈；按内容分析稳定偏好、成功路线和失败根因，更新或合并记忆、Wiki、Skill、自动化与经验索引。给出按主题/项目/生命周期分类的具体整理建议；对低风险、明确混乱、可恢复的文件或文件夹可直接整理并读回验证，高风险移动、删除、合并、批量改名进入审核。归档过期、低价值、用户未采用或已失效的机器记录，减少热数据负担。`,
         `${CANCIP_DAILY_CARE_PROMPT_MARKER}: aggregate verified daily feedback from sessions and tools, user-touched file/content clues, approved/cancelled/corrected reviews, recommendation and autocomplete shown/used/unused events, and automation outcomes. Analyze content for stable preferences, successful routes, and failure causes; update or merge memory, Wiki, Skills, automations, experience, and indexes. Give concrete organization suggestions by topic, project, or lifecycle. Directly organize and read back low-risk, clearly disordered, recoverable files or folders; route risky moves, deletes, merges, and bulk renames through review. Archive stale, low-value, unused, or invalid machine records to reduce hot data.`
       ),
       args: { days: 1, hours: 24, limit: 80, compactExperience: true },
@@ -57113,7 +57210,7 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
         "结合新文件的内容、名称、目录和全库关系图核实相关笔记，为长篇内容写短摘要、为强关联缺失关系补双链；只整理明确混乱或确有收益的部分，并在专属会话与审核面板留证。",
         "Use the new file's content, name, folder, and Vault relationship graph to verify related notes, summarize long content, and add missing links only for strong confirmed relations. Change only clearly disorganized or useful parts, with evidence in the dedicated session and Review Gate."
       ),
-      prompt: `${buildVaultCurationPrompt()}\n\n${promptLanguage}`,
+      prompt: `${buildVaultCurationPrompt("current", language)}\n\n${promptLanguage}`,
       schedule: "hourly",
       enabled: true,
       intervalMinutes: 120,
@@ -57141,7 +57238,7 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       title: local("个性化日记辅助写作", "Personalized diary writing assistance"),
       description: local("根据今日真实动作、会话结果、当前日记和相关记忆生成自然日记补充；正文与日记标签、Cancip 补充属性一起写入并进入审核。", "Draft a natural diary continuation from today's verified activity, session outcomes, current diary, and relevant memory; write the body together with diary tags and Cancip update properties through review."),
       prompt: local(
-        "Personalized Diary v3：程序已在来源包中解析当天日记路径、当前正文、今日真实动作和相关记忆。只根据这些证据生成一至三段精简的第一人称续写，不搜索文件、不重复读取、不调用打开日记命令、不编造。存在有价值且未写入的内容时返回严格 JSON {\"content\":\"要追加的 Markdown 正文\"}；程序会同时写入日记 tag、更新时间和 Cancip 补充属性；否则返回 {\"skip\":true,\"reason\":\"CANCIP_DIARY_NO_UPDATE\"}。",
+        "个性化日记 v3：程序已在来源包中解析当天日记路径、当前正文、今日真实动作和相关记忆。只根据这些证据生成一至三段精简的第一人称续写，不搜索文件、不重复读取、不调用打开日记命令、不编造。存在有价值且未写入的内容时返回严格 JSON {\"content\":\"要追加的 Markdown 正文\"}；程序会同时写入日记标签、更新时间和 Cancip 补充属性；否则返回 {\"skip\":true,\"reason\":\"CANCIP_DIARY_NO_UPDATE\"}。",
         "Personalized Diary v3: the source pack already resolves today's diary path, current text, verified activity, and relevant memory. Draft one to three concise first-person paragraphs from that evidence only. Do not search, reread, invoke a daily-note command, or invent events. Return strict JSON {\"content\":\"Markdown body to append\"} when useful nonduplicate content exists; Cancip writes diary tags, update time, and a searchable update property with it. Otherwise return {\"skip\":true,\"reason\":\"CANCIP_DIARY_NO_UPDATE\"}."
       ),
       schedule: "daily",
@@ -57448,12 +57545,24 @@ function upsertObsidianOrganizationMemoryContent(existing: string, block: string
   return [before, normalizedBlock, after].filter(Boolean).join("\n\n").trimEnd() + "\n";
 }
 
-function buildVaultCurationPrompt(version: "current" | "v8" = "current"): string {
+function buildVaultCurationPrompt(version: "current" | "v8" = "current", language: Language = "zh"): string {
   const legacy = version === "v8";
   const marker = legacy ? LEGACY_VAULT_CURATION_AUTOMATION_PROMPT_MARKER : VAULT_CURATION_AUTOMATION_PROMPT_MARKER;
+  if (!isChineseLanguage(language)) {
+    return [
+      `Internal version: ${marker}.`,
+      "Task: curate only new Markdown files listed in the Vault Curation Programmatic Scan Pack. The plugin already maintains the queue and ranks related notes from filenames, folders, headings, tags, outgoing links, and backlinks; do not rescan the full Vault.",
+      "",
+      "For each candidate, independently decide whether it needs Markdown structure cleanup, concise properties/tags/summary/verified links, or a clearer filename. Execute only categories listed in allowedActions and skip work that has no concrete benefit.",
+      "Use the source text already present in the scan pack. Read only a few strongest related-note candidates when a relation must be verified, then make one small change and read it back.",
+      "Add links only when both notes provide clear evidence; record one short reason for each added relation. Same-folder placement or one shared word is insufficient.",
+      "Do not remove substantive content, change facts, create cosmetic churn, or bypass protected templates, plugin syntax, generated files, and explicit opt-outs.",
+      "Visible note changes must enter Cancip Review Gate. Report each changed or skipped path with its evidence and verification; do not create a separate log."
+    ].join("\n");
+  }
   return [
-    `内部版本：${marker}。`,
-    "任务：主动整理“Vault Curation Programmatic Scan Pack”列出的新建 Markdown 文件。插件已程序化维护新文件队列，并已从全库元数据关系图按文件名、所在目录、标题、标签、出链和反链筛选相关笔记；不要重新全库扫正文，只按需读取少量高分候选核实。",
+    `内部版本：新文件整理 ${legacy ? "v8" : "v9"}。`,
+    "任务：主动整理“新文件整理程序扫描包”列出的新建 Markdown 文件。插件已程序化维护新文件队列，并已从全库元数据关系图按文件名、所在目录、标题、标签、出链和反链筛选相关笔记；不要重新全库扫正文，只按需读取少量高分候选核实。",
     "",
     "三类动作流水线：",
     "A. 美化整理重构：整理 Markdown 标题层级、段落、列表、表格、代码块、引用、待办、空行和 frontmatter 格式；可做轻量结构重构，但不改变事实含义，不删除实质内容。",
@@ -58156,6 +58265,40 @@ function sessionExportId(date: Date): string {
   return `${base}-${String(sessionExportSequence).padStart(2, "0")}`;
 }
 
+function localizeNativeAutomationPrompt(id: string, prompt: string, template: AutomationTemplate): string {
+  if (!prompt || !template.prompt || !/[\u3400-\u9fff]/.test(template.title)) return prompt;
+  const targetPrompt = template.prompt.trim();
+  const nativePrompts = uniqueStrings([
+    ...legacyAutomationTemplatePrompts(id),
+    ...automationTemplateDefaultVariants(id).map((item) => item.prompt ?? "")
+  ])
+    .filter((candidate) => candidate && candidate !== targetPrompt)
+    .sort((left, right) => right.length - left.length);
+  for (const nativePrompt of nativePrompts) {
+    if (prompt === nativePrompt) return targetPrompt;
+    if (prompt.startsWith(`${nativePrompt}\n`) || prompt.startsWith(`${nativePrompt}\r\n`)) {
+      return `${targetPrompt}${prompt.slice(nativePrompt.length)}`;
+    }
+  }
+  if (id === CANCIP_DAILY_CARE_AUTOMATION_ID && new RegExp(`^${escapeRegExp(CANCIP_DAILY_CARE_PROMPT_MARKER)}\\s*[:：]`).test(prompt)) {
+    return prompt.replace(new RegExp(`^${escapeRegExp(CANCIP_DAILY_CARE_PROMPT_MARKER)}\\s*[:：]`), "每日反馈学习 v4：");
+  }
+  if (id === PERSONALIZED_DIARY_AUTOMATION_ID && /^Personalized Diary v3\s*[:：]/.test(prompt)) {
+    return prompt.replace(/^Personalized Diary v3\s*[:：]/, "个性化日记 v3：");
+  }
+  if (id === VAULT_CURATION_AUTOMATION_ID && (
+    prompt.startsWith(`内部版本：${VAULT_CURATION_AUTOMATION_PROMPT_MARKER}。`)
+    || prompt.startsWith(`Internal version: ${VAULT_CURATION_AUTOMATION_PROMPT_MARKER}.`)
+  )) {
+    return prompt
+      .replace(`内部版本：${VAULT_CURATION_AUTOMATION_PROMPT_MARKER}。`, "内部版本：新文件整理 v9。")
+      .replace(`Internal version: ${VAULT_CURATION_AUTOMATION_PROMPT_MARKER}.`, "内部版本：新文件整理 v9。")
+      .replace(/Vault Curation Programmatic Scan Pack/g, "新文件整理程序扫描包")
+      .replace(/Scan Pack/g, "扫描包");
+  }
+  return prompt;
+}
+
 function subagentSessionExportId(date: Date): string {
   return `${sessionExportId(date)}-sub-${crypto.randomUUID().slice(0, 8)}`;
 }
@@ -58290,7 +58433,7 @@ function mergeUniversalSearchIndexes(indexes: UniversalSearchIndex[]): Universal
     .pop() ?? "";
   const documents = [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path)).slice(0, UNIVERSAL_SEARCH_MAX_DOCUMENTS);
   return {
-    schemaVersion: UNIVERSAL_SEARCH_SCHEMA_VERSION,
+    schemaVersion: Math.min(...indexes.map((index) => index.schemaVersion)),
     updatedAt: latest,
     complete: indexes.every((index) => index.complete),
     cursor: 0,
@@ -58374,7 +58517,9 @@ function normalizeUniversalSearchIndex(raw: unknown): UniversalSearchIndex {
     if (!previous || document.indexedAt.localeCompare(previous.indexedAt) >= 0) byPath.set(path, document);
   }
   return {
-    schemaVersion: UNIVERSAL_SEARCH_SCHEMA_VERSION,
+    schemaVersion: typeof raw.schemaVersion === "number" && Number.isFinite(raw.schemaVersion)
+      ? Math.max(0, Math.floor(raw.schemaVersion))
+      : 0,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
     complete: raw.complete === true,
     cursor: typeof raw.cursor === "number" && Number.isFinite(raw.cursor) ? Math.max(0, Math.floor(raw.cursor)) : 0,
@@ -58704,6 +58849,34 @@ function searchTextFromSessionSnapshot(raw: string, maxChars: number): string {
   } catch {
     return trimContext(redactSensitiveText(raw), maxChars);
   }
+}
+
+function searchableVaultText(path: string, raw: string, maxChars: number): string {
+  if (/\.html?$/i.test(path)) {
+    try {
+      const document = new DOMParser().parseFromString(raw, "text/html");
+      document.querySelectorAll("script, style, template, noscript").forEach((element) => element.remove());
+      const text = [document.title, document.body?.textContent ?? ""]
+        .filter(Boolean)
+        .join("\n")
+        .replace(/[\t ]+/g, " ")
+        .replace(/\n{3,}/g, "\n\n")
+        .trim();
+      if (text) return trimContext(text, maxChars);
+    } catch {
+      // Fall through to raw text when the document is malformed.
+    }
+  }
+  if (/\.xml$/i.test(path)) {
+    try {
+      const document = new DOMParser().parseFromString(raw, "application/xml");
+      const text = (document.documentElement?.textContent ?? "").replace(/\s+/g, " ").trim();
+      if (text) return trimContext(text, maxChars);
+    } catch {
+      // Fall through to raw text when XML parsing is unavailable.
+    }
+  }
+  return trimContext(raw, maxChars);
 }
 
 function shouldRecordToolExperience(event: ToolFeedbackEvent): boolean {
@@ -68939,11 +69112,10 @@ function buildChoiceSuggestionPrompt(userPrompt: string, currentConclusion: stri
     "Generate 1 to 3 next-step button labels for this assistant reply only when there are real concrete choices.",
     languageRule,
     "Rules:",
-    "- Each label must be a concrete next action based on the user's actual request and the assistant's actual answer, not a status sentence.",
-    "- Prefer domain-specific actions. Example: for an attached PDF, use labels like summarize this PDF / extract PDF content / explain task state; do not use generic continue/add details.",
-    "- No numbering, no markdown, no code, no file paths unless the user explicitly asked for a path action.",
-    "- Chinese labels should be 2-10 characters when possible and never exceed 16 Chinese characters.",
-    "- English labels should be 2-5 words.",
+    "- Every label must be an action plus a concrete object taken from the user request or final answer: an exact file/path, plugin, feature, panel, model, attachment, or named operation.",
+    "- Examples: reopen Notes/test.md; inspect PDF full-text index; refresh Cancip Review Gate. Reject labels such as continue, view details, retry, or optimize more.",
+    "- No numbering, markdown, code, invented paths, or objects that are absent from the request and answer.",
+    "- Keep labels concise, but preserve the exact object or path needed to identify the action.",
     "- Avoid generic filler such as continue, add details, ask another; infer specific next actions from the actual task/result.",
     '- Return only JSON, using the real count: {"choices":["...","..."]}. If there are no useful choices, return {"choices":[]}.',
     "",
@@ -68960,7 +69132,8 @@ function choiceOptionRelevantToReply(choice: string, userPrompt: string, finalAn
   const context = `${userPrompt}\n${stripStructuredChoices(finalAnswer)}`.normalize("NFKC").toLocaleLowerCase();
   const ignored = new Set([
     "打开", "查看", "继续", "处理", "验证", "测试", "检查", "确认", "执行", "进行", "完成", "重新",
-    "open", "view", "continue", "run", "check", "verify", "test", "confirm", "complete", "again"
+    "结果", "内容", "详情", "问题", "下一步", "更多", "优化", "重试",
+    "open", "view", "continue", "run", "check", "verify", "test", "confirm", "complete", "again", "result", "details", "more", "retry", "optimize"
   ]);
   const terms = uniqueStrings([
     ...tokenize(normalizedChoice),
@@ -68968,7 +69141,10 @@ function choiceOptionRelevantToReply(choice: string, userPrompt: string, finalAn
   ])
     .map((term) => term.normalize("NFKC").toLocaleLowerCase())
     .filter((term) => term.length >= 2 && !ignored.has(term));
-  return terms.some((term) => context.includes(term));
+  const sharedTerms = terms.filter((term) => context.includes(term));
+  if (!sharedTerms.length) return false;
+  const hasNamedObject = /(?:[\\/]|\.(?:md|pdf|html?|txt|json|docx|xlsx|pptx)\b|审核面板|Review Gate|全文索引|AI 搜索|硬搜索|会话历史|自动化任务|计划面板|工作台|朗读|TTS|Obsidian|Cancip|Vault|GitHub|插件|模型|附件|文件|笔记|搜索|索引|会话|设置)/i.test(normalizedChoice);
+  return hasNamedObject || sharedTerms.some((term) => term.length >= 3);
 }
 
 function parseChoiceSuggestionResponse(raw: string): string[] {
@@ -69175,7 +69351,6 @@ function isChoiceSectionTrailingMeta(trimmed: string): boolean {
 
 function looksLikeNextStepChoice(text: string): boolean {
   if (/[`{}[\]]/.test(text)) return false;
-  if (looksLikePathQuery(text)) return false;
   if (text.length > 56) return false;
   return /^(?:继续|修复|检查|重试|总结|生成|打开|查看|看看|提取|解释|应用|确认|取消|导出|保存|重新|补充|执行|测试|验证|搜索|追问|提问|分析|优化|整理|对齐|精简|扩展|核对|进入|运行|Continue|Fix|Check|Retry|Summari[sz]e|Generate|Open|Review|Apply|Confirm|Cancel|Export|Save|Run|Test|Verify|Search|Ask|Analyze|Optimize|Organize|Align|Refine|Extract|Explain|Inspect)\b/i.test(text)
     || /(?:继续|修复|检查|重试|总结|生成|打开|查看|看看|提取|解释|应用|确认|取消|导出|保存|重新|补充|执行|测试|验证|搜索|追问|提问|分析|优化|整理|对齐|精简|扩展|核对|进入|运行|下一步)/.test(text);
@@ -69198,6 +69373,7 @@ function normalizeChoiceText(text: string): string {
 
 function shortenChoiceText(text: string): string {
   let next = text.trim();
+  if (looksLikePathQuery(next)) return next.length <= 64 ? next : "";
   const colonIndex = next.search(/[：:]/);
   if (colonIndex > 1 && next.length > 28) next = next.slice(0, colonIndex).trim();
   next = next.split(/[。；;]/)[0].trim();
@@ -69220,9 +69396,8 @@ function shortenChoiceText(text: string): string {
 }
 
 function isUsefulChoiceText(text: string): boolean {
-  if (!text || text.length > 42) return false;
+  if (!text || text.length > 64) return false;
   if (/[`{}[\]]/.test(text)) return false;
-  if (looksLikePathQuery(text)) return false;
   if (/^(?:read|write|patch|config|command|todo|automation|npm|git|gh|node|python|powershell|cmd)\b/i.test(text)) return false;
   if (/^(?:https?:\/\/|[\w.-]+\/[\w./-]+$)/i.test(text)) return false;
   if (/^(?:原因|说明|结果|路径|文件|失败原因|失败步骤|总耗时|Total elapsed)\b/i.test(text)) return false;
@@ -73589,10 +73764,55 @@ function ensureTrailingNewline(value: string): string {
 }
 
 async function extractPdfText(file: File, maxChars: number, warnings: string[]): Promise<string> {
+  let loadingTask: { promise?: Promise<unknown>; destroy?: () => Promise<void> | void } | null = null;
+  try {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const pdfjs = await loadPdfJs();
+    const task = pdfjs.getDocument({ data: bytes, isEvalSupported: false, useSystemFonts: true });
+    loadingTask = task;
+    const document = await task.promise as {
+      numPages: number;
+      getPage: (pageNumber: number) => Promise<{ getTextContent: () => Promise<{ items?: unknown[] }> }>;
+      cleanup?: () => Promise<void> | void;
+    };
+    const pages: string[] = [];
+    const pageLimit = Math.min(Math.max(0, document.numPages || 0), 80);
+    let chars = 0;
+    for (let pageNumber = 1; pageNumber <= pageLimit && chars < maxChars; pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      const parts: string[] = [];
+      for (const item of Array.isArray(content.items) ? content.items : []) {
+        if (!isRecord(item) || typeof item.str !== "string") continue;
+        const value = item.str.replace(/\s+/g, " ").trim();
+        if (value) parts.push(value);
+        if (item.hasEOL === true) parts.push("\n");
+      }
+      const pageText = normalizeExtractedText(parts.join(" ").replace(/\s+\n\s+/g, "\n"));
+      if (pageText) {
+        pages.push(pageText);
+        chars += pageText.length;
+      }
+      if (pageNumber % 4 === 0) await sleep(0);
+    }
+    await document.cleanup?.();
+    if (document.numPages > pageLimit) warnings.push(`Indexed the first ${pageLimit} of ${document.numPages} PDF pages.`);
+    const text = trimContext(pages.join("\n\n"), maxChars);
+    if (looksLikeReadableExtractedText(text)) return text;
+    warnings.push(`PDF.js found no readable text layer in ${file.name}; trying the lightweight stream fallback.`);
+  } catch (error) {
+    warnings.push(`PDF.js: ${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    try {
+      await loadingTask?.destroy?.();
+    } catch {
+      // PDF.js cleanup is best effort.
+    }
+  }
   const maxBytes = Math.min(file.size, 5 * 1024 * 1024);
   const bytes = new Uint8Array(await file.slice(0, maxBytes).arrayBuffer());
   const text = extractPdfTextFromBytes(bytes, file.name, maxChars, warnings);
-  if (file.size > maxBytes) warnings.push(`Only scanned first ${formatFileSize(maxBytes)} of ${formatFileSize(file.size)}.`);
+  if (file.size > maxBytes) warnings.push(`Only scanned first ${formatFileSize(maxBytes)} of ${formatFileSize(file.size)} in the fallback parser.`);
   return text;
 }
 
