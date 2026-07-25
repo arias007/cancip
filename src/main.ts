@@ -1653,6 +1653,7 @@ type SessionEventKind =
   | "prompt.recoverable_error"
   | "prompt.protocol_retry"
   | "prompt.final_missing"
+  | "prompt.final_programmatic_convergence"
   | "tool.start"
   | "tool.finish"
   | "tool.reject";
@@ -4182,6 +4183,7 @@ const EN = {
   manualTodoPlaceholder: "Add a manual todo...",
   addManualTodo: "Add todo",
   noManualTodos: "No manual todos",
+  todoDragHandle: "Drag to reorder",
   todoSendToModel: "Send to model",
   todoManualOnly: "Manual only",
   planReadonlyStatus: "Plan panel is open",
@@ -5198,6 +5200,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     manualTodoPlaceholder: "添加手动待办...",
     addManualTodo: "添加待办",
     noManualTodos: "没有手动待办",
+    todoDragHandle: "拖动排序",
     todoSendToModel: "发给模型",
     todoManualOnly: "仅人工计划",
     planReadonlyStatus: "计划面板已打开",
@@ -27686,6 +27689,15 @@ class CancipView extends ItemView {
   private queuedPrompts: QueuedPrompt[] = [];
   private editingQueuedPromptId: string | null = null;
   private editingManualTodoId: string | null = null;
+  private todoPointerDrag: {
+    id: string;
+    pointerId: number;
+    startY: number;
+    targetId: string;
+    after: boolean;
+    handle: HTMLElement;
+    detach: (() => void) | null;
+  } | null = null;
   private progressStepTimers = new Map<string, number>();
   private toolRunTimers = new Map<string, number>();
   private detailsOpenState = new Map<string, boolean>();
@@ -32080,6 +32092,7 @@ class CancipView extends ItemView {
 
   private openPlanMenu(): void {
     if (!this.headerMenuEl) return;
+    this.abortTodoPointerDrag();
     this.activeHeaderMenu = "plan";
     this.closeCommandMenu();
     this.closeMentionPopup();
@@ -32784,6 +32797,103 @@ class CancipView extends ItemView {
     return "todo";
   }
 
+  private clearTodoPointerDragVisuals(): void {
+    this.headerMenuEl?.querySelectorAll<HTMLElement>(".obcc-todo-row").forEach((row) => {
+      row.removeClass("is-drag-over", "is-dragging", "is-drop-after");
+    });
+  }
+
+  private abortTodoPointerDrag(): void {
+    const drag = this.todoPointerDrag;
+    if (!drag) return;
+    drag.detach?.();
+    try {
+      drag.handle.releasePointerCapture(drag.pointerId);
+    } catch {
+      // Pointer capture is best-effort on Android WebView.
+    }
+    this.todoPointerDrag = null;
+    this.clearTodoPointerDragVisuals();
+  }
+
+  private updateTodoPointerDrag(event: PointerEvent): void {
+    const drag = this.todoPointerDrag;
+    if (!drag || !this.headerMenuEl || Math.abs(event.clientY - drag.startY) < 4) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.clearTodoPointerDragVisuals();
+    const sourceRow = this.headerMenuEl.querySelector<HTMLElement>(`.obcc-todo-row[data-todo-id="${cssEscapeAttr(drag.id)}"]`);
+    sourceRow?.addClass("is-dragging");
+    const targetRow = this.headerMenuEl.ownerDocument
+      .elementFromPoint(event.clientX, event.clientY)
+      ?.closest<HTMLElement>(".obcc-todo-row[data-todo-id]");
+    const targetId = targetRow?.dataset.todoId ?? "";
+    if (!targetRow || !targetId || targetId === drag.id) {
+      drag.targetId = "";
+      drag.after = false;
+      return;
+    }
+    const rect = targetRow.getBoundingClientRect();
+    drag.targetId = targetId;
+    drag.after = event.clientY > rect.top + rect.height / 2;
+    targetRow.addClass("is-drag-over");
+    targetRow.toggleClass("is-drop-after", drag.after);
+  }
+
+  private finishTodoPointerDrag(event: PointerEvent): void {
+    const drag = this.todoPointerDrag;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.updateTodoPointerDrag(event);
+    drag.detach?.();
+    this.todoPointerDrag = null;
+    this.clearTodoPointerDragVisuals();
+    try {
+      drag.handle.releasePointerCapture(event.pointerId);
+    } catch {
+      // Pointer capture may already be gone on mobile.
+    }
+    if (drag.targetId && drag.targetId !== drag.id) {
+      this.reorderTodo(drag.id, drag.targetId, drag.after);
+    }
+  }
+
+  private startTodoPointerDrag(todo: ManualTodo, handle: HTMLElement, event: PointerEvent): void {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    this.abortTodoPointerDrag();
+    const doc = handle.ownerDocument;
+    const move = (next: PointerEvent) => {
+      if (this.todoPointerDrag?.pointerId !== next.pointerId) return;
+      this.updateTodoPointerDrag(next);
+    };
+    const finish = (next: PointerEvent) => this.finishTodoPointerDrag(next);
+    const detach = () => {
+      doc.removeEventListener("pointermove", move, { capture: true });
+      doc.removeEventListener("pointerup", finish, { capture: true });
+      doc.removeEventListener("pointercancel", finish, { capture: true });
+    };
+    this.todoPointerDrag = {
+      id: todo.id,
+      pointerId: event.pointerId,
+      startY: event.clientY,
+      targetId: "",
+      after: false,
+      handle,
+      detach
+    };
+    doc.addEventListener("pointermove", move, { capture: true });
+    doc.addEventListener("pointerup", finish, { capture: true });
+    doc.addEventListener("pointercancel", finish, { capture: true });
+    try {
+      handle.setPointerCapture(event.pointerId);
+    } catch {
+      // Some Android WebViews do not expose pointer capture for button children.
+    }
+  }
+
   private renderTodoRow(parent: HTMLElement, text: string, readonly: boolean, todo?: ManualTodo, index = -1, readonlyDone = false, todos: ManualTodo[] = []): void {
     const done = todo?.done ?? readonlyDone;
     const status = this.planTodoStatus(todos, todo, index, done);
@@ -32804,8 +32914,19 @@ class CancipView extends ItemView {
         event.preventDefault();
         row.removeClass("is-drag-over");
         const dragged = event.dataTransfer?.getData("text/plain") ?? "";
-        if (dragged.startsWith("todo:")) this.reorderTodo(dragged.slice("todo:".length), todo.id);
+        if (dragged.startsWith("todo:")) {
+          const rect = row.getBoundingClientRect();
+          this.reorderTodo(dragged.slice("todo:".length), todo.id, event.clientY > rect.top + rect.height / 2);
+        }
       });
+    }
+    if (!readonly && todo) {
+      const handle = row.createEl("button", {
+        cls: "obcc-todo-drag",
+        attr: { type: "button", title: this.t("todoDragHandle"), "aria-label": this.t("todoDragHandle") }
+      });
+      setIcon(handle, "grip-vertical");
+      handle.addEventListener("pointerdown", (event) => this.startTodoPointerDrag(todo, handle, event));
     }
     const check = row.createEl("button", {
       cls: "obcc-todo-check",
@@ -32882,20 +33003,29 @@ class CancipView extends ItemView {
     this.openPlanMenu();
   }
 
-  private reorderTodo(id: string, beforeId: string): void {
-    if (!id || !beforeId || id === beforeId) return;
+  private reorderTodo(id: string, targetId: string, after = false): void {
+    if (!id || !targetId || id === targetId) return;
     const current = this.findTodoById(id);
-    const target = this.findTodoById(beforeId);
+    const target = this.findTodoById(targetId);
     if (!current || !target) return;
-    const currentSource = current.source === "programmatic" ? "programmatic" : "manual";
-    const targetSource = target.source === "programmatic" ? "programmatic" : "manual";
-    if (currentSource !== targetSource) return;
-    const from = this.manualTodos.findIndex((item) => item.id === id);
-    const to = this.manualTodos.findIndex((item) => item.id === beforeId);
-    if (from < 0 || to < 0) return;
-    const [item] = this.manualTodos.splice(from, 1);
-    const targetIndex = from < to ? to - 1 : to;
-    this.manualTodos.splice(targetIndex, 0, item);
+    const visible = this.planTodosForDisplay();
+    const visibleIds = visible.map((item) => item.id);
+    const from = visibleIds.indexOf(id);
+    const targetIndex = visibleIds.indexOf(targetId);
+    if (from < 0 || targetIndex < 0) return;
+    const reorderedIds = visibleIds.slice();
+    const [movedId] = reorderedIds.splice(from, 1);
+    const insertionIndex = Math.max(0, Math.min(reorderedIds.length, reorderedIds.indexOf(targetId) + (after ? 1 : 0)));
+    reorderedIds.splice(insertionIndex, 0, movedId);
+    const visibleSet = new Set(visibleIds);
+    const byId = new Map(this.manualTodos.map((item) => [item.id, item]));
+    let nextVisibleIndex = 0;
+    this.manualTodos = this.manualTodos.map((item) => {
+      if (!visibleSet.has(item.id)) return item;
+      const replacement = byId.get(reorderedIds[nextVisibleIndex]);
+      nextVisibleIndex += 1;
+      return replacement ?? item;
+    });
     void this.saveCurrentSession();
     this.openPlanMenu();
   }
@@ -45793,6 +45923,21 @@ class CancipView extends ItemView {
       if (this.hasPendingToolRuns(merged.runs)) return { status: "pending", handling: merged };
       handling = merged;
     }
+    if (!request.signal.aborted
+      && this.isCurrentRequest(request)
+      && this.canProgrammaticallyConcludeToolRuns(handling.runs, originalPrompt)) {
+      const summary = this.humanFinalConclusion(handling.runs, false, originalPrompt).trim();
+      if (summary) {
+        this.addMessage("assistant", `${summary}\n\n<!-- cancip-final {"status":"complete"} -->`);
+        void this.recordSessionEvent({
+          kind: "prompt.final_programmatic_convergence",
+          detail: "All verified tool runs were terminal; final-review retries did not produce a terminal marker.",
+          status: "completed"
+        });
+        this.renderMessages();
+        return { status: "answered", handling };
+      }
+    }
     if (!request.signal.aborted && this.isCurrentRequest(request)) {
       const completed = handling.runs.filter((run) => run.status === "executed").length;
       const failed = handling.runs.filter((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected").length;
@@ -46232,6 +46377,19 @@ class CancipView extends ItemView {
 
   private hasPendingToolRuns(runs: ToolRun[]): boolean {
     return runs.some((run) => run.status === "pending");
+  }
+
+  private hasUnfinishedExecutionTodos(): boolean {
+    return this.manualTodos.some((todo) => todo.sendToModel !== false && todo.planOnly !== true && !todo.done);
+  }
+
+  private canProgrammaticallyConcludeToolRuns(runs: ToolRun[], originalPrompt: string): boolean {
+    if (!runs.some((run) => run.status === "executed")) return false;
+    if (this.hasPendingToolRuns(runs)) return false;
+    if (runs.some((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected")) return false;
+    if (this.hasUnfinishedExecutionTodos()) return false;
+    if (shouldNeedMoreActionForPrompt(originalPrompt, runs)) return false;
+    return true;
   }
 
   private setPendingToolRunStatus(runs: ToolRun[]): void {
@@ -54534,6 +54692,14 @@ class CancipView extends ItemView {
     const hardSummary = hardSection.createEl("summary", { cls: "obcc-search-section-summary" });
     const hardSummaryLabel = hardSummary.createSpan({ text: this.t("searchHard") });
     const hardResults = hardSection.createDiv({ cls: "obcc-search-section-results" });
+    const syncSearchSectionLayout = (): void => {
+      results.toggleClass("is-ai-collapsed", !aiSection.open);
+      results.toggleClass("is-hard-collapsed", !hardSection.open);
+      results.toggleClass("is-ai-hidden", aiSection.hasClass("is-hidden"));
+    };
+    aiSection.addEventListener("toggle", syncSearchSectionLayout);
+    hardSection.addEventListener("toggle", syncSearchSectionLayout);
+    syncSearchSectionLayout();
     let requestId = 0;
     let timer: number | null = null;
     const renderHits = (parent: HTMLElement, hits: SearchHit[]): void => {
@@ -54589,6 +54755,7 @@ class CancipView extends ItemView {
         renderHits(hardResults, exactHits);
         hardSummaryLabel.setText(`${this.t("searchHard")} · ${exactHits.length}`);
         aiSection.toggleClass("is-hidden", !fuzzy.checked);
+        syncSearchSectionLayout();
         if (!fuzzy.checked) {
           status.setText(`${this.t("searchHard")} · ${this.t("hitCount", { count: exactHits.length })}`);
           return;

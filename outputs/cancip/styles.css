@@ -10750,3 +10750,143 @@ body.is-phone .obcc-document-native-preview {
     overflow-y: auto;
   }
 }
+
+/* 3.2.36: Android/WebView layout contract for independently collapsible search panes. */
+.obcc-search-popover {
+  min-height: 0 !important;
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) !important;
+}
+
+.obcc-search-results {
+  display: grid !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr) !important;
+}
+
+.obcc-search-results.is-ai-collapsed {
+  grid-template-rows: auto minmax(0, 1fr) !important;
+}
+
+.obcc-search-results.is-hard-collapsed {
+  grid-template-rows: minmax(0, 1fr) auto !important;
+}
+
+.obcc-search-results.is-ai-collapsed.is-hard-collapsed,
+.obcc-search-results.is-ai-hidden.is-hard-collapsed {
+  grid-template-rows: auto auto !important;
+  align-content: start !important;
+}
+
+.obcc-search-results.is-ai-hidden {
+  grid-template-rows: 0 minmax(0, 1fr) !important;
+}
+
+.obcc-search-section {
+  display: grid !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
+}
+
+.obcc-search-section[open] {
+  height: 100% !important;
+  grid-template-rows: auto auto minmax(0, 1fr) !important;
+}
+
+.obcc-search-section:not([open]) {
+  display: block !important;
+  height: auto !important;
+  min-height: 30px !important;
+  max-height: none !important;
+  overflow: visible !important;
+}
+
+.obcc-search-section-results {
+  min-width: 0 !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior-y: contain !important;
+  touch-action: pan-y !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+/* 3.2.36: the grip is the only touch target that starts todo reordering. */
+.obcc-todo-row {
+  grid-template-columns: 24px 24px 24px 34px minmax(0, 1fr) max-content !important;
+  min-width: 0;
+}
+
+.obcc-todo-drag {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.obcc-todo-drag:active,
+.obcc-todo-row.is-dragging .obcc-todo-drag {
+  color: var(--interactive-accent);
+  cursor: grabbing;
+}
+
+@media (max-width: 700px) {
+  .obcc-todo-row {
+    grid-template-columns: 22px 22px 22px 30px minmax(0, 1fr) max-content !important;
+    gap: 4px;
+    padding: 4px !important;
+  }
+}
+
+/* 3.2.36: restore a bounded review tree on mobile; only the tree scrolls. */
+body.is-mobile .obcc-review-leaf-shell,
+body.is-phone .obcc-review-leaf-shell,
+.is-mobile .obcc-review-leaf-shell,
+.is-phone .obcc-review-leaf-shell {
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+  display: grid !important;
+  align-content: start !important;
+  height: auto !important;
+  max-height: none !important;
+  min-height: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  touch-action: pan-y !important;
+  overscroll-behavior-y: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+}
