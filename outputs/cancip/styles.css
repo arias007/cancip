@@ -5645,6 +5645,12 @@ details.obcc-process-step {
   background: var(--background-primary);
   box-shadow: 0 6px 20px var(--background-modifier-box-shadow);
   flex-wrap: wrap;
+  max-width: calc(100vw - 16px);
+  max-height: min(70dvh, 520px);
+  overflow: auto;
+  resize: both;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y pinch-zoom;
 }
 
 .obcc-context-edit-marker {
@@ -5661,40 +5667,68 @@ details.obcc-process-step {
   background: color-mix(in srgb, var(--color-red) 14%, transparent);
 }
 
-.obcc-context-edit-marker-icon {
+.obcc-context-edit-marker.has-proposal {
+  pointer-events: none;
+}
+
+.obcc-context-edit-inline-preview {
   position: absolute;
-  top: -9px;
-  right: -9px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
+  top: calc(100% + 3px);
+  left: 0;
+  width: max-content;
+  min-width: 72px;
+  max-width: min(72vw, 480px);
+  max-height: min(28dvh, 220px);
+  padding: 3px 6px;
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--color-green) 72%, transparent);
+  border-radius: 4px;
   background: var(--background-primary);
-  color: var(--text-accent);
-  box-shadow: 0 1px 4px var(--background-modifier-box-shadow);
+  box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
+  color: var(--color-green);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }
 
-.obcc-context-edit-marker.is-loading .obcc-context-edit-marker-icon svg {
-  width: 13px;
-  height: 13px;
-  animation: obcc-spin 0.8s linear infinite;
+.obcc-context-edit-marker.has-proposal .obcc-context-edit-inline-preview,
+.obcc-context-edit-marker.has-proposal .obcc-context-edit-proposal-actions,
+.obcc-context-edit-proposal-actions button {
+  pointer-events: auto;
 }
 
-.obcc-context-edit-bubble.is-loading .obcc-context-edit-action svg {
-  animation: obcc-spin 0.8s linear infinite;
+.obcc-context-edit-proposal-actions {
+  position: absolute;
+  right: 3px;
+  top: 3px;
+  display: flex;
+  gap: 3px;
+  padding-left: 4px;
+  background: var(--background-primary);
+}
+
+.obcc-context-edit-bubble.is-proposal-ready {
+  display: none;
 }
 
 .obcc-context-edit-input {
   min-width: 0;
   flex: 1 1 auto;
-  height: 30px;
-  padding: 0 8px;
+  width: min(230px, calc(100% - 106px));
+  min-height: 38px;
+  max-height: min(36dvh, 280px);
+  padding: 7px 8px;
+  overflow: auto;
   border: 0;
   background: transparent;
   color: var(--text-normal);
   font: inherit;
+  line-height: 1.35;
+  resize: both;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y pinch-zoom;
+  transition: none;
 }
 
 .obcc-context-edit-input:focus {
