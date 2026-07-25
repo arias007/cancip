@@ -10890,3 +10890,218 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   overscroll-behavior-y: contain !important;
   -webkit-overflow-scrolling: touch !important;
 }
+
+/* 3.2.38: keep button-editor actions stable while only its form scrolls. */
+.obcc-button-edit-modal {
+  overflow: hidden !important;
+}
+
+.obcc-button-edit-modal .modal-content {
+  display: grid !important;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  gap: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+.obcc-button-edit-sticky-actions {
+  position: relative !important;
+  top: auto !important;
+  align-self: stretch !important;
+  width: 100% !important;
+  min-height: 46px;
+  margin: 0 !important;
+  padding: 6px 42px 6px 2px !important;
+  box-shadow: 0 1px 0 var(--background-modifier-border);
+}
+
+.obcc-button-edit-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  min-height: 0;
+  padding: 10px 2px 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.obcc-button-edit-icon-grid {
+  flex: 0 0 auto !important;
+  height: min(148px, 28dvh) !important;
+  min-height: min(96px, 22dvh) !important;
+  max-height: min(172px, 32dvh) !important;
+  overflow-y: auto !important;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 700px) {
+  .obcc-button-edit-modal .modal-content {
+    padding-top: 0 !important;
+  }
+}
+
+/* 3.2.38: the review tree owns scrolling; groups keep their real height. */
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+  display: flex !important;
+  flex-direction: column !important;
+  align-content: initial !important;
+  align-items: stretch !important;
+  gap: 4px !important;
+  overflow-x: hidden !important;
+  overflow-y: scroll !important;
+  touch-action: pan-y !important;
+  -webkit-overflow-scrolling: touch !important;
+}
+
+.obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree > * {
+  flex: 0 0 auto !important;
+  min-height: auto !important;
+}
+
+.obcc-review-file-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  overflow-y: auto;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+.obcc-review-file-list > * {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 700px) {
+  .obcc-review-native-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(120px, 36%) minmax(0, 1fr);
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  .obcc-review-file-list,
+  .obcc-review-detail {
+    min-height: 0;
+    overflow-y: auto;
+    touch-action: pan-y;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* 3.2.38: contextual result window can be moved and dismissed independently. */
+.obcc-context-edit-drag {
+  margin-inline-end: auto;
+  cursor: grab;
+  touch-action: none;
+}
+
+.obcc-context-edit-bubble.is-dragging,
+.obcc-context-edit-bubble.is-dragging .obcc-context-edit-drag {
+  cursor: grabbing;
+  user-select: none;
+}
+
+/* 3.2.37: keep contextual review controls inside the floating result panel. */
+.obcc-context-edit-bubble.is-proposal-ready {
+  display: flex !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+
+.obcc-context-edit-bubble.is-proposal-ready .obcc-context-edit-proposal {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.obcc-context-edit-bubble.is-proposal-ready .obcc-context-edit-proposal-actions {
+  position: relative;
+  z-index: 2;
+  top: auto;
+  right: auto;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  min-height: 30px;
+  padding: 0 0 4px;
+  background: var(--background-primary);
+}
+
+.obcc-context-edit-bubble.is-proposal-ready .obcc-context-edit-diff {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* 3.2.37: bind every mobile Review Gate ancestor to the leaf height so the
+   file tree, rather than the page, owns vertical scrolling. */
+body.is-mobile .workspace-leaf-content[data-type="cancip-review-view"],
+body.is-phone .workspace-leaf-content[data-type="cancip-review-view"],
+.is-mobile .workspace-leaf-content[data-type="cancip-review-view"],
+.is-phone .workspace-leaf-content[data-type="cancip-review-view"],
+body.is-mobile .workspace-leaf-content[data-type="cancip-review-view"] > .view-content,
+body.is-phone .workspace-leaf-content[data-type="cancip-review-view"] > .view-content,
+.is-mobile .workspace-leaf-content[data-type="cancip-review-view"] > .view-content,
+.is-phone .workspace-leaf-content[data-type="cancip-review-view"] > .view-content {
+  box-sizing: border-box !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+body.is-mobile .obcc-review-leaf,
+body.is-phone .obcc-review-leaf,
+.is-mobile .obcc-review-leaf,
+.is-phone .obcc-review-leaf,
+body.is-mobile .obcc-review-leaf-shell,
+body.is-phone .obcc-review-leaf-shell,
+.is-mobile .obcc-review-leaf-shell,
+.is-phone .obcc-review-leaf-shell,
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-leaf-body,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-leaf-body {
+  box-sizing: border-box !important;
+  display: grid !important;
+  grid-template-rows: minmax(0, 1fr) !important;
+  align-items: stretch !important;
+  height: 100% !important;
+  max-height: 100% !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav {
+  align-self: stretch !important;
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+body.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-mobile .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
+.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+  align-self: stretch !important;
+  height: var(--obcc-review-file-tree-max-height, 100%) !important;
+  max-height: var(--obcc-review-file-tree-max-height, 100%) !important;
+  min-height: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: scroll !important;
+  touch-action: pan-y !important;
+  overscroll-behavior-y: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+}

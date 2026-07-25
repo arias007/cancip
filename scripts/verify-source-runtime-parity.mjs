@@ -25,10 +25,13 @@ const runtimeMethods = namedMethods(runtimeText, ts.ScriptKind.JS, "outputs/canc
 const intentionallyRemovedRuntimeMethods = new Set([
   "applyPersonalizedDiaryButtons",
   "activateNativeNoteDrawSurface",
+  "callChoiceSuggestionModel",
   "clearPersonalizedDiaryButtons",
   "close",
   "createPlanButton",
   "createNoteDrawWorkbenchStage",
+  "deterministicChoiceOptionsForMessage",
+  "ensureModelChoiceOptions",
   "findPendingReviewBaselineItem",
   "globalFinalAnswerTemplatePrompt",
   "insertPersonalizedDiary",
@@ -38,6 +41,7 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "reviewGateTerminalDecisionPaths",
   "schedulePersonalizedDiaryButtons",
   "scheduleNativeNoteDrawSurfaceSync",
+  "shouldGenerateModelChoiceOptions",
   "shouldPreferPluginDataSettings",
   "syncNativeNoteDrawSurface"
 ]);

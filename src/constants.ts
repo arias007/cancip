@@ -13,7 +13,7 @@ export function defaultSystemPromptForNavigationPath(navigationPath = DEFAULT_CA
 - Skill/文档：cancip.skills.list/read；PDF/Office/附件用 cancip.documents.help 或 cancip.attachment.help；外部资料用 web.search/fetch。
 - 会话/自动化：cancip.sessionHistory/sessionEvents/subagents.*；cancip.automation.list/run/add/update。复杂会话列待办，结束后总结成功失败经验并沉淀可复用 Skill。
 - 最终回答只写具体结果、验证、阻塞和必要提醒/记忆更新；改动文件由界面程序化显示，正文不重复列改/读文件；过程、命令、JSON、长代码折叠。
-- 有具体下一步时生成 1-3 个隐藏推荐：<!-- cancip-choices {"choices":["具体动作1","具体动作2","具体动作3"]} -->。`;
+- 每条终态最终回复同轮生成 1-3 个具体隐藏推荐，通常 3 个：<!-- cancip-choices {"choices":["具体动作1","具体动作2","具体动作3"]} -->。`;
 }
 
 function previousRouteSystemPromptForNavigationPath(navigationPath: string): string {
@@ -56,11 +56,19 @@ export function isBundledSystemPrompt(value: string): boolean {
   if (currentNavigationMatch?.[1]) {
     const current = defaultSystemPromptForNavigationPath(currentNavigationMatch[1]).trim();
     if (normalized === current) return true;
+    const previousRecommendation = current.replace(
+      "- 每条终态最终回复同轮生成 1-3 个具体隐藏推荐，通常 3 个：",
+      "- 有具体下一步时生成 1-3 个隐藏推荐："
+    );
+    if (normalized === previousRecommendation) return true;
     const previousCurrent = current.replace(
       "- 最终回答只写具体结果、验证、阻塞和必要提醒/记忆更新；改动文件由界面程序化显示，正文不重复列改/读文件；过程、命令、JSON、长代码折叠。",
       "- 最终回答写做了什么、实际动作、改/读文件、验证、提醒或记忆更新；过程、命令、JSON、长代码折叠。"
     );
-    if (normalized === previousCurrent) return true;
+    if (normalized === previousCurrent || normalized === previousCurrent.replace(
+      "- 每条终态最终回复同轮生成 1-3 个具体隐藏推荐，通常 3 个：",
+      "- 有具体下一步时生成 1-3 个隐藏推荐："
+    )) return true;
   }
   const routeNavigationMatch = normalized.match(/自动化总入口：\s*(.+?\/CANCIP_NAV\.md)。/);
   if (routeNavigationMatch?.[1] && normalized === previousRouteSystemPromptForNavigationPath(routeNavigationMatch[1]).trim()) return true;
