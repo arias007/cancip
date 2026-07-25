@@ -2589,7 +2589,7 @@ details.obcc-process-step {
   right: var(--obcc-search-right, 8px);
   z-index: 2147483002;
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr);
   gap: 8px;
   width: min(380px, calc(100vw - 16px));
   max-height: min(72vh, 620px);
@@ -2650,7 +2650,7 @@ details.obcc-process-step {
 .obcc-search-results {
   display: grid;
   align-content: start;
-  gap: 2px;
+  gap: 8px;
   min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
@@ -4870,6 +4870,47 @@ details.obcc-process-step {
   padding: 2px;
   overflow-y: auto;
   overscroll-behavior: contain;
+}
+
+.obcc-search-section {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+}
+
+.obcc-search-section.is-hidden {
+  display: none;
+}
+
+.obcc-search-section-summary {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 4px 7px;
+  color: var(--text-normal);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+
+.obcc-search-section-explanation {
+  padding: 0 8px 5px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.obcc-search-section-results {
+  display: grid;
+  align-content: start;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 2px 3px;
 }
 
 .obcc-button-icon-choice {
