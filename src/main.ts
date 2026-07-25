@@ -176,7 +176,7 @@ const MAX_TOOL_ACTIONS_PER_BATCH = 8;
 const MAX_TOOL_ACTIONS_PER_TASK = 12;
 const MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK = 18;
 const STARTUP_MAINTENANCE_IDLE_TIMEOUT_MS = 1600;
-const TTS_CAPTURE_MAX_CHARS = 300000;
+const TTS_CAPTURE_MAX_CHARS = 120000;
 const TTS_MAX_PARTS = 50000;
 const LANGUAGE_VALUES = ["zh", "zh-TW", "en", "ug", "tr", "ru", "ja", "ko", "es", "fr", "de", "ar"] as const;
 type Language = typeof LANGUAGE_VALUES[number];
@@ -189,6 +189,7 @@ type ReviewGatePackageData = {
   folder: string;
   title: string;
   generatedAt: string;
+  sessionId?: string;
   items: ReviewGateManifestItem[];
 };
 
@@ -1182,6 +1183,7 @@ type AutomationTask = {
   sessionId?: string;
   condition?: string;
   watchNewFiles: boolean;
+  ignoreMachineFiles: boolean;
   newFilePattern?: string;
   newFileDebounceSeconds: number;
   notifyMode: AutomationNotifyMode;
@@ -1213,6 +1215,7 @@ type AutomationAction = {
   sessionId?: string;
   condition?: string;
   watchNewFiles?: boolean;
+  ignoreMachineFiles?: boolean;
   newFilePattern?: string;
   newFileDebounceSeconds?: number;
   notifyMode?: AutomationNotifyMode;
@@ -1376,6 +1379,7 @@ type AutomationTemplate = {
   hour?: number;
   minute?: number;
   watchNewFiles?: boolean;
+  ignoreMachineFiles?: boolean;
   newFilePattern?: string;
   newFileDebounceSeconds?: number;
   notifyMode?: AutomationNotifyMode;
@@ -2127,6 +2131,7 @@ type UiButtonRule = {
   menuGroupGuard?: string;
   targetKey?: string;
   legacyTargetKey?: string;
+  temporary?: boolean;
   createdAt?: string;
   updatedAt?: string;
 };
@@ -2181,15 +2186,35 @@ type UiButtonRuleResetTarget = {
 };
 
 type UiButtonWorkflowDirective = {
-  phase: "inspect-buttons" | "inspect-rules" | "apply" | "verify-apply" | "reset" | "verify-reset" | "done";
+  phase: "inspect-buttons" | "inspect-peers" | "inspect-rules" | "apply" | "verify-apply" | "reset" | "verify-reset" | "done";
   selector?: string;
   label?: string;
   scope?: UiButtonRule["scope"];
+  verificationScope?: UiButtonRule["scope"];
   ruleId?: string;
   restoreRequested?: boolean;
+  isolationRequired?: boolean;
+  allowedChanges?: UiButtonRuleChange[];
   expectedHidden?: boolean;
   verificationAttempt?: number;
   evidence?: string;
+  targetUnresolved?: boolean;
+};
+
+type UiButtonEvidenceContext = {
+  key: string;
+  region: "root" | "left" | "right" | "floating" | "menu" | "modal" | "other";
+  leaf: number;
+  view: string;
+  file: string;
+  active: boolean;
+};
+
+type UiButtonEvidenceRow = {
+  label: string;
+  selector: string;
+  hidden: boolean;
+  context?: UiButtonEvidenceContext;
 };
 
 type UiButtonCommandOption = {
@@ -2334,6 +2359,7 @@ type Settings = {
   composerAutocompleteModel: string;
   composerAutocompletePrompt: string;
   forceStatusBarVisible: boolean;
+  preventAutomaticSessionOpen: boolean;
   autoOpenPlanPanel: boolean;
   showLiveTodos: boolean;
   showManualTodos: boolean;
@@ -2458,6 +2484,15 @@ class CancipButtonEditModal extends Modal {
     this.modalEl.addClass("obcc-button-edit-modal");
     this.setTitle(this.plugin.t("buttonEditTitle"));
     const topActions = this.contentEl.createDiv({ cls: "obcc-button-edit-sticky-actions" });
+    const sendToCancip = topActions.createEl("button", {
+      cls: "obcc-button-edit-send-cancip",
+      attr: { type: "button", title: this.plugin.t("sendToAI"), "aria-label": this.plugin.t("sendToAI") }
+    });
+    setIcon(sendToCancip, "bot");
+    sendToCancip.addEventListener("click", async () => {
+      await this.onSendToCancip();
+      this.close();
+    });
     const saveTop = topActions.createEl("button", { text: this.plugin.t("buttonEditSave"), attr: { type: "button" } });
     saveTop.addClass("mod-cta");
     saveTop.addEventListener("click", () => {
@@ -2875,6 +2910,7 @@ class CancipButtonEditModal extends Modal {
 
 const CANCIP_AI_DIR = "AI/Cancip";
 const ONE_CLICK_HTML_OUTPUT_DIR = `${CANCIP_AI_DIR}/Exports/HTML`;
+const ONE_CLICK_HTML_COMPOSER_PREFIX = "HTML: ";
 const LEGACY_CANCIP_CONFIG_DIR = ".cancip";
 const DEFAULT_CANCIP_DATA_DIR = ".obsidian/plugins/cancip/data";
 const DEFAULT_MEMORY_FOLDER = `${CANCIP_AI_DIR}/Memory`;
@@ -3180,6 +3216,7 @@ const DEFAULT_SETTINGS: Settings = {
   composerAutocompleteModel: "",
   composerAutocompletePrompt: "",
   forceStatusBarVisible: true,
+  preventAutomaticSessionOpen: true,
   autoOpenPlanPanel: true,
   showLiveTodos: true,
   showManualTodos: true,
@@ -3366,7 +3403,7 @@ const CANCIP_STATE_POLL_FOLDER_MAX_ROWS = 260;
 const CANCIP_STATE_POLL_MOBILE_FOLDER_MAX_ROWS = 80;
 let AUTOMATION_DIR = `${CANCIP_CONFIG_DIR}/automations`;
 let AUTOMATION_STATE_PATH = `${CANCIP_CONFIG_DIR}/automations.json`;
-const AUTOMATION_SCHEMA_VERSION = 13;
+const AUTOMATION_SCHEMA_VERSION = 14;
 const AUTOMATION_NEW_FILE_DEFAULT_DEBOUNCE_SECONDS = 45;
 const AUTOMATION_NEW_FILE_MAX_BATCH = 40;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
@@ -3855,6 +3892,7 @@ const EN = {
   reviewGateOpenLatest: "Open latest review",
   reviewGateBack: "Back to pending files",
   reviewGateOpenNote: "Open note",
+  reviewGateOpenSession: "Open source session",
   reviewGatePendingFiles: "Pending files",
   reviewGateChanges: "Changes",
   reviewGatePanelEmpty: "No review data is open.",
@@ -4304,6 +4342,8 @@ const EN = {
   buttonRuleChangeTitle: "renamed",
   buttonRuleChangeIcon: "icon",
   settingsAutoOpenPlanPanel: "Auto-open Plan panel",
+  settingsPreventAutomaticSessionOpen: "Do not switch sessions automatically",
+  settingsPreventAutomaticSessionOpenDesc: "Keep the Cancip sidebar on the last session you actually opened. Background tasks and status updates will not take over the sidebar.",
   settingsShowLiveTodos: "Show live todos",
   settingsShowManualTodos: "Show manual todos",
   settingsCommandBusEnabled: "Enable command bus",
@@ -4383,6 +4423,8 @@ const EN = {
   automationSessionId: "Session ID",
   automationCondition: "Condition",
   automationWatchNewFiles: "Run when new files appear",
+  automationIgnoreMachineFiles: "Ignore machine-generated files",
+  automationIgnoreMachineFilesDesc: "Skip cache, index, log, lock, temporary, state, configuration, and database sidecar files. Enabled by default.",
   automationNewFilePattern: "New-file path pattern",
   automationNewFileDebounce: "New-file debounce seconds",
   automationNotifyMode: "Notification policy",
@@ -4840,6 +4882,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     reviewGateOpenLatest: "打开最近审核",
     reviewGateBack: "返回待审核列表",
     reviewGateOpenNote: "跳转到笔记",
+    reviewGateOpenSession: "跳转到来源会话",
     reviewGatePendingFiles: "待审核文件",
     reviewGateChanges: "变化",
     reviewGatePanelEmpty: "还没有打开审核面板。",
@@ -5300,6 +5343,8 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsFilePinsSortActiveFolder: "排序当前文件夹",
     settingsFilePinsNoActiveFolder: "先打开一个文件或文件夹，再排序这个文件夹里的置顶项。",
     settingsAutoOpenPlanPanel: "自动打开计划面板",
+    settingsPreventAutomaticSessionOpen: "Cancip 不主动切换会话",
+    settingsPreventAutomaticSessionOpenDesc: "侧边栏保持在用户上次实际打开的会话；后台任务和状态更新不会抢占当前会话。",
     settingsShowLiveTodos: "显示实时待办",
     settingsShowManualTodos: "显示手动待办",
     settingsCommandBusEnabled: "启用命令总线",
@@ -5368,6 +5413,8 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     automationSessionId: "会话 ID",
     automationCondition: "条件",
     automationWatchNewFiles: "发现新文件时运行",
+    automationIgnoreMachineFiles: "忽略机器生成文件",
+    automationIgnoreMachineFilesDesc: "跳过缓存、索引、日志、锁、临时、状态、配置和数据库旁路文件，默认开启。",
     automationNewFilePattern: "新文件路径规则",
     automationNewFileDebounce: "新文件合并等待秒数",
     automationNotifyMode: "通知策略",
@@ -8209,6 +8256,7 @@ export default class CancipPlugin extends Plugin {
   private automationScheduleCleanupRegistered = false;
   private automationStateCache: { at: number; tasks: AutomationTask[] } | null = null;
   private automationStateReadPromise: Promise<AutomationTask[]> | null = null;
+  private automationStatePersistedSignature = "";
   private automationStateWriteQueue: Promise<void> = Promise.resolve();
   private automationMutationQueue: Promise<void> = Promise.resolve();
   private automationExecutionQueue: Promise<void> = Promise.resolve();
@@ -8217,6 +8265,7 @@ export default class CancipPlugin extends Plugin {
   private automationNewFilePaths = new Map<string, Set<string>>();
   private automationNewFileTimers = new Map<string, number>();
   private automationRunnerLeaf: WorkspaceLeaf | null = null;
+  private lastContentWorkspaceLeaf: WorkspaceLeaf | null = null;
   private automationRunnerCleanupTimer: number | null = null;
   private personalizationCache: PersonalizationCache | null = null;
   private personalizationUsage: PersonalizationUsageLedger = emptyPersonalizationUsageLedger();
@@ -8718,6 +8767,7 @@ export default class CancipPlugin extends Plugin {
       this.srPdfToolbarPatchScan?.();
     });
     this.registerEvent(this.app.workspace.on("active-leaf-change", (leaf) => {
+      this.rememberContentWorkspaceLeaf(leaf ?? null);
       this.ensureDocumentWorkbenchExtensions();
       this.scheduleTtsViewActionRefresh();
       this.scheduleRightSidebarTabToolbarRefresh(80);
@@ -8726,6 +8776,7 @@ export default class CancipPlugin extends Plugin {
       if (file instanceof TFile) this.scheduleDefaultDocumentWorkbench(file);
     }));
     this.registerEvent(this.app.workspace.on("file-open", (file) => {
+      this.rememberContentWorkspaceLeaf(this.app.workspace.getLeaf(false));
       this.ensureDocumentWorkbenchExtensions();
       this.scheduleTtsViewActionRefresh();
       if (file instanceof TFile) this.scheduleDefaultDocumentWorkbench(file);
@@ -10426,16 +10477,64 @@ export default class CancipPlugin extends Plugin {
     return `${this.obsidianPluginsDir()}/${pluginId}`;
   }
 
-  activeWorkspaceLeaf(): WorkspaceLeaf | null {
-    const activeFile = this.app.workspace.getActiveFile();
-    if (activeFile) {
-      const leafForFile = this.app.workspace.getLeavesOfType("markdown").find((leaf) => {
-        const view = leaf.view as unknown as { file?: TFile };
-        return view.file instanceof TFile && view.file.path === activeFile.path;
-      });
-      if (leafForFile) return leafForFile;
+  private isContentWorkspaceLeaf(leaf: WorkspaceLeaf | null | undefined): leaf is WorkspaceLeaf {
+    if (!leaf) return false;
+    const viewType = leaf.view?.getViewType?.() ?? "";
+    if ([VIEW_TYPE, LEGACY_CANCIP_CHAT_VIEW_TYPE, CANCIP_AUTOMATION_RUNNER_VIEW_TYPE, CANCIP_REVIEW_VIEW_TYPE].includes(viewType)) {
+      return false;
     }
-    return this.app.workspace.getMostRecentLeaf();
+    const container = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl;
+    if (!container?.isConnected) return false;
+    const file = (leaf.view as unknown as { file?: TFile }).file;
+    return file instanceof TFile || viewType === CANCIP_DOCUMENT_VIEW_TYPE;
+  }
+
+  private isVisibleWorkspaceLeaf(leaf: WorkspaceLeaf): boolean {
+    const container = (leaf.view as unknown as { containerEl?: HTMLElement }).containerEl;
+    if (!container?.isConnected) return false;
+    const rect = container.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  }
+
+  private rememberContentWorkspaceLeaf(leaf: WorkspaceLeaf | null | undefined): void {
+    if (this.isContentWorkspaceLeaf(leaf)) this.lastContentWorkspaceLeaf = leaf;
+  }
+
+  activeWorkspaceLeaf(): WorkspaceLeaf | null {
+    const workspace = this.app.workspace;
+    const current = workspace.getLeaf(false);
+    this.rememberContentWorkspaceLeaf(current);
+    const leaves: WorkspaceLeaf[] = [];
+    workspace.iterateAllLeaves((leaf) => leaves.push(leaf));
+    const activeFile = workspace.getActiveFile();
+    const matchingFileLeaves = activeFile
+      ? leaves.filter((leaf) => {
+          const file = (leaf.view as unknown as { file?: TFile }).file;
+          return this.isContentWorkspaceLeaf(leaf) && file instanceof TFile && file.path === activeFile.path;
+        })
+      : [];
+    const choose = (candidates: WorkspaceLeaf[]): WorkspaceLeaf | null => {
+      if (current && candidates.includes(current)) return current;
+      if (this.lastContentWorkspaceLeaf && candidates.includes(this.lastContentWorkspaceLeaf)) return this.lastContentWorkspaceLeaf;
+      return candidates.find((leaf) => this.isVisibleWorkspaceLeaf(leaf)) ?? candidates[0] ?? null;
+    };
+    const fileLeaf = choose(matchingFileLeaves);
+    if (fileLeaf) {
+      this.lastContentWorkspaceLeaf = fileLeaf;
+      return fileLeaf;
+    }
+    if (this.isContentWorkspaceLeaf(current)) return current;
+    if (this.lastContentWorkspaceLeaf && leaves.includes(this.lastContentWorkspaceLeaf) && this.isContentWorkspaceLeaf(this.lastContentWorkspaceLeaf)) {
+      return this.lastContentWorkspaceLeaf;
+    }
+    const recent = workspace.getMostRecentLeaf();
+    if (this.isContentWorkspaceLeaf(recent)) {
+      this.lastContentWorkspaceLeaf = recent;
+      return recent;
+    }
+    const fallback = choose(leaves.filter((leaf) => this.isContentWorkspaceLeaf(leaf)));
+    if (fallback) this.lastContentWorkspaceLeaf = fallback;
+    return fallback;
   }
 
   isEditorAutocompleteViewActive(view: EditorView): boolean {
@@ -10787,10 +10886,13 @@ export default class CancipPlugin extends Plugin {
     if (this.builtinPrimeTtsWarmupTimer !== null) window.clearTimeout(this.builtinPrimeTtsWarmupTimer);
     const provider = isTtsProvider(this.settings.ttsProvider) ? this.settings.ttsProvider : DEFAULT_SETTINGS.ttsProvider;
     if (provider !== "auto" && provider !== "builtin-prime-tts") return;
+    const delayMs = provider === "builtin-prime-tts"
+      ? (Platform.isMobileApp ? 800 : 120)
+      : (Platform.isMobileApp ? 60000 : 5000);
     this.builtinPrimeTtsWarmupTimer = window.setTimeout(() => {
       this.builtinPrimeTtsWarmupTimer = null;
       void this.prewarmBuiltinPrimeTts();
-    }, Platform.isMobileApp ? 20 : 120);
+    }, delayMs);
   }
 
   private async prewarmBuiltinPrimeTts(): Promise<void> {
@@ -11784,11 +11886,11 @@ export default class CancipPlugin extends Plugin {
     if (this.shouldAutoTryBuiltinPrimeTts(text)) {
       if (!this.builtinPrimeTtsRuntime || !this.builtinPrimeTtsWarmupSynthDone) {
         void this.prewarmBuiltinPrimeTts();
-        return ["android-system", "web-speech", "custom-url", "builtin-prime-tts"];
+        return ["web-speech", "android-system", "custom-url", "builtin-prime-tts"];
       }
-      return ["builtin-prime-tts", "android-system", "web-speech", "custom-url"];
+      return ["builtin-prime-tts", "web-speech", "android-system", "custom-url"];
     }
-    return ["android-system", "web-speech", "custom-url"];
+    return ["web-speech", "android-system", "custom-url"];
   }
 
   private setActiveTtsParts(parts: string[], provider?: TtsProvider): void {
@@ -11872,8 +11974,8 @@ export default class CancipPlugin extends Plugin {
     this.activeTtsPartIndex = Math.max(0, Math.min(playChunks.length - 1, startIndex));
     this.syncTtsOverlay();
     void this.prepareTtsAudioOutput();
-    const runtime = await this.loadBuiltinPrimeTtsForPlayback(runId, text, playChunks, this.activeTtsPartIndex);
-    if (!runtime) return true;
+    const runtime = await this.loadBuiltinPrimeTtsForPlayback(runId);
+    if (!runtime) return false;
     if (this.activeTtsPrimeCacheRunId !== this.activeTtsPrimeCacheSessionId) {
       this.activeTtsPrimeCache.clear();
       this.activeTtsPrimeCacheRunId = this.activeTtsPrimeCacheSessionId;
@@ -11947,7 +12049,7 @@ export default class CancipPlugin extends Plugin {
     return true;
   }
 
-  private async loadBuiltinPrimeTtsForPlayback(runId: number, text: string, chunks: string[], startIndex: number): Promise<PrimeTtsRuntime | null> {
+  private async loadBuiltinPrimeTtsForPlayback(runId: number): Promise<PrimeTtsRuntime | null> {
     if (this.builtinPrimeTtsRuntime) return this.builtinPrimeTtsRuntime;
     const runtimePromise = this.loadBuiltinPrimeTts();
     const result = await Promise.race<PrimeTtsRuntime | "stall">([
@@ -11955,20 +12057,9 @@ export default class CancipPlugin extends Plugin {
       sleep(PRIME_TTS_RUNTIME_STALL_MS).then(() => "stall" as const)
     ]);
     if (result !== "stall") return result;
-    this.activeTtsLastError = "PrimeTTS runtime is still loading; deferred playback will resume automatically.";
-    void runtimePromise.then(() => {
-      if (this.activeTtsRunId !== runId) return;
-      if (this.activeTtsStartedAudio) return;
-      if (this.activeTtsMode === "stopped" || this.activeTtsMode === "idle") return;
-      this.activeTtsProvider = "builtin-prime-tts";
-      this.activeTtsMode = "playing";
-      this.activeTtsParts = chunks.slice();
-      this.activeTtsPartIndex = Math.max(0, Math.min(chunks.length - 1, startIndex));
-      void this.startBuiltinPrimeTts(text, chunks, this.activeTtsPartIndex);
-    }).catch((error) => {
-      if (this.activeTtsRunId !== runId) return;
-      this.activeTtsLastError = error instanceof Error ? error.message : String(error);
-      this.syncTtsOverlay();
+    this.activeTtsLastError = "PrimeTTS runtime did not become ready in time.";
+    void runtimePromise.catch((error) => {
+      if (this.activeTtsRunId === runId) this.activeTtsLastError = error instanceof Error ? error.message : String(error);
     });
     this.syncTtsOverlay();
     return null;
@@ -13351,20 +13442,7 @@ export default class CancipPlugin extends Plugin {
 
   private async readMarkdownRenderedText(file: TFile, maxChars: number): Promise<string> {
     const markdown = await this.app.vault.cachedRead(file);
-    const doc = activeDocument;
-    const container = doc.body.createDiv({ cls: "obcc-tts-render-scratch" });
-    try {
-      const scratchComponent = new MarkdownScratchComponent();
-      try {
-        await MarkdownRenderer.render(this.app, markdown, container, file.path, scratchComponent);
-      } finally {
-        scratchComponent.unload();
-      }
-      const renderedText = extractVisibleRenderedText(container);
-      return trimContext(renderedText || markdown, maxChars);
-    } finally {
-      container.remove();
-    }
+    return markdownToTtsText(markdown, maxChars);
   }
 
   private ttsLanguageCode(): string {
@@ -13953,7 +14031,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.settings = snapshot;
     this.syncAutocompleteProfileState();
     this.syncEditorAutocompleteMemorySettingsState();
-    this.settingsSaveQueuedSnapshot = snapshot;
+    // Temporary UI transactions exist only long enough to verify and restore a
+    // runtime state. Never sync them to another device or resurrect them after
+    // a reload when an unrelated setting happens to save mid-transaction.
+    this.settingsSaveQueuedSnapshot = {
+      ...snapshot,
+      uiButtonRules: snapshot.uiButtonRules.filter((rule) => rule.temporary !== true)
+    };
     if (!this.settingsSavePromise) {
       const operation = this.flushQueuedSettingsSaves();
       this.settingsSavePromise = operation;
@@ -15248,7 +15332,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private uiButtonScopeRoot(scope: UiButtonRule["scope"]): ParentNode {
     const doc = activeDocument;
     if (scope === "active") {
-      return (this.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc;
+      return (this.activeWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl
+        ?? doc.createDocumentFragment();
     }
     if (scope === "cancip") {
       return (this.chatLeaves()[0]?.view as unknown as { containerEl?: HTMLElement })?.containerEl ?? doc;
@@ -15783,10 +15868,23 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const rect = surface.getBoundingClientRect();
     const anchorX = Number.isFinite(x) && x > 0 ? x : rect.left + rect.width / 2;
     const anchorY = Number.isFinite(y) && y > 0 ? y : rect.top + rect.height / 2;
-    const width = Math.min(360, Math.max(240, win.innerWidth - 16));
-    const top = Math.max(8, Math.min(win.innerHeight - 54, anchorY < 100 ? anchorY + 10 : anchorY - 58));
-    const left = Math.max(8, Math.min(win.innerWidth - width - 8, anchorX - width / 2));
-    bubble.setCssStyles({ left: `${Math.round(left)}px`, top: `${Math.round(top)}px`, width: `${Math.round(width)}px` });
+    const viewport = win.visualViewport;
+    const viewportLeft = viewport?.offsetLeft ?? 0;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportWidth = viewport?.width ?? win.innerWidth;
+    const viewportHeight = viewport?.height ?? win.innerHeight;
+    const margin = 8;
+    const gap = 24;
+    const width = Math.min(360, Math.max(220, viewportWidth - margin * 2));
+    const left = Math.max(viewportLeft + margin, Math.min(viewportLeft + viewportWidth - width - margin, anchorX - width / 2));
+    bubble.setCssStyles({ left: `${Math.round(left)}px`, top: `${Math.round(viewportTop + margin)}px`, width: `${Math.round(width)}px`, visibility: "hidden" });
+    const bubbleHeight = Math.max(42, bubble.getBoundingClientRect().height);
+    const viewportBottom = viewportTop + viewportHeight;
+    const spaceBelow = viewportBottom - anchorY;
+    const placeBelow = spaceBelow >= bubbleHeight + gap || anchorY < viewportTop + viewportHeight / 2;
+    const idealTop = placeBelow ? anchorY + gap : anchorY - gap - bubbleHeight;
+    const top = Math.max(viewportTop + margin, Math.min(viewportBottom - bubbleHeight - margin, idealTop));
+    bubble.setCssStyles({ top: `${Math.round(top)}px`, visibility: "visible" });
     const stop = (event: Event) => event.stopPropagation();
     bubble.addEventListener("pointerdown", stop);
     bubble.addEventListener("click", stop);
@@ -17321,6 +17419,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const result = await buildObReviewGatePackage(this.app.vault.adapter, {
       title: typeof args.title === "string" ? args.title : undefined,
       vaultLabel: typeof args.vault_label === "string" ? args.vault_label : typeof args.vaultLabel === "string" ? args.vaultLabel : undefined,
+      sessionId: typeof args.sessionId === "string" ? args.sessionId : typeof args.session_id === "string" ? args.session_id : undefined,
       outputRoot: REVIEW_GATE_HIDDEN_DIR,
       output: requestedOutput,
       paths: args.paths,
@@ -17801,6 +17900,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       folder,
       title: typeof manifest.title === "string" && manifest.title.trim() ? manifest.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof manifest.generated_at === "string" ? manifest.generated_at : "",
+      sessionId: typeof manifest.session_id === "string" && manifest.session_id.trim() ? manifest.session_id.trim() : undefined,
       items: filterStoredReviewGateItems(normalizeReviewGateItems(manifest.items))
     };
   }
@@ -17851,6 +17951,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       folder,
       title: typeof summary.title === "string" && summary.title.trim() ? summary.title.trim() : reviewGateDisplayName(path),
       generatedAt: typeof summary.generated_at === "string" ? summary.generated_at : "",
+      sessionId: typeof summary.session_id === "string" && summary.session_id.trim() ? summary.session_id.trim() : undefined,
       items: filterStoredReviewGateItems(items)
     };
   }
@@ -21506,6 +21607,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       for (const task of tasks) {
         if (!task.enabled || !task.watchNewFiles || !automationNewFilePathMatches(task, path)) continue;
+        if (task.ignoreMachineFiles && isAutomationMachineFilePath(path)) continue;
         const paths = this.automationNewFilePaths.get(task.id) ?? new Set<string>();
         if (paths.size < AUTOMATION_NEW_FILE_MAX_BATCH) paths.add(path);
         this.automationNewFilePaths.set(task.id, paths);
@@ -21665,6 +21767,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             tasks
           }, null, 2)}\n`);
         }
+        this.automationStatePersistedSignature = stableTextHash(JSON.stringify({
+          schemaVersion: AUTOMATION_SCHEMA_VERSION,
+          dismissedTemplateIds: [...this.dismissedAutomationTemplateIds].sort(),
+          tasks
+        }));
         return tasks;
       } catch (error) {
         console.warn("Cancip automation state read failed", error);
@@ -21683,6 +21790,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
 
   async saveAutomations(tasks: AutomationTask[]): Promise<void> {
     const operation = this.automationStateWriteQueue.then(async () => {
+      const signature = stableTextHash(JSON.stringify({
+        schemaVersion: AUTOMATION_SCHEMA_VERSION,
+        dismissedTemplateIds: [...this.dismissedAutomationTemplateIds].sort(),
+        tasks
+      }));
+      if (signature === this.automationStatePersistedSignature) {
+        this.automationStateCache = { at: Date.now(), tasks };
+        return;
+      }
       await ensureFolder(this.app.vault.adapter, CANCIP_CONFIG_DIR);
       const payload = {
         schemaVersion: AUTOMATION_SCHEMA_VERSION,
@@ -21691,6 +21807,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         tasks
       };
       await this.app.vault.adapter.write(AUTOMATION_STATE_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+      this.automationStatePersistedSignature = signature;
       this.automationStateCache = { at: Date.now(), tasks };
       this.automationStateReadPromise = null;
     });
@@ -21739,6 +21856,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             hour: template.hour,
             minute: template.minute,
             watchNewFiles: template.watchNewFiles,
+            ignoreMachineFiles: template.ignoreMachineFiles,
             newFilePattern: template.newFilePattern,
             newFileDebounceSeconds: template.newFileDebounceSeconds,
             notifyMode: template.notifyMode,
@@ -21796,6 +21914,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         : existing?.sessionId ?? (shouldUseDedicatedSession ? automationDedicatedSessionId(newTaskId) : undefined),
       condition: typeof action.condition === "string" ? action.condition.trim() : existing?.condition,
       watchNewFiles: typeof action.watchNewFiles === "boolean" ? action.watchNewFiles : existing?.watchNewFiles ?? false,
+      ignoreMachineFiles: typeof action.ignoreMachineFiles === "boolean" ? action.ignoreMachineFiles : existing?.ignoreMachineFiles ?? true,
       newFilePattern: typeof action.newFilePattern === "string" ? action.newFilePattern.trim() || undefined : existing?.newFilePattern,
       newFileDebounceSeconds: typeof action.newFileDebounceSeconds === "number" ? action.newFileDebounceSeconds : existing?.newFileDebounceSeconds,
       notifyMode: isAutomationNotifyMode(action.notifyMode) ? action.notifyMode : existing?.notifyMode ?? "inherit",
@@ -22209,7 +22328,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const targetSessionId = await this.persistForegroundAutomationSession(executionTask);
       await view.prepareAutomationSession(executionTask, targetSessionId);
       const executionSessionId = view.automationSessionId();
-      if (!task.silent && executionSessionId) await this.openSessionById(executionSessionId);
+      if (!this.settings.preventAutomaticSessionOpen && !task.silent && executionSessionId) {
+        await this.openSessionById(executionSessionId);
+      }
       capture = this.beginAiVaultMutationCapture(`automation:${task.id}:${task.title}`);
       if (task.command) await this.primeAiVaultMutationCaptureReviewScope(capture);
       const result = executionTask.command
@@ -23378,6 +23499,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async activateView(): Promise<CancipView | null> {
+    this.rememberContentWorkspaceLeaf(this.app.workspace.getLeaf(false));
     const leaf = await this.ensureCancipLeaf(true);
     if (!leaf) return null;
     await this.app.workspace.revealLeaf(leaf);
@@ -23498,7 +23620,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   async openNativeMarkdownFile(file: TFile, mode: "preview" | "source" = "source"): Promise<boolean> {
-    const leaf = this.activeWorkspaceLeaf() ?? this.app.workspace.getMostRecentLeaf();
+    const leaves: WorkspaceLeaf[] = [];
+    this.app.workspace.iterateAllLeaves((candidate) => leaves.push(candidate));
+    const activeLeaf = this.activeWorkspaceLeaf() ?? this.app.workspace.getMostRecentLeaf();
+    let leaf = activeLeaf && !(activeLeaf.view instanceof CancipDocumentWorkbenchView) ? activeLeaf : null;
+    if (!leaf) {
+      leaf = leaves.find((candidate) => {
+        if (candidate.view instanceof CancipDocumentWorkbenchView) return false;
+        const candidateFile = (candidate.view as unknown as { file?: TFile }).file;
+        return candidateFile instanceof TFile && candidateFile.path === file.path;
+      }) ?? this.app.workspace.getLeaf("tab");
+    }
     if (!leaf) return false;
     await leaf.openFile(file, { state: { mode }, active: true });
     await this.app.workspace.revealLeaf(leaf);
@@ -24082,9 +24214,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private async ensureCancipLeaf(active: boolean): Promise<WorkspaceLeaf | null> {
+    if (active) this.rememberContentWorkspaceLeaf(this.app.workspace.getLeaf(false));
     let leaf: WorkspaceLeaf | null = this.chatLeaves().find((candidate) => candidate.view instanceof CancipView)
       ?? this.chatLeaves()[0];
-    if (!leaf) leaf = this.app.workspace.getRightLeaf(false) ?? null;
+    if (!leaf) {
+      leaf = this.app.workspace.getRightLeaf(false)
+        ?? this.app.workspace.getRightLeaf(true)
+        ?? null;
+    }
     if (!leaf) return null;
     if (!(leaf.view instanceof CancipView)) {
       const state = leaf.getViewState().state ?? {};
@@ -26335,6 +26472,21 @@ class CancipReviewLeafView extends ItemView {
     openNoteButton.addEventListener("click", () => {
       void openSourceNote();
     });
+    const openSessionButton = toolbar.createEl("button", {
+      cls: "obcc-review-icon-button",
+      attr: { type: "button", title: this.t("reviewGateOpenSession"), "aria-label": this.t("reviewGateOpenSession") }
+    });
+    setIcon(openSessionButton, "messages-square");
+    if (!data.sessionId) {
+      openSessionButton.disabled = true;
+      openSessionButton.addClass("is-disabled");
+    }
+    openSessionButton.addEventListener("click", () => {
+      if (!data.sessionId) return;
+      void this.plugin.openSessionById(data.sessionId).then((opened) => {
+        if (!opened) new Notice(this.t("sessionLoadFailed", { reason: data.sessionId ?? "" }));
+      });
+    });
     const renderToggleButton = toolbar.createEl("button", { cls: "obcc-review-icon-button", attr: { type: "button", title: this.t("reviewGateRender"), "aria-label": this.t("reviewGateRender") } });
     const renderToggleIcon = renderToggleButton.createSpan();
     setIcon(renderToggleIcon, this.sourceMode === "render" ? "code-2" : "eye");
@@ -26367,7 +26519,7 @@ class CancipReviewLeafView extends ItemView {
     const railInfo = toolbar.createDiv({ cls: "obcc-review-detail-rail-info" });
     railInfo.createDiv({ cls: "obcc-review-detail-rail-text", text: `${index}/${total} · ${reviewFileName(item.path)} · ${item.path}` });
 
-    for (const button of [back, openNoteButton, renderToggleButton, viewToggleButton, approveButton, cancelButton, editCorrectionButton]) {
+    for (const button of [back, openNoteButton, openSessionButton, renderToggleButton, viewToggleButton, approveButton, cancelButton, editCorrectionButton]) {
       button.addEventListener("pointerdown", (event) => event.stopPropagation());
     }
 
@@ -28555,27 +28707,7 @@ class CancipView extends ItemView {
     if (signature === this.queueStatusSignature) return;
     this.queueStatusSignature = signature;
     this.queueEl.empty();
-    this.queueEl.toggleClass("is-hidden", count === 0 && visiblePlan.length === 0);
-
-    if (visiblePlan.length) {
-      const done = visiblePlan.filter((todo) => todo.done).length;
-      const currentIndex = visiblePlan.findIndex((todo) => !todo.done);
-      const current = currentIndex >= 0 ? currentIndex + 1 : visiblePlan.length;
-      const plan = this.queueEl.createDiv({ cls: "obcc-live-plan" });
-      const planHead = plan.createDiv({ cls: "obcc-live-plan-head" });
-      setIcon(planHead.createSpan({ cls: "obcc-live-plan-icon" }), currentIndex >= 0 ? "list-checks" : "circle-check-big");
-      planHead.createSpan({ cls: "obcc-live-plan-count", text: `${this.t("planProgress", { current, total: visiblePlan.length })} · ${done}/${visiblePlan.length}` });
-      const list = plan.createDiv({ cls: "obcc-live-plan-list" });
-      for (const [index, todo] of visiblePlan.slice(0, 6).entries()) {
-        const state = todo.done ? "done" : index === currentIndex ? "current" : "pending";
-        const row = list.createDiv({ cls: `obcc-live-plan-item is-${state}` });
-        setIcon(row.createSpan({ cls: "obcc-live-plan-state" }), todo.done ? "check" : index === currentIndex ? "loader-circle" : "circle");
-        row.createSpan({ cls: "obcc-live-plan-text", text: `${index + 1}. ${todo.text}` });
-      }
-      if (visiblePlan.length > 6) {
-        list.createDiv({ cls: "obcc-live-plan-more", text: `+${visiblePlan.length - 6}` });
-      }
-    }
+    this.queueEl.toggleClass("is-hidden", count === 0);
 
     if (!count) return;
     const head = this.queueEl.createDiv({ cls: "obcc-queue-head" });
@@ -29820,7 +29952,7 @@ class CancipView extends ItemView {
   private toggleAddMenu(): void {
     const items: ComposerMenuItem[] = [
       { icon: "paperclip", label: this.t("addAttachment"), shortLabel: this.t("addAttachment"), action: () => this.openAttachmentPicker() },
-      { icon: "file-code-2", label: this.t("commandCreateInteractiveHtml"), shortLabel: "HTML", action: () => this.startOneClickHtml() },
+      { icon: "file-code-2", label: this.t("commandCreateInteractiveHtml"), shortLabel: "HTML", action: () => this.prepareOneClickHtmlComposer() },
       { icon: "file-search", label: this.t("addFileFolder"), shortLabel: this.t("mentionFile"), detail: "@", action: () => this.startMentionQuery("", "menu") },
       { icon: "plug", label: this.t("addPlugin"), shortLabel: "Plugin", detail: "@plugin", action: () => this.startMentionQuery("plugin", "menu") },
       { icon: "sparkles", label: this.t("addSkill"), shortLabel: "Skill", detail: "@skill", action: () => this.startMentionQuery("skill", "menu") },
@@ -32563,7 +32695,11 @@ class CancipView extends ItemView {
     const restoreSequence = this.sessionLoadSequence;
     const entries = (await this.readSessionHistoryIndex({ mergeFiles: false }))
       .filter((entry) => !entry.eventOnly && !entry.archived && entry.path && entry.messageCount > 0)
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+      .sort((a, b) => {
+        if (Boolean(a.lastOpenedAt) !== Boolean(b.lastOpenedAt)) return b.lastOpenedAt ? 1 : -1;
+        return cancipLatestTimestamp(b.lastOpenedAt, b.updatedAt, b.createdAt)
+          .localeCompare(cancipLatestTimestamp(a.lastOpenedAt, a.updatedAt, a.createdAt));
+      });
     if (restoreSequence !== this.sessionLoadSequence || this.messages.length || this.draftContext.length) return false;
     const latest = entries[0];
     if (!latest) return false;
@@ -32797,6 +32933,18 @@ class CancipView extends ItemView {
       return;
     }
     if (!rawPrompt) return;
+    if (rawPrompt.toLowerCase().startsWith(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().toLowerCase())) {
+      const requirement = rawPrompt.slice(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().length).trim();
+      if (!requirement) {
+        this.focusInput();
+        return;
+      }
+      this.inputEl.value = "";
+      this.clearAutocompleteSuggestion();
+      this.handleComposerInputChanged();
+      await this.startOneClickHtml(requirement);
+      return;
+    }
     this.inputEl.value = "";
     this.clearAutocompleteSuggestion();
     this.resizeInput();
@@ -32930,27 +33078,28 @@ class CancipView extends ItemView {
     return [this.makeReviewGateItem(path, oldText, newText, command === "cancip.annotate.pdf" ? "pdf-annotation" : "document-edit")];
   }
 
-  async startOneClickHtml(requirementOverride = ""): Promise<void> {
-    let requirement = requirementOverride.trim() || this.inputEl.value.trim();
-    const usedComposerInput = !requirementOverride.trim() && Boolean(requirement);
-    if (!requirement) {
-      requirement = (await promptHtmlRequirementModal(
-        this.app,
-        this.t("oneClickHtmlRequirement"),
-        this.t("oneClickHtmlRequirementPlaceholder"),
-        this.t("oneClickHtmlCreate"),
-        this.t("cancel")
-      ))?.trim() ?? "";
+  private prepareOneClickHtmlComposer(): void {
+    const current = this.inputEl.value.trimStart();
+    if (!current.toLowerCase().startsWith(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().toLowerCase())) {
+      this.inputEl.value = `${ONE_CLICK_HTML_COMPOSER_PREFIX}${current}`;
     }
-    if (!requirement) return;
+    const cursor = this.inputEl.value.length;
+    this.inputEl.setSelectionRange(cursor, cursor);
+    this.closeCommandMenu();
+    this.closeMentionPopup();
+    this.handleComposerInputChanged();
+    this.focusInput();
+  }
+
+  async startOneClickHtml(requirementOverride = ""): Promise<void> {
+    const requirement = requirementOverride.trim();
+    if (!requirement) {
+      this.prepareOneClickHtmlComposer();
+      return;
+    }
 
     const outputPath = await this.oneClickHtmlOutputPath(requirement);
     const prompt = buildOneClickHtmlPrompt(requirement, outputPath, isChineseLanguage(this.plugin.language()));
-    if (usedComposerInput) {
-      this.inputEl.value = "";
-      this.clearAutocompleteSuggestion();
-      this.handleComposerInputChanged();
-    }
     this.closeCommandMenu();
     this.closeMentionPopup();
     if (this.activeRequest) {
@@ -35681,7 +35830,7 @@ class CancipView extends ItemView {
     const operation = (async () => {
       while (this.currentSessionSaveQueued) {
         this.currentSessionSaveQueued = false;
-        const waitMs = Math.max(0, 180 - (Date.now() - this.sessionSaveLastAt));
+        const waitMs = Math.max(0, 650 - (Date.now() - this.sessionSaveLastAt));
         if (waitMs > 0) await sleep(waitMs);
         await this.saveCurrentSessionOnce();
         this.sessionSaveLastAt = Date.now();
@@ -35770,7 +35919,8 @@ class CancipView extends ItemView {
       snapshot.completedAt = timeline.completedAt || undefined;
       snapshot.stoppedAt = timeline.stoppedAt || undefined;
       snapshot.failedAt = timeline.failedAt || undefined;
-      snapshot.lastOpenedAt = previous?.lastOpenedAt || now.toISOString();
+      const lastOpenedAt = previous?.lastOpenedAt || (this.isBackgroundAutomationRunner() ? undefined : now.toISOString());
+      snapshot.lastOpenedAt = lastOpenedAt;
       snapshot.coldArchived = false;
       snapshot.archivedAt = "";
       delete snapshot.exportedAt;
@@ -35801,7 +35951,7 @@ class CancipView extends ItemView {
         archived: previous?.archived ?? false,
         coldArchived: false,
         archivedAt: "",
-        lastOpenedAt: previous?.lastOpenedAt || now.toISOString(),
+        lastOpenedAt,
         manualTitle: previous?.manualTitle ?? manualTitle,
         manualOrder: previous?.manualOrder,
         parentSessionId: parentSessionId || previous?.parentSessionId,
@@ -36608,7 +36758,7 @@ class CancipView extends ItemView {
         archived: existing?.archived ?? false,
         coldArchived: false,
         archivedAt: "",
-        lastOpenedAt: now,
+        lastOpenedAt: existing?.lastOpenedAt,
         manualTitle: existing?.manualTitle ?? Boolean(this.sessionTitleOverride),
         manualOrder: existing?.manualOrder,
         parentSessionId: this.parentSessionId || existing?.parentSessionId,
@@ -36631,7 +36781,7 @@ class CancipView extends ItemView {
           status,
           path: existing?.path ?? `${SESSION_HISTORY_DIR}/${this.sessionId}.json`
         },
-        { status, completedNotice, updatedAt: now, metadataUpdatedAt: now, lastOpenedAt: now, coldArchived: false, archivedAt: "", startedAt: timeline.startedAt, completedAt: timeline.completedAt, stoppedAt: timeline.stoppedAt, failedAt: timeline.failedAt }
+        { status, completedNotice, updatedAt: now, metadataUpdatedAt: now, coldArchived: false, archivedAt: "", startedAt: timeline.startedAt, completedAt: timeline.completedAt, stoppedAt: timeline.stoppedAt, failedAt: timeline.failedAt }
       );
       this.syncSessionChrome();
       if (this.activeHeaderMenu === "history" && this.headerMenuEl && !this.headerMenuEl.hasClass("is-hidden")) {
@@ -36896,6 +37046,10 @@ class CancipView extends ItemView {
 
   private sessionExportSnapshot(exportedAt: Date): Record<string, unknown> {
     const activeProfile = this.plugin.activeApiProfile();
+    const latestSessionProfile = [...this.messages]
+      .reverse()
+      .find((message) => message.role === "user" && message.apiProfile)?.apiProfile;
+    const sessionProfile = latestSessionProfile ?? this.redactedApiProfile(activeProfile);
     const timeline = this.currentSessionTimeline();
     return {
       schemaVersion: SESSION_EXPORT_SCHEMA_VERSION,
@@ -36926,12 +37080,12 @@ class CancipView extends ItemView {
       accessMode: this.plugin.settings.accessMode,
       includeCurrentFileForSession: this.includeCurrentFileForSession,
       apiProfile: {
-        id: activeProfile.id,
-        name: activeProfile.name,
-        apiMode: activeProfile.apiMode,
-        model: activeProfile.model,
-        hasApiUrl: Boolean(activeProfile.apiUrl),
-        hasApiKey: Boolean(activeProfile.apiKey)
+        id: sessionProfile.id,
+        name: sessionProfile.name,
+        apiMode: sessionProfile.apiMode,
+        model: sessionProfile.model,
+        hasApiUrl: sessionProfile.hasApiUrl,
+        hasApiKey: sessionProfile.hasApiKey
       },
       taskControl: this.taskControl ? { ...this.taskControl } : null,
       resumableTask: this.resumableTask ? { ...this.resumableTask } : null,
@@ -37033,7 +37187,7 @@ class CancipView extends ItemView {
     };
   }
 
-  private redactedApiProfile(profile: ApiProfile): ChatMessage["apiProfile"] {
+  private redactedApiProfile(profile: ApiProfile): NonNullable<ChatMessage["apiProfile"]> {
     return {
       id: profile.id,
       name: profile.name,
@@ -37464,9 +37618,16 @@ class CancipView extends ItemView {
     const directVaultFileTask = isSimpleDirectVaultFileTask(prompt);
     const vaultTargetOpenTask = promptRequestsVaultTargetOpen(prompt);
     const externalPathTask = Boolean(explicitExternalAbsolutePath(prompt));
-    const compactStateChange = (implementation && isSimpleSingleStepStateChangePrompt(prompt)) || directVaultFileTask || vaultTargetOpenTask || externalPathTask;
-    const skillExperienceNeed = !directVaultFileTask && !vaultTargetOpenTask && !externalPathTask && promptNeedsSkillExperienceRoute(prompt);
-    const memoryNeed = !directVaultFileTask && !vaultTargetOpenTask && !externalPathTask && (shouldUseMemoryRouter(prompt) || skillExperienceNeed);
+    const boundedUiButtonWorkflow = implementation
+      && capabilityPromptMentionsCurrentView(prompt)
+      && buttonWorkflowRequestedChanges(prompt).length > 0;
+    const compactStateChange = (implementation && isSimpleSingleStepStateChangePrompt(prompt))
+      || boundedUiButtonWorkflow
+      || directVaultFileTask
+      || vaultTargetOpenTask
+      || externalPathTask;
+    const skillExperienceNeed = !compactStateChange && !directVaultFileTask && !vaultTargetOpenTask && !externalPathTask && promptNeedsSkillExperienceRoute(prompt);
+    const memoryNeed = !compactStateChange && !directVaultFileTask && !vaultTargetOpenTask && !externalPathTask && (shouldUseMemoryRouter(prompt) || skillExperienceNeed);
     const memoryOnlyNeed = memoryNeed && !skillExperienceNeed && !promptMentionsToolOrLocalCapability(prompt);
     const skillSurfaceNeed = !memoryOnlyNeed && capabilityPromptMentionsSkillOrExperienceSurface(prompt);
     const pluginNeed = directVaultFileTask || vaultTargetOpenTask || memoryOnlyNeed || (skillSurfaceNeed && intent === "informational") ? false : shouldUsePluginRouter(prompt);
@@ -37540,19 +37701,25 @@ class CancipView extends ItemView {
     const directVaultFileTask = directVaultFileReadTask || directVaultFileMutationTask;
     const vaultTargetOpenTask = promptRequestsVaultTargetOpen(prompt);
     const externalPath = explicitExternalAbsolutePath(prompt);
+    const boundedUiButtonWorkflow = policy.intent === "implementation"
+      && capabilityPromptMentionsCurrentView(prompt)
+      && buttonWorkflowRequestedChanges(prompt).length > 0;
     const storedPrompt = this.plugin.settings.systemPrompt || DEFAULT_SYSTEM_PROMPT;
     const storedBase = runtimeCancipStorageText(storedPrompt).trim();
-    const base = directVaultFileTask || vaultTargetOpenTask || externalPath
+    const base = directVaultFileTask || vaultTargetOpenTask || externalPath || boundedUiButtonWorkflow
       ? (isChineseLanguage(this.plugin.language())
-          ? `你是 Cancip，Obsidian Vault 内的移动端 AI 助手。按用户语言完成当前${externalPath ? "库外路径只读能力检查" : vaultTargetOpenTask ? "文件定位、打开和验证" : `明确文件${directVaultFileReadTask ? "读取" : "改动"}`}。`
-          : `You are Cancip, a mobile assistant inside an Obsidian Vault. Complete the current ${externalPath ? "read-only external path capability check" : vaultTargetOpenTask ? "file resolution, open, and verification" : `explicit file ${directVaultFileReadTask ? "read" : "change"}`} in the user's language.`)
+          ? `你是 Cancip，Obsidian Vault 内的移动端 AI 助手。按用户语言完成当前${externalPath ? "库外路径只读能力检查" : vaultTargetOpenTask ? "文件定位、打开和验证" : boundedUiButtonWorkflow ? "运行时按钮操作和验证" : `明确文件${directVaultFileReadTask ? "读取" : "改动"}`}。`
+          : `You are Cancip, a mobile assistant inside an Obsidian Vault. Complete the current ${externalPath ? "read-only external path capability check" : vaultTargetOpenTask ? "file resolution, open, and verification" : boundedUiButtonWorkflow ? "runtime button operation and verification" : `explicit file ${directVaultFileReadTask ? "read" : "change"}`} in the user's language.`)
       : isBundledSystemPrompt(storedPrompt)
         ? defaultSystemPromptForNavigationPath(this.plugin.memoryPath("CANCIP_NAV.md"))
         : trimContext(storedBase, 1800);
     const accessPrompt = directVaultFileTask
       ? this.directVaultFileAccessPrompt()
       : this.plugin.settings.accessMode === "full-access" ? this.t("accessPromptFull") : this.t("accessPromptAsk");
-    const routedToolPrompt = directVaultFileReadTask
+    const nativeToolModel = profileUsesNativeCancipActionProtocol(this.plugin.activeApiProfile());
+    const routedToolPrompt = nativeToolModel && policy.includeToolProtocol
+      ? this.nativeToolProtocolPrompt()
+      : directVaultFileReadTask
       ? this.directVaultFileReadToolPrompt(prompt)
       : directVaultFileMutationTask
         ? this.directVaultFileMutationToolPrompt(prompt)
@@ -37575,17 +37742,19 @@ class CancipView extends ItemView {
     if (/\bcancip\b.{0,20}(?:version|版本|版本号|版本號)|(?:version|版本|版本号|版本號).{0,20}\bcancip\b/i.test(prompt)) {
       sections.push(`Cancip runtime version: ${this.plugin.manifest.version}`);
     }
-    if (!directVaultFileTask && !vaultTargetOpenTask && !externalPath && (policy.includeToolCatalog || policy.includeMemoryIndex || policy.includeWorkingState)) {
+    if (!directVaultFileTask && !vaultTargetOpenTask && !externalPath && !policy.compactStateChange && (policy.includeToolCatalog || policy.includeMemoryIndex || policy.includeWorkingState)) {
       sections.push(this.resourceRetrievalPolicyPrompt());
     }
     if (policy.includeAccessPrompt) {
       sections.push(accessPrompt);
-      if (!directVaultFileTask) sections.push(this.t("vaultNoteReviewPrompt"));
+      if (!directVaultFileTask && !boundedUiButtonWorkflow) sections.push(this.t("vaultNoteReviewPrompt"));
     }
     if (policy.includeToolProtocol || policy.includeToolCatalog) sections.push(toolPrompt);
     if (/(?:自动化|定时|通知|新文件触发|automation|schedule|notification|new.?file)/i.test(prompt)) sections.push(this.automationAgentPolicyPrompt());
     if (!directVaultFileTask && policy.intent === "implementation" && (policy.includeAutoSkills || promptNeedsSkillExperienceRoute(prompt))) sections.push(this.skillRoutePolicyPrompt());
-    if (!directVaultFileTask && (policy.includeToolProtocol || (policy.intent === "implementation" && policy.includeWorkingState))) sections.push(this.t("finalAnswerFormatPrompt"));
+    if (!directVaultFileTask && (policy.includeToolProtocol || (policy.intent === "implementation" && policy.includeWorkingState))) {
+      sections.push(nativeToolModel ? this.nativeFinalAnswerPrompt() : this.t("finalAnswerFormatPrompt"));
+    }
     if (isOneClickHtmlPrompt(prompt)) sections.push(this.oneClickHtmlSystemPrompt());
     sections.push(modeInstruction);
     if (this.mode === "search") sections.push(this.universalSearchPolicyPrompt());
@@ -37641,6 +37810,18 @@ class CancipView extends ItemView {
       "Do not guess or ask for files. Use the smallest useful action from the tool index.",
       "If blocked, name the failed and next executable routes."
     ].join("\n");
+  }
+
+  private nativeToolProtocolPrompt(): string {
+    return this.plugin.language().startsWith("zh")
+      ? "工具协议：需要 Obsidian 状态或实际改动时调用原生 cancip_action；一次只调用一个动作，等待真实结果后再决定下一步。未知命令先调用 cancip.tools.index，不编造命令；无需工具时直接短答。"
+      : "Tool protocol: use the native cancip_action tool for Obsidian state or mutations, one action at a time, and wait for the real result. Use cancip.tools.index before an unknown command; never invent commands. Answer directly when no tool is needed.";
+  }
+
+  private nativeFinalAnswerPrompt(): string {
+    return this.plugin.language().startsWith("zh")
+      ? "收尾：只根据真实工具结果给出精简最终回答；不重复过程、原始 JSON、路径清单或程序化改动卡。未完成就说明具体阻塞，不要假装完成。"
+      : "Close with a concise final answer based only on real tool results. Do not repeat process, raw JSON, path lists, or programmatic change cards. State an exact blocker instead of claiming completion.";
   }
 
   private lightweightToolCatalogPrompt(): string {
@@ -38241,7 +38422,8 @@ class CancipView extends ItemView {
     onAttempt?: (progress: ModelCallRetryProgress) => void,
     profileOverride?: ApiProfile,
     onStream?: ModelStreamCallback,
-    directInput = false
+    directInput = false,
+    allowNativeTools = true
   ): Promise<string> {
     let lastError = "";
     const attempts: ModelCallAudit[] = [];
@@ -38250,9 +38432,9 @@ class CancipView extends ItemView {
         onAttempt?.({ attempt, maxAttempts: MODEL_CALL_MAX_ATTEMPTS, reason: lastError, retrying: true });
       }
       try {
-        const answer = await withTimeout(this.callModel(prompt, context, rawPrompt, profileOverride, onStream, directInput), timeoutMs, timeoutMessage);
+        const answer = await withTimeout(this.callModel(prompt, context, rawPrompt, profileOverride, onStream, directInput, allowNativeTools), timeoutMs, timeoutMessage);
         if (answer.trim()) {
-          const completed = await this.completeTruncatedModelReply(answer, prompt, context, rawPrompt, timeoutMs, profileOverride, onStream, directInput);
+          const completed = await this.completeTruncatedModelReply(answer, prompt, context, rawPrompt, timeoutMs, profileOverride, onStream, directInput, allowNativeTools);
           this.prependModelCallAudits(attempts);
           return completed;
         }
@@ -38285,7 +38467,8 @@ class CancipView extends ItemView {
     timeoutMs: number,
     profileOverride?: ApiProfile,
     onStream?: ModelStreamCallback,
-    directInput = false
+    directInput = false,
+    allowNativeTools = true
   ): Promise<string> {
     let combined = initialAnswer;
     for (let continuation = 1; continuation <= 2; continuation += 1) {
@@ -38317,7 +38500,8 @@ class CancipView extends ItemView {
             onStream
               ? (progress) => onStream({ text: mergeModelContinuation(combined, progress.text), done: progress.done })
               : undefined,
-            directInput
+            directInput,
+            allowNativeTools
           ),
           timeoutMs,
           "model continuation timed out"
@@ -38434,7 +38618,7 @@ class CancipView extends ItemView {
     };
   }
 
-  private async callModel(prompt: string, context: { system: string; contextText: string; images?: ImageAttachmentContext[] }, rawPrompt = prompt, profileOverride?: ApiProfile, onStream?: ModelStreamCallback, directInput = false): Promise<string> {
+  private async callModel(prompt: string, context: { system: string; contextText: string; images?: ImageAttachmentContext[] }, rawPrompt = prompt, profileOverride?: ApiProfile, onStream?: ModelStreamCallback, directInput = false, allowNativeTools = true): Promise<string> {
     const profile = profileOverride ?? this.activeRequestApiProfile ?? this.plugin.activeApiProfile();
     const maxOutputTokens = modelOutputTokenBudgetForPrompt(rawPrompt, this.plugin.settings.maxOutputTokens);
     const inputText = directInput
@@ -38462,22 +38646,22 @@ class CancipView extends ItemView {
 
     try {
       if (mode === "responses") {
-        return finish(await this.callResponsesApi(profile, endpoint.responsesUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens));
+        return finish(await this.callResponsesApi(profile, endpoint.responsesUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens, allowNativeTools));
       }
 
       if (mode === "compatible") {
         this.lastResponsesState = null;
-        return finish(await this.callCompatibleApi(profile, endpoint.chatUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens));
+        return finish(await this.callCompatibleApi(profile, endpoint.chatUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens, allowNativeTools));
       }
 
       const preferredMode = preferredAutomaticApiMode(profile.apiUrl);
       const fallbackMode: Exclude<ApiMode, "auto"> = preferredMode === "responses" ? "compatible" : "responses";
       const callByMode = async (candidate: Exclude<ApiMode, "auto">): Promise<string> => {
         if (candidate === "responses") {
-          return await this.callResponsesApi(profile, endpoint.responsesUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens);
+          return await this.callResponsesApi(profile, endpoint.responsesUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens, allowNativeTools);
         }
         this.lastResponsesState = null;
-        return await this.callCompatibleApi(profile, endpoint.chatUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens);
+        return await this.callCompatibleApi(profile, endpoint.chatUrl, context.system, inputText, context.images ?? [], onStream, maxOutputTokens, allowNativeTools);
       };
       try {
         return finish(await callByMode(preferredMode));
@@ -38512,8 +38696,10 @@ class CancipView extends ItemView {
     }
   }
 
-  private async callCompatibleApi(profile: ApiProfile, url: string, system: string, inputText: string, images: ImageAttachmentContext[] = [], onStream?: ModelStreamCallback, maxOutputTokens = this.plugin.settings.maxOutputTokens): Promise<string> {
+  private async callCompatibleApi(profile: ApiProfile, url: string, system: string, inputText: string, images: ImageAttachmentContext[] = [], onStream?: ModelStreamCallback, maxOutputTokens = this.plugin.settings.maxOutputTokens, allowNativeTools = true): Promise<string> {
     const settings = this.plugin.settings;
+    const nativeToolProfile = profileUsesNativeCancipActionProtocol(profile);
+    const nativeTool = allowNativeTools ? nativeCancipActionToolForProfile(profile, "compatible") : null;
     const userContent = images.length
       ? [
           { type: "text", text: inputText },
@@ -38532,7 +38718,16 @@ class CancipView extends ItemView {
         { role: "user", content: userContent }
       ]
     };
-    if (shouldDisableOptionalReasoning(profile.apiUrl, maxOutputTokens)) {
+    if (nativeToolProfile) {
+      delete body.max_tokens;
+      body.max_completion_tokens = maxOutputTokens;
+      body.reasoning_effort = "none";
+      body.verbosity = "low";
+      if (nativeTool) {
+        body.tools = [nativeTool];
+        body.tool_choice = "auto";
+      }
+    } else if (shouldDisableOptionalReasoning(profile.apiUrl, maxOutputTokens)) {
       body.reasoning = { effort: "none", exclude: true };
     }
     this.lastModelCallAudit = { mode: "compatible", url, requestBody: body };
@@ -38550,7 +38745,7 @@ class CancipView extends ItemView {
       STREAMING_UNAVAILABLE_UNTIL.delete(streamingKey);
       try { window.localStorage.removeItem(streamingStorageKey); } catch { /* Ignore unavailable device storage. */ }
     }
-    if (onStream && streamingUnavailableUntil <= Date.now()) {
+    if (onStream && !nativeToolProfile && streamingUnavailableUntil <= Date.now()) {
       try {
         const streamed = await this.postJsonStream(url, { ...body, stream: true }, profile.apiKey, "compatible", onStream, extractCompatibleStreamDelta);
         STREAMING_UNAVAILABLE_UNTIL.delete(streamingKey);
@@ -38588,7 +38783,7 @@ class CancipView extends ItemView {
       onStream?.({ text: "", done: true });
       throw error;
     }
-    const text = sanitizeModelVisibleAnswer(extractResponseText(response.json) || extractNonJsonText(response.text));
+    const text = sanitizeModelVisibleAnswer(extractModelResponseText(response.json) || extractNonJsonText(response.text));
     const usage = extractTokenUsage(response.json, estimateRequestTokens(system, inputText), text);
     this.lastModelCallAudit = {
       ...(this.lastModelCallAudit ?? { mode: "compatible", url, requestBody: body }),
@@ -38604,8 +38799,10 @@ class CancipView extends ItemView {
     throw new Error(`Chat Completions returned no assistant text (${describeResponseShape(response.json)})`);
   }
 
-  private async callResponsesApi(profile: ApiProfile, url: string, instructions: string, inputText: string, images: ImageAttachmentContext[] = [], onStream?: ModelStreamCallback, maxOutputTokens = this.plugin.settings.maxOutputTokens): Promise<string> {
+  private async callResponsesApi(profile: ApiProfile, url: string, instructions: string, inputText: string, images: ImageAttachmentContext[] = [], onStream?: ModelStreamCallback, maxOutputTokens = this.plugin.settings.maxOutputTokens, allowNativeTools = true): Promise<string> {
     const settings = this.plugin.settings;
+    const nativeToolProfile = profileUsesNativeCancipActionProtocol(profile);
+    const nativeTool = allowNativeTools ? nativeCancipActionToolForProfile(profile, "responses") : null;
     const input = images.length
       ? [{
           role: "user",
@@ -38626,7 +38823,14 @@ class CancipView extends ItemView {
       max_output_tokens: maxOutputTokens,
       prompt_cache_key: `cancip-${stableTextHash(`${profile.model}\n${instructions}`)}`
     } as Record<string, unknown>;
-    if (shouldDisableOptionalReasoning(profile.apiUrl, maxOutputTokens)) {
+    if (nativeToolProfile) {
+      body.reasoning = { effort: "none" };
+      body.text = { verbosity: "low" };
+      if (nativeTool) {
+        body.tools = [nativeTool];
+        body.tool_choice = "auto";
+      }
+    } else if (shouldDisableOptionalReasoning(profile.apiUrl, maxOutputTokens)) {
       body.reasoning = { effort: "none", exclude: true };
     }
     const previousResponseId = this.previousResponseIdFor(profile);
@@ -38646,7 +38850,7 @@ class CancipView extends ItemView {
       STREAMING_UNAVAILABLE_UNTIL.delete(streamingKey);
       try { window.localStorage.removeItem(streamingStorageKey); } catch { /* Ignore unavailable device storage. */ }
     }
-    if (onStream && streamingUnavailableUntil <= Date.now()) {
+    if (onStream && !nativeToolProfile && streamingUnavailableUntil <= Date.now()) {
       try {
         const streamed = await this.postJsonStream(url, { ...body, stream: true }, profile.apiKey, "responses", onStream, extractResponsesStreamDelta);
         STREAMING_UNAVAILABLE_UNTIL.delete(streamingKey);
@@ -38688,7 +38892,7 @@ class CancipView extends ItemView {
       onStream?.({ text: "", done: true });
       throw error;
     }
-    const text = sanitizeModelVisibleAnswer(extractResponseText(response.json) || extractNonJsonText(response.text));
+    const text = sanitizeModelVisibleAnswer(extractModelResponseText(response.json) || extractNonJsonText(response.text));
     const usage = extractTokenUsage(response.json, estimateRequestTokens(instructions, inputText), text);
     const responseId = extractResponseId(response.json);
     if (responseId) {
@@ -40689,6 +40893,40 @@ class CancipView extends ItemView {
   }
 
   private currentActionExecutionStage(actions: CancipAction[]): CancipAction[] {
+    const originalPrompt = this.previousActionableUserPrompt();
+    const taskRuns = this.currentTaskToolRuns();
+    const buttonCommands = actions.filter((action): action is Extract<CancipAction, { type: "command" }> =>
+      action.type === "command"
+      && [
+        "obsidian.ui.buttons",
+        "obsidian.ui.buttonRules",
+        "obsidian.ui.applyButtonRules"
+      ].includes(normalizeCommandBusName(action.command))
+    );
+    const modelSelectedButtonWorkflow = classifyPromptIntent(originalPrompt) === "implementation"
+      && buttonCommands.some((action) => normalizeCommandBusName(action.command) === "obsidian.ui.buttons")
+      && buttonCommands.some((action) => normalizeCommandBusName(action.command) !== "obsidian.ui.buttons");
+    const activeScopedButtonWorkflow = classifyPromptIntent(originalPrompt) === "implementation"
+      && buttonWorkflowTargetsActiveScope(originalPrompt)
+      && buttonWorkflowRequestedChanges(originalPrompt).length > 0
+      && buttonCommands.some((action) => normalizeCommandBusName(action.command) === "obsidian.ui.buttons");
+    const hasActiveButtonEvidence = taskRuns.some((run) => run.status === "executed"
+      && run.action.type === "command"
+      && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
+      && uiButtonCommandScope(run.action.args) === "active");
+    if ((modelSelectedButtonWorkflow || activeScopedButtonWorkflow) && !hasActiveButtonEvidence) {
+      const firstInspection = buttonCommands.find((action) => normalizeCommandBusName(action.command) === "obsidian.ui.buttons");
+      if (firstInspection) {
+        const staged: CancipAction[] = actions.filter((action) => action.type === "todo");
+        staged.push({ ...firstInspection, args: { ...(firstInspection.args ?? {}), scope: "active" } });
+        void this.recordSessionEvent({
+          kind: "prompt.protocol_retry",
+          status: "staged-ui-button-discovery",
+          detail: "Executed only obsidian.ui.buttons scope=active before peer/rule inspection or mutation."
+        });
+        return staged;
+      }
+    }
     const hasObservation = actions.some((action) => isReadOnlyAction(action));
     const hasDependentEffect = actions.some((action) => !isReadOnlyAction(action) && action.type !== "todo");
     if (!hasObservation || !hasDependentEffect) return actions;
@@ -40752,13 +40990,77 @@ class CancipView extends ItemView {
   }
 
   private prepareUiButtonWorkflowAction(action: CancipAction, directive: UiButtonWorkflowDirective | null): CancipAction {
-    if (directive?.phase !== "apply" || !directive.restoreRequested || action.type !== "command") return action;
-    if (normalizeCommandBusName(action.command) !== "obsidian.ui.applyButtonRules") return action;
+    if (!directive || action.type !== "command") return action;
+    const command = normalizeCommandBusName(action.command);
     const args = action.args ?? {};
-    if (!normalizeUiButtonRules(args.rules).length) return action;
+    if (command === "obsidian.ui.buttons") {
+      if (directive.phase === "inspect-buttons") {
+        return { ...action, args: { ...args, scope: "active" } };
+      }
+      if (directive.phase === "inspect-peers" || directive.phase === "verify-apply" || directive.phase === "verify-reset") {
+        return {
+          ...action,
+          args: {
+            ...args,
+            ...(directive.selector ? { selector: directive.selector } : {}),
+            ...(directive.label ? { label: directive.label } : {}),
+            scope: directive.verificationScope ?? (directive.isolationRequired ? "global" : directive.scope ?? "active"),
+            includeSameLabel: directive.isolationRequired === true,
+            limit: directive.isolationRequired ? 80 : clampInt(args.limit, 8, 1, 80)
+          }
+        };
+      }
+      return action;
+    }
+    if (command === "obsidian.ui.buttonRules" && directive.phase === "inspect-rules") {
+      return {
+        ...action,
+        args: {
+          ...args,
+          ...(directive.selector ? { selector: directive.selector } : {}),
+          ...(directive.scope ? { scope: directive.scope } : {}),
+          limit: 12
+        }
+      };
+    }
+    if (command !== "obsidian.ui.applyButtonRules" || directive.phase !== "apply") return action;
+    const incoming = normalizeUiButtonRules(args.rules);
+    if (!incoming.length) return action;
+    const allowed = new Set(directive.allowedChanges ?? []);
+    const restrictChanges = allowed.size > 0;
+    const rules = incoming.map((rule) => {
+      const selector = directive.selector || rule.selector;
+      const label = directive.label || (rule.label === rule.selector ? uiButtonLabelFromSelector(selector) : rule.label);
+      const scope = directive.scope ?? rule.scope;
+      const identityChanged = selector !== rule.selector || label !== rule.label || scope !== rule.scope;
+      const temporary = directive.restoreRequested === true;
+      const temporaryId = temporary
+        ? `cancip-temporary-${stableRuleId(`${scope}:${selector}:${normalizeUiButtonLabel(label)}`)}`
+        : rule.id;
+      return {
+        ...rule,
+        id: temporary ? temporaryId : identityChanged ? "" : rule.id,
+        selector,
+        label,
+        scope,
+        temporary: temporary || rule.temporary ? true : undefined,
+        hidden: allowed.has("hidden") && directive.expectedHidden !== undefined
+          ? directive.expectedHidden
+          : !restrictChanges || allowed.has("hidden") ? rule.hidden : false,
+        order: !restrictChanges || allowed.has("order") ? rule.order : 0,
+        title: !restrictChanges || allowed.has("title") ? rule.title : undefined,
+        icon: !restrictChanges || allowed.has("icon") ? rule.icon : undefined,
+        mediaPath: !restrictChanges || allowed.has("media") ? rule.mediaPath : undefined,
+        effect: !restrictChanges || allowed.has("effect") ? rule.effect : undefined
+      };
+    });
     return {
       ...action,
-      args: { ...args, preserveExisting: true }
+      args: {
+        ...args,
+        rules,
+        ...(directive.restoreRequested ? { preserveExisting: true } : {})
+      }
     };
   }
 
@@ -41021,9 +41323,11 @@ class CancipView extends ItemView {
       .filter((run) => run.action.type === "todo")
       .map((run) => JSON.stringify(run.action))
       .join(" ");
-    const requestsRestore = buttonWorkflowRequestsRestore(`${originalPrompt}\n${planText}`);
-
-    const buttonList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttons" && run.status === "executed");
+    const workflowText = `${originalPrompt}\n${planText}`;
+    const requestsRestore = buttonWorkflowRequestsRestore(workflowText);
+    const isolationRequired = buttonWorkflowRequiresPeerIsolation(workflowText);
+    const allowedChanges = buttonWorkflowRequestedChanges(workflowText);
+    const requestedHidden = buttonWorkflowRequestedHiddenState(workflowText);
     const ruleList = [...relevant].reverse().find(({ command, run }) => command === "obsidian.ui.buttonRules" && run.status === "executed");
     const mutations = relevant.filter(({ command, run }) => {
       if (command !== "obsidian.ui.applyButtonRules" || run.status !== "executed" || run.action.type !== "command") return false;
@@ -41032,14 +41336,84 @@ class CancipView extends ItemView {
         || normalizeUiButtonRules(args.rules).length > 0
         || normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules).length > 0;
     });
+    const firstMutationIndex = mutations[0]?.index ?? Number.POSITIVE_INFINITY;
+    const discoveryLists = relevant.filter(({ command, run, index }) =>
+      command === "obsidian.ui.buttons"
+      && run.status === "executed"
+      && run.action.type === "command"
+      && index < firstMutationIndex
+    );
+    const targetButtonList = isolationRequired
+      ? [...discoveryLists].reverse().find(({ run }) => uiButtonCommandScope(run.action.type === "command" ? run.action.args : undefined) === "active")
+      : discoveryLists[discoveryLists.length - 1];
+    const targetEvidence = targetButtonList?.run.action.type === "command"
+      ? uiButtonTargetEvidenceFromResult(
+        targetButtonList.run.result || "",
+        originalPrompt,
+        uiButtonActionSelector(targetButtonList.run.action.args)
+      )
+      : null;
+    const targetSelector = targetEvidence?.selector ?? "";
+    const targetLabel = targetEvidence?.label || uiButtonLabelFromSelector(targetSelector);
+    const targetScope = targetButtonList?.run.action.type === "command"
+      ? uiButtonCommandScope(targetButtonList.run.action.args)
+      : "active";
+    const peerButtonList = [...discoveryLists].reverse().find(({ run }) =>
+      run.action.type === "command"
+      && uiButtonCommandScope(run.action.args) === "global"
+      && run.action.args?.includeSameLabel === true
+      && (!targetSelector || uiButtonActionSelector(run.action.args) === targetSelector)
+    );
 
     if (!mutations.length) {
-      if (!buttonList) return { phase: "inspect-buttons" };
-      if (!ruleList) return { phase: "inspect-rules" };
+      if (!targetButtonList || !targetSelector) {
+        return {
+          phase: "inspect-buttons",
+          isolationRequired,
+          allowedChanges,
+          expectedHidden: requestedHidden,
+          targetUnresolved: Boolean(targetButtonList),
+          evidence: targetButtonList
+            ? trimContext(targetButtonList.run.result || targetButtonList.run.error || "", 1800)
+            : undefined
+        };
+      }
+      if (isolationRequired && !peerButtonList) {
+        return {
+          phase: "inspect-peers",
+          selector: targetSelector,
+          label: targetLabel,
+          scope: targetScope,
+          verificationScope: "global",
+          isolationRequired,
+          allowedChanges,
+          expectedHidden: requestedHidden
+        };
+      }
+      if (!ruleList) {
+        return {
+          phase: "inspect-rules",
+          selector: targetSelector,
+          label: targetLabel,
+          scope: targetScope,
+          isolationRequired,
+          allowedChanges,
+          expectedHidden: requestedHidden
+        };
+      }
       return {
         phase: "apply",
+        selector: targetSelector,
+        label: targetLabel,
+        scope: targetScope,
         restoreRequested: requestsRestore,
-        evidence: trimContext(buttonList.run.result || buttonList.run.error || "", 1200)
+        isolationRequired,
+        allowedChanges,
+        expectedHidden: requestedHidden,
+        evidence: trimContext([
+          targetButtonList.run.result || targetButtonList.run.error || "",
+          peerButtonList?.run.result || peerButtonList?.run.error || ""
+        ].filter(Boolean).join("\n\n"), 1800)
       };
     }
 
@@ -41058,8 +41432,10 @@ class CancipView extends ItemView {
     const targetRule = incoming[0] ?? previousAppliedRule;
     const resetTarget = resetTargets[0];
     const selector = targetRule?.selector ?? resetTarget?.selector;
-    const label = targetRule?.label ?? resetTarget?.label;
+    const rawLabel = targetRule?.label ?? resetTarget?.label ?? targetLabel;
+    const label = rawLabel && rawLabel !== selector ? rawLabel : uiButtonLabelFromSelector(selector || "") || targetLabel;
     const scope = targetRule?.scope ?? resetTarget?.scope;
+    const verificationScope: UiButtonRule["scope"] = isolationRequired ? "global" : scope ?? "active";
     const appliedRuleId = uiButtonRuleIdFromMutationResult(
       (isReset ? previousAppliedMutation?.run.result : latest.run.result) || ""
     );
@@ -41069,23 +41445,32 @@ class CancipView extends ItemView {
       if (command !== "obsidian.ui.buttons" || run.status !== "executed" || run.action.type !== "command") return false;
       const requestedSelector = typeof run.action.args?.selector === "string" ? run.action.args.selector.trim() : "";
       const result = run.result || "";
+      if (uiButtonCommandScope(run.action.args) !== verificationScope) return false;
+      if (isolationRequired && run.action.args?.includeSameLabel !== true) return false;
       if (selector) return requestedSelector === selector || result.includes(selector);
       return label ? result.includes(label) : true;
     });
-    const verifiedAfterMutation = verificationRuns.some(({ run }) => {
-      const result = run.result || "";
-      const targetFound = selector ? result.includes(selector) : label ? result.includes(label) : !/^\s*(?:none|无|没有)\b/i.test(result);
-      if (!targetFound) return false;
-      const reportedHidden = /\[hidden\]|data-cancip-ui-(?:rule-)?hidden\s*=\s*["']?true/i.test(result);
-      if (expectedHidden === true) return reportedHidden;
-      if (expectedHidden === false) return !reportedHidden;
-      return true;
-    });
-    const verificationAttempt = entries.filter(({ command, run }) => {
+    const baselinePeerResult = peerButtonList?.run.result || "";
+    const verifiedAfterMutation = verificationRuns.some(({ run }) => uiButtonWorkflowVerificationMatches(
+      run.result || "",
+      expectedHidden,
+      isolationRequired,
+      baselinePeerResult
+    ));
+    const matchingVerificationReads = entries.filter(({ command, run }) => {
       if (command !== "obsidian.ui.buttons" || run.action.type !== "command") return false;
       const requestedSelector = typeof run.action.args?.selector === "string" ? run.action.args.selector.trim() : "";
-      return Boolean(selector && requestedSelector === selector);
-    }).length + 1;
+      return Boolean(selector
+        && requestedSelector === selector
+        && uiButtonCommandScope(run.action.args) === verificationScope
+        && (!isolationRequired || run.action.args?.includeSameLabel === true));
+    });
+    const maxPreviousRefresh = matchingVerificationReads.reduce((maximum, { run }) => {
+      if (run.action.type !== "command") return maximum;
+      const value = Number(run.action.args?.refresh);
+      return Number.isFinite(value) ? Math.max(maximum, Math.max(0, Math.trunc(value))) : maximum;
+    }, 0);
+    const verificationAttempt = Math.max(matchingVerificationReads.length, maxPreviousRefresh) + 1;
 
     if (!verifiedAfterMutation) {
       return {
@@ -41093,16 +41478,20 @@ class CancipView extends ItemView {
         selector,
         label,
         scope,
+        verificationScope,
         ruleId,
+        restoreRequested: requestsRestore,
+        isolationRequired,
+        allowedChanges,
         expectedHidden,
         verificationAttempt
       };
     }
-    if (isReset) return { phase: "done", selector, label, scope, ruleId };
+    if (isReset) return { phase: "done", selector, label, scope, verificationScope, ruleId, isolationRequired, allowedChanges };
 
     return requestsRestore
-      ? { phase: "reset", selector, label, scope, ruleId, expectedHidden: targetRule?.hidden }
-      : { phase: "done", selector, label, scope, ruleId };
+      ? { phase: "reset", selector, label, scope, verificationScope, ruleId, isolationRequired, allowedChanges, expectedHidden: targetRule?.hidden }
+      : { phase: "done", selector, label, scope, verificationScope, ruleId, isolationRequired, allowedChanges };
   }
 
   private uiButtonWorkflowStateForModel(runs: ToolRun[], originalPrompt: string): string {
@@ -41111,22 +41500,38 @@ class CancipView extends ItemView {
     const chinese = isChineseLanguage(this.plugin.language());
     const selectorJson = JSON.stringify(directive.selector ?? "<exact selector from buttons>");
     const scopeJson = JSON.stringify(directive.scope ?? "active");
+    const verificationScopeJson = JSON.stringify(directive.verificationScope ?? (directive.isolationRequired ? "global" : directive.scope ?? "active"));
+    const labelJson = JSON.stringify(directive.label ?? "");
+    const peerArgs = `{"scope":${verificationScopeJson},"selector":${selectorJson},"label":${labelJson},"includeSameLabel":${directive.isolationRequired === true},"limit":${directive.isolationRequired ? 80 : 8}`;
     const verificationAttempt = directive.verificationAttempt ?? 1;
     const resetTarget = directive.ruleId
       ? `{\"id\":${JSON.stringify(directive.ruleId)}}`
       : `{\"selector\":${selectorJson},\"scope\":${scopeJson}}`;
     if (chinese) {
       if (directive.phase === "inspect-buttons") {
-        return "按钮工具链状态：模型已经选择运行时 UI 路线。下一步只执行 obsidian.ui.buttons 读取当前按钮；不要搜 Vault、猜配置文件、读源码或重复 help。";
+        if (directive.targetUnresolved) {
+          return [
+            "按钮工具链状态：活动按钮已读取，但原问题没有与任何 label 形成可信唯一匹配，因此没有擅自采用列表第一项。",
+            `真实候选：\n${directive.evidence || "见上方 obsidian.ui.buttons 结果。"}`,
+            "下一步只执行一次 obsidian.ui.buttons scope=active，并填写从真实候选中选出的精确 selector；不能再次空参数列出全部按钮，不能读取规则或修改按钮。"
+          ].join("\n");
+        }
+        return "按钮工具链状态：模型已经选择运行时 UI 路线。下一步只执行 obsidian.ui.buttons scope=active 读取当前目标按钮；不要搜 Vault、猜配置文件、读源码或重复 help。";
+      }
+      if (directive.phase === "inspect-peers") {
+        return `按钮工具链状态：当前目标已读取，但原任务要求不影响其他位置。下一步只执行 obsidian.ui.buttons args=${peerArgs}}，一次读取活动目标和同名非目标的基线位置/可见状态。`;
       }
       if (directive.phase === "inspect-rules") {
-        return "按钮工具链状态：当前按钮已读取。下一步只执行 obsidian.ui.buttonRules 读取已保存规则；不要再列按钮、搜索 Vault 或读 help。";
+        return `按钮工具链状态：目标${directive.isolationRequired ? "和同名非目标基线" : ""}已读取。下一步只执行 obsidian.ui.buttonRules args={"selector":${selectorJson},"scope":${scopeJson},"limit":12} 读取该目标的已保存规则。`;
       }
       if (directive.phase === "apply") {
+        const hiddenRequirement = directive.expectedHidden === undefined
+          ? ""
+          : `，hidden 必须为 ${directive.expectedHidden}`;
         return [
           "按钮工具链状态：按钮与已保存规则都已读取，发现阶段结束。",
           `目标证据：\n${directive.evidence || "使用上方真实按钮列表中的 selector。"}`,
-          "下一步必须输出 obsidian.ui.applyButtonRules，args.rules 只包含本次目标 selector，并按原任务填写 hidden/order/title/icon/mediaPath/effect；不得再 search/read/list/help，也不得猜文件。"
+          `下一步必须输出 obsidian.ui.applyButtonRules，args.rules 只包含本次目标 selector，scope 必须是 ${directive.scope ?? "active"}${hiddenRequirement}，只填写原任务明确要求的字段；不得扩大范围或附带改名、排序、图标、媒体、特效。`
         ].join("\n");
       }
       if (directive.phase === "verify-apply" || directive.phase === "verify-reset") {
@@ -41135,7 +41540,7 @@ class CancipView extends ItemView {
           : directive.expectedHidden === true ? "[hidden]" : "改动后的实际状态";
         return [
           `按钮工具链状态：${directive.phase === "verify-reset" ? "本次规则已恢复" : "规则已应用"}，尚缺 UI 读回证据。`,
-          `下一步只执行 obsidian.ui.buttons args={\"selector\":${selectorJson},\"limit\":8,\"refresh\":${verificationAttempt}}，确认 ${expected}；只有结果明确出现目标且状态符合才算通过，不要 search/help/buttonRules 或重复 apply。`
+          `下一步只执行 obsidian.ui.buttons args=${peerArgs},"refresh":${verificationAttempt}}，确认 ${expected}${directive.isolationRequired ? "，并逐项对比同名非目标与改动前一致" : ""}；不要 search/help/buttonRules 或重复 mutation。`
         ].join("\n");
       }
       if (directive.phase === "reset") {
@@ -41146,10 +41551,14 @@ class CancipView extends ItemView {
       }
       return "按钮工具链状态：应用、定向验证、所需恢复和恢复后验证均已完成。直接根据真实前后状态回答，不再调用工具。";
     }
-    if (directive.phase === "inspect-buttons") return "Button workflow: the model selected the runtime UI route. Next, only call obsidian.ui.buttons; do not search the Vault, guess files, inspect source, or repeat help.";
-    if (directive.phase === "inspect-rules") return "Button workflow: current buttons are known. Next, only call obsidian.ui.buttonRules; do not list buttons again, search the Vault, or read help.";
-    if (directive.phase === "apply") return `Button workflow: button and saved-rule discovery is complete. Evidence:\n${directive.evidence || "Use the exact selector above."}\nNext, only call obsidian.ui.applyButtonRules with one rule for the exact target selector and the requested hidden/order/title/icon/mediaPath/effect field. Do not search/read/list/help.`;
-    if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return `Button workflow: the ${directive.phase === "verify-reset" ? "reset" : "change"} ran but lacks matching UI evidence. Next, only call obsidian.ui.buttons with args={"selector":${selectorJson},"limit":8,"refresh":${verificationAttempt}}. The target must exist and its hidden/visible state must match; do not search, read help/rules, or repeat the mutation.`;
+    if (directive.phase === "inspect-buttons") {
+      if (directive.targetUnresolved) return `Button workflow: the active list did not credibly identify the user's target, so no first-row fallback was used. Candidates:\n${directive.evidence || "See the previous obsidian.ui.buttons result."}\nCall obsidian.ui.buttons once with scope=active and one exact selector chosen from the real candidates. Do not list all buttons again, inspect rules, or mutate anything.`;
+      return "Button workflow: inspect the current target with obsidian.ui.buttons scope=active; do not search the Vault, guess files, inspect source, or repeat help.";
+    }
+    if (directive.phase === "inspect-peers") return `Button workflow: the target is known and other positions must remain unchanged. Call obsidian.ui.buttons with args=${peerArgs}} once to capture target and same-label peer baselines.`;
+    if (directive.phase === "inspect-rules") return `Button workflow: target discovery is complete. Call obsidian.ui.buttonRules with the exact selector and scope=${directive.scope ?? "active"}; do not list unrelated rules.`;
+    if (directive.phase === "apply") return `Button workflow: target, peer baseline when required, and saved-rule discovery are complete. Evidence:\n${directive.evidence || "Use the exact selector above."}\nCall obsidian.ui.applyButtonRules with one exact rule in scope=${directive.scope ?? "active"}${directive.expectedHidden === undefined ? "" : ` and hidden=${directive.expectedHidden}`} and only fields explicitly requested by the user. Do not broaden scope or add unrelated title/order/icon/media/effect changes.`;
+    if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return `Button workflow: the ${directive.phase === "verify-reset" ? "reset" : "change"} ran but lacks matching UI evidence. Call obsidian.ui.buttons with args=${peerArgs},"refresh":${verificationAttempt}}. Verify the active target and, when requested, every same-label peer against its baseline; do not repeat the mutation.`;
     if (directive.phase === "reset") return `Button workflow: the change is applied and verified, and restoration remains. Next, only call obsidian.ui.applyButtonRules with args={"reset":[${resetTarget}]}; remove only this rule and never clear all rules.`;
     return "Button workflow: change, focused verification, required restoration, and post-reset verification are complete. Answer from the real states without another tool call.";
   }
@@ -41160,19 +41569,41 @@ class CancipView extends ItemView {
     const args = action.type === "command" ? action.args ?? {} : {};
     const chinese = isChineseLanguage(this.plugin.language());
     const expected = (() => {
-      if (directive.phase === "inspect-buttons") return "obsidian.ui.buttons";
-      if (directive.phase === "inspect-rules") return "obsidian.ui.buttonRules";
-      if (directive.phase === "apply") return "obsidian.ui.applyButtonRules";
+      if (directive.phase === "inspect-buttons") return "obsidian.ui.buttons scope=active";
+      if (directive.phase === "inspect-peers") return "obsidian.ui.buttons scope=global with same-label peers";
+      if (directive.phase === "inspect-rules") return "obsidian.ui.buttonRules for the exact selector and scope";
+      if (directive.phase === "apply") return `obsidian.ui.applyButtonRules for the exact selector in scope=${directive.scope ?? "active"}`;
       if (directive.phase === "reset") return directive.ruleId
         ? `obsidian.ui.applyButtonRules reset id=${directive.ruleId}`
         : "obsidian.ui.applyButtonRules reset for the exact temporary selector";
-      if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return "obsidian.ui.buttons with the exact selector";
+      if (directive.phase === "verify-apply" || directive.phase === "verify-reset") return `obsidian.ui.buttons with the exact selector in scope=${directive.verificationScope ?? directive.scope ?? "active"}`;
       return "a final answer without tools";
     })();
     let valid = false;
-    if (directive.phase === "inspect-buttons") valid = command === "obsidian.ui.buttons";
-    else if (directive.phase === "inspect-rules") valid = command === "obsidian.ui.buttonRules";
-    else if (directive.phase === "apply") valid = command === "obsidian.ui.applyButtonRules" && normalizeUiButtonRules(args.rules).length > 0;
+    if (directive.phase === "inspect-buttons") {
+      valid = command === "obsidian.ui.buttons"
+        && uiButtonCommandScope(args) === "active"
+        && (!directive.targetUnresolved || Boolean(uiButtonActionSelector(args)));
+    }
+    else if (directive.phase === "inspect-peers") {
+      valid = command === "obsidian.ui.buttons"
+        && uiButtonCommandScope(args) === "global"
+        && args.includeSameLabel === true
+        && (!directive.selector || uiButtonActionSelector(args) === directive.selector);
+    }
+    else if (directive.phase === "inspect-rules") {
+      valid = command === "obsidian.ui.buttonRules"
+        && (!directive.selector || uiButtonActionSelector(args) === directive.selector)
+        && (!directive.scope || uiButtonCommandScope(args) === directive.scope);
+    }
+    else if (directive.phase === "apply") {
+      const rules = normalizeUiButtonRules(args.rules);
+      valid = command === "obsidian.ui.applyButtonRules"
+        && rules.length > 0
+        && rules.every((rule) => (!directive.selector || rule.selector === directive.selector)
+          && (!directive.scope || rule.scope === directive.scope)
+          && (directive.expectedHidden === undefined || rule.hidden === directive.expectedHidden));
+    }
     else if (directive.phase === "reset") {
       const targets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
       const exactTarget = directive.ruleId
@@ -41182,7 +41613,10 @@ class CancipView extends ItemView {
     }
     else if (directive.phase === "verify-apply" || directive.phase === "verify-reset") {
       const selector = typeof args.selector === "string" ? args.selector.trim() : "";
-      valid = command === "obsidian.ui.buttons" && (!directive.selector || selector === directive.selector);
+      valid = command === "obsidian.ui.buttons"
+        && (!directive.selector || selector === directive.selector)
+        && uiButtonCommandScope(args) === (directive.verificationScope ?? directive.scope ?? "active")
+        && (!directive.isolationRequired || args.includeSameLabel === true);
     }
     if (valid) return "";
     return chinese
@@ -41194,6 +41628,12 @@ class CancipView extends ItemView {
     return isChineseLanguage(this.plugin.language())
       ? "你是 Cancip。只根据本轮原任务、真实工具结果和按钮工具链状态决定当前一步。需要动作时只输出一个 ```cancip-action JSON 块，格式为 {\"actions\":[{\"type\":\"command\",\"command\":\"状态指定的命令\",\"args\":{}}]}；严格执行状态指定的唯一下一命令，不搜索 Vault、不猜文件、不重复 list/help。工具结果会再次返回；不要提前声称完成。工具链明确 done 时才输出带 <!-- cancip-final {\"status\":\"complete\"} --> 的精简事实回答。"
       : "You are Cancip. Decide only the current step from the original task, real tool result, and button-workflow state. For an action, output one ```cancip-action JSON block shaped as {\"actions\":[{\"type\":\"command\",\"command\":\"the command required by the state\",\"args\":{}}]}. Run only the state's required command; never search the Vault, guess files, or repeat list/help. Tool results return for the next decision. Only a done workflow may produce a concise factual final with <!-- cancip-final {\"status\":\"complete\"} -->.";
+  }
+
+  private verifiedButtonFinalReviewSystemPrompt(): string {
+    return isChineseLanguage(this.plugin.language())
+      ? "复核原问题与程序化验证结论。只在全部要求均有真实证据时标记 complete；不得调用工具、输出过程或原始 JSON。按用户语言精简回答。"
+      : "Review the original request against the programmatically verified conclusion. Mark complete only when every requirement has real evidence. Do not call tools or expose process/raw JSON. Answer concisely in the user's language.";
   }
 
   private toolGoalStateForModel(runs: ToolRun[], originalPrompt: string): string {
@@ -41655,6 +42095,7 @@ class CancipView extends ItemView {
     const normalizedAction: CancipAction = { ...action, command };
     if (isReadOnlyAction(normalizedAction)) return false;
     if (isVaultOpenCommandName(command)) return false;
+    if (command === "obsidian.ui.applyButtonRules" && this.isTemporaryUiButtonRuleTransaction(action)) return false;
     if (this.isObsidianExecuteCommandName(command)) {
       const args = action.args ?? {};
       if (this.shouldOpenVaultTargetFromObsidianExecuteArgs(args) || this.shouldProbeVaultTargetFromObsidianExecuteQuery(args)) return false;
@@ -41676,8 +42117,21 @@ class CancipView extends ItemView {
       || looksLikeDirectObsidianCommand(command)
       || command === "cancip.pluginAction"
       || command === "obsidian.dom.click"
-      || command === "obsidian.dom.input"
-      || command === "obsidian.ui.applyButtonRules";
+      || command === "obsidian.dom.input";
+  }
+
+  private isTemporaryUiButtonRuleTransaction(action: CancipAction): boolean {
+    if (action.type !== "command" || normalizeCommandBusName(action.command) !== "obsidian.ui.applyButtonRules") return false;
+    const args = action.args ?? {};
+    const rules = normalizeUiButtonRules(args.rules);
+    const resetTargets = normalizeUiButtonRuleResetTargets(args.reset ?? args.remove ?? args.resetRules ?? args.removeRules);
+    if (rules.length) return rules.every((rule) => rule.temporary === true);
+    if (!resetTargets.length) return false;
+    const currentRules = this.plugin.settings.uiButtonRules;
+    const matched = currentRules.filter((rule) => uiButtonRuleMatchesAnyResetTarget(rule, resetTargets));
+    return matched.length > 0
+      && matched.every((rule) => rule.temporary === true)
+      && resetTargets.every((target) => matched.some((rule) => uiButtonRuleMatchesAnyResetTarget(rule, [target])));
   }
 
   private async reviewHoldBeforeExecution(run: ToolRun): Promise<string> {
@@ -43014,12 +43468,12 @@ class CancipView extends ItemView {
     for (let iteration = 0; iteration < maxIterations; iteration += 1) {
       if (!current || request.signal.aborted || !this.isCurrentRequest(request)) return lastHandled;
       if (this.currentTaskActionBudgetReached()) return lastHandled;
-      const automaticVerification = await this.runDeterministicUiButtonVerification(originalPrompt, request);
-      if (automaticVerification) {
-        this.addActionReportMessage(automaticVerification);
+      const automaticButtonStep = await this.runDeterministicUiButtonVerification(originalPrompt, request);
+      if (automaticButtonStep) {
+        this.addActionReportMessage(automaticButtonStep);
         this.renderMessagesAfterMutation();
-        lastHandled = automaticVerification;
-        current = automaticVerification;
+        lastHandled = automaticButtonStep;
+        current = automaticButtonStep;
         const verifiedDirective = this.uiButtonWorkflowDirective(this.currentTaskToolRuns(), originalPrompt);
         if (verifiedDirective?.phase === "done") return lastHandled;
         continue;
@@ -43109,27 +43563,82 @@ class CancipView extends ItemView {
   ): Promise<ActionHandlingResult | null> {
     if (request.signal.aborted || !this.isCurrentRequest(request)) return null;
     const directive = this.uiButtonWorkflowDirective(this.currentTaskToolRuns(), originalPrompt);
-    if (!directive || (directive.phase !== "verify-apply" && directive.phase !== "verify-reset") || !directive.selector) return null;
-    if ((directive.verificationAttempt ?? 1) > 3) return null;
+    if (!directive || !directive.selector) return null;
+    let action: CancipAction | null = null;
+    if (directive.phase === "inspect-peers") {
+      action = {
+        type: "command",
+        command: "obsidian.ui.buttons",
+        args: {
+          selector: directive.selector,
+          ...(directive.label ? { label: directive.label } : {}),
+          scope: "global",
+          includeSameLabel: true,
+          limit: 80
+        }
+      };
+    } else if (directive.phase === "inspect-rules") {
+      action = {
+        type: "command",
+        command: "obsidian.ui.buttonRules",
+        args: {
+          selector: directive.selector,
+          scope: directive.scope ?? "active",
+          limit: 12
+        }
+      };
+    } else if (
+      directive.phase === "apply"
+      && directive.expectedHidden !== undefined
+      && directive.allowedChanges?.length === 1
+      && directive.allowedChanges[0] === "hidden"
+    ) {
+      action = {
+        type: "command",
+        command: "obsidian.ui.applyButtonRules",
+        args: {
+          rules: [{
+            selector: directive.selector,
+            ...(directive.label ? { label: directive.label } : {}),
+            scope: directive.scope ?? "active",
+            hidden: directive.expectedHidden
+          }]
+        }
+      };
+    } else if (directive.phase === "reset") {
+      const resetTarget: UiButtonRuleResetTarget = directive.ruleId
+        ? { id: directive.ruleId }
+        : { selector: directive.selector, scope: directive.scope ?? "active" };
+      action = {
+        type: "command",
+        command: "obsidian.ui.applyButtonRules",
+        args: { reset: [resetTarget] }
+      };
+    } else if (directive.phase === "verify-apply" || directive.phase === "verify-reset") {
+      if ((directive.verificationAttempt ?? 1) > 3) return null;
+      action = {
+        type: "command",
+        command: "obsidian.ui.buttons",
+        args: {
+          selector: directive.selector,
+          ...(directive.label ? { label: directive.label } : {}),
+          scope: directive.verificationScope ?? (directive.isolationRequired ? "global" : directive.scope ?? "active"),
+          includeSameLabel: directive.isolationRequired === true,
+          limit: directive.isolationRequired ? 80 : 8,
+          refresh: directive.verificationAttempt ?? 1
+        }
+      };
+    }
+    if (!action) return null;
     const answer = [
       "```cancip-action",
-      JSON.stringify({
-        actions: [{
-          type: "command",
-          command: "obsidian.ui.buttons",
-          args: {
-            selector: directive.selector,
-            limit: 8,
-            refresh: directive.verificationAttempt ?? 1
-          }
-        }]
-      }),
+      JSON.stringify({ actions: [action] }),
       "```"
     ].join("\n");
     void this.recordSessionEvent({
       kind: "prompt.protocol_retry",
-      status: "deterministic-ui-verification",
-      detail: `${directive.phase} ${directive.selector} refresh=${directive.verificationAttempt ?? 1}`
+      status: "deterministic-ui-step",
+      detail: `${directive.phase} ${directive.selector} scope=${directive.verificationScope ?? directive.scope ?? "active"} peers=${directive.isolationRequired === true}${directive.verificationAttempt ? ` refresh=${directive.verificationAttempt}` : ""}`
     });
     return await this.handleActionBlocks(answer);
   }
@@ -43505,6 +44014,7 @@ class CancipView extends ItemView {
     const executed = runs.filter((run) => run.status === "executed");
     const planTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
     const requestsRestore = buttonWorkflowRequestsRestore(`${originalPrompt}\n${planTodos.map((todo) => todo.text).join("\n")}`);
+    const isolationRequired = directive.isolationRequired === true;
     const applyIndex = executed.findIndex((run) => run.action.type === "command"
       && normalizeCommandBusName(run.action.command) === "obsidian.ui.applyButtonRules"
       && normalizeUiButtonRules(run.action.args?.rules).length > 0);
@@ -43518,17 +44028,21 @@ class CancipView extends ItemView {
         break;
       }
     }
+    const baselinePeerResult = isolationRequired && applyIndex > 0
+      ? [...executed.slice(0, applyIndex)].reverse().find((run) => run.action.type === "command"
+        && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
+        && uiButtonCommandScope(run.action.args) === "global"
+        && run.action.args?.includeSameLabel === true)?.result || ""
+      : "";
     const hiddenEvidence = applyIndex >= 0 && executed.some((run, index) => index > applyIndex
       && (resetIndex < 0 || index < resetIndex)
       && run.action.type === "command"
       && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
-      && (run.result || "").includes(directive.selector!)
-      && /\[hidden\]/i.test(run.result || ""));
+      && uiButtonWorkflowVerificationMatches(run.result || "", true, isolationRequired, baselinePeerResult));
     const restoredEvidence = resetIndex > applyIndex && executed.some((run, index) => index > resetIndex
       && run.action.type === "command"
       && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttons"
-      && (run.result || "").includes(directive.selector!)
-      && !/\[hidden\]/i.test(run.result || ""));
+      && uiButtonWorkflowVerificationMatches(run.result || "", false, isolationRequired, baselinePeerResult));
     if (!hiddenEvidence || (requestsRestore && !restoredEvidence)) return "";
     const counts = executed
       .filter((run) => run.action.type === "command" && normalizeCommandBusName(run.action.command) === "obsidian.ui.applyButtonRules")
@@ -43538,48 +44052,50 @@ class CancipView extends ItemView {
       ? `${counts[0][0]} -> ${counts[0][1]} -> ${counts[counts.length - 1][1]}`
       : counts.length === 1 ? `${counts[0][0]} -> ${counts[0][1]}` : "";
     if (isChineseLanguage(this.plugin.language())) {
+      const peerVerification = isolationRequired ? "；同名非目标位置与改动前逐项一致" : "";
       if (planTodos.length) {
         return planTodos.map((todo, index) => {
           if (/(恢复|还原|复原|撤销|重置)/i.test(todo.text)) {
-            return `${index + 1}. 已撤销本次临时规则并验证按钮恢复可见${countTrace ? `；规则数 ${countTrace}` : ""}。`;
+            return `${index + 1}. 已撤销本次临时规则并验证按钮恢复可见${peerVerification}${countTrace ? `；规则数 ${countTrace}` : ""}。`;
           }
           if (/(隐藏|应用|改动|修改)/i.test(todo.text)) {
-            return `${index + 1}. 已应用临时规则并定向验证，按钮明确显示 [hidden]。`;
+            return `${index + 1}. 已应用临时规则并定向验证，按钮明确显示 [hidden]${peerVerification}。`;
           }
-          return `${index + 1}. 已读取目标按钮和现有规则，确认后续操作只针对 ${label}按钮。`;
+          return `${index + 1}. 已读取目标按钮和现有规则${isolationRequired ? "，并记录同名非目标位置的改动前基线" : ""}，确认后续操作只针对 ${label}按钮。`;
         }).join("\n");
       }
       if (!requestsRestore) {
         return [
           `${label}按钮已隐藏。`,
-          `验证：变更后明确显示 [hidden]${countTrace ? `；规则数 ${countTrace}` : ""}。`
+          `验证：变更后明确显示 [hidden]${peerVerification}${countTrace ? `；规则数 ${countTrace}` : ""}。`
         ].join("\n");
       }
       return [
         `${label}按钮已临时隐藏并恢复。`,
-        `验证：隐藏时明确显示 [hidden]，恢复后重新可见${countTrace ? `；规则数 ${countTrace}` : ""}。`
+        `验证：隐藏时明确显示 [hidden]，恢复后重新可见${peerVerification}${countTrace ? `；规则数 ${countTrace}` : ""}。`
       ].join("\n");
     }
+    const peerVerification = isolationRequired ? "; same-label peer locations matched their pre-change states" : "";
     if (!requestsRestore) {
       return [
         `${label} is hidden.`,
-        `Verified: the post-change state reported [hidden]${countTrace ? `; rule count ${countTrace}` : ""}.`
+        `Verified: the post-change state reported [hidden]${peerVerification}${countTrace ? `; rule count ${countTrace}` : ""}.`
       ].join("\n");
     }
     if (planTodos.length) {
       return planTodos.map((todo, index) => {
         if (/(restore|revert|reset|undo)/i.test(todo.text)) {
-          return `${index + 1}. Removed only the temporary rule and verified that the button is visible again${countTrace ? `; rule count ${countTrace}` : ""}.`;
+          return `${index + 1}. Removed only the temporary rule and verified that the button is visible again${peerVerification}${countTrace ? `; rule count ${countTrace}` : ""}.`;
         }
         if (/(hide|apply|change|modify)/i.test(todo.text)) {
-          return `${index + 1}. Applied the temporary rule and verified the explicit [hidden] state.`;
+          return `${index + 1}. Applied the temporary rule and verified the explicit [hidden] state${peerVerification}.`;
         }
-        return `${index + 1}. Read the target button and saved rules before changing only ${label}.`;
+        return `${index + 1}. Read the target button and saved rules${isolationRequired ? ", including same-label peer baselines" : ""} before changing only ${label}.`;
       }).join("\n");
     }
     return [
       `${label} was temporarily hidden and restored.`,
-      `Verified: the hidden state reported [hidden], then the button became visible again${countTrace ? `; rule count ${countTrace}` : ""}.`
+      `Verified: the hidden state reported [hidden], then the button became visible again${peerVerification}${countTrace ? `; rule count ${countTrace}` : ""}.`
     ].join("\n");
   }
 
@@ -43592,9 +44108,12 @@ class CancipView extends ItemView {
     if (this.hasPendingToolRuns(result.runs)) return result;
     if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
     const taskRuns = uniqueToolRunsById([...this.currentTaskToolRuns(), ...result.runs]);
-    const terminalButtonWorkflow = this.uiButtonWorkflowDirective(taskRuns, originalPrompt)?.phase === "done";
+    const buttonWorkflowDirective = this.uiButtonWorkflowDirective(taskRuns, originalPrompt);
+    const buttonWorkflowActive = Boolean(buttonWorkflowDirective);
+    const terminalButtonWorkflow = buttonWorkflowDirective?.phase === "done";
+    const incompleteButtonWorkflow = buttonWorkflowActive && !terminalButtonWorkflow;
     if (terminalButtonWorkflow) this.completeVerifiedButtonWorkflowPlan();
-    const decisionRuns = terminalButtonWorkflow ? taskRuns : result.runs;
+    const decisionRuns = buttonWorkflowActive ? taskRuns : result.runs;
     const terminalButtonSummary = terminalButtonWorkflow ? this.verifiedUiButtonWorkflowFinalAnswer(decisionRuns, originalPrompt) : "";
     let finalStep: ChatMessage | null = null;
     const directFileReadFinal = isSimpleDirectVaultFileReadTask(originalPrompt)
@@ -43614,19 +44133,39 @@ class CancipView extends ItemView {
       .filter((todo) => todo.sendToModel !== false)
       .map((todo, index) => `${index + 1}. [${todo.done ? "done" : "todo"}] ${trimContext(todo.text.replace(/\s+/g, " "), 120)} (${todo.id})`)
       .join("\n");
-    const reviewInstruction = [
-      "Final review: silently compare the original request, relevant context, and actual tool results.",
-      terminalButtonWorkflow
-        ? `The verified button workflow is complete. Do not output cancip-action or call any tool; return the final answer now. The visible answer must agree with this authoritative verified conclusion: ${terminalButtonSummary}`
-        : "If available work can still advance the request, return exactly one executable cancip-action and no final marker.",
-      "Otherwise include exactly one hidden marker such as <!-- cancip-final {\"status\":\"complete\"} -->. Valid status values are complete, awaiting-approval, blocked, and failed; mark complete only when every requested result is verified.",
-      planState
-        ? "A Plan exists. Before marking complete, every item must be done from verified results. The visible final answer must keep the same numbering and order, with one concise but specific result and verification per item; for a blocked/failed item, give its exact blocker and necessary measure."
-        : "Then give at most four concise lines: result and verification, or the exact blocker and necessary user action.",
-      "Do not repeat process narration or programmatic changed-file cards."
-    ].join("\n");
+    const reviewInstruction = terminalButtonWorkflow
+      ? [
+          "Silently compare the original request with the authoritative verified conclusion.",
+          "Do not call tools. If they agree, include exactly <!-- cancip-final {\"status\":\"complete\"} --> and state only the result and verification; if they do not, mark blocked and name the exact missing evidence.",
+          planState ? "Keep the Plan numbering and order." : "Use at most two concise lines."
+        ].join("\n")
+      : [
+          "Final review: silently compare the original request, relevant context, and actual tool results.",
+          "If available work can still advance the request, return exactly one executable cancip-action and no final marker.",
+          "Otherwise include exactly one hidden marker such as <!-- cancip-final {\"status\":\"complete\"} -->. Valid status values are complete, awaiting-approval, blocked, and failed; mark complete only when every requested result is verified.",
+          planState
+            ? "A Plan exists. Before marking complete, every item must be done from verified results. The visible final answer must keep the same numbering and order, with one concise but specific result and verification per item; for a blocked/failed item, give its exact blocker and necessary measure."
+            : "Then give at most four concise lines: result and verification, or the exact blocker and necessary user action.",
+          "Do not repeat process narration or programmatic changed-file cards."
+        ].join("\n");
     const goalState = this.toolGoalStateForModel(decisionRuns, originalPrompt);
-    const basePrompt = compactFileFinal
+    const basePrompt = terminalButtonWorkflow
+      ? [
+          `Original user request:\n${originalPrompt}`,
+          planState ? `Current Plan:\n${planState}` : "",
+          `Authoritative verified conclusion:\n${terminalButtonSummary}`,
+          reviewInstruction
+        ].filter(Boolean).join("\n\n")
+      : incompleteButtonWorkflow
+      ? this.toolContinuationPromptForModel(
+          [
+            this.conversationForToolContinuation(2, 140),
+            this.toolRunsForPrompt(decisionRuns, 1800, 3),
+            this.toolGoalStateForModel(decisionRuns, originalPrompt)
+          ].filter(Boolean).join("\n\n"),
+          originalPrompt
+        )
+      : compactFileFinal
       ? [
           `Original user request:\n${originalPrompt}`,
           relevantContext ? `Relevant context:\n${relevantContext}` : "",
@@ -43656,7 +44195,11 @@ class CancipView extends ItemView {
         ].filter(Boolean).join("\n");
     let correction = "";
     const finalContext = {
-      system: compactFileFinal || terminalButtonWorkflow ? this.informationalAnswerSystemPrompt() : this.modePrompt(originalPrompt),
+      system: incompleteButtonWorkflow
+        ? this.uiButtonWorkflowContinuationSystemPrompt()
+        : terminalButtonWorkflow
+          ? this.verifiedButtonFinalReviewSystemPrompt()
+          : compactFileFinal ? this.informationalAnswerSystemPrompt() : this.modePrompt(originalPrompt),
       contextText: "",
       images: context.images
     };
@@ -43677,7 +44220,8 @@ class CancipView extends ItemView {
           this.modelRetryProgressUpdater(finalStep, finalDecisionStatus),
           undefined,
           this.modelStreamProgressUpdater(finalStep, finalDecisionStatus),
-          true
+          true,
+          false
         );
         if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
         const hasActions = extractCancipActions(answer).length > 0;
@@ -43692,7 +44236,7 @@ class CancipView extends ItemView {
           : this.finalReviewStatusRequirementFailure(reviewStatus, decisionRuns);
         const buttonRestoreRequired = buttonWorkflowRequestsRestore(`${originalPrompt}\n${this.agentPlanTodos().map((todo) => todo.text).join("\n")}`);
         const terminalButtonAnswerFailure = terminalButtonWorkflow && visibleAnswer
-          ? (/(?:还没|還沒|未|没有|沒有|并未|並未|not\s+(?:done|complete)|did\s+not).{0,24}(?:完成|改动|改動|执行|執行|done|complete|change|execute)|(?:只|仅|僅|only).{0,18}(?:读取|讀取|检查|檢查|read|inspect)/i.test(visibleAnswer)
+          ? (terminalButtonAnswerContradictsVerifiedCompletion(visibleAnswer)
               ? "final answer contradicts the verified completed button workflow"
               : !/(隐藏|隱藏|hidden|hide)/i.test(visibleAnswer)
                 ? "final answer must state the verified hidden state"
@@ -43712,6 +44256,11 @@ class CancipView extends ItemView {
         const next = terminalButtonWorkflow && hasActions ? null : await this.handleActionBlocks(answer, assistantMessage);
         if (next) return next;
         if (acceptedVisibleAnswer.trim()) return "answered";
+        if (terminalButtonWorkflow && terminalButtonSummary) {
+          this.addMessage("assistant", `${terminalButtonSummary}\n\n<!-- cancip-final {"status":"complete"} -->`);
+          this.renderMessages();
+          return "answered";
+        }
         void this.recordSessionEvent({
           kind: "prompt.protocol_retry",
           detail: protocolIssue || (hasActions ? "response had actions but no executable action was parsed" : requirementFailure),
@@ -44695,6 +45244,10 @@ class CancipView extends ItemView {
         `replace: ${trimContext(run.action.replace, 500)}`
       ].join("\n")), Math.min(maxDetail, 1800));
     }
+    if (run.action.type === "command" && normalizeCommandBusName(run.action.command) === "obsidian.ui.buttonRules") {
+      const rulesOnly = detail.split(/\r?\n\s*(?:恢复单条规则|恢復單條規則|Restore (?:one|a single) rule)\s*[:：]?/i)[0].trim();
+      return trimContext(redactSensitiveText(rulesOnly), Math.min(maxDetail, 900));
+    }
     if (
       run.action.type === "config"
       || run.action.type === "rename"
@@ -44886,6 +45439,7 @@ class CancipView extends ItemView {
     return await this.plugin.buildReviewGate({
       hidden: true,
       title,
+      sessionId: this.sessionId,
       items: describedItems,
       maxFiles: describedItems.length,
       maxFileChars: REVIEW_GATE_MAX_FILE_CHARS
@@ -49300,35 +49854,13 @@ class CancipView extends ItemView {
     if (scope === "active") {
       const container = (this.outcomeActiveWorkspaceLeaf()?.view as unknown as { containerEl?: HTMLElement })?.containerEl;
       if (container) return container;
+      throw new Error("No active file content view is available.");
     }
     return this.containerEl.ownerDocument;
   }
 
   private outcomeActiveWorkspaceLeaf(): WorkspaceLeaf | null {
-    const activeFile = this.app.workspace.getActiveFile();
-    const current = this.app.workspace.getLeaf(false);
-    const candidates: WorkspaceLeaf[] = [];
-    const allLeaves: WorkspaceLeaf[] = [];
-    this.app.workspace.iterateAllLeaves((leaf) => allLeaves.push(leaf));
-    if (activeFile) {
-      for (const leaf of allLeaves) {
-        const file = (leaf.view as unknown as { file?: TFile }).file;
-        if (file instanceof TFile && file.path === activeFile.path) candidates.push(leaf);
-      }
-    }
-    const visible = (leaf: WorkspaceLeaf | null | undefined): leaf is WorkspaceLeaf => {
-      const container = (leaf?.view as unknown as { containerEl?: HTMLElement } | undefined)?.containerEl;
-      if (!container?.isConnected) return false;
-      const rect = container.getBoundingClientRect();
-      return rect.width > 1 && rect.height > 1;
-    };
-    if (current && candidates.includes(current) && visible(current)) return current;
-    const visibleMatch = candidates.find(visible);
-    if (visibleMatch) return visibleMatch;
-    if (current && current.view?.getViewType?.() !== VIEW_TYPE && visible(current)) return current;
-    const anyVisible = allLeaves.find(visible);
-    if (anyVisible) return anyVisible;
-    return candidates[0] ?? current ?? null;
+    return this.plugin.activeWorkspaceLeaf();
   }
 
   private domTarget(args: Record<string, unknown>): DomActionResult & { element: HTMLElement } {
@@ -49349,6 +49881,40 @@ class CancipView extends ItemView {
     };
   }
 
+  private uiButtonEvidenceContext(el: HTMLElement): UiButtonEvidenceContext {
+    const leaves: WorkspaceLeaf[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => leaves.push(leaf));
+    const leaf = leaves.find((candidate) => {
+      const container = (candidate.view as unknown as { containerEl?: HTMLElement })?.containerEl;
+      return Boolean(container && (container === el || container.contains(el)));
+    });
+    const leafIndex = leaf ? leaves.indexOf(leaf) : -1;
+    const file = leaf ? (leaf.view as unknown as { file?: TFile }).file : undefined;
+    const view = leaf?.view?.getViewType?.() ?? "";
+    const region: UiButtonEvidenceContext["region"] = el.closest(".menu, .menu-group, .mobile-menu, [role='menu']")
+      ? "menu"
+      : el.closest(".modal, .prompt, .popover")
+        ? "modal"
+        : el.closest(".mod-left-split, .workspace-split.mod-left-split")
+          ? "left"
+          : el.closest(".mod-right-split, .workspace-split.mod-right-split")
+            ? "right"
+            : el.closest(".workspace-window.mod-popout, .mod-popout")
+              ? "floating"
+              : leaf ? "root" : "other";
+    const activeLeaf = this.outcomeActiveWorkspaceLeaf();
+    const active = Boolean((leaf && activeLeaf && leaf === activeLeaf) || el.closest(".workspace-leaf.mod-active"));
+    const filePath = file instanceof TFile ? file.path : "";
+    return {
+      key: [region, leafIndex, view || "-", filePath || "-"].join("|"),
+      region,
+      leaf: leafIndex,
+      view,
+      file: filePath,
+      active
+    };
+  }
+
   private uiButtonsSummary(args: Record<string, unknown>): string {
     if (args.help === true || args.action === "help") return this.uiButtonCommandHelp();
     const requestedAction = typeof args.action === "string" ? args.action.trim().toLowerCase() : "";
@@ -49358,16 +49924,40 @@ class CancipView extends ItemView {
     if (typeof args.click === "string" && args.click.trim()) {
       throw new Error("obsidian.ui.buttons is read-only; use obsidian.dom.click with args.selector and args.index");
     }
-    const scope = typeof args.scope === "string" ? args.scope : "active";
+    const scope = uiButtonCommandScope(args);
     const root = this.domActionRoot({ scope });
     const limit = clampInt(args.limit, 80, 1, 200);
+    const defaultSelector = ".view-header button, .view-header .clickable-icon, .view-actions button, .view-actions .clickable-icon, .workspace-tab-header, .mod-right-split button, .mod-right-split .clickable-icon, .menu .menu-item, .menu-item, .document-search-button, .pdf-toolbar button, .pdf-toolbar .clickable-icon";
+    const sameLabelSelector = `${defaultSelector}, button[aria-label], button[title], .clickable-icon[aria-label], .clickable-icon[title], [role='button'][aria-label], [role='menuitem']`;
     const selector = typeof args.selector === "string" && args.selector.trim()
       ? args.selector.trim()
-      : ".view-header button, .view-header .clickable-icon, .view-actions button, .view-actions .clickable-icon, .workspace-tab-header, .mod-right-split button, .mod-right-split .clickable-icon, .menu .menu-item, .menu-item, .document-search-button, .pdf-toolbar button, .pdf-toolbar .clickable-icon";
-    const elements = Array.from(root.querySelectorAll<HTMLElement>(selector)).slice(0, limit);
+      : defaultSelector;
+    const requestedLabel = normalizeUiButtonLabel(typeof args.label === "string" ? args.label : uiButtonLabelFromSelector(selector));
+    const includeSameLabel = args.includeSameLabel === true && Boolean(requestedLabel);
+    const querySelector = includeSameLabel
+      ? uniqueStrings([
+          selector,
+          sameLabelSelector,
+          `[data-cancip-ui-rule-label="${cssEscapeAttr(requestedLabel)}"]`
+        ]).join(", ")
+      : selector;
+    const elements = Array.from(root.querySelectorAll<HTMLElement>(querySelector))
+      .filter((el) => {
+        if (includeSameLabel && el.classList.contains("obcc-message-tts")) return false;
+        if (!includeSameLabel) return true;
+        let exact = false;
+        try {
+          exact = el.matches(selector);
+        } catch {
+          exact = false;
+        }
+        const label = normalizeUiButtonLabel(el.dataset.cancipUiRuleLabel || uiElementLabel(el));
+        return exact || label === requestedLabel;
+      })
+      .slice(0, limit);
     if (!elements.length) return `${this.t("none")}\n${this.uiButtonCommandHelp()}`;
     const rows = elements.map((el, index) => {
-      const label = uiElementLabel(el);
+      const label = el.dataset.cancipUiRuleLabel || uiElementLabel(el);
       const stable = stableSelectorForElement(el);
       const style = el.ownerDocument.defaultView?.getComputedStyle(el) ?? getComputedStyle(el);
       const hidden = el.dataset.cancipUiHidden === "true"
@@ -49376,12 +49966,13 @@ class CancipView extends ItemView {
         || style.display === "none"
         || style.visibility === "hidden";
       const order = style.order;
-      return `${index}. ${label || el.tagName.toLowerCase()}${hidden ? " [hidden]" : ""}${order !== "0" ? ` order=${order}` : ""}\n   selector: ${stable}`;
+      const context = this.uiButtonEvidenceContext(el);
+      return `${index}. ${label || el.tagName.toLowerCase()}${hidden ? " [hidden]" : ""}${order !== "0" ? ` order=${order}` : ""}\n   selector: ${stable}\n   context: ${JSON.stringify(context)}`;
     });
     const hint = isChineseLanguage(this.plugin.language())
       ? "只读列表；隐藏/恢复用 obsidian.ui.applyButtonRules，点击用 obsidian.dom.click。参数不清用 cancip.tools.help {command:'obsidian.ui.applyButtonRules'}。"
       : "Read-only list; use obsidian.ui.applyButtonRules to hide/restore and obsidian.dom.click to click. For parameters call cancip.tools.help {command:'obsidian.ui.applyButtonRules'}.";
-    return [...rows, "", hint].join("\n");
+    return [`scope: ${scope}; count: ${rows.length}`, ...rows, "", hint].join("\n");
   }
 
   private uiButtonRulesSummary(args: Record<string, unknown> = {}): string {
@@ -49439,7 +50030,11 @@ class CancipView extends ItemView {
       ? next.filter((rule) => !beforeIds.has(rule.id)).map((rule) => rule.id)
       : [];
     this.plugin.settings.uiButtonRules = next;
-    await this.plugin.saveSettings();
+    const persistentBefore = beforeRules.filter((rule) => rule.temporary !== true);
+    const persistentNext = next.filter((rule) => rule.temporary !== true);
+    if (stableCacheKey(persistentBefore) !== stableCacheKey(persistentNext)) {
+      await this.plugin.saveSettings();
+    }
     this.plugin.applyUiButtonRules();
     const operation = clear ? "cleared" : resetTargets.length ? `reset ${resetTargets.length}` : `applied ${incoming.length}`;
     const targetSummary = incoming[0]?.selector || resetTargets[0]?.selector || resetTargets[0]?.id || resetTargets[0]?.label || "all";
@@ -53138,6 +53733,7 @@ class CancipSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.language = value as LanguageMode;
             await this.plugin.saveSettings();
+            await this.plugin.ensureDefaultDailyAutomations();
             this.plugin.refreshOpenViews();
             this.renderSettings();
           });
@@ -54019,6 +54615,10 @@ class CancipSettingTab extends PluginSettingTab {
   }
 
   private displayPlanSettings(parent: HTMLElement): void {
+    this.addToggleSetting(parent, "settingsPreventAutomaticSessionOpen", this.plugin.settings.preventAutomaticSessionOpen, async (value) => {
+      this.plugin.settings.preventAutomaticSessionOpen = value;
+      await this.plugin.saveSettings();
+    }, "settingsPreventAutomaticSessionOpenDesc");
     this.addToggleSetting(parent, "settingsAutoOpenPlanPanel", this.plugin.settings.autoOpenPlanPanel, async (value) => {
       this.plugin.settings.autoOpenPlanPanel = value;
       await this.plugin.saveSettings();
@@ -54396,6 +54996,17 @@ class CancipSettingTab extends PluginSettingTab {
           .setValue(task.watchNewFiles)
           .onChange(async (value) => {
             await patchTask({ watchNewFiles: value });
+          });
+      });
+
+    new Setting(body)
+      .setName(this.plugin.t("automationIgnoreMachineFiles"))
+      .setDesc(this.plugin.t("automationIgnoreMachineFilesDesc"))
+      .addToggle((toggle) => {
+        toggle
+          .setValue(task.ignoreMachineFiles)
+          .onChange(async (value) => {
+            await patchTask({ ignoreMachineFiles: value });
           });
       });
 
@@ -55432,6 +56043,7 @@ function normalizeAutomationTask(raw: unknown): AutomationTask | null {
     sessionId: typeof raw.sessionId === "string" && raw.sessionId.trim() ? raw.sessionId.trim() : undefined,
     condition: typeof raw.condition === "string" && raw.condition.trim() ? raw.condition.trim() : undefined,
     watchNewFiles: typeof raw.watchNewFiles === "boolean" ? raw.watchNewFiles : false,
+    ignoreMachineFiles: typeof raw.ignoreMachineFiles === "boolean" ? raw.ignoreMachineFiles : true,
     newFilePattern: typeof raw.newFilePattern === "string" && raw.newFilePattern.trim() ? raw.newFilePattern.trim() : undefined,
     newFileDebounceSeconds: Number.isFinite(newFileDebounceSeconds)
       ? Math.max(1, Math.min(3600, newFileDebounceSeconds))
@@ -55628,6 +56240,7 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       enabled: true,
       intervalMinutes: 120,
       watchNewFiles: true,
+      ignoreMachineFiles: true,
       newFilePattern: "**/*.md",
       newFileDebounceSeconds: 60,
       notifyMode: "always",
@@ -58044,6 +58657,7 @@ function reviewConfigPathLabel(
     composerAutocompleteCandidateCount: "settingsAutocompleteCandidateCount",
     composerAutocompleteApiProfileId: "settingsAutocompleteSource",
     composerAutocompleteModel: "settingsAutocompleteModel",
+    preventAutomaticSessionOpen: "settingsPreventAutomaticSessionOpen",
     documentWorkbenchDefaultMode: "settingsDocumentWorkbenchDefaultMode",
     documentWorkbenchCompactHeader: "settingsDocumentWorkbenchCompactHeader",
     documentWorkbenchShowMetadata: "settingsDocumentWorkbenchShowMetadata",
@@ -59741,7 +60355,7 @@ function scoreSkillForPrompt(skill: CancipSkill, prompt: string): number {
   if (/skill|技能|能力|agent|代理|智能体/i.test(prompt) && skill.priority >= 90) score += 18;
   if (promptNeedsMemorySkillRoute(prompt) && /(memory|remember|preference|profile|wal|context|记忆|偏好|规则|用户)/i.test(fieldText)) score += 42;
   if (promptNeedsExperienceSkillRoute(prompt) && /(experience|workflow|skill|harvest|observer|optimizer|recipe|复盘|经验|流程|沉淀|收割|优化)/i.test(fieldText)) score += 38;
-  if (promptNeedsObsidianSkillRoute(prompt) && /(obsidian|vault|markdown|plugin|command|pdf|note|button|automation|ob|插件|笔记|命令|按钮|自动化)/i.test(fieldText)) score += 34;
+  if (promptNeedsObsidianSkillRoute(prompt) && /(obsidian|vault|markdown|plugin|command|pdf|note|button|automation|\bob\b|插件|笔记|命令|按钮|自动化)/i.test(fieldText)) score += 34;
   if (promptNeedsSkillExperienceRoute(prompt) && /(skill|agent|capability|workflow|mcp|openclaw|hermes|claude|技能|能力|智能体)/i.test(fieldText)) score += 24;
   if (score > 0) score += Math.min(24, skill.priority / 5);
   return score;
@@ -60724,7 +61338,7 @@ function shouldUseMemoryRouter(prompt: string): boolean {
   const lower = prompt.toLowerCase();
   if (promptNeedsIdentityMemory(prompt)) return true;
   if (promptMentionsCancip(prompt)) return true;
-  return /(memory|remember|preference|project|index|rag|knowledge|context|记忆|偏好|项目|索引|知识库|上下文|经验|攻略|规则)/i.test(lower);
+  return /(memory|remember|preference|project|index|rag|knowledge|context|记忆|偏好|项目|索引|知识库|上下文|经验|攻略|(?:记住|沉淀|更新|保存|修改).{0,8}规则|规则.{0,8}(?:记忆|偏好|长期))/i.test(lower);
 }
 
 function promptNeedsMemorySkillRoute(prompt: string): boolean {
@@ -63287,13 +63901,14 @@ function normalizeUiButtonRules(raw: unknown): UiButtonRule[] {
       const menuGroupGuard = typeof item.menuGroupGuard === "string" && item.menuGroupGuard.trim() ? item.menuGroupGuard.trim() : undefined;
       const targetKey = typeof item.targetKey === "string" && item.targetKey.trim() ? item.targetKey.trim() : undefined;
       const legacyTargetKey = typeof item.legacyTargetKey === "string" && item.legacyTargetKey.trim() ? item.legacyTargetKey.trim() : undefined;
+      const temporary = item.temporary === true || item.transient === true ? true : undefined;
       const createdAt = typeof item.createdAt === "string" && item.createdAt.trim() ? item.createdAt.trim() : undefined;
       const updatedAt = typeof item.updatedAt === "string" && item.updatedAt.trim() ? item.updatedAt.trim() : undefined;
       const selectorChanged = rawSelector && rawSelector !== selector;
       const id = rawId && (kind === "custom" || !selectorChanged)
         ? rawId
         : stableRuleId(uiButtonRuleStableIdInput(scope, selector, label));
-      return { id, selector, label, hidden, order, title, icon, mediaPath: mediaPath || undefined, effect, scope, kind, anchorSelector, anchorLabel, commandId, commandName, fallbackSelector, insertPosition, viewType, commandGuard, iconGuard, menuGroupGuard, targetKey, legacyTargetKey, createdAt, updatedAt };
+      return { id, selector, label, hidden, order, title, icon, mediaPath: mediaPath || undefined, effect, scope, kind, anchorSelector, anchorLabel, commandId, commandName, fallbackSelector, insertPosition, viewType, commandGuard, iconGuard, menuGroupGuard, targetKey, legacyTargetKey, temporary, createdAt, updatedAt };
     })
     .filter((item): item is UiButtonRule => item !== null);
   return mergeUiButtonRules([], rules).slice(0, 200);
@@ -64417,6 +65032,7 @@ function normalizeSettings(input: Partial<Settings>): Settings {
       : DEFAULT_SETTINGS.composerAutocompleteModel,
     composerAutocompletePrompt: typeof merged.composerAutocompletePrompt === "string" ? trimContext(merged.composerAutocompletePrompt.trim(), 240) : DEFAULT_SETTINGS.composerAutocompletePrompt,
     forceStatusBarVisible: typeof merged.forceStatusBarVisible === "boolean" ? merged.forceStatusBarVisible : DEFAULT_SETTINGS.forceStatusBarVisible,
+    preventAutomaticSessionOpen: typeof merged.preventAutomaticSessionOpen === "boolean" ? merged.preventAutomaticSessionOpen : DEFAULT_SETTINGS.preventAutomaticSessionOpen,
     autoOpenPlanPanel: typeof merged.autoOpenPlanPanel === "boolean" ? merged.autoOpenPlanPanel : DEFAULT_SETTINGS.autoOpenPlanPanel,
     showLiveTodos: typeof merged.showLiveTodos === "boolean" ? merged.showLiveTodos : DEFAULT_SETTINGS.showLiveTodos,
     showManualTodos: typeof merged.showManualTodos === "boolean" ? merged.showManualTodos : DEFAULT_SETTINGS.showManualTodos,
@@ -64527,6 +65143,7 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     composerAutocompleteModel: settings.composerAutocompleteModel,
     composerAutocompletePrompt: settings.composerAutocompletePrompt,
     forceStatusBarVisible: settings.forceStatusBarVisible,
+    preventAutomaticSessionOpen: settings.preventAutomaticSessionOpen,
     autoOpenPlanPanel: settings.autoOpenPlanPanel,
     showLiveTodos: settings.showLiveTodos,
     showManualTodos: settings.showManualTodos,
@@ -64650,6 +65267,7 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.composerAutocompleteModel === "string") config.composerAutocompleteModel = raw.composerAutocompleteModel;
   if (typeof raw.composerAutocompletePrompt === "string") config.composerAutocompletePrompt = raw.composerAutocompletePrompt;
   if (typeof raw.forceStatusBarVisible === "boolean") config.forceStatusBarVisible = raw.forceStatusBarVisible;
+  if (typeof raw.preventAutomaticSessionOpen === "boolean") config.preventAutomaticSessionOpen = raw.preventAutomaticSessionOpen;
   if (typeof raw.autoOpenPlanPanel === "boolean") config.autoOpenPlanPanel = raw.autoOpenPlanPanel;
   if (typeof raw.showLiveTodos === "boolean") config.showLiveTodos = raw.showLiveTodos;
   if (typeof raw.showManualTodos === "boolean") config.showManualTodos = raw.showManualTodos;
@@ -64790,6 +65408,7 @@ const CANCIP_CONFIG_BOOLEAN_KEYS = new Set([
   "composerAutocompleteEnabled",
   "composerAutocompletePrefetchEnabled",
   "forceStatusBarVisible",
+  "preventAutomaticSessionOpen",
   "autoOpenPlanPanel",
   "showLiveTodos",
   "showManualTodos",
@@ -65904,8 +66523,13 @@ function cleanTtsText(input: string): string {
   const redacted = redactSensitiveText(input);
   const display = prepareMessageDisplay(redacted);
   const source = display.visibleContent.trim() || redacted;
+  return markdownToTtsText(source, TTS_CAPTURE_MAX_CHARS);
+}
+
+function markdownToTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): string {
   return trimContext(
-    source
+    input
+      .replace(/^---\s*\n[\s\S]*?\n---\s*(?:\n|$)/, " ")
       .replace(/<!--[\s\S]*?-->/g, " ")
       .replace(/```[\s\S]*?```/g, " ")
       .replace(/`([^`]+)`/g, "$1")
@@ -65915,11 +66539,13 @@ function cleanTtsText(input: string): string {
       .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
       .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
       .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_full, path: string, alias: string | undefined) => alias || path)
-    .replace(/^[\s>*#+=[\]_|-]+/gm, "")
+      .replace(/^\s*[-*+]\s+\[[ xX]]\s+/gm, "")
+      .replace(/^[\s>*#+=[\]_|-]+/gm, "")
+      .replace(/\|/g, " ")
       .replace(/[ \t]{2,}/g, " ")
       .replace(/\n{3,}/g, "\n\n")
       .trim(),
-    30000
+    maxChars
   );
 }
 
@@ -68177,6 +68803,8 @@ function uiButtonRuleStableIdInput(scope: UiButtonRule["scope"], selector: strin
 }
 
 function uiButtonRulesReferToSameTarget(a: UiButtonRule, b: UiButtonRule): boolean {
+  if (Boolean(a.temporary) !== Boolean(b.temporary)) return false;
+  if (a.temporary && b.temporary && a.id !== b.id) return false;
   if (a.kind === "custom" || b.kind === "custom") {
     if (a.kind !== "custom" || b.kind !== "custom") return false;
     if (a.id && b.id && a.id === b.id) return true;
@@ -68508,8 +69136,162 @@ function uiButtonRuleIdFromMutationResult(result: string): string {
   return result.match(/^\d+\.\s+id=([^\s]+)/m)?.[1]?.trim() ?? "";
 }
 
+function uiButtonCommandScope(args: Record<string, unknown> | undefined): UiButtonRule["scope"] {
+  return args?.scope === "global" || args?.scope === "cancip" || args?.scope === "active" ? args.scope : "active";
+}
+
+function uiButtonActionSelector(args: Record<string, unknown> | undefined): string {
+  return typeof args?.selector === "string" ? args.selector.trim() : "";
+}
+
+function uiButtonSelectorFromResult(result: string): string {
+  return result.match(/^\s*selector:\s*(.+)$/m)?.[1]?.trim() ?? "";
+}
+
+function uiButtonLabelFromSelector(selector: string): string {
+  const label = selector.match(/\[(?:aria-label|title|data-cancip-ui-rule-label)\s*=\s*["']([^"']+)["']\]/i)?.[1]?.trim() ?? "";
+  return label.replace(/\\([\\"'])/g, "$1");
+}
+
+function uiButtonLabelFromResult(result: string): string {
+  const row = result.match(/^\d+\.\s+(.+?)\s*$/m)?.[1]?.trim() ?? "";
+  return row.replace(/\s+\[hidden\]/gi, "").replace(/\s+order=\S+.*$/i, "").trim();
+}
+
+function uiButtonTargetComparableText(value: string): string {
+  return value
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\s\p{P}\p{S}]+/gu, "");
+}
+
+function uiButtonTargetEvidenceFromResult(
+  result: string,
+  originalPrompt: string,
+  explicitSelector = ""
+): UiButtonEvidenceRow | null {
+  const rows = parseUiButtonEvidenceRows(result);
+  if (!rows.length) return null;
+  const preferActive = (candidates: UiButtonEvidenceRow[]): UiButtonEvidenceRow[] => {
+    const active = candidates.filter((row) => row.context?.active === true);
+    return active.length ? active : candidates;
+  };
+  const requestedSelector = explicitSelector.trim();
+  if (requestedSelector) {
+    const exact = preferActive(rows.filter((row) => row.selector === requestedSelector));
+    if (exact.length) return exact[0];
+  }
+
+  const prompt = uiButtonTargetComparableText(originalPrompt);
+  const matches = rows
+    .map((row, index) => ({ row, index, label: uiButtonTargetComparableText(row.label) }))
+    .filter((item) => item.label.length > 0 && prompt.includes(item.label));
+  if (!matches.length) return null;
+  const activeMatches = matches.filter((item) => item.row.context?.active === true);
+  const candidates = activeMatches.length ? activeMatches : matches;
+  candidates.sort((left, right) =>
+    right.label.length - left.label.length
+    || prompt.indexOf(left.label) - prompt.indexOf(right.label)
+    || left.index - right.index
+  );
+  return candidates[0].row;
+}
+
+function buttonWorkflowRequiresPeerIsolation(text: string): boolean {
+  const chinesePeer = /(?:侧边栏|右侧|左侧|旁边|别处|其他标签页|别的标签页|其他分栏|别的分栏|其他视图|别的视图|其他位置|别的位置|同名.{0,12}(?:按钮|菜单项|按键|键)|非目标(?:按钮|位置)).{0,48}(?:不受影响|不变|没(?:有)?变化|不跟着变|不一起变|保持|原样|原状态|可见|别动|不要动)|(?:不受影响|不变|没(?:有)?变化|不跟着变|不一起变|保持|原样|原状态|可见|别动|不要动).{0,48}(?:侧边栏|右侧|左侧|旁边|别处|其他标签页|别的标签页|其他分栏|别的分栏|其他视图|别的视图|其他位置|别的位置|同名.{0,12}(?:按钮|菜单项|按键|键)|非目标(?:按钮|位置))/i;
+  const chineseOnlyCurrent = /(?:只|仅).{0,10}(?:当前|活动|这个|这一|选中|目标).{0,20}(?:按钮|标题栏|工具栏|标签页|视图).{0,60}(?:其他|别的|其余|同名|非目标)/i;
+  const englishPeer = /(?:other|same[- ]?(?:name|label)|non[- ]?target).{0,60}(?:button|tab|sidebar|menu|view|location).{0,40}(?:unaffected|unchanged|visible|remain|keep)|(?:unaffected|unchanged|visible|remain|keep).{0,40}(?:other|same[- ]?(?:name|label)|non[- ]?target)/i;
+  const englishOnlyCurrent = /(?:only|just).{0,20}(?:current|active|selected|target).{0,30}(?:button|toolbar|tab|view).{0,70}(?:other|same[- ]?(?:name|label)|non[- ]?target)/i;
+  return chinesePeer.test(text) || chineseOnlyCurrent.test(text) || englishPeer.test(text) || englishOnlyCurrent.test(text);
+}
+
+function buttonWorkflowTargetsActiveScope(text: string): boolean {
+  const chinese = /(?:只|仅|暂时|临时)?.{0,10}(?:当前|活动|这个|这一|选中).{0,20}(?:笔记|标签页|视图|标题栏|工具栏|按钮)|(?:当前|活动)(?:笔记|标签页|视图).{0,24}(?:标题栏|工具栏|按钮|菜单项)/i;
+  const english = /(?:only|just|temporarily)?.{0,12}(?:current|active|selected).{0,24}(?:note|tab|view|titlebar|toolbar|button|menu item)/i;
+  return chinese.test(text) || english.test(text);
+}
+
+function buttonWorkflowRequestedChanges(text: string): UiButtonRuleChange[] {
+  const changes = new Set<UiButtonRuleChange>();
+  if (/(?:隐藏|藏起|收起|显示|显现|可见|hide|show|visible)/i.test(text)) changes.add("hidden");
+  if (/(?:按钮|菜单项).{0,12}(?:排序|顺序|前移|后移|置顶|移到|order|reorder|before|after)|(?:排序|顺序|前移|后移|置顶|order|reorder).{0,12}(?:按钮|菜单项)/i.test(text)) changes.add("order");
+  if (/(?:按钮|菜单项).{0,12}(?:改名|重命名|名称|文案|rename|retitle|label)|(?:改名|重命名|rename|retitle).{0,12}(?:按钮|菜单项)/i.test(text)) changes.add("title");
+  if (/(?:按钮|菜单项).{0,12}(?:图标|icon)|(?:更换|修改|自定义|换).{0,8}(?:图标|icon)/i.test(text)) changes.add("icon");
+  if (/(?:按钮|图标).{0,12}(?:动图|图片|视频|gif|media)|(?:动图|gif|media).{0,12}(?:按钮|图标)/i.test(text)) changes.add("media");
+  if (/(?:按钮|图标).{0,12}(?:特效|动画|闪烁|旋转|发光|effect|pulse|spin|glow|bounce|tilt)|(?:特效|动画|effect|pulse|spin|glow|bounce|tilt).{0,12}(?:按钮|图标)/i.test(text)) changes.add("effect");
+  return [...changes];
+}
+
+function buttonWorkflowRequestedHiddenState(text: string): boolean | undefined {
+  const hideIndex = text.search(/(?:隐藏|藏起|收起|hide|hidden)/i);
+  const showIndex = text.search(/(?:显示|显现|展现|重新可见|show|visible)/i);
+  if (hideIndex < 0) return showIndex < 0 ? undefined : false;
+  if (showIndex < 0) return true;
+  return hideIndex <= showIndex;
+}
+
+function parseUiButtonEvidenceRows(result: string): UiButtonEvidenceRow[] {
+  const rows: UiButtonEvidenceRow[] = [];
+  const pattern = /(?:^|\n)\d+\.\s+([^\r\n]+)\r?\n\s*selector:\s*([^\r\n]+)\r?\n\s*context:\s*(\{[^\r\n]+\})/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(result)) !== null) {
+    let context: UiButtonEvidenceContext | undefined;
+    try {
+      const parsed = JSON.parse(match[3]) as Partial<UiButtonEvidenceContext>;
+      if (typeof parsed.key === "string" && typeof parsed.active === "boolean") context = parsed as UiButtonEvidenceContext;
+    } catch {
+      context = undefined;
+    }
+    rows.push({
+      label: match[1].replace(/\s+\[hidden\]/gi, "").replace(/\s+order=\S+.*$/i, "").trim(),
+      selector: match[2].trim(),
+      hidden: /\[hidden\]/i.test(match[1]),
+      context
+    });
+  }
+  return rows;
+}
+
+function uiButtonWorkflowVerificationMatches(
+  result: string,
+  expectedHidden: boolean | undefined,
+  isolationRequired: boolean,
+  baselineResult = ""
+): boolean {
+  const rows = parseUiButtonEvidenceRows(result);
+  if (!rows.length) {
+    if (isolationRequired) return false;
+    const targetFound = !/^\s*(?:none|无|没有)\b/i.test(result);
+    const hidden = /\[hidden\]|data-cancip-ui-(?:rule-)?hidden\s*=\s*["']?true/i.test(result);
+    return targetFound && (expectedHidden === undefined || hidden === expectedHidden);
+  }
+  const contextualTargets = rows.filter((row) => row.context?.active === true);
+  const targets = contextualTargets.length || isolationRequired ? contextualTargets : rows;
+  if (!targets.length || (expectedHidden !== undefined && !targets.some((row) => row.hidden === expectedHidden))) return false;
+  if (!isolationRequired) return true;
+
+  const baselinePeers = parseUiButtonEvidenceRows(baselineResult).filter((row) => row.context && !row.context.active);
+  const currentPeers = rows.filter((row) => row.context && !row.context.active);
+  if (!baselinePeers.length) return currentPeers.length === 0;
+  if (!currentPeers.length) return false;
+  return baselinePeers.every((baseline) => currentPeers.some((current) =>
+    current.context?.key === baseline.context?.key
+    && current.label === baseline.label
+    && current.selector === baseline.selector
+    && current.hidden === baseline.hidden
+  ));
+}
+
 function buttonWorkflowRequestsRestore(text: string): boolean {
   return /(恢复|还原|复原|撤销|撤回|回退|退回|取消(?:本次|临时|规则|改动)?|重置|reset|restore|revert|roll\s*back|undo|temporary)/i.test(text);
+}
+
+function terminalButtonAnswerContradictsVerifiedCompletion(text: string): boolean {
+  const chineseIncomplete = /(?:还没|還沒|尚未|未能|没有|沒有|并未|並未)\s*(?:真正|实际|實際)?\s*(?:完成|做完|执行完|執行完)/i;
+  const chineseReadOnly = /(?:这轮|這輪|本轮|本輪|当前|當前|目前).{0,12}(?:只|仅|僅)\s*(?:(?:做|进行|進行|完成)了?\s*)?(?:读取|讀取|检查|檢查)/i;
+  const englishIncomplete = /\b(?:not\s+(?:done|complete)|did\s+not\s+(?:complete|finish)(?:\s+the)?\s+(?:task|request|workflow))\b/i;
+  const englishReadOnly = /(?:^|[.!?;\n]\s*)(?:only|just)\s+(?:(?:did|performed|completed)\s+)?(?:read|inspected?|checked)\b/i;
+  return chineseIncomplete.test(text) || chineseReadOnly.test(text) || englishIncomplete.test(text) || englishReadOnly.test(text);
 }
 
 function cancipActionBlockForActions(actions: CancipAction[]): string {
@@ -69212,6 +69994,7 @@ function parseCancipAction(input: unknown): CancipAction | null {
       sessionId: typeof input.sessionId === "string" ? input.sessionId : undefined,
       condition: typeof input.condition === "string" ? input.condition : undefined,
       watchNewFiles: typeof input.watchNewFiles === "boolean" ? input.watchNewFiles : undefined,
+      ignoreMachineFiles: typeof input.ignoreMachineFiles === "boolean" ? input.ignoreMachineFiles : undefined,
       newFilePattern: typeof input.newFilePattern === "string" ? input.newFilePattern : undefined,
       newFileDebounceSeconds: typeof input.newFileDebounceSeconds === "number"
         ? input.newFileDebounceSeconds
@@ -69351,6 +70134,19 @@ function isAutomationInternalPath(path: string, obsidianConfigDir: string): bool
     || isPathInVaultFolder(normalized, obsidianConfigDir)
     || isAcceptanceUserReportPath(normalized)
     || isPathInVaultFolder(normalized, ".trash");
+}
+
+function isAutomationMachineFilePath(path: string): boolean {
+  const normalized = normalizePath(path.replace(/\\/g, "/").replace(/^\/+/, ""));
+  const lower = normalized.toLowerCase();
+  const segments = lower.split("/").filter(Boolean);
+  const fileName = segments.at(-1) ?? "";
+  if (segments.some((segment) => /^(?:\.git|\.cache|\.index|\.logs?|\.tmp|\.temp|\.state|node_modules|cache|caches|logs?|tmp|temp)$/.test(segment))) {
+    return true;
+  }
+  if (/\.(?:log|lock|tmp|temp|bak|cache|db|sqlite|sqlite3|wal|shm|journal)$/.test(fileName)) return true;
+  return /^(?:index|cache|state|workspace(?:-mobile)?|data|manifest|versions|community-plugins|core-plugins(?:-migration)?|appearance|hotkeys|types)\.json$/.test(fileName)
+    || /^(?:package-lock|pnpm-lock|yarn\.lock)$/.test(fileName);
 }
 
 function automationNewFilePathMatches(task: AutomationTask, path: string): boolean {
@@ -72818,6 +73614,92 @@ function extractTokenUsage(json: unknown, fallbackInput: number, fallbackOutputT
     totalTokens: total ?? inputTokens + outputTokens,
     estimated: input === undefined || output === undefined || total === undefined
   };
+}
+
+function nativeCancipActionToolForProfile(profile: Pick<ApiProfile, "model">, mode: Exclude<ApiMode, "auto">): Record<string, unknown> | null {
+  if (!profileUsesNativeCancipActionProtocol(profile)) return null;
+  const description = [
+    "Execute exactly one Cancip action when Obsidian state or a mutation is required; otherwise answer normally.",
+    "Never invent command names.",
+    "Common routes: obsidian.ui.buttons {scope,query,includeSameLabel}; obsidian.ui.buttonRules {selector,scope}; obsidian.ui.applyButtonRules {rules|reset}; cancip.findTarget {query,targetKind,includeContent}; cancip.openFile {path}; cancip.searchVault {query}; cancip.tools.index {query}; cancip.tools.help {command}.",
+    "If the exact route is unknown, call cancip.tools.index first and wait for its result."
+  ].join(" ");
+  const parameters = {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      type: { type: "string", description: "Cancip action type; use command for command-bus routes." },
+      command: { type: "string", description: "Exact Cancip command name for command actions." },
+      args: { type: "object", additionalProperties: true, description: "Arguments for the exact command." },
+      path: { type: "string", description: "Vault-relative path for direct file actions." },
+      content: { type: "string", description: "Content for direct write or append actions." },
+      find: { type: "string", description: "Exact text for a direct patch action." },
+      replace: { type: "string", description: "Replacement text for a direct patch action." }
+    },
+    required: ["type"]
+  };
+  if (mode === "responses") {
+    return { type: "function", name: "cancip_action", description, parameters };
+  }
+  return {
+    type: "function",
+    function: { name: "cancip_action", description, parameters }
+  };
+}
+
+function profileUsesNativeCancipActionProtocol(profile: Pick<ApiProfile, "model">): boolean {
+  const model = profile.model.trim().toLowerCase();
+  return /(?:^|\/)gpt-5\.6-(?:sol|solar|terra|luna)(?:$|[-:@/])/.test(model);
+}
+
+function extractModelResponseText(json: unknown): string {
+  return extractNativeCancipActionText(json) || extractResponseText(json);
+}
+
+function extractNativeCancipActionText(json: unknown): string {
+  if (!isRecord(json)) return "";
+  const calls: Array<{ name: string; argumentsValue: unknown }> = [];
+  const addCall = (value: unknown): void => {
+    if (!isRecord(value)) return;
+    const nested = isRecord(value.function) ? value.function : value;
+    const name = typeof nested.name === "string"
+      ? nested.name
+      : typeof value.name === "string"
+        ? value.name
+        : "";
+    if (name !== "cancip_action") return;
+    const argumentsValue = nested.arguments ?? value.arguments ?? nested.input ?? value.input;
+    calls.push({ name, argumentsValue });
+  };
+  if (Array.isArray(json.choices)) {
+    for (const choice of json.choices) {
+      if (!isRecord(choice)) continue;
+      const message = isRecord(choice.message) ? choice.message : choice;
+      if (Array.isArray(message.tool_calls)) message.tool_calls.forEach(addCall);
+      addCall(message.function_call);
+    }
+  }
+  if (Array.isArray(json.output)) {
+    for (const item of json.output) {
+      if (!isRecord(item)) continue;
+      if (item.type === "function_call" || item.type === "tool_call") addCall(item);
+      if (Array.isArray(item.tool_calls)) item.tool_calls.forEach(addCall);
+    }
+  }
+  const actions: CancipAction[] = [];
+  const seen = new Set<string>();
+  for (const call of calls) {
+    const raw = typeof call.argumentsValue === "string"
+      ? call.argumentsValue
+      : JSON.stringify(call.argumentsValue ?? {});
+    for (const action of extractCancipActionsFromJson(raw)) {
+      const signature = JSON.stringify(action);
+      if (seen.has(signature)) continue;
+      seen.add(signature);
+      actions.push(action);
+    }
+  }
+  return actions.length ? cancipActionBlockForActions(actions) : "";
 }
 
 function extractResponseText(json: unknown): string {

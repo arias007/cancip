@@ -1405,7 +1405,7 @@ body .obcc-ui-rule-hidden,
 body [data-cancip-ui-hidden="true"],
 body [data-cancip-ui-rule-hidden="true"],
 body [data-cancip-tag-hidden="true"] {
-  display: none;
+  display: none !important;
 }
 
 .obcc-title-line .obcc-session-id-copy {
@@ -4772,14 +4772,16 @@ details.obcc-process-step {
   box-shadow: 0 1px 0 var(--background-modifier-border);
 }
 
-.obcc-button-edit-sticky-actions::before {
-  content: "";
-  position: absolute;
-  inset-inline: 0;
-  top: -28px;
-  height: 28px;
-  background: inherit;
-  pointer-events: none;
+.obcc-button-edit-send-cancip {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  margin-inline-end: auto;
+  padding: 0;
+}
+
+.obcc-button-edit-modal .modal-close-button {
+  z-index: 20;
 }
 
 .obcc-button-edit-target {
@@ -5612,6 +5614,37 @@ details.obcc-process-step {
 .obcc-context-edit-action.is-secondary {
   background: transparent;
   color: var(--text-muted);
+}
+
+@media (max-width: 700px) {
+  .obcc-button-edit-modal {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 12px);
+    margin-top: env(safe-area-inset-top, 0px);
+    margin-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  .obcc-button-edit-modal .modal-content {
+    max-height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
+    padding-top: 34px;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    touch-action: pan-y;
+  }
+
+  .obcc-button-edit-sticky-actions {
+    top: 0;
+    margin-top: -4px;
+  }
+
+  .obcc-button-edit-icon-grid {
+    max-height: min(172px, 28dvh);
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .obcc-button-edit-media-grid {
+    max-height: min(260px, 38dvh);
+    -webkit-overflow-scrolling: touch;
+  }
 }
 
 .obcc-context-edit-action svg {

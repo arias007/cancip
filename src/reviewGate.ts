@@ -47,12 +47,14 @@ export type ReviewGateManifest = {
   folder: string;
   generated_at: string;
   source: string;
+  session_id?: string;
   items: ReviewGateManifestItem[];
 };
 
 export type ReviewGateBuildOptions = {
   title?: string;
   vaultLabel?: string;
+  sessionId?: string;
   outputRoot: string;
   output?: string;
   paths?: unknown;
@@ -156,6 +158,7 @@ async function buildManifest(adapter: DataAdapter, options: ReviewGateBuildOptio
     folder: outputDir,
     generated_at: new Date().toISOString(),
     source: "cancip.programmatic.reviewGate",
+    ...(cleanText(options.sessionId) ? { session_id: cleanText(options.sessionId) } : {}),
     items
   };
 }
@@ -286,6 +289,7 @@ function makeSummary(manifest: ReviewGateManifest, prepared: PreparedReviewItem[
     vault_label: manifest.vault_label,
     folder: manifest.folder,
     generated_at: manifest.generated_at,
+    ...(manifest.session_id ? { session_id: manifest.session_id } : {}),
     items: prepared.map((item) => ({
       name: basename(item.path),
       path: item.path,
