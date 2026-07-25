@@ -27726,7 +27726,7 @@ class CancipView extends ItemView {
   }
 
   refreshPersonalizedGreeting(): void {
-    if (!this.messages.length && this.messagesEl?.isConnected) this.renderMessages();
+    if (!this.messages.length && this.messagesEl?.isConnected) this.renderMessages(true);
     this.scheduleAutocomplete();
   }
 
@@ -28201,7 +28201,7 @@ class CancipView extends ItemView {
     this.syncRequestControls();
     this.syncSessionChrome();
     this.cancelAutocompleteNetworkRequests();
-    this.renderMessages();
+    this.renderMessages(true);
     this.plugin.schedulePersonalizationRefresh(0);
     this.renderSources([]);
     this.setStatus("");
@@ -52084,14 +52084,14 @@ class CancipView extends ItemView {
     this.renderMessages();
   }
 
-  private renderMessages(): void {
+  private renderMessages(force = false): void {
     this.cancelScheduledMessageRender();
     this.messageRenderLastAt = Date.now();
     if (this.isBackgroundAutomationRunner()) {
       this.pendingMessageRender = false;
       return;
     }
-    if (this.shouldDeferMessageRender()) {
+    if (!force && this.shouldDeferMessageRender()) {
       this.pendingMessageRender = true;
       return;
     }
