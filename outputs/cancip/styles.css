@@ -10610,3 +10610,143 @@ body.is-phone .obcc-document-native-preview {
     padding-inline: 6px;
   }
 }
+
+/* 3.2.35 final cascade: keep the outer frames fixed and give Android
+   WebView only the actual result panes a bounded vertical scroll surface. */
+.obcc-context-edit-bubble.is-proposal-ready {
+  display: flex !important;
+  align-items: stretch;
+}
+
+.obcc-context-edit-input.is-hidden {
+  display: none !important;
+}
+
+.obcc-search-results {
+  min-height: 0;
+  overflow: hidden;
+}
+
+.obcc-search-section {
+  min-height: 0;
+  height: 100%;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.obcc-search-section:not([open]) {
+  height: auto;
+  grid-template-rows: auto;
+}
+
+.obcc-search-section-results {
+  min-height: 0;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.obcc-search-results:has(> .obcc-search-section.is-ai:not([open])) {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.obcc-search-results:has(> .obcc-search-section.is-hard:not([open])) {
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+
+.obcc-search-results:has(> .obcc-search-section.is-ai:not([open])):has(> .obcc-search-section.is-hard:not([open])) {
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+
+.obcc-review-leaf,
+.obcc-review-leaf-shell,
+.obcc-review-leaf-body,
+.obcc-review-file-nav,
+.obcc-review-detail-view,
+.obcc-review-detail-content,
+.obcc-review-detail-main,
+.obcc-review-changes,
+.obcc-review-sources-paired {
+  min-width: 0;
+  min-height: 0;
+}
+
+.obcc-review-leaf-body,
+.obcc-review-file-nav-tree,
+.obcc-review-detail-content,
+.obcc-review-detail-main,
+.obcc-review-changes-body,
+.obcc-review-diff,
+.obcc-review-diff-render,
+.obcc-review-source-body,
+.obcc-review-render-body {
+  touch-action: pan-y;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-view,
+.obcc-review-leaf.has-review-detail .obcc-review-detail-content,
+.obcc-review-leaf.has-review-detail .obcc-review-detail-main {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-view {
+  overflow: hidden;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-content,
+.obcc-review-leaf.has-review-detail .obcc-review-detail-main {
+  overflow: hidden;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-detail-main.is-diff-view > .obcc-review-changes,
+.obcc-review-leaf.has-review-detail .obcc-review-detail-main.is-source-view > .obcc-review-sources-paired {
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-changes-body,
+.obcc-review-leaf.has-review-detail .obcc-review-diff,
+.obcc-review-leaf.has-review-detail .obcc-review-diff-render,
+.obcc-review-leaf.has-review-detail .obcc-review-source-body,
+.obcc-review-leaf.has-review-detail .obcc-review-render-body {
+  min-height: 0;
+  max-height: 100%;
+  overflow-y: auto;
+}
+
+.obcc-review-leaf.has-review-detail .obcc-review-sources-paired {
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+@media (max-width: 700px) {
+  .obcc-search-results {
+    grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .obcc-review-leaf.has-review-nav .obcc-review-file-nav,
+  .obcc-review-leaf.has-review-nav .obcc-review-file-nav.is-page {
+    height: 100%;
+    max-height: 100%;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree {
+    height: 100%;
+    max-height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+  }
+}

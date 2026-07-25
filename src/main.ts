@@ -16317,11 +16317,23 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     bubble.removeClass("is-loading");
     bubble.addClass("is-proposal-ready");
     input.disabled = true;
+    input.addClass("is-hidden");
     cancip.disabled = true;
     cancip.addClass("is-hidden");
     submit.disabled = true;
     submit.addClass("is-hidden");
     close.addClass("is-hidden");
+
+    const proposalPanel = bubble.createDiv({ cls: "obcc-context-edit-proposal" });
+    const diff = proposalPanel.createDiv({ cls: "obcc-context-edit-diff" });
+    for (const item of proposal.items) {
+      if (item.path?.trim()) diff.createDiv({ cls: "obcc-context-edit-diff-path", text: item.path });
+      for (const line of makeReviewDiffLines(item.old_text ?? "", item.new_text ?? "")) {
+        const row = diff.createDiv({ cls: `obcc-context-edit-diff-line is-${line.kind}` });
+        row.createSpan({ text: line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " " });
+        row.createSpan({ cls: "obcc-context-edit-diff-text", text: line.text });
+      }
+    }
 
     const marker = this.contextEditMarkerEl;
     marker?.addClass("has-proposal");
@@ -16370,11 +16382,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     retry.addEventListener("click", () => {
       disable();
       void this.resolveContextualEditProposal(proposal, false).then(() => {
+        proposalPanel.remove();
         bubble.removeClass("is-proposal-ready");
         this.contextEditMarkerEl?.remove();
         this.contextEditMarkerEl = null;
         if (this.contextEditBubbleAnchor) this.showContextEditMarker(this.contextEditBubbleAnchor, false);
         input.disabled = false;
+        input.removeClass("is-hidden");
         cancip.disabled = false;
         cancip.removeClass("is-hidden");
         input.value = instruction;
@@ -27649,6 +27663,7 @@ class CancipView extends ItemView {
   private mentionEl: HTMLElement | null = null;
   private menuEl: HTMLElement | null = null;
   private headerMenuEl: HTMLElement | null = null;
+  private moreButtonEl: HTMLButtonElement | null = null;
   private overlayLayerEl: HTMLElement | null = null;
   private headerSessionIdEl: HTMLElement | null = null;
   private headerSessionTitleEl: HTMLElement | null = null;
@@ -28291,6 +28306,9 @@ class CancipView extends ItemView {
     this.syncRequestControls();
     this.syncSessionChrome();
     this.cancelAutocompleteNetworkRequests();
+    // The personalized greeting is a local cache read. Wait for it before the
+    // first paint so a new chat does not briefly show a generic time greeting.
+    await this.plugin.loadPersonalizationCache();
     this.renderMessages(true);
     this.plugin.schedulePersonalizationRefresh(0);
     this.renderSources([]);
@@ -28759,6 +28777,7 @@ class CancipView extends ItemView {
     this.menuEl = null;
     this.mentionEl = null;
     this.headerMenuEl = null;
+    this.moreButtonEl = null;
 
     const root = this.contentEl;
     root.empty();
@@ -28830,6 +28849,7 @@ class CancipView extends ItemView {
       cls: "obcc-icon-button obcc-more-button",
       attr: { "aria-label": this.t("moreMenu"), title: this.t("moreMenu") }
     });
+    this.moreButtonEl = moreButton;
     setIcon(moreButton, "more-horizontal");
     moreButton.addEventListener("click", () => {
       this.toggleMoreMenu();
@@ -29363,8 +29383,7 @@ class CancipView extends ItemView {
   private renderQueueStatus(): void {
     if (!this.queueEl) return;
     const count = this.queuedPrompts.length;
-    const planTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
-    const visiblePlan = planTodos.length ? planTodos : this.visibleManualTodos().filter((todo) => todo.sendToModel !== false);
+    const visiblePlan = this.modelPlanTodos();
     const liveFiles = this.liveChangedFileEntries();
     this.renderHeaderLiveStatus(visiblePlan, liveFiles);
     this.renderComposerStatusMeta(visiblePlan, liveFiles);
@@ -31120,9 +31139,29 @@ class CancipView extends ItemView {
     const rootLeft = rootRect ? Math.max(viewportLeft + 4, rootRect.left + 4) : viewportLeft + 8;
     const rootRight = rootRect ? Math.min(viewportLeft + viewportWidth - 4, rootRect.right - 4) : viewportLeft + viewportWidth - 8;
     const width = Math.max(180, rootRight - rootLeft);
-    const anchorAboveComposer = this.activeHeaderMenu === "more"
-      || this.activeHeaderMenu === "skills"
-      || this.activeHeaderMenu === "automation";
+    if ((this.activeHeaderMenu === "more" || this.activeHeaderMenu === "skills" || this.activeHeaderMenu === "automation")
+      && this.moreButtonEl?.isConnected) {
+      const anchor = this.moreButtonEl.getBoundingClientRect();
+      const panelWidth = Math.min(360, Math.max(180, rootRight - rootLeft));
+      const maxHeight = Math.min(560, Math.max(120, Math.floor(viewportHeight - viewportTop - 16)));
+      const measuredHeight = Math.max(96, Math.min(maxHeight, this.headerMenuEl.scrollHeight || 96));
+      const left = Math.max(viewportLeft + 8, Math.min(viewportLeft + viewportWidth - panelWidth - 8, anchor.right - panelWidth));
+      const below = anchor.bottom + 6;
+      const top = below + measuredHeight <= viewportTop + viewportHeight - 8
+        ? below
+        : Math.max(viewportTop + 8, anchor.top - measuredHeight - 6);
+      this.headerMenuEl.setCssStyles({
+        left: `${Math.floor(left)}px`,
+        right: "auto",
+        top: `${Math.floor(top)}px`,
+        bottom: "auto",
+        width: `${Math.floor(panelWidth)}px`,
+        maxWidth: `${Math.floor(panelWidth)}px`,
+        maxHeight: `${maxHeight}px`
+      });
+      return;
+    }
+    const anchorAboveComposer = false;
     const footerRect = this.footerEl?.getBoundingClientRect();
     if (anchorAboveComposer && footerRect && Number.isFinite(footerRect.top)) {
       const footerTop = Math.min(footerRect.top, viewportTop + viewportHeight - 4);
@@ -32058,12 +32097,12 @@ class CancipView extends ItemView {
     setIcon(closeButton, "x");
     closeButton.addEventListener("click", () => this.closeHeaderMenu());
 
-    const agentTodos = this.agentPlanTodos();
-    if (this.plugin.settings.showLiveTodos && agentTodos.length) {
+    const allPlanTodos = this.planTodosForDisplay();
+    if (allPlanTodos.length) {
       const agentSection = this.headerMenuEl.createDiv({ cls: "obcc-plan-section" });
-      agentSection.createDiv({ cls: "obcc-plan-section-title", text: this.planSectionTitle(this.t("realtimeTodos"), agentTodos) });
+      agentSection.createDiv({ cls: "obcc-plan-section-title", text: this.planSectionTitle(this.t("realtimeTodos"), allPlanTodos) });
       const agentList = agentSection.createDiv({ cls: "obcc-manual-todos obcc-agent-todos" });
-      this.renderTodoList(agentList, agentTodos);
+      this.renderTodoList(agentList, allPlanTodos);
     } else if (this.plugin.settings.showLiveTodos) {
       const liveTodos = this.realtimeTodos();
       if (liveTodos.length) {
@@ -32084,10 +32123,7 @@ class CancipView extends ItemView {
 
     if (this.plugin.settings.showManualTodos) {
       const manualSection = this.headerMenuEl.createDiv({ cls: "obcc-plan-section" });
-      const manualTodos = this.visibleManualTodos();
-      manualSection.createDiv({ cls: "obcc-plan-section-title", text: this.planSectionTitle(this.t("manualTodos"), manualTodos) });
-      const manualList = manualSection.createDiv({ cls: "obcc-manual-todos" });
-      this.renderTodoList(manualList, manualTodos);
+      manualSection.createDiv({ cls: "obcc-plan-section-title", text: this.t("manualTodos") });
 
       const form = manualSection.createEl("form", { cls: "obcc-manual-todo-form" });
       const input = form.createEl("input", {
@@ -32713,9 +32749,9 @@ class CancipView extends ItemView {
   }
 
   private realtimeTodos(): RealtimeTodo[] {
-    const agentTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
-    if (agentTodos.length) {
-      return agentTodos.map((todo) => ({ text: todo.text, done: todo.done }));
+    const planTodos = this.planTodosForDisplay().filter((todo) => todo.sendToModel !== false);
+    if (planTodos.length) {
+      return planTodos.map((todo) => ({ text: todo.text, done: todo.done }));
     }
 
     const runMap = new Map<string, ToolRun>();
@@ -32734,10 +32770,11 @@ class CancipView extends ItemView {
   }
 
   private planSectionTitle(title: string, todos: ManualTodo[]): string {
-    const visibleCount = todos.filter((todo) => todo.sendToModel !== false).length;
-    const heldCount = todos.length - visibleCount;
+    const aiCount = todos.filter((todo) => todo.source === "programmatic").length;
+    const manualCount = todos.filter((todo) => todo.source !== "programmatic").length;
+    const heldCount = todos.filter((todo) => todo.sendToModel === false).length;
     const doneCount = todos.filter((todo) => todo.done).length;
-    return `${title} · ${doneCount}/${todos.length} · ${visibleCount} AI · ${heldCount} hold`;
+    return `${title} · ${doneCount}/${todos.length} · ${aiCount} AI · ${manualCount} ${this.t("manualTodos")} · ${heldCount} hold`;
   }
 
   private planTodoStatus(todos: ManualTodo[], todo: ManualTodo | undefined, index: number, done: boolean): "done" | "current" | "todo" {
@@ -32783,6 +32820,7 @@ class CancipView extends ItemView {
       });
     }
     row.createSpan({ cls: "obcc-todo-index", text: index >= 0 ? `${index + 1}.` : "" });
+    if (todo) row.createSpan({ cls: "obcc-todo-source", text: todo.source === "programmatic" ? "AI" : this.t("manualTodos") });
     if (!readonly && todo && this.editingManualTodoId === todo.id) {
       const editor = row.createEl("input", {
         cls: "obcc-manual-todo-input is-inline",
@@ -32928,6 +32966,16 @@ class CancipView extends ItemView {
 
   private agentPlanTodos(): ManualTodo[] {
     return this.manualTodos.filter((todo) => todo.source === "programmatic");
+  }
+
+  private planTodosForDisplay(): ManualTodo[] {
+    return this.manualTodos.filter((todo) => todo.source === "programmatic"
+      ? this.plugin.settings.showLiveTodos
+      : this.plugin.settings.showManualTodos);
+  }
+
+  private modelPlanTodos(): ManualTodo[] {
+    return this.manualTodos.filter((todo) => todo.sendToModel !== false);
   }
 
   private toggleMoreMenu(): void {
@@ -34909,8 +34957,7 @@ class CancipView extends ItemView {
   }
 
   private livePlanProgressLine(): string {
-    const agentTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
-    const todos = agentTodos.length ? agentTodos : this.visibleManualTodos().filter((todo) => todo.sendToModel !== false);
+    const todos = this.modelPlanTodos();
     if (!todos.length) return "";
     const total = todos.length;
     const done = todos.filter((todo) => todo.done).length;
@@ -38117,6 +38164,7 @@ class CancipView extends ItemView {
         done: todo.done,
         createdAt: todo.createdAt,
         sendToModel: todo.sendToModel !== false,
+        planOnly: todo.planOnly === true,
         source: todo.source ?? "manual"
       })),
       queuedPrompts: this.queuedPrompts.map((item) => ({
@@ -42956,9 +43004,7 @@ class CancipView extends ItemView {
       && !promptContainsForDedup(promptForModel, taskGoal);
     const includeOriginalPrompt = Boolean(originalPrompt)
       && !promptContainsForDedup(promptForModel, originalPrompt);
-    const agentTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
-    const manualModelTodos = this.visibleManualTodos().filter((todo) => todo.sendToModel !== false);
-    const modelTodos = agentTodos.length ? agentTodos : manualModelTodos;
+    const modelTodos = this.modelPlanTodos();
     const overallPlan = modelTodos.length
       ? modelTodos
           .slice(0, 20)
@@ -44549,7 +44595,7 @@ class CancipView extends ItemView {
   ): Promise<ActionHandlingResult | null> {
     if (this.hasPendingToolRuns(previous.runs)) return previous;
     if (this.currentTaskActionBudgetReached()) return previous;
-    const unfinishedPlanNeedsAction = this.agentPlanTodos().some((todo) => todo.sendToModel !== false && todo.planOnly !== true && !todo.done);
+    const unfinishedPlanNeedsAction = this.modelPlanTodos().some((todo) => todo.planOnly !== true && !todo.done);
     if (!this.plugin.settings.autoContinueAfterTools && !unfinishedPlanNeedsAction) return previous;
     // A completed read-only batch has already produced the evidence needed by
     // the final-decision step. Do not spend another general continuation call
@@ -44632,6 +44678,18 @@ class CancipView extends ItemView {
         if (assistantMessage) this.attachChoiceSource(assistantMessage, actionableAnswer);
         if (assistantMessage) this.renderMessages();
         current = await this.handleActionBlocks(actionableAnswer, assistantMessage);
+        if (!current) {
+          const unfinishedPlan = this.modelPlanTodos().some((todo) => todo.planOnly !== true && !todo.done);
+          const terminalStatus = finalReviewStatusFromAnswer(actionableAnswer);
+          if (unfinishedPlan && terminalStatus !== "blocked" && terminalStatus !== "failed" && terminalStatus !== "awaiting-approval") {
+            if (assistantMessage) {
+              this.messages = this.messages.filter((item) => item !== assistantMessage);
+              this.renderMessages();
+            }
+            current = lastHandled;
+            continue;
+          }
+        }
       } catch (error) {
         const reasonText = error instanceof Error ? error.message : String(error);
         this.updateProgressStep(continueStep, this.generationStepSummary(continuationStatus, this.currentModelCharUsageText()), reasonText, this.t("toolRunFailed"));
@@ -44647,7 +44705,7 @@ class CancipView extends ItemView {
       const cumulativeRuns = this.currentTaskToolRuns();
       const cumulativeButtonDirective = this.uiButtonWorkflowDirective(cumulativeRuns, originalPrompt);
       const cumulativeButtonNeedsAction = Boolean(cumulativeButtonDirective && cumulativeButtonDirective.phase !== "done");
-      const cumulativeUnfinishedPlan = this.agentPlanTodos().some((todo) => todo.sendToModel !== false && todo.planOnly !== true && !todo.done);
+      const cumulativeUnfinishedPlan = this.modelPlanTodos().some((todo) => todo.planOnly !== true && !todo.done);
       if (!shouldContinueToolLoopFromRuns(cumulativeRuns) && !shouldNeedMoreActionForPrompt(originalPrompt, cumulativeRuns) && !cumulativeButtonNeedsAction && !cumulativeUnfinishedPlan) {
         return lastHandled;
       }
@@ -45227,7 +45285,7 @@ class CancipView extends ItemView {
       && decisionRuns.every((run) => isReadOnlyAction(run.action));
     const compactFileFinal = directFileReadFinal || directFileMutationFinal || compactInformationalFinal;
     const relevantContext = trimPromptPayload(context.contextText, 1400);
-    const planState = this.agentPlanTodos()
+    const planState = this.modelPlanTodos()
       .filter((todo) => todo.sendToModel !== false && todo.planOnly !== true)
       .map((todo, index) => `${index + 1}. [${todo.done ? "done" : "todo"}] ${trimContext(todo.text.replace(/\s+/g, " "), 120)} (${todo.id})`)
       .join("\n");
@@ -45465,7 +45523,7 @@ class CancipView extends ItemView {
     if (!visible || isOnlyRunStatsText(visible) || this.isActionOnlyFallbackMessage(visible)) {
       return "missing a concrete user-visible result";
     }
-    const planTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false && todo.planOnly !== true);
+    const planTodos = this.modelPlanTodos().filter((todo) => todo.planOnly !== true);
     if (planTodos.length) {
       for (let index = 0; index < planTodos.length; index += 1) {
         const marker = new RegExp(`(?:^|\\n)\\s*(?:\\*\\*)?${index + 1}[.、)）．]\\s*`, "m");
@@ -45518,7 +45576,7 @@ class CancipView extends ItemView {
     if (!status) return "missing hidden final-review status";
     const pending = runs.some((run) => run.status === "pending" || run.status === "executing");
     const terminalFailure = runs.some((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected");
-    const unfinishedPlan = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false && todo.planOnly !== true && !todo.done);
+    const unfinishedPlan = this.modelPlanTodos().filter((todo) => todo.planOnly !== true && !todo.done);
     if (status === "complete" && unfinishedPlan.length) {
       return `final review marked complete with unfinished Plan items: ${unfinishedPlan.map((todo) => todo.id).join(", ")}`;
     }
@@ -47949,7 +48007,7 @@ class CancipView extends ItemView {
   }
 
   private findAgentTodo(action: TodoAction): ManualTodo | null {
-    return this.agentPlanTodos().find((todo) => this.todoMatchesAction(todo, action)) ?? null;
+    return this.modelPlanTodos().find((todo) => this.todoMatchesAction(todo, action)) ?? null;
   }
 
   private todoMatchesAction(todo: ManualTodo, action: TodoAction): boolean {
@@ -47966,9 +48024,12 @@ class CancipView extends ItemView {
   }
 
   private planTodosSummary(): string {
-    const agentTodos = this.agentPlanTodos();
-    if (!agentTodos.length) return this.t("noManualTodos");
-    return agentTodos.map((todo, index) => `${index + 1}. [${todo.done ? "x" : " "}] ${todo.text} (${todo.id})`).join("\n");
+    const todos = this.modelPlanTodos();
+    if (!todos.length) return this.t("noManualTodos");
+    return todos.map((todo, index) => {
+      const source = todo.source === "programmatic" ? "AI" : this.t("manualTodos");
+      return `${index + 1}. [${todo.done ? "x" : " "}] [${source}] ${todo.text} (${todo.id})`;
+    }).join("\n");
   }
 
   private async executeAutomationAction(action: AutomationAction): Promise<string> {
@@ -52864,8 +52925,7 @@ class CancipView extends ItemView {
   }
 
   private processRecordMetaLabel(items: RenderedMessage[]): string {
-    const agentTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
-    const todos = agentTodos.length ? agentTodos : this.visibleManualTodos().filter((todo) => todo.sendToModel !== false);
+    const todos = this.modelPlanTodos();
     const processRuns = uniqueToolRunsById(items.flatMap((item) => [
       ...(item.message.toolRuns ?? []),
       ...(item.message.changedFileRuns ?? [])
@@ -52889,8 +52949,7 @@ class CancipView extends ItemView {
   }
 
   private renderProcessRecordMeta(parent: HTMLElement, items: RenderedMessage[]): void {
-    const agentTodos = this.agentPlanTodos().filter((todo) => todo.sendToModel !== false);
-    const todos = agentTodos.length ? agentTodos : this.visibleManualTodos().filter((todo) => todo.sendToModel !== false);
+    const todos = this.modelPlanTodos();
     const processRuns = uniqueToolRunsById(items.flatMap((item) => [
       ...(item.message.toolRuns ?? []),
       ...(item.message.changedFileRuns ?? [])
