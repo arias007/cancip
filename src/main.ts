@@ -281,6 +281,18 @@ type ReviewDiffHunk = {
   lines: ReviewDiffLine[];
 };
 
+type ReviewDiffBlock = {
+  id: string;
+  lines: ReviewDiffLine[];
+};
+
+type ReviewDiffBlockDecisionState = {
+  schemaVersion: 1;
+  path: string;
+  base: "approved" | "cancelled";
+  decisions: Record<string, "approved" | "cancelled">;
+};
+
 type LineDeltaSummary = {
   added: number;
   removed: number;
@@ -1692,6 +1704,8 @@ type ComposerMenuItem = {
   action: () => void | Promise<void>;
 };
 
+type ComposerCapability = "html" | "plan";
+
 type ObsidianCommandDefinition = {
   id?: string;
   name?: string;
@@ -1929,6 +1943,7 @@ type ContextualEditProposal = {
   messageId: string;
   runId: string;
   items: ReviewGateManifestItem[];
+  runner?: CancipView;
 };
 
 type ContextualEditAnchor = {
@@ -1945,6 +1960,7 @@ type ContextualEditAnchor = {
   y?: number;
   width?: number;
   height?: number;
+  screenRect?: { left: number; top: number; width: number; height: number };
 };
 
 type AiVaultMutationKind = "write" | "append" | "process" | "rename" | "move" | "copy" | "delete";
@@ -2020,6 +2036,8 @@ type ActionHandlingResult = {
 
 type ActionHandlingOptions = {
   readOnlyOnly?: boolean;
+  forceApproval?: boolean;
+  silentApproval?: boolean;
 };
 
 type ActionReportSection = {
@@ -8348,6 +8366,7 @@ export default class CancipPlugin extends Plugin {
   private activeTtsPaused = false;
   private activeTtsLastError = "";
   private activeTtsStartedAudio = false;
+  private activeTtsWebRetryPart = -1;
   private activeTtsRunId = 0;
   private activeTtsStartNoticeRunId = -1;
   private activeTtsCompletionNoticeRunId = -1;
@@ -8409,6 +8428,9 @@ export default class CancipPlugin extends Plugin {
   private selectionSendBubbleEl: HTMLButtonElement | null = null;
   private contextEditLongPressTarget: ContextualEditAnchor | null = null;
   private contextEditBubbleEl: HTMLElement | null = null;
+  private contextEditBubbleSurface: HTMLElement | null = null;
+  private contextEditBubbleAnchor: ContextualEditAnchor | null = null;
+  private contextEditMarkerEl: HTMLElement | null = null;
   private uiButtonSortCleanup: (() => void) | null = null;
   private startupUiEnhancementsInstalled = false;
   private srPdfToolbarPatchScan: (() => void) | null = null;
@@ -10608,6 +10630,7 @@ export default class CancipPlugin extends Plugin {
       this.activeTtsLastError = "";
       this.activeTtsPaused = false;
       this.activeTtsStartedAudio = false;
+      this.activeTtsWebRetryPart = -1;
       this.activeTtsRunId += 1;
       this.activeTtsPrimeCacheSessionId += 1;
       const preferredProvider = forcedProvider && forcedProvider !== "auto"
@@ -10647,12 +10670,9 @@ export default class CancipPlugin extends Plugin {
           errors.push(`${provider}: ${reason}`);
           this.activeTtsLastError = reason;
           console.warn(`Cancip TTS provider failed: ${provider}`, error);
-          if (this.activeTtsStartedAudio) {
-            this.activeTtsMode = "failed";
-            new Notice(`${this.t("ttsUnavailable")}: ${provider}: ${reason}`);
-            this.syncTtsOverlay();
-            return;
-          }
+          // Mobile providers may fail between sentences. Let the remaining
+          // provider chain continue instead of terminating the whole reading.
+          this.activeTtsStartedAudio = false;
         }
       }
       this.activeTtsMode = "failed";
@@ -10708,6 +10728,7 @@ export default class CancipPlugin extends Plugin {
     this.activeNativeBridge = null;
     this.activeTtsMode = "idle";
     this.activeTtsStartedAudio = false;
+    this.activeTtsWebRetryPart = -1;
     this.activeTtsSourcePath = "";
     this.activeTtsSourceText = "";
     this.activeTtsHighlightBaseCursor = 0;
@@ -12681,8 +12702,7 @@ export default class CancipPlugin extends Plugin {
     this.setActiveTtsParts(existingParts?.length ? existingParts.slice() : splitTtsText(text, Math.max(200, Math.min(2000, this.settings.ttsChunkChars || 1800)), true), "android-system");
     this.activeTtsPartIndex = Math.max(0, Math.min(Math.max(0, this.activeTtsParts.length - 1), startIndex));
     this.syncTtsOverlay();
-    await this.speakNativeTtsParts(nativeBridge, runId);
-    return true;
+    return await this.speakNativeTtsParts(nativeBridge, runId);
   }
 
   private startWebSpeechTts(text: string, existingParts?: string[], startIndex = 0): boolean {
@@ -12739,26 +12759,75 @@ export default class CancipPlugin extends Plugin {
     const playChunks = this.activeTtsParts;
     this.activeTtsPartIndex = Math.max(0, Math.min(Math.max(0, playChunks.length - 1), startIndex));
     this.syncTtsOverlay();
+    let played = false;
+    const prefetched = new Map<number, Promise<string>>();
+    const loadPart = (index: number): Promise<string> => {
+      const existing = prefetched.get(index);
+      if (existing) return existing;
+      const pending = this.fetchTtsAudioUrl(url, playChunks[index], provider, false).catch((error) => {
+        this.activeTtsLastError = error instanceof Error ? error.message : String(error);
+        return "";
+      });
+      prefetched.set(index, pending);
+      return pending;
+    };
+    const releasePrefetched = () => {
+      const pendingUrls = [...prefetched.values()];
+      prefetched.clear();
+      for (const pending of pendingUrls) {
+        void pending.then((audioUrl) => {
+          if (audioUrl.startsWith("blob:") && audioUrl !== this.activeTtsAudioUrl) URL.revokeObjectURL(audioUrl);
+        }).catch(() => undefined);
+      }
+    };
+    void loadPart(this.activeTtsPartIndex);
     for (let index = this.activeTtsPartIndex; index < playChunks.length; index += 1) {
-      if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
+      if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) {
+        releasePrefetched();
+        return played;
+      }
       this.activeTtsPartIndex = index;
       this.syncTtsOverlay();
-      const audioUrl = await this.fetchTtsAudioUrl(url, playChunks[index], provider);
-      if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
-      await this.playTtsAudio(audioUrl, runId);
+      let completedPart = false;
+      for (let attempt = 0; attempt < 2 && !completedPart; attempt += 1) {
+        try {
+          const audioUrl = await loadPart(index);
+          if (!audioUrl) throw new Error(this.activeTtsLastError || "TTS audio request failed");
+          if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) {
+            releasePrefetched();
+            return played;
+          }
+          if (index + 1 < playChunks.length) void loadPart(index + 1);
+          if (this.activeTtsAudioUrl && this.activeTtsAudioUrl !== audioUrl && this.activeTtsAudioUrl.startsWith("blob:")) {
+            URL.revokeObjectURL(this.activeTtsAudioUrl);
+            this.activeTtsAudioUrl = "";
+          }
+          await this.playTtsAudio(audioUrl, runId);
+          completedPart = true;
+          played = true;
+        } catch (error) {
+          this.activeTtsLastError = error instanceof Error ? error.message : String(error);
+          const failedUrl = await prefetched.get(index)?.catch(() => "");
+          if (failedUrl?.startsWith("blob:") && failedUrl !== this.activeTtsAudioUrl) URL.revokeObjectURL(failedUrl);
+          prefetched.delete(index);
+          if (attempt === 0) await sleep(120);
+        }
+      }
     }
+    releasePrefetched();
     if (this.activeTtsRunId === runId) {
-      this.announceTtsCompleted(runId);
+      if (played) this.announceTtsCompleted(runId);
+      this.stopAudioTts();
       this.clearActiveTtsParts();
       this.activeTtsPartIndex = 0;
       this.activeTtsMode = "idle";
       this.clearTtsSourceHighlight();
       this.syncTtsOverlay();
     }
-    return true;
+    return played;
   }
 
-  private async fetchTtsAudioUrl(templateUrl: string, text: string, provider: TtsProvider): Promise<string> {
+  private async fetchTtsAudioUrl(templateUrl: string, text: string, provider: TtsProvider, replaceActive = true): Promise<string> {
     const lang = this.ttsLanguageCodeForText(text);
     const voice = this.settings.ttsVoice.trim() || defaultTtsVoiceForLanguage(lang);
     const rate = Math.max(0.25, Math.min(4, Number(this.settings.ttsRate) || 1));
@@ -12782,7 +12851,7 @@ export default class CancipPlugin extends Plugin {
         .replace(/\{provider\}/g, encoded.provider);
       const response = await requestUrl({ url, throw: false });
       if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
-      return await this.ttsResponseToAudioUrl(response);
+      return await this.ttsResponseToAudioUrl(response, replaceActive);
     }
     const response = await requestUrl({
       url: templateUrl,
@@ -12792,10 +12861,10 @@ export default class CancipPlugin extends Plugin {
       throw: false
     });
     if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}`);
-    return await this.ttsResponseToAudioUrl(response);
+    return await this.ttsResponseToAudioUrl(response, replaceActive);
   }
 
-  private async ttsResponseToAudioUrl(response: { headers: Record<string, string>; json: unknown; arrayBuffer: ArrayBuffer }): Promise<string> {
+  private async ttsResponseToAudioUrl(response: { headers: Record<string, string>; json: unknown; arrayBuffer: ArrayBuffer }, replaceActive = true): Promise<string> {
     const contentType = responseHeaderValue(response.headers, "content-type");
     if (contentType.includes("application/json")) {
       const json = response.json;
@@ -12805,11 +12874,11 @@ export default class CancipPlugin extends Plugin {
       const base64 = typeof json.audioBase64 === "string" ? json.audioBase64 : typeof json.audio === "string" ? json.audio : "";
       if (base64.trim()) {
         const mimeType = typeof json.mimeType === "string" && json.mimeType.trim() ? json.mimeType.trim() : "audio/mpeg";
-        return this.audioBlobUrl(base64ToArrayBuffer(base64), mimeType);
+        return this.audioBlobUrl(base64ToArrayBuffer(base64), mimeType, replaceActive);
       }
       throw new Error("JSON TTS response needs url/audioUrl/audioBase64");
     }
-    return this.audioBlobUrl(response.arrayBuffer, contentType || "audio/mpeg");
+    return this.audioBlobUrl(response.arrayBuffer, contentType || "audio/mpeg", replaceActive);
   }
 
   private audioBlobUrl(buffer: ArrayBuffer, mimeType: string, replaceActive = true): string {
@@ -13069,22 +13138,31 @@ export default class CancipPlugin extends Plugin {
     this.activeWebAudioContext = null;
   }
 
-  private async speakNativeTtsParts(bridge: NativeTtsBridge, runId: number): Promise<void> {
-    let completed = false;
+  private async speakNativeTtsParts(bridge: NativeTtsBridge, runId: number): Promise<boolean> {
+    let played = false;
     try {
       for (let index = this.activeTtsPartIndex; index < this.activeTtsParts.length; index += 1) {
-        if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return;
+        if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return played;
         this.activeTtsPartIndex = index;
         this.syncTtsOverlay();
         const lang = this.ttsLanguageCodeForText(this.activeTtsParts[index]);
-        const speaking = bridge.speak(this.activeTtsParts[index], lang);
-        this.markActiveTtsPartAudible(runId);
-        await speaking;
+        let completedPart = false;
+        for (let attempt = 0; attempt < 2 && !completedPart; attempt += 1) {
+          try {
+            const speaking = bridge.speak(this.activeTtsParts[index], lang);
+            this.markActiveTtsPartAudible(runId);
+            await speaking;
+            completedPart = true;
+            played = true;
+          } catch (error) {
+            this.activeTtsLastError = error instanceof Error ? error.message : String(error);
+            if (attempt === 0) await sleep(100);
+          }
+        }
       }
-      completed = true;
     } finally {
       if (this.activeTtsRunId === runId) {
-        if (completed) this.announceTtsCompleted(runId);
+        if (played) this.announceTtsCompleted(runId);
         this.clearActiveTtsParts();
         this.activeTtsPartIndex = 0;
         this.activeUtterance = null;
@@ -13093,6 +13171,7 @@ export default class CancipPlugin extends Plugin {
         this.syncTtsOverlay();
       }
     }
+    return played;
   }
 
   private nativeTtsBridge(): NativeTtsBridge | null {
@@ -13175,6 +13254,7 @@ export default class CancipPlugin extends Plugin {
       if (this.activeTtsRunId !== runId) return;
       if (this.activeUtterance !== utterance) return;
       if (this.activeTtsPaused) return;
+      this.activeTtsWebRetryPart = -1;
       this.activeTtsPartIndex += 1;
       this.speakNextTtsPart();
     };
@@ -13185,8 +13265,15 @@ export default class CancipPlugin extends Plugin {
       console.warn("Cancip TTS utterance failed", event);
       if (this.activeUtterance === utterance) {
         if (this.activeTtsPaused) return;
-        this.activeTtsMode = "failed";
-        this.syncTtsOverlay();
+        this.activeUtterance = null;
+        if (this.activeTtsWebRetryPart !== this.activeTtsPartIndex) {
+          this.activeTtsWebRetryPart = this.activeTtsPartIndex;
+          window.setTimeout(() => this.speakNextTtsPart(), 100);
+          return;
+        }
+        this.activeTtsWebRetryPart = -1;
+        this.activeTtsPartIndex += 1;
+        window.setTimeout(() => this.speakNextTtsPart(), 40);
       }
     };
     this.activeUtterance = utterance;
@@ -15559,6 +15646,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const keyup = () => showSelectionBubbleSoon();
     const selectionChange = () => {
       window.setTimeout(() => {
+        if (this.contextEditBubbleEl && this.contextEditBubbleSurface) {
+          const refreshed = this.contextEditAnchorForTarget(this.contextEditBubbleSurface);
+          if (refreshed?.kind === "selection") this.contextEditBubbleAnchor = refreshed;
+        }
         if (!this.documentSelectionText()) this.hideSelectionSendBubble();
       }, 0);
     };
@@ -15569,13 +15660,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         if (this.buttonEditBubbleEl?.contains(target)) return;
         if (this.selectionSendBubbleEl?.contains(target)) return;
         if (this.contextEditBubbleEl?.contains(target)) return;
+        if (this.contextEditBubbleSurface?.contains(target)) return;
       }
       if (this.buttonEditBubbleEl) {
         if (this.settings.uiButtonManagementEnabled && this.editableButtonTarget(target)) return;
         this.hideButtonEditBubble();
       }
       if (this.selectionSendBubbleEl) this.hideSelectionSendBubble();
-      if (this.contextEditBubbleEl) this.hideContextEditBubble();
+      if (this.contextEditBubbleEl) {
+        if (this.contextEditBubbleEl.hasClass("is-loading") || this.contextEditBubbleEl.querySelector(".obcc-context-edit-proposal")) return;
+        this.hideContextEditBubble();
+      }
     };
     doc.addEventListener("pointerdown", start, true);
     doc.addEventListener("pointerup", end, true);
@@ -15631,6 +15726,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           if (this.contextEditLongPressTarget !== anchor) return;
           const latestTarget = doc?.elementFromPoint(x, y);
           const latest = this.contextEditAnchorForTarget(latestTarget, x, y, file, doc?.body) ?? anchor;
+          if (latest.screenRect) {
+            const frameRect = frame.getBoundingClientRect();
+            latest.screenRect = {
+              ...latest.screenRect,
+              left: frameRect.left + latest.screenRect.left,
+              top: frameRect.top + latest.screenRect.top
+            };
+          }
           opened = true;
           this.showContextEditBubble(latest, point.x, point.y);
         }, 620);
@@ -15661,6 +15764,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         this.clearButtonEditLongPress();
         opened = true;
         const point = parentPoint(event.clientX, event.clientY);
+        if (anchor.screenRect) {
+          const frameRect = frame.getBoundingClientRect();
+          anchor.screenRect = {
+            ...anchor.screenRect,
+            left: frameRect.left + anchor.screenRect.left,
+            top: frameRect.top + anchor.screenRect.top
+          };
+        }
         this.showContextEditBubble(anchor, point.x, point.y);
       };
       doc.addEventListener("pointerdown", start, true);
@@ -15740,7 +15851,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           selectedText,
           startLine: from.line + 1,
           endLine: to.line + 1,
-          nearbyText: this.contextualEditEditorLines(editor, from.line, to.line)
+          nearbyText: this.contextualEditEditorLines(editor, from.line, to.line),
+          screenRect: this.contextualEditScreenRect(element, clientX, clientY)
         };
       }
       const cursor = editor.getCursor();
@@ -15750,7 +15862,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         surface,
         kind: "blank-caret",
         cursorLine: cursor.line + 1,
-        nearbyText: this.contextualEditEditorLines(editor, cursor.line, cursor.line)
+        nearbyText: this.contextualEditEditorLines(editor, cursor.line, cursor.line),
+        screenRect: this.contextualEditScreenRect(element, clientX, clientY)
       };
     }
 
@@ -15763,10 +15876,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const endLine = workbenchEditor.value.slice(0, end).split(/\r?\n/).length;
       const nearbyText = this.contextualEditTextLines(lines, startLine - 1, endLine - 1);
       if (selectedText.trim()) {
-        return { file, surface, kind: "selection", selectedText, startLine, endLine, nearbyText };
+        return { file, surface, kind: "selection", selectedText, startLine, endLine, nearbyText, screenRect: this.contextualEditScreenRect(workbenchEditor, clientX, clientY) };
       }
       if ((lines[startLine - 1] ?? "").trim()) return null;
-      return { file, surface, kind: "blank-caret", cursorLine: startLine, nearbyText };
+      return { file, surface, kind: "blank-caret", cursorLine: startLine, nearbyText, screenRect: this.contextualEditScreenRect(workbenchEditor, clientX, clientY) };
     }
 
     const selection = win.getSelection();
@@ -15786,6 +15899,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           kind: "selection",
           selectedText,
           nearbyText: trimContext(nearbyText || selectedText, 1600),
+          screenRect: this.contextualEditScreenRect(anchorElement ?? element, clientX, clientY, range.getBoundingClientRect()),
           ...this.contextualEditDomGeometry(surface, anchorElement ?? null, range.getBoundingClientRect())
         };
       }
@@ -15806,6 +15920,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       surface,
       kind: "position",
       nearbyText,
+      screenRect: this.contextualEditScreenRect(nearbyElement ?? element, clientX, clientY, rect),
       ...this.contextualEditDomGeometry(surface, nearbyElement ?? element, rect)
     };
   }
@@ -15857,6 +15972,18 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     };
   }
 
+  private contextualEditScreenRect(element: Element, x?: number, y?: number, sourceRect?: DOMRect): ContextualEditAnchor["screenRect"] {
+    const rect = sourceRect ?? element.getBoundingClientRect();
+    const left = rect.width > 0 ? rect.left : Number.isFinite(x) ? Number(x) : rect.left;
+    const top = rect.height > 0 ? rect.top : Number.isFinite(y) ? Number(y) : rect.top;
+    return {
+      left,
+      top,
+      width: Math.max(3, Math.min(rect.width || 4, 480)),
+      height: Math.max(18, Math.min(rect.height || 20, 220))
+    };
+  }
+
   private contextualEditEditorLines(editor: Editor, startLine: number, endLine: number): string {
     const lines: string[] = [];
     const start = Math.max(0, startLine - 2);
@@ -15885,6 +16012,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ? "在空白光标处修改或追加..."
         : "在长按位置修改或追加...";
     const bubble = doc.body.createDiv({ cls: "obcc-context-edit-bubble" });
+    this.contextEditBubbleSurface = surface;
+    this.contextEditBubbleAnchor = anchor;
     const input = bubble.createEl("input", {
       cls: "obcc-context-edit-input",
       attr: { type: "text", placeholder, "aria-label": placeholder }
@@ -15918,6 +16047,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const stop = (event: Event) => event.stopPropagation();
     bubble.addEventListener("pointerdown", stop);
     bubble.addEventListener("click", stop);
+    input.addEventListener("pointerdown", () => {
+      const refreshed = this.contextEditAnchorForTarget(surface);
+      if (refreshed?.kind === "selection") this.contextEditBubbleAnchor = refreshed;
+    }, { capture: true });
     let submitting = false;
     const send = async () => {
       if (submitting) return;
@@ -15930,12 +16063,20 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       input.disabled = true;
       cancip.disabled = true;
       submit.disabled = true;
+      close.disabled = true;
       setIcon(submit, "loader-circle");
       bubble.addClass("is-loading");
+      const effectiveAnchor = this.contextEditBubbleAnchor ?? anchor;
+      this.showContextEditMarker(effectiveAnchor, true);
       try {
-        const proposal = await this.submitContextualEdit(anchor, instruction);
-        if (!bubble.isConnected) return;
+        const proposal = await this.submitContextualEdit(effectiveAnchor, instruction);
+        if (!bubble.isConnected) {
+          if (proposal) await this.resolveContextualEditProposal(proposal, false);
+          return;
+        }
         if (proposal) {
+          await this.revealContextualEditAnchor(effectiveAnchor);
+          this.showContextEditMarker(effectiveAnchor, false);
           this.showContextEditProposal(bubble, input, cancip, submit, close, proposal, instruction);
           return;
         }
@@ -15945,7 +16086,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         input.disabled = false;
         cancip.disabled = false;
         submit.disabled = false;
+        close.disabled = false;
         bubble.removeClass("is-loading");
+        this.contextEditMarkerEl?.remove();
+        this.contextEditMarkerEl = null;
         setIcon(submit, "arrow-up");
         new Notice(error instanceof Error ? error.message : String(error));
         input.focus();
@@ -15967,7 +16111,43 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
     });
     this.contextEditBubbleEl = bubble;
-    window.setTimeout(() => input.focus(), 0);
+  }
+
+  private async revealContextualEditAnchor(anchor: ContextualEditAnchor): Promise<void> {
+    let matchingLeaf: WorkspaceLeaf | null = null;
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      if (matchingLeaf) return;
+      const file = (leaf.view as unknown as { file?: TFile }).file;
+      if (file instanceof TFile && file.path === anchor.file.path) matchingLeaf = leaf;
+    });
+    if (matchingLeaf) {
+      await this.app.workspace.revealLeaf(matchingLeaf);
+      this.app.workspace.setActiveLeaf(matchingLeaf, { focus: false });
+      await sleep(30);
+      return;
+    }
+    if (isMarkdownFile(anchor.file)) {
+      await this.openNativeMarkdownFile(anchor.file, "source");
+      return;
+    }
+    const leaf = this.app.workspace.getLeaf("tab");
+    await leaf.openFile(anchor.file, { active: true });
+    await this.app.workspace.revealLeaf(leaf);
+  }
+
+  private showContextEditMarker(anchor: ContextualEditAnchor, loading: boolean): void {
+    this.contextEditMarkerEl?.remove();
+    const rect = anchor.screenRect;
+    if (!rect) return;
+    const marker = activeDocument.body.createDiv({ cls: `obcc-context-edit-marker${anchor.kind === "selection" ? " is-selection" : " is-caret"}${loading ? " is-loading" : " is-ready"}` });
+    marker.setCssStyles({
+      left: `${Math.round(rect.left)}px`,
+      top: `${Math.round(rect.top)}px`,
+      width: `${Math.round(rect.width)}px`,
+      height: `${Math.round(rect.height)}px`
+    });
+    if (loading) setIcon(marker.createSpan({ cls: "obcc-context-edit-marker-icon" }), "loader-circle");
+    this.contextEditMarkerEl = marker;
   }
 
   private showContextEditProposal(
@@ -16029,8 +16209,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       disable();
       void (async () => {
         try {
-          const view = await this.activateView();
-          await view?.approveContextualEditProposal(proposal.messageId, proposal.runId);
+          await this.resolveContextualEditProposal(proposal, true);
           this.hideContextEditBubble();
         } catch (error) {
           new Notice(error instanceof Error ? error.message : String(error));
@@ -16044,8 +16223,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       disable();
       void (async () => {
         try {
-          const view = await this.activateView();
-          await view?.rejectContextualEditProposal(proposal.messageId, proposal.runId);
+          await this.resolveContextualEditProposal(proposal, false);
           this.hideContextEditBubble();
         } catch (error) {
           new Notice(error instanceof Error ? error.message : String(error));
@@ -16056,30 +16234,43 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       })();
     });
     retry.addEventListener("click", () => {
-      panel.remove();
-      input.disabled = false;
-      cancip.disabled = false;
-      cancip.removeClass("is-hidden");
-      input.value = instruction;
-      submit.disabled = false;
-      submit.removeClass("is-hidden");
-      close.removeClass("is-hidden");
-      setIcon(submit, "arrow-up");
-      input.focus();
+      disable();
+      void this.resolveContextualEditProposal(proposal, false).then(() => {
+        panel.remove();
+        this.contextEditMarkerEl?.remove();
+        this.contextEditMarkerEl = null;
+        input.disabled = false;
+        cancip.disabled = false;
+        cancip.removeClass("is-hidden");
+        input.value = instruction;
+        submit.disabled = false;
+        submit.removeClass("is-hidden");
+        close.disabled = false;
+        close.removeClass("is-hidden");
+        setIcon(submit, "arrow-up");
+        input.focus();
+      }).catch((error) => {
+        new Notice(error instanceof Error ? error.message : String(error));
+        accept.disabled = false;
+        reject.disabled = false;
+        retry.disabled = false;
+      });
     });
   }
 
   private hideContextEditBubble(): void {
     this.contextEditBubbleEl?.remove();
     this.contextEditBubbleEl = null;
+    this.contextEditBubbleSurface = null;
+    this.contextEditBubbleAnchor = null;
+    this.contextEditMarkerEl?.remove();
+    this.contextEditMarkerEl = null;
   }
 
   private async submitContextualEdit(anchor: ContextualEditAnchor, instruction: string): Promise<ContextualEditProposal | null> {
-    const view = await this.activateView();
-    if (!view) return null;
+    const view = await this.getAutomationRunnerView();
+    if (!view || view.automationSessionBusy()) throw new Error("Cancip 后台执行器正忙，请稍后重试");
     const { file } = anchor;
-    const startedAt = Date.now();
-    await view.addFileOrFolderContext(file);
     const scope = anchor.kind === "selection"
       ? [
           `编辑锚点：选中文字${anchor.startLine ? `，第 ${anchor.startLine}${anchor.endLine && anchor.endLine !== anchor.startLine ? `-${anchor.endLine}` : ""} 行` : ""}`,
@@ -16117,16 +16308,41 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         : [
             "这是可直接编辑的文字源文件。优先用一次精确 patch；空白光标插入可使用最小范围 patch/write，并读回锚点附近验证。"
           ];
-    await view.submitExternalPrompt([
+    const prompt = [
       `直接处理当前文件：${file.path}`,
       ...scope,
       geometry ? `预览位置：${geometry}` : "",
       anchor.nearbyText ? `锚点附近原文：\n${trimContext(anchor.nearbyText, 3000)}` : "",
       `用户要求：${trimContext(instruction, 1200)}`,
       ...route,
-      "请按现有审核/全权模式执行真实修改或追加；锚点是主要编辑范围，修改后读回验证，返回简短结果。"
-    ].filter(Boolean).join("\n\n"));
-    return await view.contextualEditProposalForPath(file.path, startedAt, this.settings.accessMode === "ask-for-approval");
+      "用户输入是编辑要求或问题，不是要原样插入的文字。先理解要求并生成自然、完整的目标内容；除非用户明确说‘插入这句话’，禁止把用户指令原样回填。例如‘你是谁’应生成对该问题的回答。",
+      "只生成这一处局部修改的可审核动作，不要打开侧边栏、创建计划、输出解释或改动其他位置。"
+    ].filter(Boolean).join("\n\n");
+    try {
+      const proposal = await view.runContextualEditPrompt(file, prompt);
+      if (proposal) proposal.runner = view;
+      if (!proposal) {
+        view.finishContextualEditPrompt();
+        this.scheduleAutomationRunnerCleanup();
+      }
+      return proposal;
+    } catch (error) {
+      view.finishContextualEditPrompt();
+      this.scheduleAutomationRunnerCleanup();
+      throw error;
+    }
+  }
+
+  private async resolveContextualEditProposal(proposal: ContextualEditProposal, approved: boolean): Promise<void> {
+    const runner = proposal.runner;
+    if (!runner) throw new Error("局部编辑执行器已释放，请重试");
+    try {
+      if (approved) await runner.approveContextualEditProposal(proposal.messageId, proposal.runId);
+      else await runner.rejectContextualEditProposal(proposal.messageId, proposal.runId);
+    } finally {
+      runner.finishContextualEditPrompt();
+      this.scheduleAutomationRunnerCleanup();
+    }
   }
 
   private workspaceTabHeaderTarget(rawTarget: EventTarget | null): HTMLElement | null {
@@ -21693,7 +21909,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       }
       for (const task of tasks) {
         if (!task.enabled || !task.watchNewFiles || !automationNewFilePathMatches(task, path)) continue;
-        if (task.ignoreMachineFiles && isAutomationMachineFilePath(path)) continue;
+        if (task.ignoreMachineFiles && isAutomationMachineFilePath(path, this.settings)) continue;
         const paths = this.automationNewFilePaths.get(task.id) ?? new Set<string>();
         if (paths.size < AUTOMATION_NEW_FILE_MAX_BATCH) paths.add(path);
         this.automationNewFilePaths.set(task.id, paths);
@@ -23671,7 +23887,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ? leaves[0].view
         : null;
     const runnerBusy = runner
-      ? [...this.sessionRequestOwners.values()].some((owner) => owner === runner)
+      ? runner.automationSessionBusy() || [...this.sessionRequestOwners.values()].some((owner) => owner === runner)
       : false;
     if (this.automationRunningIds.size || this.automationQueuedIds.size || runnerBusy) return false;
     if (this.automationRunnerCleanupTimer !== null) {
@@ -24407,10 +24623,9 @@ class CancipDocumentWorkbenchView extends FileView {
     const registry = (this.plugin.app as unknown as {
       viewRegistry?: { typeByExtension?: Record<string, string> };
     }).viewRegistry;
-    return normalized === "md"
-      || normalized === "markdown"
-      || (this.plugin.isDocumentWorkbenchExtension(normalized)
-        && (!normalized || registry?.typeByExtension?.[normalized] === CANCIP_DOCUMENT_VIEW_TYPE));
+    if (normalized === "md" || normalized === "markdown") return false;
+    return this.plugin.isDocumentWorkbenchExtension(normalized)
+      && (!normalized || registry?.typeByExtension?.[normalized] === CANCIP_DOCUMENT_VIEW_TYPE);
   }
 
   async setState(state: unknown, result: ViewStateResult): Promise<void> {
@@ -26663,6 +26878,7 @@ class CancipReviewLeafView extends ItemView {
     let sources: HTMLElement | null = null;
     let oldPane: ReviewGateSourcePane | null = null;
     let newPane: ReviewGateSourcePane | null = null;
+    let openCorrectionForText = (_text: string): void => undefined;
     let ensureDiffSource = (): void => undefined;
     let ensureDiffRendered = (): void => undefined;
     if (hasContentChange) {
@@ -26672,6 +26888,8 @@ class CancipReviewLeafView extends ItemView {
       });
       changes.createEl("summary", { text: this.t(isConfigReview ? "reviewGateConfigRaw" : "reviewGateContentChanges") });
       const changesBody = changes.createDiv({ cls: "obcc-review-changes-body" });
+      const blockControls = changesBody.createDiv({ cls: "obcc-review-block-controls" });
+      this.renderReviewBlockControls(blockControls, data, item, (text) => openCorrectionForText(text));
       diffBody = changesBody.createDiv({ cls: "obcc-review-diff is-hidden" });
       let diffSourceReady = false;
       ensureDiffSource = () => {
@@ -26739,6 +26957,24 @@ class CancipReviewLeafView extends ItemView {
         this.unlockReviewKeyboardLayout();
       }
     };
+    openCorrectionForText = (text: string) => {
+      const selected = trimContext(text.replace(/\s+/g, " ").trim(), 500);
+      setCorrectionOpen(true);
+      if (selected) correctionInput.value = `针对“${selected}”：`;
+      syncCorrectionButton();
+      correctionInput.focus({ preventScroll: true });
+      correctionInput.setSelectionRange(correctionInput.value.length, correctionInput.value.length);
+    };
+    main.addEventListener("pointerup", () => {
+      window.setTimeout(() => {
+        const selection = main.ownerDocument.defaultView?.getSelection();
+        if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+        const range = selection.getRangeAt(0);
+        if (!main.contains(range.commonAncestorContainer)) return;
+        const selected = selection.toString().trim();
+        if (selected) openCorrectionForText(selected);
+      }, 0);
+    });
 
     const setMode = (mode: "source" | "render") => {
       if (!oldPane || !newPane || !diffBody || !diffRender) return;
@@ -26838,6 +27074,145 @@ class CancipReviewLeafView extends ItemView {
     card.createDiv({ cls: "obcc-review-structure-arrow", text: "->" });
     card.createDiv({ cls: "obcc-review-structure-path", text: change.new_path });
     if (change.reason) card.createDiv({ cls: "obcc-review-structure-reason", text: change.reason });
+  }
+
+  private renderReviewBlockControls(
+    parent: HTMLElement,
+    data: ReviewGatePackageData,
+    item: ReviewGateManifestItem,
+    correct: (text: string) => void
+  ): void {
+    const blocks = reviewDiffBlocks(item.old_text, item.new_text);
+    if (!blocks.length) {
+      parent.addClass("is-hidden");
+      return;
+    }
+    const rows = new Map<string, HTMLElement>();
+    for (const [index, block] of blocks.entries()) {
+      const row = parent.createDiv({ cls: "obcc-review-block-row" });
+      rows.set(block.id, row);
+      const removed = block.lines.filter((line) => line.kind === "removed").map((line) => line.text).join("\n");
+      const added = block.lines.filter((line) => line.kind === "added").map((line) => line.text).join("\n");
+      const summary = [removed ? `- ${trimContext(removed, 90)}` : "", added ? `+ ${trimContext(added, 90)}` : ""].filter(Boolean).join("  ");
+      row.createSpan({ cls: "obcc-review-block-index", text: String(index + 1) });
+      row.createSpan({ cls: "obcc-review-block-summary", text: summary || this.t("reviewGateContentChanges") });
+      const actions = row.createDiv({ cls: "obcc-review-block-actions" });
+      const approve = actions.createEl("button", { cls: "obcc-review-icon-button", attr: { type: "button", title: "通过此块", "aria-label": "通过此块" } });
+      setIcon(approve, "check");
+      const reject = actions.createEl("button", { cls: "obcc-review-icon-button is-danger", attr: { type: "button", title: "拒绝此块", "aria-label": "拒绝此块" } });
+      setIcon(reject, "x");
+      const correction = actions.createEl("button", { cls: "obcc-review-icon-button", attr: { type: "button", title: this.t("reviewGateCorrection"), "aria-label": this.t("reviewGateCorrection") } });
+      setIcon(correction, "edit-3");
+      const decide = (decision: "approved" | "cancelled") => {
+        approve.disabled = true;
+        reject.disabled = true;
+        correction.disabled = true;
+        void this.saveReviewGateBlockDecision(data, item, block, decision).catch((error) => {
+          approve.disabled = false;
+          reject.disabled = false;
+          correction.disabled = false;
+          new Notice(this.t("reviewGateFailed", { reason: error instanceof Error ? error.message : String(error) }));
+        });
+      };
+      approve.addEventListener("click", () => decide("approved"));
+      reject.addEventListener("click", () => decide("cancelled"));
+      correction.addEventListener("click", () => correct([removed, added].filter(Boolean).join(" -> ")));
+    }
+    void this.loadReviewGateBlockDecisionState(data.folder, item).then((state) => {
+      if (!parent.isConnected) return;
+      for (const [id, row] of rows) {
+        const decision = state.decisions[id];
+        row.toggleClass("is-approved", decision === "approved");
+        row.toggleClass("is-cancelled", decision === "cancelled");
+      }
+    }).catch(() => undefined);
+  }
+
+  private reviewGateBlockDecisionPath(folder: string, item: ReviewGateManifestItem): string {
+    return `${folder}/review-corrections/blocks-${stableTextHash(normalizePath(item.path))}.json`;
+  }
+
+  private async loadReviewGateBlockDecisionState(folder: string, item: ReviewGateManifestItem): Promise<ReviewDiffBlockDecisionState> {
+    const path = this.reviewGateBlockDecisionPath(folder, item);
+    const raw = await readTextIfExists(this.app.vault.adapter, path, "");
+    if (raw.trim()) {
+      try {
+        const parsed = JSON.parse(raw) as unknown;
+        if (isRecord(parsed) && parsed.schemaVersion === 1 && isRecord(parsed.decisions)) {
+          const decisions: Record<string, "approved" | "cancelled"> = {};
+          for (const [id, value] of Object.entries(parsed.decisions)) {
+            if (value === "approved" || value === "cancelled") decisions[id] = value;
+          }
+          return {
+            schemaVersion: 1,
+            path: item.path,
+            base: parsed.base === "approved" ? "approved" : "cancelled",
+            decisions
+          };
+        }
+      } catch {
+        // Rebuild a malformed block state from the current file below.
+      }
+    }
+    let base: "approved" | "cancelled" = "cancelled";
+    try {
+      const file = this.app.vault.getAbstractFileByPath(normalizePath(item.path));
+      if (file instanceof TFile && isContextTextFile(file)) {
+        const current = await this.app.vault.cachedRead(file);
+        if (current === item.new_text) base = "approved";
+      }
+    } catch {
+      // Old content is the conservative baseline.
+    }
+    return { schemaVersion: 1, path: item.path, base, decisions: {} };
+  }
+
+  private async saveReviewGateBlockDecision(
+    data: ReviewGatePackageData,
+    item: ReviewGateManifestItem,
+    block: ReviewDiffBlock,
+    decision: "approved" | "cancelled"
+  ): Promise<void> {
+    const state = await this.loadReviewGateBlockDecisionState(data.folder, item);
+    state.decisions[block.id] = decision;
+    const targetText = reviewTextForBlockDecisions(item.old_text, item.new_text, state);
+    const file = this.app.vault.getAbstractFileByPath(normalizePath(item.path));
+    const currentText = file instanceof TFile && isContextTextFile(file) ? await this.app.vault.cachedRead(file) : item.old_text;
+    let applyResult = "";
+    if (currentText !== targetText) {
+      applyResult = await applyApprovedReviewGateItem(this.app, {
+        ...item,
+        old_text: currentText,
+        new_text: targetText,
+        structure: []
+      }, this.plugin.obsidianConfigDir(), this.plugin.settings.memoryFolder);
+    }
+    const dir = `${data.folder}/review-corrections`;
+    await ensureFolder(this.app.vault.adapter, dir);
+    await this.app.vault.adapter.write(this.reviewGateBlockDecisionPath(data.folder, item), `${JSON.stringify(state, null, 2)}\n`);
+    const auditPath = `${dir}/pending.jsonl`;
+    const audit = await readTextIfExists(this.app.vault.adapter, auditPath, "");
+    const payload = {
+      at: new Date().toISOString(),
+      path: item.path,
+      blockId: block.id,
+      decision,
+      applied: currentText !== targetText,
+      applyResult,
+      source: "cancip.review-panel.block"
+    };
+    await this.app.vault.adapter.write(auditPath, `${audit}${JSON.stringify(payload)}\n`);
+    await this.plugin.recordReviewFeedback(payload);
+    const completed = reviewDiffBlocks(item.old_text, item.new_text).every((candidate) => state.decisions[candidate.id]);
+    if (completed) {
+      const previousPending = [...(this.reviewSessionEntries ?? [])];
+      await this.plugin.markReviewGateItemsDecided(data.path, [item.path]);
+      await this.advanceReviewAfterDecision(data.path, item.path, previousPending);
+    } else {
+      await this.render();
+    }
+    this.plugin.syncOpenReviewGateDecision(data.path, this);
+    this.plugin.refreshStatusBarAttention();
   }
 
   private renderReviewDiff(parent: HTMLElement, oldText: string, newText: string): void {
@@ -27075,6 +27450,8 @@ class CancipView extends ItemView {
     candidates: string[];
   } | null = null;
   private composerWorkflowHints = new Map<string, ComposerWorkflowHint>();
+  private composerCapabilities = new Set<ComposerCapability>();
+  private composerPlanPrompts = new Set<string>();
   private autocompleteOutsideCleanup: (() => void) | null = null;
   private attachmentInputEl: HTMLInputElement | null = null;
   private statusEl!: HTMLElement;
@@ -27139,6 +27516,7 @@ class CancipView extends ItemView {
   private vaultAttachmentTextCache = new Map<string, VaultAttachmentParseCacheEntry>();
   private activeAutomationTaskId = "";
   private activeAutomationNotifyMode: AutomationNotifyMode = "inherit";
+  private contextualEditSilentRun = false;
   private skillCache: { at: number; skills: CancipSkill[] } | null = null;
   private userPinnedScroll = false;
   private autoFollowMessages = true;
@@ -27537,7 +27915,7 @@ class CancipView extends ItemView {
   }
 
   automationSessionBusy(): boolean {
-    return Boolean(this.activeRequest);
+    return Boolean(this.activeRequest || this.contextualEditSilentRun);
   }
 
   refreshSessionRequestIndicator(sessionId: string, status: NonNullable<SessionHistoryEntry["status"]>): void {
@@ -27706,6 +28084,8 @@ class CancipView extends ItemView {
     this.subagentGoal = "";
     this.subagentProgress = "";
     this.draftContext = [];
+    this.composerCapabilities.clear();
+    this.composerPlanPrompts.clear();
     this.includeCurrentFileForSession = inheritedIncludeCurrentFile;
     this.manualTodos = [];
     this.taskControl = null;
@@ -30057,6 +30437,7 @@ class CancipView extends ItemView {
     const items: ComposerMenuItem[] = [
       { icon: "paperclip", label: this.t("addAttachment"), shortLabel: this.t("addAttachment"), action: () => this.openAttachmentPicker() },
       { icon: "file-code-2", label: this.t("commandCreateInteractiveHtml"), shortLabel: "HTML", action: () => this.prepareOneClickHtmlComposer() },
+      { icon: "list-todo", label: this.t("planPanelTitle"), shortLabel: this.t("planPanelTitle"), action: () => this.preparePlanComposer() },
       { icon: "file-search", label: this.t("addFileFolder"), shortLabel: this.t("mentionFile"), detail: "@", action: () => this.startMentionQuery("", "menu") },
       { icon: "plug", label: this.t("addPlugin"), shortLabel: "Plugin", detail: "@plugin", action: () => this.startMentionQuery("plugin", "menu") },
       { icon: "sparkles", label: this.t("addSkill"), shortLabel: "Skill", detail: "@skill", action: () => this.startMentionQuery("skill", "menu") },
@@ -32695,6 +33076,8 @@ class CancipView extends ItemView {
             }))
             .filter((item) => item.label || item.content)
         : [];
+      this.composerCapabilities.clear();
+      this.composerPlanPrompts.clear();
       this.includeCurrentFileForSession = typeof snapshot.includeCurrentFileForSession === "boolean"
         ? snapshot.includeCurrentFileForSession
         : this.plugin.settings.includeCurrentFile;
@@ -33097,21 +33480,31 @@ class CancipView extends ItemView {
       return;
     }
     if (!rawPrompt) return;
-    if (rawPrompt.toLowerCase().startsWith(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().toLowerCase())) {
-      const requirement = rawPrompt.slice(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().length).trim();
+    const legacyHtmlPrefix = rawPrompt.toLowerCase().startsWith(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().toLowerCase());
+    const htmlRequested = this.composerCapabilities.has("html") || legacyHtmlPrefix;
+    const planRequested = this.composerCapabilities.has("plan");
+    if (htmlRequested) {
+      const requirement = legacyHtmlPrefix
+        ? rawPrompt.slice(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().length).trim()
+        : rawPrompt;
       if (!requirement) {
         this.focusInput();
         return;
       }
       this.inputEl.value = "";
+      this.composerCapabilities.clear();
       this.clearAutocompleteSuggestion();
       this.handleComposerInputChanged();
-      await this.startOneClickHtml(requirement);
+      this.renderContextChips();
+      await this.startOneClickHtml(requirement, planRequested);
       return;
     }
     this.inputEl.value = "";
+    this.composerCapabilities.clear();
+    if (planRequested) this.composerPlanPrompts.add(rawPrompt);
     this.clearAutocompleteSuggestion();
     this.resizeInput();
+    this.renderContextChips();
     this.resumableTask = null;
 
     if (mode === "hold") {
@@ -33165,6 +33558,84 @@ class CancipView extends ItemView {
     await this.sendPromptNow(normalized);
   }
 
+  async runContextualEditPrompt(file: TFile, rawPrompt: string): Promise<ContextualEditProposal | null> {
+    if (this.activeRequest) throw new Error(this.t("todoRequestRunning"));
+    this.contextualEditSilentRun = true;
+    await this.newChat({ force: true, skipSaveCurrent: true, focus: false });
+    const startedAt = Date.now();
+    const userMessage = this.addMessage("user", rawPrompt);
+    const profile = this.plugin.activeApiProfile();
+    if (!profile.apiUrl || !profile.apiKey || !profile.model) throw new Error(this.t("missingApi"));
+    let fileContext = "";
+    if (isContextTextFile(file)) {
+      fileContext = await this.app.vault.cachedRead(file);
+    } else {
+      const parsed = await this.readVaultAttachmentText(file, this.plugin.settings.maxFileContextChars);
+      fileContext = parsed.text;
+    }
+    const context = {
+      system: `${this.modePrompt(rawPrompt)}\n\nThis is an ephemeral contextual edit. Return executable Cancip actions only; every mutation must remain pending for the inline preview.`,
+      contextText: trimContext([`Current file: ${file.path}`, fileContext ? `Current content:\n${fileContext}` : ""].filter(Boolean).join("\n\n"), this.plugin.settings.maxFileContextChars),
+      images: [] as ImageAttachmentContext[]
+    };
+    userMessage.contextText = context.contextText;
+    userMessage.systemPrompt = context.system;
+    userMessage.apiProfile = this.redactedApiProfile(profile);
+    const request = new AbortController();
+    this.activeRequest = request;
+    this.activeRequestApiProfile = profile;
+    try {
+      let prompt = rawPrompt;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const answer = await this.callModelWithRetries(
+          prompt,
+          context,
+          rawPrompt,
+          "contextual edit model request timed out",
+          this.modelCallTimeoutForPrompt(rawPrompt),
+          undefined,
+          profile
+        );
+        if (request.signal.aborted) throw new Error(this.t("stopped"));
+        const handling = await this.handleActionBlocks(answer, undefined, { forceApproval: true, silentApproval: true });
+        if (handling) {
+          const message = this.addActionReportMessage(handling);
+          for (let index = handling.runs.length - 1; index >= 0; index -= 1) {
+            const run = handling.runs[index];
+            if (run.status !== "pending" || !this.contextualEditActionTouchesPath(run.action, file.path)) continue;
+            const items = await this.reviewItemsForPendingAction(run.action);
+            const previewItems = items.length ? items : this.contextualEditPreviewItems(run.action, file.path);
+            if (previewItems.length) return { messageId: message.id, runId: run.id, items: previewItems, runner: this };
+          }
+          const results = this.toolRunsForPrompt(handling.runs, 5000);
+          prompt = [
+            rawPrompt,
+            "",
+            "The previous step did not produce a pending edit for the target. Use the concrete result below and now return exactly one mutating Cancip action for that target.",
+            results
+          ].filter(Boolean).join("\n");
+          continue;
+        }
+        prompt = [
+          rawPrompt,
+          "",
+          "Your previous response did not contain an executable edit. Return exactly one patch/write/annotation/document-edit cancip-action for the requested local change. Do not answer with prose and do not copy the instruction as the replacement text."
+        ].join("\n");
+      }
+      throw new Error("模型没有生成可审核的局部修改");
+    } finally {
+      if (this.activeRequest === request) this.activeRequest = null;
+      this.activeRequestApiProfile = null;
+    }
+  }
+
+  finishContextualEditPrompt(): void {
+    this.contextualEditSilentRun = false;
+    this.messages = [];
+    this.draftContext = [];
+    this.pendingActionReviewSnapshots = new WeakMap<CancipAction, Map<string, PendingActionSnapshot>>();
+  }
+
   async contextualEditProposalForPath(path: string, since: number, waitForQueuedPrompt = false): Promise<ContextualEditProposal | null> {
     const normalizedPath = normalizeActionPath(path);
     const deadline = Date.now() + 90_000;
@@ -33188,10 +33659,26 @@ class CancipView extends ItemView {
   }
 
   async approveContextualEditProposal(messageId: string, runId: string): Promise<void> {
+    if (this.contextualEditSilentRun) {
+      const message = this.messages.find((item) => item.id === messageId);
+      const run = message?.toolRuns?.find((item) => item.id === runId);
+      if (!run || run.status !== "pending") throw new Error(this.t("toolRunNoPending"));
+      await this.executeToolRun(run);
+      return;
+    }
     await this.runPendingToolRun(messageId, runId);
   }
 
   async rejectContextualEditProposal(messageId: string, runId: string): Promise<void> {
+    if (this.contextualEditSilentRun) {
+      const message = this.messages.find((item) => item.id === messageId);
+      const run = message?.toolRuns?.find((item) => item.id === runId);
+      if (!run || run.status !== "pending") throw new Error(this.t("toolRunNoPending"));
+      run.status = "rejected";
+      run.executedAt = new Date().toISOString();
+      run.error = this.t("toolRunRejectedNotice");
+      return;
+    }
     await this.rejectPendingToolRun(messageId, runId);
   }
 
@@ -33243,19 +33730,22 @@ class CancipView extends ItemView {
   }
 
   private prepareOneClickHtmlComposer(): void {
-    const current = this.inputEl.value.trimStart();
-    if (!current.toLowerCase().startsWith(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().toLowerCase())) {
-      this.inputEl.value = `${ONE_CLICK_HTML_COMPOSER_PREFIX}${current}`;
-    }
-    const cursor = this.inputEl.value.length;
-    this.inputEl.setSelectionRange(cursor, cursor);
+    this.composerCapabilities.add("html");
     this.closeCommandMenu();
     this.closeMentionPopup();
-    this.handleComposerInputChanged();
+    this.renderContextChips();
     this.focusInput();
   }
 
-  async startOneClickHtml(requirementOverride = ""): Promise<void> {
+  private preparePlanComposer(): void {
+    this.composerCapabilities.add("plan");
+    this.closeCommandMenu();
+    this.closeMentionPopup();
+    this.renderContextChips();
+    this.focusInput();
+  }
+
+  async startOneClickHtml(requirementOverride = "", requirePlan = false): Promise<void> {
     const requirement = requirementOverride.trim();
     if (!requirement) {
       this.prepareOneClickHtmlComposer();
@@ -33264,6 +33754,7 @@ class CancipView extends ItemView {
 
     const outputPath = await this.oneClickHtmlOutputPath(requirement);
     const prompt = buildOneClickHtmlPrompt(requirement, outputPath, isChineseLanguage(this.plugin.language()));
+    if (requirePlan) this.composerPlanPrompts.add(prompt);
     this.closeCommandMenu();
     this.closeMentionPopup();
     if (this.activeRequest) {
@@ -33443,6 +33934,7 @@ class CancipView extends ItemView {
 
   private async sendPromptNow(rawPrompt: string): Promise<void> {
     const startedAt = Date.now();
+    const requirePlanPanel = this.composerPlanPrompts.delete(rawPrompt);
     this.turnModelUsage = null;
     this.drainQueueAfterRequest = true;
     void this.recordSessionEvent({ kind: "prompt.send", detail: rawPrompt });
@@ -33468,7 +33960,13 @@ class CancipView extends ItemView {
     this.resumableTask = null;
     this.noteTaskControlPrompt(rawPrompt);
     this.ensureTaskControl(rawPrompt, taskGoal);
-    const modelPrompt = this.modelPromptForTurn(rawPrompt, taskGoal);
+    const baseModelPrompt = this.modelPromptForTurn(rawPrompt, taskGoal);
+    const modelPrompt = requirePlanPanel
+      ? [
+          baseModelPrompt,
+          "This turn was explicitly sent through Cancip's Plan control. Analyze the task yourself, then create the real Plan panel with a todo set containing at least 3 ordered, concrete, verifiable items. In the same action batch immediately include the first non-todo action needed to execute the plan. Do not substitute a Markdown checklist or prose plan."
+        ].join("\n\n")
+      : baseModelPrompt;
     const readOnlyOnly = false;
     const suppressToolActions = false;
     this.syncSessionChrome();
@@ -33526,7 +34024,7 @@ class CancipView extends ItemView {
       this.primeModelCharStats(modelPrompt, context, rawPrompt);
       generationStep = this.addProgressStep(this.modelCharProgressSummary(this.t("generating")));
       requestProgressSteps.push(generationStep);
-      const answer = await this.callModelWithRetries(
+      let answer = await this.callModelWithRetries(
         modelPrompt,
         context,
         rawPrompt,
@@ -33537,6 +34035,27 @@ class CancipView extends ItemView {
         this.modelStreamProgressUpdater(generationStep, this.t("generating"))
       );
       if (request.signal.aborted || !this.hasRequest(request)) return;
+      if (requirePlanPanel && !responseCreatesExecutablePlan(answer, 3)) {
+        const correctionPrompt = [
+          modelPrompt,
+          "Protocol correction: the previous response did not create the real Cancip Plan panel. Return one executable cancip-action response containing a todo set with at least 3 specific items, followed in the same actions array by the first non-todo action. Preserve the user's task; do not return prose or a Markdown checklist.",
+          `Previous response:\n${trimContext(redactSensitiveText(answer), 2400)}`
+        ].join("\n\n");
+        answer = await this.callModelWithRetries(
+          correctionPrompt,
+          context,
+          rawPrompt,
+          "plan protocol correction timed out",
+          this.modelCallTimeoutForPrompt(taskGoal),
+          this.modelRetryProgressUpdater(generationStep, this.t("generating")),
+          undefined,
+          this.modelStreamProgressUpdater(generationStep, this.t("generating"))
+        );
+        if (request.signal.aborted || !this.hasRequest(request)) return;
+        if (!responseCreatesExecutablePlan(answer, 3)) {
+          throw new Error("模型未创建至少 3 项真实计划待办并开始执行");
+        }
+      }
       const requestSessionId = this.requestSessionId(request);
       if (requestSessionId && requestSessionId !== this.sessionId) {
         await this.completeDetachedApiResponse(requestSessionId, modelPrompt, answer, startedAt, suppressToolActions);
@@ -35986,6 +36505,7 @@ class CancipView extends ItemView {
   }
 
   private async saveCurrentSession(): Promise<void> {
+    if (this.contextualEditSilentRun) return;
     this.currentSessionSaveQueued = true;
     if (this.currentSessionSavePromise) {
       await this.currentSessionSavePromise;
@@ -37981,8 +38501,8 @@ class CancipView extends ItemView {
 
   private nativeToolProtocolPrompt(): string {
     return this.plugin.language().startsWith("zh")
-      ? "工具协议：需要 Obsidian 状态或实际改动时调用原生 cancip_action；一次只调用一个动作，等待真实结果后再决定下一步。未知命令先调用 cancip.tools.index，不编造命令；无需工具时直接短答。"
-      : "Tool protocol: use the native cancip_action tool for Obsidian state or mutations, one action at a time, and wait for the real result. Use cancip.tools.index before an unknown command; never invent commands. Answer directly when no tool is needed.";
+      ? "工具协议：需要 Obsidian 状态或实际改动时调用原生 cancip_action；一次只调用一个动作，等待真实结果后再决定下一步。用户明确指定工具、Skill、插件命令或 Cancip 面板时必须实际调用，不能用普通文字模拟。未知命令先调用 cancip.tools.index，不编造命令；无需工具时直接短答。"
+      : "Tool protocol: use the native cancip_action tool for Obsidian state or mutations, one action at a time, and wait for the real result. When the user explicitly names a tool, Skill, plugin command, or Cancip panel, invoke the real capability instead of simulating it with prose. Use cancip.tools.index before an unknown command; never invent commands. Answer directly when no tool is needed.";
   }
 
   private nativeFinalAnswerPrompt(): string {
@@ -39275,8 +39795,11 @@ class CancipView extends ItemView {
     const responseContract = isChineseLanguage(this.plugin.language())
       ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；多步骤任务由你把用户要求整理成有顺序、可验收的 2-8 项；用户已明确列出更多独立要求时应完整保留，最多 20 项。在同一 actions 数组先给 todo set，每项使用稳定 id（step-1、step-2……），紧接第一项实际动作，不能只建待办。简单任务不要建待办。后续每轮把真实工具结果与对应待办核对：完成一项就在同一 actions 数组用相同 id 做 todo update done:true，再紧接下一项实际动作；失败但仍可推进时换路线，不得提前结束。最终复核时，complete 要求所有待办已完成；最终回答按相同序号和顺序逐项写具体结果、验证或精确阻塞。todo 只维护计划面板并立即生效，不批准后续文件或命令动作。无需工具时直接给最终回答。简短问候要像熟人一样自然短答，不自我介绍 Cancip、不列能力、不用“有什么可以帮你”“需要我做什么”“随时准备”等客服式邀约、不复述系统定位；没有具体近况时简单打招呼或关心近况即可。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
       : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. For a multi-step task, organize the user's requirements into 2-8 ordered, verifiable items; preserve a longer explicit list of independent requirements when the user supplied one, up to 20 items. In the same actions array put a todo set first, using stable IDs step-1, step-2, and so on, then immediately include the first real action; never stop after creating todos. Do not create todos for simple tasks. On every continuation, compare the real tool result with the matching todo: when one item is complete, update that same ID with done:true and include the next real action in the same actions array. If work can still advance after a failure, change route instead of ending early. A complete final review requires every todo to be done, and the final answer must use the same numbering and order with one concrete result, verification, or exact blocker per item. Todo actions update the Plan panel immediately but never approve subsequent file or command actions. Otherwise answer directly. Keep brief greetings natural and familiar: do not introduce Cancip, list capabilities, invite the user to ask for help, say that you are ready to help, or restate the system role. Without concrete recent context, simply greet the user or ask how they are. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
-    if (policy.includeDetailedToolProtocol) return `${responseContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}\n\n${this.t("toolProtocol")}`;
-    return `${responseContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}`;
+    const explicitCapabilityContract = isChineseLanguage(this.plugin.language())
+      ? "用户明确指定工具、Skill、插件命令或 Cancip 面板时，必须先确认真实入口并实际调用；不能用普通文字清单或模拟结果代替。"
+      : "When the user explicitly names a tool, Skill, plugin command, or Cancip panel, resolve and invoke the real capability; never substitute a prose checklist or simulated result.";
+    if (policy.includeDetailedToolProtocol) return `${responseContract}\n\n${explicitCapabilityContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}\n\n${this.t("toolProtocol")}`;
+    return `${responseContract}\n\n${explicitCapabilityContract}\n\n${routeIndex}\n\n${this.toolCatalogPrompt()}`;
   }
 
   private compactActionRouteIndexPrompt(): string {
@@ -41069,7 +41592,7 @@ class CancipView extends ItemView {
       void this.saveCurrentSession();
       return { report: this.formatActionReport(sections), runs, executed: executable.length > 0 };
     }
-    if (this.plugin.settings.accessMode !== "full-access") {
+    if (options.forceApproval || this.plugin.settings.accessMode !== "full-access") {
       const executable = runs.filter((run) => run.status === "pending" && canExecuteWithoutApproval(run.action));
       const pending = runs.filter((run) => run.status === "pending" && !canExecuteWithoutApproval(run.action));
       const blocked = runs.filter((run) => run.status === "blocked");
@@ -41095,12 +41618,14 @@ class CancipView extends ItemView {
         summary: `${queuedSummary}\n${this.t("toolRunsQueued", { count: pending.length })}`.trim()
       });
       void this.saveCurrentSession();
-      this.plugin.notifyObsidianAttention({
-        kind: "approval",
-        sessionId: this.sessionId,
-        title: this.sessionTitle(),
-        summary: `${queuedSummary}\n${this.t("toolRunsQueued", { count: pending.length })}`.trim()
-      });
+      if (!options.silentApproval) {
+        this.plugin.notifyObsidianAttention({
+          kind: "approval",
+          sessionId: this.sessionId,
+          title: this.sessionTitle(),
+          summary: `${queuedSummary}\n${this.t("toolRunsQueued", { count: pending.length })}`.trim()
+        });
+      }
       return {
         report: this.formatActionReport(sections),
         runs,
@@ -47629,6 +48154,13 @@ class CancipView extends ItemView {
       const path = normalizePath(typeof args.path === "string" ? args.path : activePath);
       const mode = isDocumentWorkbenchMode(args.mode) ? args.mode : this.plugin.settings.documentWorkbenchDefaultMode;
       if (!path) throw new Error("cancip.documents.open requires args.path or an active file");
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile && isMarkdownFile(file)) {
+        const nativeMode = mode === "preview" || mode === "reading" ? "preview" : "source";
+        const opened = await this.plugin.openNativeMarkdownFile(file, nativeMode);
+        if (!opened) throw new Error(`Native Markdown view could not open: ${path}`);
+        return this.t("commandExecuted", { command: normalized, result: `${path}\nmode=native-${nativeMode}` });
+      }
       const view = await this.plugin.activateDocumentWorkbench(path, mode);
       if (!view) throw new Error(`Document workbench could not open: ${path}`);
       return this.t("commandExecuted", { command: normalized, result: `${path}\nmode=${mode}` });
@@ -53391,8 +53923,29 @@ class CancipView extends ItemView {
     if (!this.contextEl) return;
     this.contextEl.empty();
     const chips = this.contextChips();
-    this.contextEl.toggleClass("is-hidden", !chips.length);
-    if (!chips.length) return;
+    const capabilities = [...this.composerCapabilities];
+    this.contextEl.toggleClass("is-hidden", !chips.length && !capabilities.length);
+    for (const capability of capabilities) {
+      const label = capability === "html" ? "HTML" : this.t("planPanelTitle");
+      const item = this.contextEl.createDiv({
+        cls: `obcc-context-chip is-capability is-${capability}`,
+        attr: { title: label }
+      });
+      const display = item.createDiv({ cls: "obcc-context-open", attr: { "aria-label": label } });
+      setIcon(display.createSpan({ cls: "obcc-context-chip-icon" }), capability === "html" ? "file-code-2" : "list-todo");
+      display.createSpan({ cls: "obcc-context-chip-name", text: label });
+      const removeButton = item.createEl("button", {
+        cls: "obcc-context-remove",
+        attr: { type: "button", title: this.t("clearContext"), "aria-label": this.t("clearContext") }
+      });
+      setIcon(removeButton, "x");
+      removeButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.composerCapabilities.delete(capability);
+        this.renderContextChips();
+        this.focusInput();
+      });
+    }
     for (const chip of chips) {
       const item = this.contextEl.createDiv({
         cls: `obcc-context-chip is-${chip.kind}`,
@@ -57898,7 +58451,7 @@ function universalSearchBuildDelayForChangedPath(path: string): number {
 }
 
 function shouldSearchConfigsForQuery(query: string): boolean {
-  return /(?:cancip|obsidian|plugin|plugins?|setting|settings?|config|command|api|automation|skill|css|json|配置|设置|插件|命令|自动化|按钮|审核|模型|密钥|接口|能力|样式|源码)/i.test(query);
+  return /(?:cancip|obsidian|plugin|plugins?|setting|settings?|config|command|api|automation|skill|memory|index|css|json|配置|设置|插件|命令|自动化|按钮|审核|模型|密钥|接口|能力|记忆|索引|样式|源码)/i.test(query);
 }
 
 function shouldSearchAttachmentsForQuery(query: string): boolean {
@@ -57909,11 +58462,11 @@ function universalSearchKindsForQuery(
   query: string,
   options: { includeArchived: boolean; includeConfigs: boolean; includeAttachments: boolean }
 ): UniversalSearchDocumentKind[] {
-  const kinds: UniversalSearchDocumentKind[] = ["memory", "note", "session", "file"];
+  const kinds: UniversalSearchDocumentKind[] = ["note", "session", "file"];
   if (options.includeAttachments) kinds.push("pdf", "image", "office", "archive");
-  if (options.includeConfigs) kinds.push("config");
+  if (options.includeConfigs) kinds.push("config", "memory");
   if (options.includeArchived || /(?:归档|archive|历史|history|旧会话|冷归档)/i.test(query)) kinds.push("session");
-  return uniqueUniversalSearchKinds(kinds) ?? ["memory", "note", "session", "file"];
+  return uniqueUniversalSearchKinds(kinds) ?? ["note", "session", "file"];
 }
 
 function universalSearchProtectedContentPath(path: string): boolean {
@@ -57930,7 +58483,13 @@ function universalSearchDocumentKind(path: string, memoryFolder: string, obsidia
     .filter(Boolean);
   if (lower.startsWith(`${CANCIP_ARCHIVE_SESSIONS_DIR.toLowerCase()}/`) || lower.startsWith(`${SESSION_HISTORY_DIR.toLowerCase()}/`)) return "session";
   if (/(^|\/)(?:skills?|技能)(?:\/|$)/i.test(lower)) return "config";
-  if (lower === PROJECT_MEMORY_PATH.toLowerCase() || memoryRoots.some((root) => lower === root || lower.startsWith(`${root}/`)) || /(^|\/)memory(?:\/|$)/i.test(lower)) return "memory";
+  if (
+    lower === PROJECT_MEMORY_PATH.toLowerCase()
+    || lower === CANCIP_MACHINE_INDEX_DIR.toLowerCase()
+    || lower.startsWith(`${CANCIP_MACHINE_INDEX_DIR.toLowerCase()}/`)
+    || memoryRoots.some((root) => lower === root || lower.startsWith(`${root}/`))
+    || /(^|\/)memory(?:\/|$)/i.test(lower)
+  ) return "config";
   if (isPdfPath(normalized)) return "pdf";
   if (isImagePath(normalized)) return "image";
   if (/\.(docx|xlsx|pptx)$/i.test(normalized)) return "office";
@@ -59429,6 +59988,56 @@ function reviewDiffHunks(oldText: string, newText: string, contextRadius = 2): R
   }
   if (currentStart >= 0) ranges.push({ start: currentStart, end: previous });
   return ranges.map((range) => ({ lines: lines.slice(range.start, range.end + 1) }));
+}
+
+function reviewDiffBlocks(oldText: string, newText: string): ReviewDiffBlock[] {
+  const blocks: ReviewDiffBlock[] = [];
+  let current: ReviewDiffLine[] = [];
+  const push = () => {
+    if (!current.length) return;
+    const signature = current.map((line) => `${line.kind}:${line.oldLine ?? 0}:${line.newLine ?? 0}:${line.text}`).join("\n");
+    blocks.push({ id: stableTextHash(signature), lines: current });
+    current = [];
+  };
+  for (const line of makeReviewDiffLines(oldText, newText)) {
+    if (line.kind === "context") {
+      push();
+      continue;
+    }
+    current.push(line);
+  }
+  push();
+  return blocks;
+}
+
+function reviewTextForBlockDecisions(
+  oldText: string,
+  newText: string,
+  state: ReviewDiffBlockDecisionState
+): string {
+  const rows = makeReviewDiffLines(oldText, newText);
+  const output: string[] = [];
+  let changed: ReviewDiffLine[] = [];
+  const pushChanged = () => {
+    if (!changed.length) return;
+    const signature = changed.map((line) => `${line.kind}:${line.oldLine ?? 0}:${line.newLine ?? 0}:${line.text}`).join("\n");
+    const id = stableTextHash(signature);
+    const decision = state.decisions[id] ?? state.base;
+    const kind = decision === "approved" ? "added" : "removed";
+    output.push(...changed.filter((line) => line.kind === kind).map((line) => line.text));
+    changed = [];
+  };
+  for (const row of rows) {
+    if (row.kind === "context") {
+      pushChanged();
+      output.push(row.text);
+    } else {
+      changed.push(row);
+    }
+  }
+  pushChanged();
+  const source = state.base === "approved" ? newText : oldText;
+  return `${output.join("\n")}${source.endsWith("\n") ? "\n" : ""}`;
 }
 
 function reviewChangedMarkdownRows(oldText: string, newText: string): Array<ReviewDiffLine & { markdown: string }> {
@@ -67434,7 +68043,7 @@ function makeTtsPartPlan(input: string, provider: TtsProvider | undefined, targe
   const displayIndexByPlayIndex: number[] = [];
   const makePlayChunks = (text: string) => usePrimeFastPlan
     ? splitPrimeTtsMicroPlayText(text, playTarget)
-    : splitTtsText(text, targetLength, false);
+    : splitTtsText(text, targetLength, true);
   for (const display of sourceDisplayParts) {
     const spokenDisplay = spokenTransform ? spokenTransform(display) : display;
     const spokenChunks = makePlayChunks(spokenDisplay).filter(Boolean);
@@ -67901,6 +68510,10 @@ function splitTtsTextSegments(input: string): TtsTextSegment[] {
       continue;
     }
     if ("。！？；".includes(char)) {
+      push(false);
+      continue;
+    }
+    if ("，、：,:".includes(char) && normalizeTtsHighlightText(buffer).length >= 10) {
       push(false);
       continue;
     }
@@ -69443,6 +70056,16 @@ function extractCancipActions(answer: string): CancipAction[] {
   return actions.slice(0, 20);
 }
 
+function responseCreatesExecutablePlan(answer: string, minimumItems: number): boolean {
+  const actions = extractCancipActions(answer);
+  const createsPlan = actions.some((action) =>
+    action.type === "todo"
+    && action.op === "set"
+    && (action.items ?? []).filter((item) => item.text.trim()).length >= minimumItems
+  );
+  return createsPlan && actions.some((action) => action.type !== "todo");
+}
+
 function appendUiButtonRulesPreservingExisting(existing: UiButtonRule[], incoming: UiButtonRule[]): UiButtonRule[] {
   const merged = [...existing];
   for (const rule of incoming) merged.push(ensureUniqueUiButtonRuleId(rule, merged, -1));
@@ -70458,9 +71081,19 @@ function isAutomationInternalPath(path: string, obsidianConfigDir: string): bool
     || isPathInVaultFolder(normalized, ".trash");
 }
 
-function isAutomationMachineFilePath(path: string): boolean {
+function isAutomationMachineFilePath(path: string, settings?: Settings): boolean {
   const normalized = normalizePath(path.replace(/\\/g, "/").replace(/^\/+/, ""));
   const lower = normalized.toLowerCase();
+  const configRoots = uniqueStrings([
+    CANCIP_CONFIG_DIR,
+    CANCIP_MACHINE_INDEX_DIR,
+    DEFAULT_MEMORY_FOLDER,
+    LEGACY_DEFAULT_MEMORY_FOLDER,
+    INTERRUPTED_DEFAULT_MEMORY_FOLDER,
+    settings?.memoryFolder || DEFAULT_MEMORY_FOLDER
+  ]).map((root) => normalizePath(root).replace(/^\/+|\/+$/g, "").toLowerCase()).filter(Boolean);
+  if (configRoots.some((root) => lower === root || lower.startsWith(`${root}/`))) return true;
+  if (lower === PROJECT_MEMORY_PATH.toLowerCase()) return true;
   const segments = lower.split("/").filter(Boolean);
   const fileName = segments.at(-1) ?? "";
   if (segments.some((segment) => /^(?:\.git|\.cache|\.index|\.logs?|\.tmp|\.temp|\.state|node_modules|cache|caches|logs?|tmp|temp)$/.test(segment))) {

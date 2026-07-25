@@ -552,6 +552,16 @@ body .view-content.obcc-review-leaf {
   color: var(--interactive-accent);
 }
 
+.obcc-context-chip.is-capability {
+  border-color: color-mix(in srgb, var(--interactive-accent) 48%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) 9%, var(--background-secondary));
+  color: var(--text-normal);
+}
+
+.obcc-context-chip.is-capability .obcc-context-open {
+  cursor: default;
+}
+
 .obcc-context-open,
 .obcc-context-edit,
 .obcc-context-remove {
@@ -5605,7 +5615,7 @@ details.obcc-process-step {
 
 .obcc-context-edit-bubble {
   position: fixed;
-  z-index: 1001;
+  z-index: 1003;
   display: flex;
   align-items: center;
   gap: 4px;
@@ -5616,6 +5626,41 @@ details.obcc-process-step {
   background: var(--background-primary);
   box-shadow: 0 6px 20px var(--background-modifier-box-shadow);
   flex-wrap: wrap;
+}
+
+.obcc-context-edit-marker {
+  position: fixed;
+  z-index: 1002;
+  pointer-events: none;
+  border: 1px solid color-mix(in srgb, var(--color-green) 72%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-green) 13%, transparent);
+}
+
+.obcc-context-edit-marker.is-selection {
+  border-color: color-mix(in srgb, var(--color-red) 78%, transparent);
+  background: color-mix(in srgb, var(--color-red) 14%, transparent);
+}
+
+.obcc-context-edit-marker-icon {
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--background-primary);
+  color: var(--text-accent);
+  box-shadow: 0 1px 4px var(--background-modifier-box-shadow);
+}
+
+.obcc-context-edit-marker.is-loading .obcc-context-edit-marker-icon svg {
+  width: 13px;
+  height: 13px;
+  animation: obcc-spin 0.8s linear infinite;
 }
 
 .obcc-context-edit-bubble.is-loading .obcc-context-edit-action svg {
@@ -6046,6 +6091,66 @@ details.obcc-process-step {
 .obcc-review-diff.is-hidden,
 .obcc-review-diff-render.is-hidden {
   display: none;
+}
+
+.obcc-review-block-controls {
+  display: grid;
+  gap: 4px;
+  padding: 5px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  background: var(--background-secondary);
+}
+
+.obcc-review-block-controls.is-hidden {
+  display: none;
+}
+
+.obcc-review-block-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 2px 4px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+}
+
+.obcc-review-block-row.is-approved {
+  border-color: color-mix(in srgb, var(--color-green) 58%, var(--background-modifier-border));
+}
+
+.obcc-review-block-row.is-cancelled {
+  border-color: color-mix(in srgb, var(--color-red) 55%, var(--background-modifier-border));
+}
+
+.obcc-review-block-index {
+  color: var(--text-faint);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.obcc-review-block-summary {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-family: var(--font-monospace);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-review-block-actions {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.obcc-review-block-actions .obcc-review-icon-button {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
 }
 
 .obcc-review-diff-hunk {
