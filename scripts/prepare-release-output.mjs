@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { gzipSync } from "node:zlib";
 import esbuild from "esbuild";
 
 const outputDir = "outputs/cancip";
@@ -12,6 +13,7 @@ await mkdir("src/generated", { recursive: true });
 const workerBundle = await esbuild.build({
   entryPoints: ["src/primeTtsWorker.ts"],
   bundle: true,
+  banner: { js: `/* Cancip PrimeTTS worker ${version} */` },
   format: "iife",
   target: "es2020",
   platform: "browser",
@@ -21,7 +23,11 @@ const workerBundle = await esbuild.build({
   write: false
 });
 const workerSource = workerBundle.outputFiles[0]?.text ?? "";
-await writeFile("src/generated/primeTtsWorkerSource.ts", `export const PRIME_TTS_WORKER_SOURCE = ${JSON.stringify(workerSource)};\n`);
+const workerGzipBase64 = gzipSync(Buffer.from(workerSource), { level: 9 }).toString("base64");
+await writeFile(
+  "src/generated/primeTtsWorkerSource.ts",
+  `export const PRIME_TTS_WORKER_VERSION = ${JSON.stringify(version)};\nexport const PRIME_TTS_WORKER_GZIP_BASE64 = ${JSON.stringify(workerGzipBase64)};\n`
+);
 
 for (const file of ["manifest.json", "README.md"]) {
   await writeFile(`${outputDir}/${file}`, await readFile(file, "utf8"));

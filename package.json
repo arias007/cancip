@@ -1,10 +1,11 @@
 {
   "name": "cancip",
-  "version": "3.2.44",
+  "version": "3.2.45",
   "private": true,
   "main": "main.js",
   "scripts": {
     "verify:source-parity": "node scripts/verify-source-runtime-parity.mjs",
+    "test:tts": "node scripts/verify-tts-regression.mjs",
     "build:ocr-package": "node scripts/prepare-ocr-package.mjs",
     "build": "npm run verify:source-parity && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
     "check": "tsc --noEmit --skipLibCheck",

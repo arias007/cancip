@@ -4,6 +4,7 @@ import esbuild from "esbuild";
 import process from "process";
 
 const prod = process.argv[2] === "production";
+const pluginVersion = JSON.parse(await readFile("manifest.json", "utf8")).version;
 
 await mkdir("outputs/build", { recursive: true });
 await mkdir("outputs/cancip", { recursive: true });
@@ -11,6 +12,7 @@ await mkdir("outputs/cancip", { recursive: true });
 const mainOutput = "outputs/cancip/main.js";
 
 await esbuild.build({
+  banner: { js: `/* Cancip PrimeTTS worker ${pluginVersion} */` },
   entryPoints: ["src/primeTtsWorker.ts"],
   bundle: true,
   format: "iife",

@@ -7,6 +7,9 @@ remain with their respective authors.
 Notable bundled runtime assets:
 - html2canvas 1.4.1 (MIT) for local active-view PNG evidence capture.
 - PrimeTTS v3_4.6M model assets under outputs/cancip/tts/prime-tts/.
+- A compact 1,200-word English pronunciation table generated from
+  cmu-pronouncing-dictionary 3.0.0 and subtlex-word-frequencies 2.0.0
+  (ISC, Copyright 2015 Zeke Sikelianos).
 - ONNX Runtime Web WASM files under outputs/cancip/tts/prime-tts/ort/.
 
 See outputs/cancip/tts/prime-tts/README.md and package-lock.json for

@@ -29,11 +29,12 @@ import {
   WorkspaceLeaf
 } from "obsidian";
 import html2canvas from "html2canvas";
-import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { gunzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { createWorker as createTesseractWorker, OEM as TesseractOem, PSM as TesseractPsm, type Worker as TesseractWorker } from "tesseract.js";
 import { DEFAULT_SYSTEM_PROMPT, defaultSystemPromptForNavigationPath, isBundledSystemPrompt, PLUGIN_NAME, VIEW_TYPE } from "./constants";
+import { PRIME_TTS_WORKER_GZIP_BASE64, PRIME_TTS_WORKER_VERSION } from "./generated/primeTtsWorkerSource";
 import supportCodeOneDataUrl from "./support/code-1.png";
 import supportCodeTwoDataUrl from "./support/code-2.png";
 import {
@@ -258,15 +259,16 @@ const BUILTIN_PRIME_TTS_WARMUP_TEXT = "好。";
 const BUILTIN_PRIME_TTS_WARMUP_SYNTH_DELAY_MS = 80;
 const PRIME_TTS_FAST_DEFAULT_CHARS = 96;
 const PRIME_TTS_STALL_MS = 850;
-const PRIME_TTS_STALL_SKIP_MS = 2200;
 const PRIME_TTS_MAX_PLAY_CHARS = 48;
 const PRIME_TTS_MICRO_TARGET_CHARS = 28;
 const PRIME_TTS_MICRO_MAX_CHARS = 48;
 const PRIME_TTS_DISPLAY_TARGET_CHARS = 28;
 const PRIME_TTS_DISPLAY_MAX_CHARS = 48;
-const PRIME_TTS_LATIN_WORD_MAX_CHARS = 18;
 const PRIME_TTS_STARTUP_WORD_UNITS = 2;
 const PRIME_TTS_STARTUP_PHRASE_TARGET_CHARS = 12;
+const PRIME_TTS_ENGLISH_STARTUP_TARGET_CHARS = 24;
+const PRIME_TTS_ENGLISH_STEADY_TARGET_CHARS = 48;
+const PRIME_TTS_ENGLISH_MAX_CHARS = 72;
 const PRIME_TTS_PLAYBACK_DRAIN_MS = 0;
 const PRIME_TTS_WEB_AUDIO_FALLBACK_GRACE_MS = 650;
 const AUTOMATION_STATE_CACHE_TTL_MS = 5000;
@@ -282,6 +284,7 @@ const MAX_TOOL_ACTIONS_PER_TASK = 12;
 const MAX_AUTOMATION_TOOL_ACTIONS_PER_TASK = 18;
 const STARTUP_MAINTENANCE_IDLE_TIMEOUT_MS = 1600;
 const TTS_CAPTURE_MAX_CHARS = 120000;
+const TTS_FILE_CAPTURE_MAX_CHARS = Number.MAX_SAFE_INTEGER;
 const TTS_MAX_PARTS = 50000;
 const LANGUAGE_VALUES = ["zh", "zh-TW", "en", "ug", "tr", "ru", "ja", "ko", "es", "fr", "de", "ar"] as const;
 type Language = typeof LANGUAGE_VALUES[number];
@@ -10949,7 +10952,7 @@ export default class CancipPlugin extends Plugin {
   }
 
   speakText(input: string, label?: string, sourcePath = "", sourceText = ""): void {
-    const text = cleanTtsText(input);
+    const text = cleanTtsText(input, sourcePath ? TTS_FILE_CAPTURE_MAX_CHARS : TTS_CAPTURE_MAX_CHARS);
     if (!text) {
       new Notice(this.t("ttsNoText"));
       return;
@@ -10958,7 +10961,7 @@ export default class CancipPlugin extends Plugin {
   }
 
   speakTextWithProvider(input: string, provider: TtsProvider, label?: string, sourcePath = "", sourceText = ""): void {
-    const text = cleanTtsText(input);
+    const text = cleanTtsText(input, sourcePath ? TTS_FILE_CAPTURE_MAX_CHARS : TTS_CAPTURE_MAX_CHARS);
     if (!text) {
       new Notice(this.t("ttsNoText"));
       return;
@@ -13030,13 +13033,9 @@ export default class CancipPlugin extends Plugin {
       this.activeTtsPrimeDecodedCache.clear();
       this.activeTtsPrimeDecodedCacheRunId = this.activeTtsPrimeCacheSessionId;
     }
-    this.prefetchPrimeTtsWindow(runtime, playChunks, this.activeTtsPartIndex, runId);
-    this.prefetchPrimeTtsBlockLookahead(runtime, playChunks, this.activeTtsPartIndex, runId);
     for (let index = this.activeTtsPartIndex; index < playChunks.length; index += 1) {
       if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
-      this.prefetchPrimeTtsWindow(runtime, playChunks, index, runId);
-      this.prefetchPrimeTtsBlockLookahead(runtime, playChunks, index, runId);
-      let playable: PrimeTtsPlayable | "skip" | null = null;
+      let playable: PrimeTtsPlayable | null = null;
       try {
         playable = await this.getPrimeTtsPlayableWithStallFallback(runtime, playChunks, index, runId);
       } catch (error) {
@@ -13045,20 +13044,16 @@ export default class CancipPlugin extends Plugin {
           continue;
         }
         this.activeTtsLastError = error instanceof Error ? error.message : String(error);
-        continue;
+        throw error;
       }
       if (playable === null) {
         index -= 1;
         continue;
       }
-      if (playable === "skip") {
-        this.activeTtsLastError = `PrimeTTS skipped a stalled chunk: ${trimContext(playChunks[index] ?? "", 20)}`;
-        continue;
-      }
       if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
       this.activeTtsPartIndex = index;
       this.prefetchPrimeTtsWindow(runtime, playChunks, index + 1, runId);
-      this.prefetchPrimeTtsBlockLookahead(runtime, playChunks, index + 1, runId);
+      if (this.activeTtsStartedAudio) this.prefetchPrimeTtsBlockLookahead(runtime, playChunks, index + 1, runId);
       try {
         await this.playPrimeTtsPlayable(playable, runId);
       } catch (error) {
@@ -13068,9 +13063,11 @@ export default class CancipPlugin extends Plugin {
             await this.playTtsGeneratedWav(wav, runId);
           } catch (fallbackError) {
             this.activeTtsLastError = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+            throw fallbackError;
           }
         } else {
           this.activeTtsLastError = error instanceof Error ? error.message : String(error);
+          throw error;
         }
       }
       this.prunePrimeTtsCache(index);
@@ -13152,10 +13149,13 @@ export default class CancipPlugin extends Plugin {
     }
     this.prefetchPrimeTtsAudioUrl(runtime, chunks, index, runId);
     const promise = this.activeTtsPrimeCache.get(index);
-    if (!promise) {
-      return await this.queueBuiltinPrimeTtsSynthesis(runtime, chunks[index], this.activeTtsPrimeCacheSessionId);
+    const wav = promise
+      ? await promise
+      : await this.queueBuiltinPrimeTtsSynthesis(runtime, chunks[index], this.activeTtsPrimeCacheSessionId);
+    if (this.activeTtsRunId === runId && this.activeTtsParts.length) {
+      this.prefetchPrimeTtsAudioUrl(runtime, chunks, index + 1, runId);
     }
-    return await promise;
+    return wav;
   }
 
   private prefetchPrimeTtsDecodedAudio(chunks: string[], index: number, runId: number): void {
@@ -13213,7 +13213,7 @@ export default class CancipPlugin extends Plugin {
     return this.builtinPrimeTtsRuntime;
   }
 
-  private async getPrimeTtsPlayableWithStallFallback(runtime: PrimeTtsRuntime, chunks: string[], index: number, runId: number): Promise<PrimeTtsPlayable | "skip" | null> {
+  private async getPrimeTtsPlayableWithStallFallback(runtime: PrimeTtsRuntime, chunks: string[], index: number, runId: number): Promise<PrimeTtsPlayable | null> {
     const playablePromise = this.getPrimeTtsDecodedPlayable(chunks, index, runId);
     const chunk = chunks[index] ?? "";
     const result = await Promise.race<PrimeTtsPlayable | "stall">([
@@ -13227,15 +13227,7 @@ export default class CancipPlugin extends Plugin {
     if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return null;
     const normalizedLength = normalizeTtsHighlightText(chunks[index] ?? "").length;
     if (shouldSplitStalledPrimeTtsChunk(chunk, normalizedLength) && this.applyPrimeTtsProgressiveFallback(index, chunks, runtime, runId)) return null;
-    const fallback = await Promise.race<PrimeTtsPlayable | "skip">([
-      playablePromise,
-      sleep(PRIME_TTS_STALL_SKIP_MS).then(() => "skip" as const)
-    ]);
-    if (fallback === "skip") {
-      this.activeTtsPrimeCache.delete(index);
-      this.activeTtsPrimeDecodedCache.delete(index);
-      return "skip";
-    }
+    const fallback = await playablePromise;
     this.builtinPrimeTtsWarmupSynthDone = true;
     return fallback;
   }
@@ -13385,14 +13377,25 @@ export default class CancipPlugin extends Plugin {
 
   private async createPrimeTtsWorkerUrl(): Promise<string> {
     const path = `${this.pluginInstallDir()}/prime-tts-worker.js`;
+    const expectedMarker = `/* Cancip PrimeTTS worker ${PRIME_TTS_WORKER_VERSION} */`;
+    let source = "";
     try {
-      const source = await this.app.vault.adapter.read(path);
-      if (!source.trim()) throw new Error("worker source is empty");
-      return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+      const installedSource = await this.app.vault.adapter.read(path);
+      if (installedSource.startsWith(expectedMarker)) source = installedSource;
+      else console.debug(`Cancip ignored an outdated PrimeTTS worker at ${path}`);
     } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(`PrimeTTS worker asset is unavailable at ${path}: ${reason}`);
+      console.debug(`Cancip PrimeTTS worker asset is unavailable at ${path}; using the bundled fallback`, error);
     }
+    if (!source) {
+      try {
+        source = strFromU8(gunzipSync(base64ToBytes(PRIME_TTS_WORKER_GZIP_BASE64)));
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`PrimeTTS worker fallback could not be decoded: ${reason}`);
+      }
+    }
+    if (!source.startsWith(expectedMarker)) throw new Error("PrimeTTS worker version marker is invalid");
+    return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
   }
 
   private primeTtsWorkerRequest(
@@ -14397,7 +14400,7 @@ export default class CancipPlugin extends Plugin {
 
   async speakFile(file: TFile): Promise<void> {
     try {
-      const snapshot = await this.captureFileTtsStartSnapshot(file, TTS_CAPTURE_MAX_CHARS);
+      const snapshot = await this.captureFileTtsStartSnapshot(file, TTS_FILE_CAPTURE_MAX_CHARS);
       if (!snapshot.text) {
         if (isPdfFile(file)) new Notice(this.t("ttsPdfNoText"));
         else new Notice(this.t("ttsNoText"));
@@ -14480,7 +14483,8 @@ export default class CancipPlugin extends Plugin {
   private async readPdfFileText(file: TFile, maxChars: number): Promise<string> {
     const warnings: string[] = [];
     const buffer = await this.app.vault.adapter.readBinary(file.path);
-    const text = normalizePdfTtsText(extractPdfTextFromBytes(new Uint8Array(buffer), file.name, maxChars, warnings));
+    const webFile = new File([buffer], file.name, { type: "application/pdf", lastModified: file.stat.mtime });
+    const text = normalizePdfTtsText(await extractPdfText(webFile, maxChars, warnings, Number.MAX_SAFE_INTEGER));
     if (!text && warnings.length) this.activeTtsLastError = warnings.join("; ");
     return text;
   }
@@ -54567,12 +54571,17 @@ class CancipView extends ItemView {
     const targetPluginId = forcedPluginId || manifestId;
     const mainJs = await this.githubDownloadText(assetUrl("main.js"));
     const stylesCss = await this.githubDownloadText(assetUrl("styles.css")).catch(() => "");
+    const workerAsset = assets.find((item) => String(item.name ?? "") === "prime-tts-worker.js");
+    const primeTtsWorker = workerAsset
+      ? await this.githubDownloadText(assetUrl("prime-tts-worker.js")).catch(() => "")
+      : "";
 
     const targetDir = this.plugin.pluginInstallDir(targetPluginId);
     await ensureFolder(this.app.vault.adapter, targetDir);
     await this.app.vault.adapter.write(`${targetDir}/manifest.json`, `${JSON.stringify(manifest, null, 2)}\n`);
     await this.app.vault.adapter.write(`${targetDir}/main.js`, mainJs);
     if (stylesCss) await this.app.vault.adapter.write(`${targetDir}/styles.css`, stylesCss);
+    if (primeTtsWorker) await this.app.vault.adapter.write(`${targetDir}/prime-tts-worker.js`, primeTtsWorker);
     return `Installed ${targetPluginId} from ${decodeURIComponent(repo.owner)}/${decodeURIComponent(repo.repo)} ${tagName}\n${targetDir}`;
   }
 
@@ -71640,11 +71649,11 @@ function redactSensitiveText(input: string): string {
   return redacted;
 }
 
-function cleanTtsText(input: string): string {
+function cleanTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): string {
   const redacted = redactSensitiveText(input);
   const display = prepareMessageDisplay(redacted);
   const source = display.visibleContent.trim() || redacted;
-  return markdownToTtsText(source, TTS_CAPTURE_MAX_CHARS);
+  return markdownToTtsText(source, maxChars);
 }
 
 function markdownToTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): string {
@@ -72153,8 +72162,10 @@ function sliceTtsTextFromAnchorToEnd(fullText: string, anchorText: string, maxCh
       const offset = normalizedFull.offsets[match.index] ?? 0;
       return trimContext(full.slice(offset), maxChars);
     }
+    const cursorOffset = normalizedFull.offsets[Math.max(0, Math.min(normalizedFull.offsets.length - 1, cursor))] ?? 0;
+    return trimContext(full.slice(cursorOffset), maxChars);
   }
-  return trimContext(anchorText || full, maxChars);
+  return trimContext(full, maxChars);
 }
 
 function offsetToEditorPosition(source: string, offset: number): { line: number; ch: number } {
@@ -72421,7 +72432,7 @@ function splitPrimeTtsMicroPlayTextWithStage(
   for (const fragment of splitPrimeTtsSentenceFragments(text)) {
     const split = splitPrimeTtsAdaptiveFragment(fragment.text, target, stage);
     parts.push(...split.parts);
-    stage = fragment.endsSentence ? 0 : split.nextStage;
+    stage = split.nextStage;
     if (parts.length >= TTS_MAX_PARTS) break;
   }
   return { parts: parts.slice(0, TTS_MAX_PARTS), nextStage: stage };
@@ -72480,6 +72491,17 @@ function splitPrimeTtsAdaptiveFragment(
   if (!rest) return { parts: [], nextStage: initialStage };
   const parts: string[] = [];
   let stage = initialStage;
+  if (looksLikeEnglishTtsText(rest) && !hasCjkText(rest)) {
+    if (stage === 0) {
+      const first = takePrimeTtsRampChunk(rest, PRIME_TTS_ENGLISH_STARTUP_TARGET_CHARS);
+      if (first) {
+        parts.push(first.text);
+        rest = rest.slice(first.length).trimStart();
+      }
+    }
+    if (rest) parts.push(...splitPrimeTtsPhraseText(rest, PRIME_TTS_ENGLISH_STEADY_TARGET_CHARS, PRIME_TTS_ENGLISH_MAX_CHARS));
+    return { parts: parts.filter(Boolean), nextStage: 3 };
+  }
   if (stage === 0) {
     const first = takePrimeTtsStartupChunk(rest, 1);
     if (first) {
@@ -72576,25 +72598,7 @@ function normalizePrimeTtsMicroNumberToken(token: string): string {
 function splitPrimeTtsMicroLatinToken(token: string): string[] {
   const clean = token.replace(/^'+|'+$/g, "").trim();
   if (!clean) return [];
-  if (clean.length <= PRIME_TTS_LATIN_WORD_MAX_CHARS) return [clean];
-  const parts: string[] = [];
-  let index = 0;
-  while (index < clean.length) {
-    const hard = Math.min(clean.length, index + PRIME_TTS_LATIN_WORD_MAX_CHARS);
-    let take = hard;
-    for (let cursor = hard; cursor > index + 1; cursor -= 1) {
-      const before = clean[cursor - 1] ?? "";
-      const after = clean[cursor] ?? "";
-      if (/[aeiouy]/i.test(before) && after && /[bcdfghjklmnpqrstvwxyz]/i.test(after)) {
-        take = cursor;
-        break;
-      }
-    }
-    const part = clean.slice(index, take);
-    if (part) parts.push(part);
-    index = take;
-  }
-  return parts;
+  return [clean];
 }
 
 function isPrimeTtsMicroPunctuation(char: string): boolean {
@@ -72683,7 +72687,7 @@ function shouldSplitStalledPrimeTtsChunk(chunk: string, normalizedLength: number
   const normalized = normalizeTtsHighlightText(chunk);
   const hasLatin = /[A-Za-z]/.test(chunk);
   const hasCjk = hasCjkText(chunk);
-  if (hasLatin && !hasCjk) return normalized.length > PRIME_TTS_LATIN_WORD_MAX_CHARS;
+  if (hasLatin && !hasCjk) return normalized.length > PRIME_TTS_ENGLISH_MAX_CHARS;
   return normalizedLength > PRIME_TTS_MICRO_TARGET_CHARS;
 }
 
@@ -72849,6 +72853,7 @@ function adjustPrimeTtsTakeBoundary(text: string, candidate: number, min: number
   while (end < text.length && /[年月日号时点分秒%％]/.test(text[end] ?? "")) end += 1;
   if (start >= min) return start;
   if (end <= hard) return end;
+  if (/[A-Za-z]/.test(text.slice(start, end))) return end;
   return cut;
 }
 
@@ -78232,7 +78237,7 @@ function ensureTrailingNewline(value: string): string {
   return value.endsWith("\n") ? value : `${value}\n`;
 }
 
-async function extractPdfText(file: File, maxChars: number, warnings: string[]): Promise<string> {
+async function extractPdfText(file: File, maxChars: number, warnings: string[], maxPages = 80): Promise<string> {
   let loadingTask: { promise?: Promise<unknown>; destroy?: () => Promise<void> | void } | null = null;
   try {
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -78245,7 +78250,7 @@ async function extractPdfText(file: File, maxChars: number, warnings: string[]):
       cleanup?: () => Promise<void> | void;
     };
     const pages: string[] = [];
-    const pageLimit = Math.min(Math.max(0, document.numPages || 0), 80);
+    const pageLimit = Math.min(Math.max(0, document.numPages || 0), Math.max(1, Math.floor(maxPages)));
     let chars = 0;
     for (let pageNumber = 1; pageNumber <= pageLimit && chars < maxChars; pageNumber += 1) {
       const page = await document.getPage(pageNumber);

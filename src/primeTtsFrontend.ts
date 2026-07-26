@@ -1,4 +1,5 @@
 import { customPinyin, pinyin } from "pinyin-pro";
+import { PRIME_TTS_COMMON_ENGLISH_WORD_PHONES } from "./generated/primeTtsCommonEnglishWords";
 
 export type PrimeTtsIds = {
   phoneIds: number[];
@@ -402,7 +403,7 @@ function pinyinSyllableToZhuyin(raw: string): { symbols: string[]; tone: number 
 function englishWordToPrimePhones(word: string): string[] {
   const lower = word.toLowerCase();
   if (!lower) return [];
-  const known = PRIME_TTS_WORD_PHONES[lower];
+  const known = PRIME_TTS_WORD_PHONES[lower] ?? PRIME_TTS_COMMON_ENGLISH_WORD_PHONES[lower];
   if (known) return known;
   if (lower.length <= 2 || /^[bcdfghjklmnpqrstvwxyz]{2,}$/i.test(lower)) {
     return lower.split("").flatMap((char) => PRIME_TTS_LETTER_PHONES[char] ?? []);
