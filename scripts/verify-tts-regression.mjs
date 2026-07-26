@@ -34,10 +34,16 @@ for (const statement of sourceFile.statements) {
 }
 
 const roots = [
+  "cleanTtsText",
+  "ttsSourceWithReadableFrontmatter",
+  "markdownTtsEmbedReferences",
   "markdownToTtsText",
   "sliceTtsTextFromAnchorToEnd",
+  "ttsScrollProgressCursor",
   "splitPrimeTtsMicroPlayText",
-  "makeTtsPartPlan"
+  "primeTtsSynthesisText",
+  "makeTtsPartPlan",
+  "findSequentialNormalizedNeedleMatch"
 ];
 const selected = new Set();
 const pending = [...roots];
@@ -68,6 +74,22 @@ const sandbox = { console };
 vm.runInNewContext(transpiled, sandbox, { filename: "cancip-tts-regression-runtime.js" });
 const api = sandbox.__cancipTtsTest;
 
+const repeatedHaystack = "开头重复内容中间重复内容结尾";
+const firstRepeated = api.findSequentialNormalizedNeedleMatch(repeatedHaystack, "重复内容", true, 0, 0);
+assert.equal(firstRepeated?.index, 2, "Initial highlight should resolve the first matching phrase");
+const secondRepeated = api.findSequentialNormalizedNeedleMatch(
+  repeatedHaystack,
+  "重复内容",
+  true,
+  (firstRepeated?.index ?? 0) + (firstRepeated?.needle.length ?? 0),
+  (firstRepeated?.index ?? 0) + (firstRepeated?.needle.length ?? 0)
+);
+assert.equal(secondRepeated?.index, 8, "Forward highlight must not jump back to an earlier duplicate");
+const backwardRepeated = api.findSequentialNormalizedNeedleMatch(repeatedHaystack, "重复内容", true, 2, 0);
+assert.equal(backwardRepeated?.index, 2, "Explicit backward seeking may resolve an earlier duplicate");
+const singleCharacterForward = api.findSequentialNormalizedNeedleMatch("今日日记今日计划", "今", true, 4, 4);
+assert.equal(singleCharacterForward?.index, 4, "A one-character startup chunk must follow the playback cursor instead of retaining the previous highlight");
+
 const endMarker = "CANCIP_TTS_REAL_END_MARKER";
 const longMarkdown = `${"这是用于验证长文完整朗读的短句。\n".repeat(12000)}${endMarker}`;
 const fullText = api.markdownToTtsText(longMarkdown, Number.MAX_SAFE_INTEGER);
@@ -88,6 +110,17 @@ const anchored = api.sliceTtsTextFromAnchorToEnd(
 assert.ok(anchored.startsWith("游标之后"), "Anchor fallback must use the viewport cursor instead of a DOM-only fragment");
 assert.ok(anchored.endsWith(endMarker), "Anchor fallback must still reach the file ending");
 
+const virtualViewportCursor = api.ttsScrollProgressCursor(1000, 240, 800, 1040);
+assert.equal(virtualViewportCursor, 230, "A virtualized reading view must preserve its current viewport progress");
+const virtualViewportText = api.sliceTtsTextFromAnchorToEnd(
+  `${"前".repeat(230)}当前屏幕顶部。${"后".repeat(200)}${endMarker}`,
+  "",
+  Number.MAX_SAFE_INTEGER,
+  virtualViewportCursor
+);
+assert.ok(virtualViewportText.startsWith("当前屏幕顶部"), "An empty virtualized DOM anchor must not fall back to the file top");
+assert.ok(virtualViewportText.endsWith(endMarker), "Virtualized viewport fallback must still read through the file ending");
+
 const journalMarkdown = `## 主体开始
 ![外部前言](外部前言.md)
 
@@ -101,6 +134,24 @@ const journalText = api.markdownToTtsText(journalMarkdown, Number.MAX_SAFE_INTEG
 assert.ok(!journalText.includes("外部前言"), "External Markdown embeds must not replace the host note body");
 assert.ok(journalText.includes("待办 主体任务一"), "Unchecked task state must align with the rendered viewport text");
 assert.ok(journalText.includes("已完成 主体任务二"), "Checked task state must align with the rendered viewport text");
+
+const propertyText = api.markdownToTtsText(`---
+tags:
+  - 日记
+cancip_diary: true
+mood: 平静
+---
+## 正文`, Number.MAX_SAFE_INTEGER);
+assert.ok(propertyText.startsWith("tags："), "Visible note properties must be read before the body at the file top");
+assert.ok(propertyText.includes("日记"), "Frontmatter list values must remain readable");
+assert.ok(propertyText.includes("cancip diary：true"), "Frontmatter property keys must remain pronounceable");
+
+const embedReferences = api.markdownTtsEmbedReferences(`![日记前言](../日记/日记插入/日记前言.md)\n![[领域索引|领域]]`);
+assert.equal(
+  embedReferences.map((item) => item.target).join("\n"),
+  "../日记/日记插入/日记前言.md\n领域索引",
+  "Markdown and wikilink note embeds must be discoverable for recursive reading"
+);
 const journalAnchored = api.sliceTtsTextFromAnchorToEnd(
   journalText,
   "待办 主体任务一，后续内容不能漏读",
@@ -109,6 +160,17 @@ const journalAnchored = api.sliceTtsTextFromAnchorToEnd(
 );
 assert.ok(journalAnchored.startsWith("待办 主体任务一"), "A rendered task anchor must resolve to the same task in the source text");
 assert.ok(journalAnchored.endsWith(endMarker), "Journal reading must continue through the real host-note ending");
+
+const quotedDocument = api.cleanTtsText(
+  `正文开始。\n\n> [!quote] 引用标题\n> 这是必须朗读的引用正文。\n> 引用的第二行也不能丢失。\n\n正文结束。`,
+  Number.MAX_SAFE_INTEGER,
+  true
+);
+assert.ok(quotedDocument.includes("引用标题"), "Document TTS must keep the rendered quote title");
+assert.ok(quotedDocument.includes("这是必须朗读的引用正文"), "Document TTS must keep quote body text");
+assert.ok(quotedDocument.includes("引用的第二行也不能丢失"), "Document TTS must keep multi-line quote content");
+assert.ok(!quotedDocument.includes("!quote"), "Obsidian callout metadata must not be pronounced");
+
 const contaminatedAnchor = api.sliceTtsTextFromAnchorToEnd(
   journalText,
   "外部引用中无法匹配主体的文字",
@@ -137,9 +199,26 @@ assert.ok(englishParts.at(-1)?.endsWith("."), "English punctuation must remain o
 
 const chinese = "朗读开始需要快。后续每一句都应该连续自然，不要反复停顿。最后一句必须完整到达文件结尾。";
 const chineseParts = api.splitPrimeTtsMicroPlayText(chinese, 96);
-assert.equal(chineseParts[0], "朗", "Only the initial Chinese block should use the one-character fast start");
-assert.ok(chineseParts.length <= 6, "Later Chinese sentences must not restart the micro-chunk ladder");
+assert.equal(chineseParts[0], "朗", "Chinese startup should use one character for the earliest possible first sound");
+const secondSentenceIndex = chineseParts.findIndex((part) => part.startsWith("后"));
+assert.ok(secondSentenceIndex > 0, "The second sentence must remain in the playback plan");
+assert.equal(chineseParts[secondSentenceIndex], "后", "Every new Chinese sentence should restart with a one-character handoff");
+assert.ok(chineseParts.every((part) => part.length <= 32), "Chinese steady chunks must stay short enough for continuous prefetch");
+assert.ok(chineseParts.length <= 18, "Sentence handoff chunks must stay bounded");
 assert.ok(chineseParts.at(-1)?.endsWith("结尾。"), "Chinese final sentence must remain complete");
+
+const mixedJournalLine = "领域：💰经济 · 💻计算机 · 📖知识\n📅 2026-07-26，继续朗读引用和主体。";
+const mixedJournalPlan = api.makeTtsPartPlan(mixedJournalLine, "builtin-prime-tts", 96);
+assert.ok(mixedJournalPlan.playParts.length > 0, "Mixed journal text must produce playable chunks");
+assert.ok(
+  mixedJournalPlan.playParts.every((part) => !/[\ud800-\udbff]$/.test(part) && !/^[\udc00-\udfff]/.test(part)),
+  "PrimeTTS chunks must not split surrogate pairs"
+);
+assert.equal(
+  readableSequence(mixedJournalPlan.playParts.join("")),
+  readableSequence(mixedJournalLine),
+  "Emoji handling must not omit readable journal text"
+);
 
 const frontendBundle = await build({
   stdin: {
@@ -156,6 +235,11 @@ const frontendModule = await import(`data:text/javascript;base64,${Buffer.from(f
 const becauseIds = frontendModule.primeTtsTextToIds("because");
 assert.deepEqual(becauseIds.phoneIds.slice(0, 5), [47, 57, 60, 44, 78], "Common English words must use CMU phonemes");
 assert.ok(becauseIds.langIds.slice(0, 5).every((lang) => lang === 1), "English phonemes must keep the English language id");
+for (const part of mixedJournalPlan.playParts) {
+  const synthesisText = api.primeTtsSynthesisText(part);
+  assert.ok(!/[\ud800-\udfff]/.test(synthesisText), `Synthesis text retained an invalid surrogate: ${JSON.stringify(synthesisText)}`);
+  assert.ok(frontendModule.primeTtsTextToIds(synthesisText).phoneIds.length > 0, `Mixed journal chunk produced no phones: ${JSON.stringify(part)}`);
+}
 
 console.log(JSON.stringify({
   longTextChars: fullText.length,

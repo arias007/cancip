@@ -34,6 +34,7 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "ensureModelChoiceOptions",
   "findPendingReviewBaselineItem",
   "globalFinalAnswerTemplatePrompt",
+  "hydrateSubagentCards",
   "insertPersonalizedDiary",
   "installReviewTreeTouchScroll",
   "noteDrawControllerForStage",

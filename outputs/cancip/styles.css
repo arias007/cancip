@@ -1986,6 +1986,39 @@ details.obcc-process-step {
   overflow-wrap: anywhere;
 }
 
+.obcc-process-automation-badge {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(42%, 180px);
+  margin-right: 6px;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 35%, var(--background-modifier-border));
+  border-radius: 4px;
+  color: var(--text-accent);
+  font-size: 10px;
+  line-height: 1.25;
+  vertical-align: text-top;
+}
+
+.obcc-process-automation-badge > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-process-automation-badge-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  width: 11px;
+  height: 11px;
+  margin-right: 3px;
+}
+
+.obcc-process-automation-badge-icon svg {
+  width: 11px;
+  height: 11px;
+}
+
 .obcc-process-step-body {
   min-width: 0;
   margin: 4px 0 0 25px;
@@ -10976,21 +11009,18 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   -webkit-overflow-scrolling: touch !important;
 }
 
-/* 3.2.43: real child agents live under their owning Plan step. */
-.obcc-subagent-step-cards {
+/* Real child agents live inside the process step that launched them. */
+.obcc-process-subagent-cards {
   display: grid;
   gap: 4px;
   min-width: 0;
-  margin: -1px 0 5px;
-  padding: 0 2px 2px 86px;
+  margin: 6px 0;
+  padding: 6px 0;
+  border-block: 1px solid var(--background-modifier-border);
 }
 
-.obcc-subagent-step-cards.is-hidden {
-  display: none;
-}
-
-.obcc-subagent-step-cards.is-unassigned {
-  padding-left: 2px;
+.obcc-process-subagent-cards.is-loading {
+  min-height: 42px;
 }
 
 .obcc-subagent-track-label {
@@ -11009,7 +11039,7 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   overscroll-behavior-x: contain;
   scroll-snap-type: x proximity;
   scrollbar-width: thin;
-  touch-action: pan-x;
+  touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
 }
 
@@ -11162,6 +11192,15 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   overscroll-behavior-y: contain;
   touch-action: pan-y;
   -webkit-overflow-scrolling: touch;
+}
+
+.obcc-search-match {
+  padding: 0 1px;
+  border-radius: 2px;
+  background: rgba(250, 204, 21, 0.25);
+  background: color-mix(in srgb, var(--color-yellow) 34%, transparent);
+  color: inherit;
+  font-weight: 650;
 }
 
 .obcc-subagent-exchange {
