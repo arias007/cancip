@@ -43,7 +43,11 @@ const roots = [
   "splitPrimeTtsMicroPlayText",
   "primeTtsSynthesisText",
   "makeTtsPartPlan",
-  "findSequentialNormalizedNeedleMatch"
+  "findSequentialNormalizedNeedleMatch",
+  "normalizeTtsHighlightText",
+  "ttsSyntheticTaskPrefixRemainingUnits",
+  "ttsHighlightCandidateTexts",
+  "ttsRawDisplayCandidateForSpokenPart"
 ];
 const selected = new Set();
 const pending = [...roots];
@@ -89,6 +93,25 @@ const backwardRepeated = api.findSequentialNormalizedNeedleMatch(repeatedHaystac
 assert.equal(backwardRepeated?.index, 2, "Explicit backward seeking may resolve an earlier duplicate");
 const singleCharacterForward = api.findSequentialNormalizedNeedleMatch("今日日记今日计划", "今", true, 4, 4);
 assert.equal(singleCharacterForward?.index, 4, "A one-character startup chunk must follow the playback cursor instead of retaining the previous highlight");
+
+const taskParts = ["待", "办晚", "间二十二，周七", "#日记运动"];
+const taskMap = [0, 0, 0, 0];
+assert.equal(api.ttsSyntheticTaskPrefixRemainingUnits(taskParts, taskMap, 0, 0, "待办晚间22，周7 #日记运动"), 2);
+assert.equal(api.ttsSyntheticTaskPrefixRemainingUnits(taskParts, taskMap, 1, 0, "待办晚间22，周7 #日记运动"), 1);
+assert.equal(
+  api.ttsHighlightCandidateTexts("待", "待办晚间22，周7 #日记运动", 2).length,
+  0,
+  "A spoken-only task-state chunk must not jump to an unrelated visible occurrence"
+);
+assert.ok(
+  api.ttsHighlightCandidateTexts("办晚", "待办晚间22，周7 #日记运动", 1).includes("晚"),
+  "The first visible task character must become the highlight anchor after the spoken-only prefix"
+);
+assert.equal(
+  api.ttsRawDisplayCandidateForSpokenPart("间二十二，周七", "晚间22，周7 #日记运动"),
+  "间22，周7",
+  "Highlight matching must map spoken Chinese numbers back to the digits rendered by Obsidian"
+);
 
 const endMarker = "CANCIP_TTS_REAL_END_MARKER";
 const longMarkdown = `${"这是用于验证长文完整朗读的短句。\n".repeat(12000)}${endMarker}`;
@@ -188,6 +211,14 @@ assert.equal(
   "PrimeTTS chunking must not omit readable journal characters"
 );
 assert.ok(journalPlan.playParts.at(-1)?.includes(endMarker), "PrimeTTS journal plan must include the final marker");
+
+const headingBoundaryText = api.markdownToTtsText("## 干成为王\n\n## 领域\n经济", Number.MAX_SAFE_INTEGER);
+const headingBoundaryPlan = api.makeTtsPartPlan(headingBoundaryText, "builtin-prime-tts", 96);
+assert.ok(headingBoundaryText.includes("干成为王。领域。"), "Markdown headings must preserve a spoken structural pause");
+assert.ok(
+  headingBoundaryPlan.playParts.every((part) => !api.findSequentialNormalizedNeedleMatch(part, "王领域", false, 0, 0)),
+  "PrimeTTS chunks must not cross adjacent Markdown heading boundaries"
+);
 
 const english = "PrimeTTS should pronounce internationalization and characteristically complete words without awkward pauses.";
 const englishParts = api.splitPrimeTtsMicroPlayText(english, 96);

@@ -12125,17 +12125,20 @@ export default class CancipPlugin extends Plugin {
     }
     if (this.activeTtsHighlightKey === key) return;
     this.clearTtsSourceHighlight();
-    const highlightedRendered = this.highlightActiveRenderedTtsPart(keyText);
-    const highlightedEditor = highlightedRendered ? false : this.highlightActiveEditorTtsPart(keyText);
-    if (!highlightedRendered && !highlightedEditor && displayText && normalizeTtsHighlightText(playText) !== normalizeTtsHighlightText(displayText)) {
-      const highlightedDisplayRendered = this.highlightActiveRenderedTtsPart(displayText);
-      const highlightedDisplayEditor = highlightedDisplayRendered ? false : this.highlightActiveEditorTtsPart(displayText);
-      if (highlightedDisplayRendered || highlightedDisplayEditor) {
-        this.activeTtsHighlightKey = key;
-        return;
-      }
+    const syntheticPrefixUnits = ttsSyntheticTaskPrefixRemainingUnits(
+      this.activeTtsParts,
+      this.activeTtsDisplayIndexByPart,
+      this.activeTtsHighlightPartIndex,
+      displayIndex,
+      displayText
+    );
+    for (const candidate of ttsHighlightCandidateTexts(playText, displayText, syntheticPrefixUnits)) {
+      const highlightedRendered = this.highlightActiveRenderedTtsPart(candidate);
+      const highlightedEditor = highlightedRendered ? false : this.highlightActiveEditorTtsPart(candidate);
+      if (!highlightedRendered && !highlightedEditor) continue;
+      this.activeTtsHighlightKey = key;
+      return;
     }
-    if (highlightedRendered || highlightedEditor) this.activeTtsHighlightKey = key;
   }
 
   private highlightActiveEditorTtsPart(current: string): boolean {
@@ -73136,6 +73139,7 @@ function markdownToTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): str
       .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_full, path: string, alias: string | undefined) => alias || path)
       .replace(/^\s*>\s*\[![^\]]+]\s*[+-]?\s*/gm, "")
       .replace(/^\s*[-*+]\s+\[([ xX])]\s+/gm, (_full, state: string) => state.toLowerCase() === "x" ? "已完成 " : "待办 ")
+      .replace(/^\s{0,3}#{1,6}\s+(.+?)\s*$/gm, (_full, heading: string) => /[。！？!?；;]$/.test(heading.trim()) ? heading.trim() : `${heading.trim()}。`)
       .replace(/\*\*|__|~~/g, "")
       .replace(/^[\s>*#+=[\]_|-]+/gm, "")
       .replace(/\|/g, " ")
@@ -73567,6 +73571,110 @@ function normalizeTtsHighlightText(input: string): string {
     .replace(/\s+/g, "")
     .replace(/[，。！？；：、,.!?;:"'“”‘’（）()[\]【】{}<>《》—_~`|/\\-]/g, "")
     .trim();
+}
+
+function ttsSyntheticTaskPrefixRemainingUnits(
+  playParts: string[],
+  displayIndexByPart: number[],
+  partIndex: number,
+  displayIndex: number,
+  displayText: string
+): number {
+  const match = displayText.match(/^(待办|已完成)\s*/);
+  if (!match || partIndex < 0) return 0;
+  let firstPart = partIndex;
+  while (firstPart > 0 && displayIndexByPart[firstPart - 1] === displayIndex) firstPart -= 1;
+  let consumed = 0;
+  for (let index = firstPart; index < partIndex; index += 1) {
+    consumed += normalizeTtsHighlightText(playParts[index] ?? "").length;
+  }
+  return Math.max(0, normalizeTtsHighlightText(match[1]).length - consumed);
+}
+
+function ttsHighlightCandidateTexts(playText: string, displayText: string, syntheticPrefixUnits = 0): string[] {
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  const push = (value: string): void => {
+    const text = value.trim();
+    const key = normalizeTtsHighlightText(text);
+    if (!text || !key || seen.has(key)) return;
+    seen.add(key);
+    candidates.push(text);
+  };
+  const taskState = displayText.match(/^(?:待办|已完成)\s*/)?.[0] ?? "";
+  if (taskState) {
+    const playCharacters = Array.from(playText);
+    const visiblePlayText = playCharacters.slice(Math.min(playCharacters.length, syntheticPrefixUnits)).join("");
+    // The synthetic task state is spoken, but only the checkbox and task body exist in reading view.
+    if (!visiblePlayText && syntheticPrefixUnits > 0) return candidates;
+    push(visiblePlayText || playText);
+    const visibleDisplayText = displayText.slice(taskState.length);
+    push(ttsRawDisplayCandidateForSpokenPart(visiblePlayText || playText, visibleDisplayText));
+    push(visibleDisplayText);
+    return candidates;
+  }
+  push(playText);
+  push(ttsRawDisplayCandidateForSpokenPart(playText, displayText));
+  push(displayText);
+  return candidates;
+}
+
+function ttsRawDisplayCandidateForSpokenPart(playText: string, displayText: string): string {
+  if (!/\d/.test(displayText)) return "";
+  const playNeedle = normalizeTtsHighlightText(playText);
+  const raw = normalizedTextWithSourceOffsets(displayText);
+  if (!playNeedle || !raw.text || raw.text.includes(playNeedle)) return "";
+  const spokenDisplay = normalizeTtsHighlightText(normalizeChineseNumbersForPrimeTts(displayText, true));
+  const spokenStart = spokenDisplay.indexOf(playNeedle);
+  if (spokenStart < 0) return "";
+  const spokenToRaw = alignTtsNormalizedTextOffsets(raw.text, spokenDisplay);
+  const rawStartIndex = spokenToRaw[spokenStart];
+  const rawEndIndex = spokenToRaw[Math.min(spokenToRaw.length - 1, spokenStart + playNeedle.length - 1)];
+  if (!Number.isFinite(rawStartIndex) || !Number.isFinite(rawEndIndex)) return "";
+  const sourceStart = raw.offsets[Math.max(0, rawStartIndex)] ?? -1;
+  const sourceEndBase = raw.offsets[Math.max(0, rawEndIndex)] ?? -1;
+  if (sourceStart < 0 || sourceEndBase < sourceStart) return "";
+  return displayText.slice(sourceStart, sourceEndBase + 1).trim();
+}
+
+function alignTtsNormalizedTextOffsets(raw: string, spoken: string): number[] {
+  if (!spoken) return [];
+  if (!raw) return new Array(spoken.length).fill(0);
+  const rows = raw.length + 1;
+  const columns = spoken.length + 1;
+  const matrix = Array.from({ length: rows }, () => new Uint16Array(columns));
+  for (let row = 0; row < rows; row += 1) matrix[row][0] = row;
+  for (let column = 0; column < columns; column += 1) matrix[0][column] = column;
+  for (let row = 1; row < rows; row += 1) {
+    for (let column = 1; column < columns; column += 1) {
+      const substitution = matrix[row - 1][column - 1] + (raw[row - 1] === spoken[column - 1] ? 0 : 1);
+      matrix[row][column] = Math.min(substitution, matrix[row - 1][column] + 1, matrix[row][column - 1] + 1);
+    }
+  }
+  const offsets = new Array<number>(spoken.length).fill(0);
+  let row = raw.length;
+  let column = spoken.length;
+  while (column > 0) {
+    const substitutionCost = row > 0 ? (raw[row - 1] === spoken[column - 1] ? 0 : 1) : Number.POSITIVE_INFINITY;
+    if (row > 0 && matrix[row][column] === matrix[row - 1][column - 1] + substitutionCost) {
+      offsets[column - 1] = row - 1;
+      row -= 1;
+      column -= 1;
+      continue;
+    }
+    if (matrix[row][column] === matrix[row][column - 1] + 1) {
+      offsets[column - 1] = Math.max(0, row - 1);
+      column -= 1;
+      continue;
+    }
+    row = Math.max(0, row - 1);
+  }
+  let previous = 0;
+  for (let index = 0; index < offsets.length; index += 1) {
+    previous = Math.max(previous, Math.min(raw.length - 1, offsets[index] ?? previous));
+    offsets[index] = previous;
+  }
+  return offsets;
 }
 
 function findBestNormalizedNeedleMatch(haystack: string, needle: string, preferShortFallback = false, cursor = 0): { needle: string; index: number } | null {
