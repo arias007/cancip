@@ -83,6 +83,59 @@ type ChatMessage = {
   processAuditSections?: ProcessAuditSection[];
 };
 
+type ContextCompactionState = {
+  schemaVersion: 1;
+  throughMessageId: string;
+  throughCreatedAt: number;
+  sourceHash: string;
+  summary: string;
+  updatedAt: string;
+  sourceChars: number;
+  compactedChars: number;
+  estimatedSourceTokens: number;
+  estimatedCompactedTokens: number;
+};
+
+type ScoreEntityKind = "feature" | "tool" | "button" | "autocomplete" | "skill";
+
+type ScoreEntityState = {
+  key: string;
+  kind: ScoreEntityKind;
+  label: string;
+  selector?: string;
+  scope?: UiButtonRule["scope"];
+  targetKey?: string;
+  layoutReviewAt?: string;
+  score: number;
+  uses: number;
+  accepts: number;
+  rejects: number;
+  corrections: number;
+  activeMs: number;
+  lastUsedAt: string;
+  lastDecayAt: string;
+  updatedAt: string;
+};
+
+type ScoreState = {
+  schemaVersion: 1;
+  updatedAt: string;
+  totalScore: number;
+  entities: Record<string, ScoreEntityState>;
+};
+
+type ScoreEvent = {
+  key: string;
+  kind: ScoreEntityKind;
+  label?: string;
+  selector?: string;
+  scope?: UiButtonRule["scope"];
+  targetKey?: string;
+  outcome: "use" | "accept" | "reject" | "correct" | "active";
+  activeMs?: number;
+  weight?: number;
+};
+
 type ComposerMode = "ask" | "search" | "plan" | "edit";
 type ApiMode = "auto" | "compatible" | "responses";
 type TtsProvider = "auto" | "builtin-prime-tts" | "android-system" | "web-speech" | "custom-url";
@@ -1215,6 +1268,8 @@ type ManualTodo = {
   text: string;
   done: boolean;
   createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
   sendToModel?: boolean;
   planOnly?: boolean;
   source?: "manual" | "programmatic";
@@ -1646,6 +1701,12 @@ type SessionHistoryEntry = {
   subagentRole?: string;
   subagentGoal?: string;
   subagentProgress?: string;
+  subagentPlanStepId?: string;
+  subagentAcceptance?: string;
+  subagentDeadlineAt?: string;
+  subagentAttempt?: number;
+  subagentStartedAt?: string;
+  subagentCompletedAt?: string;
   path: string;
   eventOnly?: boolean;
 };
@@ -1661,7 +1722,25 @@ type SessionTimeline = {
   status?: SessionHistoryEntry["status"];
 };
 
-type SessionHistoryEntryPatch = Partial<Pick<SessionHistoryEntry, "title" | "unread" | "completedNotice" | "pinned" | "archived" | "coldArchived" | "archivedAt" | "lastOpenedAt" | "manualTitle" | "manualOrder" | "updatedAt" | "metadataUpdatedAt" | "startedAt" | "completedAt" | "stoppedAt" | "failedAt" | "status" | "parentSessionId" | "parentSessionTitle" | "subagentIds" | "subagentRole" | "subagentGoal" | "subagentProgress">>;
+type SessionHistoryEntryPatch = Partial<Pick<SessionHistoryEntry, "title" | "unread" | "completedNotice" | "pinned" | "archived" | "coldArchived" | "archivedAt" | "lastOpenedAt" | "manualTitle" | "manualOrder" | "updatedAt" | "metadataUpdatedAt" | "startedAt" | "completedAt" | "stoppedAt" | "failedAt" | "status" | "parentSessionId" | "parentSessionTitle" | "subagentIds" | "subagentRole" | "subagentGoal" | "subagentProgress" | "subagentPlanStepId" | "subagentAcceptance" | "subagentDeadlineAt" | "subagentAttempt" | "subagentStartedAt" | "subagentCompletedAt">>;
+
+type SubagentStartSpec = {
+  goal: string;
+  role: string;
+  title: string;
+  parentSessionId: string;
+  planStepId: string;
+  acceptance: string;
+  timeoutMinutes: number;
+  attempt: number;
+};
+
+type StartedSubagent = {
+  sessionId: string;
+  path: string;
+  title: string;
+  completion: Promise<void>;
+};
 
 type CancipArchiveKind = "session" | "session-events" | "experience" | "memory";
 
@@ -1793,7 +1872,7 @@ type ComposerMenuItem = {
   action: () => void | Promise<void>;
 };
 
-type ComposerCapability = "html" | "plan";
+type ComposerCapability = "html" | "plan" | "multi-agent";
 
 type ObsidianCommandDefinition = {
   id?: string;
@@ -2516,6 +2595,24 @@ type Settings = {
   maxMentionFolderFiles: number;
   maxFileContextChars: number;
   maxFolderFileContextChars: number;
+  contextCompactionEnabled: boolean;
+  contextCompactionTriggerTokens: number;
+  contextCompactionTargetTokens: number;
+  contextCompactionKeepRecentMessages: number;
+  contextCompactionUseModel: boolean;
+  contextCompactionShowStats: boolean;
+  multiAgentEnabled: boolean;
+  multiAgentAutoDelegate: boolean;
+  multiAgentMinAgents: number;
+  multiAgentMaxAgents: number;
+  multiAgentDefaultAgents: number;
+  multiAgentCrossReview: boolean;
+  multiAgentTimeoutMinutes: number;
+  scoreEnabled: boolean;
+  scoreAccuracyWeight: number;
+  scoreUsageWeight: number;
+  scoreDecayDays: number;
+  scoreLayoutSuggestions: boolean;
   skillsEnabled: boolean;
   skillRoots: string[];
   skillAutoSelect: boolean;
@@ -2646,6 +2743,20 @@ class CancipButtonEditModal extends Modal {
     this.verifyEl = form.createDiv({ cls: "obcc-button-edit-verify" });
     this.refreshVerifyStatus();
     this.verifyTimer = window.setInterval(() => this.refreshVerifyStatus(), 700);
+    const buttonScore = this.plugin.scoreForUiButtonDescriptor(this.descriptor);
+    const scorePanel = form.createDiv({ cls: "obcc-button-score" });
+    scorePanel.createDiv({
+      cls: "obcc-button-score-value",
+      text: this.plugin.t("scoreButtonLabel", {
+        score: buttonScore.score.toFixed(2),
+        uses: String(buttonScore.uses),
+        accepts: String(buttonScore.accepts)
+      })
+    });
+    scorePanel.createDiv({
+      cls: "obcc-button-score-detail",
+      text: `${this.plugin.t("reviewGateCancel")} ${buttonScore.rejects} · ${this.plugin.t("reviewGateCorrection")} ${buttonScore.corrections} · ${formatElapsed(buttonScore.activeMs)}`
+    });
 
     new Setting(form)
       .setName(this.plugin.t("buttonEditName"))
@@ -3393,6 +3504,24 @@ const DEFAULT_SETTINGS: Settings = {
   maxMentionFolderFiles: 6,
   maxFileContextChars: 6000,
   maxFolderFileContextChars: 1800,
+  contextCompactionEnabled: true,
+  contextCompactionTriggerTokens: 12000,
+  contextCompactionTargetTokens: 5000,
+  contextCompactionKeepRecentMessages: 8,
+  contextCompactionUseModel: true,
+  contextCompactionShowStats: true,
+  multiAgentEnabled: true,
+  multiAgentAutoDelegate: true,
+  multiAgentMinAgents: 2,
+  multiAgentMaxAgents: 10,
+  multiAgentDefaultAgents: 3,
+  multiAgentCrossReview: true,
+  multiAgentTimeoutMinutes: 10,
+  scoreEnabled: true,
+  scoreAccuracyWeight: 60,
+  scoreUsageWeight: 40,
+  scoreDecayDays: 14,
+  scoreLayoutSuggestions: true,
   skillsEnabled: true,
   skillRoots: [...DEFAULT_SKILL_ROOTS],
   skillAutoSelect: true,
@@ -3476,6 +3605,11 @@ function memoryPathForFolder(folder: string, fileName: string): string {
   return `${root}/${fileName}`;
 }
 let PERSONALIZATION_USAGE_PATH = `${CANCIP_CONFIG_DIR}/personalization-usage.json`;
+let CANCIP_SCORE_STATE_PATH = `${CANCIP_CONFIG_DIR}/score-state.json`;
+const CANCIP_SCORE_SCHEMA_VERSION = 1;
+const CANCIP_SCORE_WRITE_DEBOUNCE_MS = 20000;
+const CANCIP_SCORE_MIN = 0.01;
+const CANCIP_SCORE_MAX = 200;
 const PERSONALIZATION_PRIORITY_REVIEW_PATH = "AI/Cancip/个性化建议/按钮排序.md";
 const PERSONALIZATION_PRIORITY_REVIEW_MARKER = "cancip-personalization-priority";
 const PERSONALIZATION_SCHEMA_VERSION = 3;
@@ -3660,6 +3794,7 @@ function configureCancipStorageRoot(storageDir: string): void {
   SESSION_EVENTS_PATH = `${SESSION_HISTORY_DIR}/events.jsonl`;
   PERSONALIZATION_CACHE_PATH = `${CANCIP_CONFIG_DIR}/personalization.json`;
   PERSONALIZATION_USAGE_PATH = `${CANCIP_CONFIG_DIR}/personalization-usage.json`;
+  CANCIP_SCORE_STATE_PATH = `${CANCIP_CONFIG_DIR}/score-state.json`;
   CANCIP_ARCHIVE_DIR = `${CANCIP_CONFIG_DIR}/archive`;
   CANCIP_ARCHIVE_SESSIONS_DIR = `${CANCIP_ARCHIVE_DIR}/sessions`;
   CANCIP_ARCHIVE_EVENTS_DIR = `${CANCIP_ARCHIVE_DIR}/session-events`;
@@ -3815,6 +3950,17 @@ const EN = {
   subagentGoal: "Goal",
   subagentRole: "Role",
   subagentProgress: "Progress",
+  subagentAcceptance: "Acceptance",
+  subagentDeadline: "Deadline",
+  subagentRestart: "Restart subagent",
+  subagentDelete: "Delete and let main agent take over",
+  subagentConsensus: "Build consensus",
+  subagentOpen: "Open subagent",
+  rawSent: "Sent",
+  rawReceived: "Received",
+  subagentRawExchange: "Original exchange",
+  subagentTakeover: "Main agent takeover",
+  multiAgentComposer: "Multi-agent",
   subagentNone: "No subagents.",
   subagentHistoryHint: "It is visible under the parent session in history and can be opened/stopped from there.",
   sessionIdLabel: "Session",
@@ -4457,6 +4603,7 @@ const EN = {
   settingsGroupTts: "Text to speech",
   settingsGroupOcr: "Local OCR",
   settingsGroupExport: "Export",
+  settingsGroupAdvanced: "Advanced",
   settingsGroupSupport: "Payment QR codes",
   settingsGroupModelAdvanced: "Model settings",
   settingsGroupReviewSystem: "Review system",
@@ -4544,6 +4691,37 @@ const EN = {
   settingsMaxMentionFolderFiles: "Folder mention file count",
   settingsMaxFileContextChars: "File context characters",
   settingsMaxFolderFileContextChars: "Folder file context characters",
+  settingsContextCompaction: "Automatic context compaction",
+  settingsContextCompactionDesc: "Keeps the original conversation intact and incrementally compacts only the older history sent to the model.",
+  settingsContextCompactionEnabled: "Enable automatic compaction",
+  settingsContextCompactionTriggerTokens: "Trigger tokens",
+  settingsContextCompactionTargetTokens: "Target tokens",
+  settingsContextCompactionKeepRecent: "Recent messages kept verbatim",
+  settingsContextCompactionUseModel: "Use model structured summary",
+  settingsContextCompactionShowStats: "Show compaction statistics",
+  settingsMultiAgent: "Multi-agent orchestration",
+  settingsMultiAgentDesc: "Runs real child sessions in parallel for suitable complex steps, then cross-reviews their evidence.",
+  settingsMultiAgentDisabled: "Enable multi-agent orchestration in Advanced settings first.",
+  settingsMultiAgentEnabled: "Enable multi-agent",
+  settingsMultiAgentAutoDelegate: "Auto-delegate suitable complex steps",
+  settingsMultiAgentMinAgents: "Minimum agents",
+  settingsMultiAgentMaxAgents: "Maximum agents",
+  settingsMultiAgentDefaultAgents: "Default agents",
+  settingsMultiAgentCrossReview: "Cross-review and consensus",
+  settingsMultiAgentTimeout: "Default timeout (minutes)",
+  settingsScore: "Cancip Score",
+  settingsScoreDesc: "Accuracy-first, passive feedback score for Cancip, features, tools, skills and buttons.",
+  settingsScoreEnabled: "Enable Score",
+  settingsScoreAccuracyWeight: "Accuracy weight (%)",
+  settingsScoreUsageWeight: "Usage weight (%)",
+  settingsScoreDecayDays: "Unused decay interval (days)",
+  settingsScoreLayoutSuggestions: "Create reviewed button layout suggestions",
+  scoreTotal: "Total score",
+  scoreStrategyGrowth: "Growth mode: actively absorb useful information",
+  scoreStrategyConservative: "Conservative mode: prefer verified sources and archive rejected or stale information",
+  scoreFeatureCount: "Scored entities",
+  scoreButtonLabel: "Score {score} · used {uses} · accepted {accepts}",
+  contextCompactionStats: "Compacted {source} -> {target} tokens",
   settingsSkillsEnabled: "Enable Skills",
   settingsSkillsEnabledDesc: "Discovers agent-style SKILL.md / *.skill.md files and exposes them to @ mentions and cancip.skills commands.",
   settingsSkillRoots: "Skill roots",
@@ -4834,6 +5012,17 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     subagentGoal: "目标",
     subagentRole: "角色",
     subagentProgress: "进度",
+    subagentAcceptance: "验收标准",
+    subagentDeadline: "时限",
+    subagentRestart: "重启子 Agent",
+    subagentDelete: "删除并由主 Agent 接管",
+    subagentConsensus: "生成共识",
+    subagentOpen: "打开子 Agent",
+    rawSent: "发送",
+    rawReceived: "接收",
+    subagentRawExchange: "原始收发",
+    subagentTakeover: "主 Agent 接管",
+    multiAgentComposer: "多 Agent",
     subagentNone: "没有子 agent。",
     subagentHistoryHint: "它会在会话历史的父会话下默认折叠显示，可从那里打开或停止。",
     sessionIdLabel: "会话",
@@ -5491,6 +5680,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsGroupTts: "朗读 / TTS",
     settingsGroupOcr: "本地 OCR",
     settingsGroupExport: "导出",
+    settingsGroupAdvanced: "高级",
     settingsGroupSupport: "收款码设置",
     settingsGroupModelAdvanced: "模型设置",
     settingsGroupReviewSystem: "审核系统",
@@ -5574,6 +5764,37 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsMaxMentionFolderFiles: "文件夹提及读取文件数",
     settingsMaxFileContextChars: "单文件上下文字数",
     settingsMaxFolderFileContextChars: "文件夹内单文件上下文字数",
+    settingsContextCompaction: "自动压缩上下文",
+    settingsContextCompactionDesc: "原始会话完整保留，只对发给模型的旧历史做增量结构化压缩。",
+    settingsContextCompactionEnabled: "启用自动压缩",
+    settingsContextCompactionTriggerTokens: "触发 Token",
+    settingsContextCompactionTargetTokens: "压缩目标 Token",
+    settingsContextCompactionKeepRecent: "近期原文消息数",
+    settingsContextCompactionUseModel: "使用模型生成结构化摘要",
+    settingsContextCompactionShowStats: "显示压缩统计",
+    settingsMultiAgent: "多 Agent 调度",
+    settingsMultiAgentDesc: "适合并行的复杂步骤会启动真实子会话并交叉复核证据。",
+    settingsMultiAgentDisabled: "请先在高级设置中开启多 Agent 调度。",
+    settingsMultiAgentEnabled: "启用多 Agent",
+    settingsMultiAgentAutoDelegate: "自动分派适合的复杂步骤",
+    settingsMultiAgentMinAgents: "最少 Agent 数",
+    settingsMultiAgentMaxAgents: "最多 Agent 数",
+    settingsMultiAgentDefaultAgents: "默认 Agent 数",
+    settingsMultiAgentCrossReview: "交叉挑错并生成共识",
+    settingsMultiAgentTimeout: "默认时限（分钟）",
+    settingsScore: "Cancip Score",
+    settingsScoreDesc: "准确度优先、无感反馈的 Cancip、功能、工具、Skill 和按钮评分。",
+    settingsScoreEnabled: "启用 Score",
+    settingsScoreAccuracyWeight: "准确度权重（%）",
+    settingsScoreUsageWeight: "使用权重（%）",
+    settingsScoreDecayDays: "未使用衰减周期（天）",
+    settingsScoreLayoutSuggestions: "生成需审核的按钮布局建议",
+    scoreTotal: "总分",
+    scoreStrategyGrowth: "增法模式：积极吸收有用信息",
+    scoreStrategyConservative: "减法模式：优先可信来源，归档被拒绝或过期信息",
+    scoreFeatureCount: "评分对象",
+    scoreButtonLabel: "评分 {score} · 使用 {uses} · 接受 {accepts}",
+    contextCompactionStats: "上下文已压缩 {source} -> {target} Token",
     settingsSkillsEnabled: "启用 Skills",
     settingsSkillsEnabledDesc: "发现 agent-style SKILL.md / *.skill.md，并暴露给 @ 提及和 cancip.skills 命令。",
     settingsSkillRoots: "Skill 根目录",
@@ -8488,6 +8709,11 @@ export default class CancipPlugin extends Plugin {
   private personalizationUsageWriteTimer: number | null = null;
   private personalizationUsageDirty = false;
   private personalizationUsagePersistedSignature = "";
+  private scoreState: ScoreState = emptyScoreState();
+  private scoreStateLoaded = false;
+  private scoreWriteTimer: number | null = null;
+  private scoreDirty = false;
+  private scoreWriteQueue: Promise<void> = Promise.resolve();
   private personalizationGreetingSelections = new Map<string, { timeKey: string; index: number }>();
   private personalizationLastGreetingIndex = -1;
   private personalizationLastGreetingTimeKey = "";
@@ -8743,6 +8969,7 @@ export default class CancipPlugin extends Plugin {
       const reason = error instanceof Error ? error.message : String(error);
       this.devErrors.push(`settings load failed: ${reason}`);
     }
+    await this.loadScoreState();
     this.syncAutocompleteProfileState(true);
     this.syncEditorAutocompleteMemorySettingsState(true);
     await this.ensureCancipNavigationFiles();
@@ -10642,6 +10869,11 @@ export default class CancipPlugin extends Plugin {
       this.personalizationUsageWriteTimer = null;
     }
     if (this.personalizationUsageDirty) void this.writePersonalizationUsage();
+    if (this.scoreWriteTimer !== null) {
+      window.clearTimeout(this.scoreWriteTimer);
+      this.scoreWriteTimer = null;
+    }
+    if (this.scoreDirty) void this.flushScoreState();
     if (this.vaultOverviewRefreshTimer !== null) {
       window.clearTimeout(this.vaultOverviewRefreshTimer);
       this.vaultOverviewRefreshTimer = null;
@@ -14427,6 +14659,195 @@ export default class CancipPlugin extends Plugin {
       new Notice(this.t("configWriteFailed", { reason }));
       throw error;
     }
+  }
+
+  private async loadScoreState(): Promise<void> {
+    if (this.scoreStateLoaded) return;
+    this.scoreStateLoaded = true;
+    try {
+      const adapter = this.app.vault.adapter;
+      if (await adapter.exists(CANCIP_SCORE_STATE_PATH)) {
+        this.scoreState = normalizeScoreState(JSON.parse(await adapter.read(CANCIP_SCORE_STATE_PATH)) as unknown);
+      }
+      if (this.applyScoreDecay()) this.scheduleScoreWrite();
+    } catch (error) {
+      console.warn("Cancip score state load failed", error);
+      this.scoreState = emptyScoreState();
+    }
+  }
+
+  recordScoreEvent(event: ScoreEvent): void {
+    if (!this.settings.scoreEnabled || !event.key.trim()) return;
+    const now = new Date().toISOString();
+    const key = normalizeScoreKey(event.key);
+    const current = this.scoreState.entities[key] ?? {
+      key,
+      kind: event.kind,
+      label: trimContext(event.label?.trim() || key.replace(/^[^:]+:/, ""), 100),
+      selector: event.selector,
+      scope: event.scope,
+      targetKey: event.targetKey,
+      score: 100,
+      uses: 0,
+      accepts: 0,
+      rejects: 0,
+      corrections: 0,
+      activeMs: 0,
+      lastUsedAt: now,
+      lastDecayAt: now,
+      updatedAt: now
+    };
+    const weight = Math.max(0.05, Math.min(5, event.weight ?? 1));
+    let baseDelta = 0;
+    if (event.outcome === "accept") {
+      current.accepts += 1;
+      current.uses += 1;
+      baseDelta = 7 * weight;
+    } else if (event.outcome === "reject") {
+      current.rejects += 1;
+      baseDelta = -9 * weight;
+    } else if (event.outcome === "correct") {
+      current.corrections += 1;
+      current.uses += 1;
+      baseDelta = -4.5 * weight;
+    } else if (event.outcome === "active") {
+      const activeMs = Math.max(0, Math.min(24 * 60 * 60 * 1000, event.activeMs ?? 0));
+      current.activeMs += activeMs;
+      baseDelta = Math.min(0.8, activeMs / 900000) * weight;
+    } else {
+      current.uses += 1;
+      baseDelta = 0.35 * weight;
+    }
+    current.score = scoreAfterSaturatedDelta(current.score, baseDelta);
+    current.kind = event.kind;
+    if (event.label?.trim()) current.label = trimContext(event.label.trim(), 100);
+    if (event.selector?.trim()) current.selector = trimContext(event.selector.trim(), 600);
+    if (event.scope) current.scope = event.scope;
+    if (event.targetKey?.trim()) current.targetKey = trimContext(event.targetKey.trim(), 400);
+    current.lastUsedAt = now;
+    current.updatedAt = now;
+    this.scoreState.entities[key] = current;
+    this.scoreState.totalScore = calculateTotalScore(this.scoreState, this.settings);
+    this.scoreState.updatedAt = now;
+    this.scoreDirty = true;
+    this.scheduleScoreWrite();
+    this.settingTab?.refreshSettings();
+  }
+
+  scoreFor(key: string, kind: ScoreEntityKind = "feature", label = ""): ScoreEntityState {
+    const normalized = normalizeScoreKey(key);
+    return this.scoreState.entities[normalized] ?? {
+      key: normalized,
+      kind,
+      label: label || normalized.replace(/^[^:]+:/, ""),
+      score: 100,
+      uses: 0,
+      accepts: 0,
+      rejects: 0,
+      corrections: 0,
+      activeMs: 0,
+      lastUsedAt: "",
+      lastDecayAt: "",
+      updatedAt: ""
+    };
+  }
+
+  scoreSummary(): { total: number; entities: number; strategy: "growth" | "conservative"; top: ScoreEntityState[]; low: ScoreEntityState[] } {
+    const rows = Object.values(this.scoreState.entities).sort((a, b) => b.score - a.score || b.uses - a.uses);
+    return {
+      total: roundScore(this.scoreState.totalScore),
+      entities: rows.length,
+      strategy: this.scoreState.totalScore >= 100 ? "growth" : "conservative",
+      top: rows.slice(0, 5),
+      low: [...rows].sort((a, b) => a.score - b.score || b.uses - a.uses).slice(0, 5)
+    };
+  }
+
+  scorePolicyPrompt(): string {
+    if (!this.settings.scoreEnabled) return "";
+    const summary = this.scoreSummary();
+    const describe = (rows: ScoreEntityState[]): string => rows
+      .filter((row) => row.uses + row.accepts + row.rejects + row.corrections > 0)
+      .slice(0, 3)
+      .map((row) => `${trimContext(row.label || row.key, 44)} ${row.score.toFixed(2)}`)
+      .join(", ");
+    const top = describe(summary.top);
+    const low = describe(summary.low);
+    if (isChineseLanguage(this.language())) {
+      return [
+        `Cancip Score ${summary.total.toFixed(2)}（${summary.strategy === "growth" ? "增法" : "减法"}模式）。`,
+        summary.strategy === "growth"
+          ? "优先复用高分能力，并可主动发现有来源、可验证的新信息/Skill/路线；不得把来历不明内容直接晋升为可信记忆。"
+          : "优先可信、高分、已验证能力；被拒绝、过期或长期不用的信息/Skill 只生成归档或降权候选，不静默删除。",
+        "实体分只用于排序和复核，不能覆盖用户明确要求；按钮隐藏、移动和持久化信息改动必须走访问模式或审核面板。",
+        top ? `当前高分：${top}。` : "",
+        low ? `当前低分：${low}。` : ""
+      ].filter(Boolean).join(" ");
+    }
+    return [
+      `Cancip Score ${summary.total.toFixed(2)} (${summary.strategy} mode).`,
+      summary.strategy === "growth"
+        ? "Prefer proven high-score capabilities and proactively discover useful, attributable, verifiable information, Skills, and routes; never promote unknown material directly into trusted memory."
+        : "Prefer trusted, high-score, verified capabilities; create reviewable archive or down-rank candidates for rejected, stale, or unused information and Skills, never silently delete them.",
+      "Entity scores rank and trigger review only; they never override explicit user intent. Button hiding/reordering and persistent knowledge changes must use access mode or Review Gate.",
+      top ? `High: ${top}.` : "",
+      low ? `Low: ${low}.` : ""
+    ].filter(Boolean).join(" ");
+  }
+
+  private applyScoreDecay(): boolean {
+    const intervalMs = Math.max(1, this.settings.scoreDecayDays) * 86400000;
+    const now = Date.now();
+    let changed = false;
+    for (const entity of Object.values(this.scoreState.entities)) {
+      const anchor = Date.parse(entity.lastDecayAt || entity.lastUsedAt || entity.updatedAt);
+      if (!Number.isFinite(anchor) || now - anchor < intervalMs) continue;
+      const periods = Math.min(24, Math.floor((now - anchor) / intervalMs));
+      if (periods <= 0) continue;
+      entity.score = scoreAfterSaturatedDelta(entity.score, -Math.min(4, periods * 0.65));
+      entity.lastDecayAt = new Date(anchor + periods * intervalMs).toISOString();
+      entity.updatedAt = new Date().toISOString();
+      changed = true;
+      if (entity.kind === "button" && entity.selector && this.shouldProposeScoreButtonLayout(entity)) {
+        const scope = entity.scope ?? "global";
+        const rule = this.settings.uiButtonRules.find((item) => item.selector === entity.selector && item.scope === scope) ?? null;
+        void this.proposeScoreButtonLayoutReview({
+          selector: entity.selector,
+          label: entity.label,
+          scope,
+          rule,
+          targetKey: entity.targetKey
+        }, entity);
+      }
+    }
+    if (changed) {
+      this.scoreState.totalScore = calculateTotalScore(this.scoreState, this.settings);
+      this.scoreState.updatedAt = new Date().toISOString();
+      this.scoreDirty = true;
+    }
+    return changed;
+  }
+
+  private scheduleScoreWrite(): void {
+    if (this.scoreWriteTimer !== null) return;
+    this.scoreWriteTimer = window.setTimeout(() => {
+      this.scoreWriteTimer = null;
+      void this.flushScoreState();
+    }, CANCIP_SCORE_WRITE_DEBOUNCE_MS);
+  }
+
+  private async flushScoreState(): Promise<void> {
+    if (!this.scoreDirty) return;
+    this.scoreDirty = false;
+    const payload = `${JSON.stringify(normalizeScoreState(this.scoreState), null, 2)}\n`;
+    this.scoreWriteQueue = this.scoreWriteQueue.then(async () => {
+      await ensureFolder(this.app.vault.adapter, CANCIP_CONFIG_DIR);
+      await this.app.vault.adapter.write(CANCIP_SCORE_STATE_PATH, payload);
+    }).catch((error) => {
+      this.scoreDirty = true;
+      console.warn("Cancip score state write failed", error);
+    });
+    await this.scoreWriteQueue;
   }
 
   private async ensureVisibleDataFolders(): Promise<void> {
@@ -20032,6 +20453,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (!(target instanceof Element)) return;
     const element = target.closest<HTMLElement>("button,[role='button'],.clickable-icon,.menu-item");
     if (!element || element.matches(":disabled,[aria-disabled='true']")) return;
+    const descriptor = this.describeUiButtonEditTarget(element);
     const label = sanitizePersonalizationText(
       uiElementLabel(element)
       || element.dataset.cancipUiRuleLabel
@@ -20041,6 +20463,21 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       80,
       true
     );
+    const scoreLabel = label || descriptor.label || descriptor.selector;
+    const scoreKey = this.uiButtonScoreKey(descriptor);
+    this.recordScoreEvent({
+      key: scoreKey,
+      kind: "button",
+      label: scoreLabel,
+      selector: descriptor.selector,
+      scope: descriptor.scope,
+      targetKey: descriptor.targetKey,
+      outcome: "use"
+    });
+    if (this.settings.scoreLayoutSuggestions) {
+      const score = this.scoreFor(scoreKey, "button", scoreLabel);
+      if (this.shouldProposeScoreButtonLayout(score)) void this.proposeScoreButtonLayoutReview(descriptor, score);
+    }
     if (!label || /^(?:关闭|取消|接受|拒绝|重试|发送|复制|返回|更多|close|cancel|accept|reject|retry|send|copy|back|more)$/i.test(label)) return;
     const commandId = [
       element.dataset.commandId,
@@ -20064,6 +20501,26 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         .sort((a, b) => b.count - a.count || Date.parse(b.lastUsedAt) - Date.parse(a.lastUsedAt))
         .slice(0, 80);
     });
+  }
+
+  uiButtonScoreKey(descriptor: UiButtonEditDescriptor): string {
+    const identity = descriptor.targetKey?.trim()
+      || `${descriptor.scope}|${descriptor.selector}|${normalizeUiButtonLabel(descriptor.label)}`;
+    return `button:${stableTextHash(identity).slice(0, 20)}`;
+  }
+
+  scoreForUiButtonDescriptor(descriptor: UiButtonEditDescriptor): ScoreEntityState {
+    return this.scoreFor(this.uiButtonScoreKey(descriptor), "button", descriptor.label || descriptor.selector);
+  }
+
+  private shouldProposeScoreButtonLayout(score: ScoreEntityState): boolean {
+    if (score.layoutReviewAt) return false;
+    if (score.uses >= 8 && score.score >= 112) return true;
+    const lastUsed = Date.parse(score.lastUsedAt);
+    return score.uses >= 2
+      && score.score <= 82
+      && Number.isFinite(lastUsed)
+      && Date.now() - lastUsed >= Math.max(7, this.settings.scoreDecayDays) * 86400000;
   }
 
   async recordEditorAutocompleteChoice(
@@ -20103,6 +20560,13 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         event
       ].slice(-120);
       this.upsertPersonalizationChoiceEntry(normalizedText, "editor-autocomplete");
+    });
+    this.recordScoreEvent({
+      key: "autocomplete:editor",
+      kind: "autocomplete",
+      label: this.t("settingsComposerAutocomplete"),
+      outcome: "accept",
+      weight: 1.8
     });
   }
 
@@ -20157,6 +20621,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         event.dismissedReason = outcome.reason ?? "closed";
       }
     });
+    if (!outcome.used) {
+      this.recordScoreEvent({
+        key: "autocomplete:editor",
+        kind: "autocomplete",
+        label: this.t("settingsComposerAutocomplete"),
+        outcome: "reject",
+        weight: 0.2
+      });
+    }
   }
 
   private async enqueuePersonalizationUsageMutation(mutator: (ledger: PersonalizationUsageLedger) => void): Promise<void> {
@@ -20214,6 +20687,31 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     await this.writePersonalizationUsage();
     this.refreshPersonalizedSurfaces();
+  }
+
+  recordReviewDecisionScore(item: ReviewGateManifestItem, decision: ReviewGateDecision): void {
+    const outcome: ScoreEvent["outcome"] = decision === "approved"
+      ? "accept"
+      : decision === "correction"
+        ? "correct"
+        : "reject";
+    this.recordScoreEvent({
+      key: "feature:review-gate",
+      kind: "feature",
+      label: this.t("reviewGate"),
+      outcome,
+      weight: decision === "approved" ? 2 : 1.4
+    });
+    const scoreKey = item.review_source?.match(/^Cancip Score\s*:\s*(button:[a-z0-9]+)$/i)?.[1];
+    if (scoreKey) {
+      this.recordScoreEvent({
+        key: scoreKey,
+        kind: "button",
+        label: item.review_summary || item.path,
+        outcome,
+        weight: decision === "approved" ? 2.2 : 1.6
+      });
+    }
   }
 
   private async writePersonalizationUsageDirect(): Promise<void> {
@@ -21882,6 +22380,84 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.rememberUiRuleIconTarget(el, iconTarget);
     el.dataset.cancipUiIcon = icon;
     setIcon(iconTarget, icon);
+  }
+
+  private async proposeScoreButtonLayoutReview(descriptor: UiButtonEditDescriptor, score: ScoreEntityState): Promise<void> {
+    if (!this.settings.scoreLayoutSuggestions || score.layoutReviewAt || !descriptor.selector.trim()) return;
+    score.layoutReviewAt = new Date().toISOString();
+    score.updatedAt = score.layoutReviewAt;
+    this.scoreState.entities[score.key] = score;
+    this.scoreDirty = true;
+    this.scheduleScoreWrite();
+    try {
+      const existingRule = descriptor.rule ?? this.findUiButtonRuleForTarget(descriptor.selector, descriptor.scope, descriptor.label, descriptor.target);
+      const promote = score.score >= 100;
+      const hide = !promote && score.score < 45 && score.uses >= 3;
+      const proposedRule: UiButtonRule = {
+        ...(existingRule ?? {}),
+        id: existingRule?.id ?? stableRuleId(uiButtonRuleStableIdInput(descriptor.scope, descriptor.selector, descriptor.label || descriptor.selector)),
+        selector: descriptor.selector,
+        label: descriptor.label || descriptor.selector,
+        hidden: hide ? true : existingRule?.hidden ?? false,
+        order: promote ? -100 : 100,
+        scope: descriptor.scope,
+        viewType: existingRule?.viewType || descriptor.viewType,
+        commandGuard: existingRule?.commandGuard || descriptor.commandGuard,
+        iconGuard: existingRule?.iconGuard || descriptor.iconGuard,
+        menuGroupGuard: existingRule?.menuGroupGuard || descriptor.menuGroupGuard,
+        targetKey: existingRule?.targetKey || descriptor.targetKey,
+        createdAt: existingRule?.createdAt || score.layoutReviewAt,
+        updatedAt: score.layoutReviewAt
+      };
+      const rules = normalizeUiButtonRules([
+        ...this.settings.uiButtonRules.filter((rule) => rule.id !== proposedRule.id),
+        proposedRule
+      ]).slice(-200);
+      const oldText = await readTextIfExists(
+        this.app.vault.adapter,
+        CANCIP_CONFIG_PATH,
+        `${JSON.stringify(settingsToCancipConfig(this.settings), null, 2)}\n`
+      );
+      const nextSettings = normalizeSettings({ ...this.settings, uiButtonRules: rules });
+      const newText = `${JSON.stringify(settingsToCancipConfig(nextSettings), null, 2)}\n`;
+      const action = promote
+        ? (isChineseLanguage(this.language()) ? "前移" : "move forward")
+        : hide
+          ? (isChineseLanguage(this.language()) ? "收入隐藏" : "hide")
+          : (isChineseLanguage(this.language()) ? "后移" : "move later");
+      const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\.\d+Z$/, "Z").replace("T", "-");
+      await this.buildReviewGate({
+        title: `${this.t("settingsScoreLayoutSuggestions")}：${descriptor.label || descriptor.selector}`,
+        output: `${REVIEW_GATE_HIDDEN_DIR}/score-button-layout-${stamp}`,
+        items: [{
+          path: CANCIP_CONFIG_PATH,
+          old_text: oldText,
+          new_text: newText,
+          changes: [oldText ? "write" : "create"],
+          links: {},
+          structure: [],
+          category: "button",
+          review_summary: `${action}「${descriptor.label || descriptor.selector}」`,
+          review_details: [
+            `${this.t("scoreTotal")}: ${score.score.toFixed(2)}`,
+            `${isChineseLanguage(this.language()) ? "使用" : "Uses"}: ${score.uses}`,
+            `${isChineseLanguage(this.language()) ? "接受" : "Accepted"}: ${score.accepts}`,
+            `${isChineseLanguage(this.language()) ? "拒绝/指正" : "Rejected/corrected"}: ${score.rejects + score.corrections}`,
+            `${isChineseLanguage(this.language()) ? "批准后应用；取消不改界面；可在编辑按钮面板恢复。" : "Applies only after approval; cancel leaves the UI unchanged; restore it in Button editor."}`
+          ],
+          review_source: `Cancip Score: ${score.key}`
+        }],
+        maxFiles: 1,
+        maxFileChars: REVIEW_GATE_MAX_FILE_CHARS
+      });
+      this.refreshStatusBarAttention();
+    } catch (error) {
+      score.layoutReviewAt = undefined;
+      score.updatedAt = new Date().toISOString();
+      this.scoreDirty = true;
+      this.scheduleScoreWrite();
+      console.warn("Cancip score layout review failed", error);
+    }
   }
 
   private applyUiRuleMedia(el: HTMLElement, path: string): void {
@@ -28510,6 +29086,7 @@ class CancipReviewLeafView extends ItemView {
       };
       await this.app.vault.adapter.write(path, `${existing}${JSON.stringify(payload)}\n`);
       await this.plugin.recordReviewFeedback({ ...payload, source: "cancip.review-panel" });
+      this.plugin.recordReviewDecisionScore(item, decision);
       await this.plugin.markReviewGateItemsDecided(`${folder}/manifest.json`, [item.path]);
       await this.plugin.handlePersonalizationReviewDecision(item, decision);
       if (data) {
@@ -28577,6 +29154,7 @@ class CancipView extends ItemView {
   private draftContext: DraftContext[] = [];
   private manualTodos: ManualTodo[] = [];
   private taskControl: TaskControlState | null = null;
+  private contextCompaction: ContextCompactionState | null = null;
   private sourceHits: SearchHit[] = [];
   private lastModelCallAudit: ModelCallAudit | null = null;
   private activeModelCharStats: ModelCharStats | null = null;
@@ -28628,6 +29206,7 @@ class CancipView extends ItemView {
   private composerWorkflowHints = new Map<string, ComposerWorkflowHint>();
   private composerCapabilities = new Set<ComposerCapability>();
   private composerPlanPrompts = new Set<string>();
+  private composerMultiAgentPrompts = new Set<string>();
   private autocompleteOutsideCleanup: (() => void) | null = null;
   private attachmentInputEl: HTMLInputElement | null = null;
   private statusEl!: HTMLElement;
@@ -28734,6 +29313,12 @@ class CancipView extends ItemView {
   private subagentRole = "";
   private subagentGoal = "";
   private subagentProgress = "";
+  private subagentPlanStepId = "";
+  private subagentAcceptance = "";
+  private subagentDeadlineAt = "";
+  private subagentAttempt = 0;
+  private subagentStartedAt = "";
+  private subagentCompletedAt = "";
   private sessionHistoryCache: { at: number; mergeFiles: boolean; entries: SessionHistoryEntry[] } | null = null;
   private sessionHistoryReadPromise: { mergeFiles: boolean; promise: Promise<SessionHistoryEntry[]> } | null = null;
   private syncedSessionHistoryPaths = new Set<string>();
@@ -28745,6 +29330,7 @@ class CancipView extends ItemView {
   private experienceHarvestTimer: number | null = null;
   private experienceRecordedSessionIds = new Set<string>();
   private headerMenuLoadId = 0;
+  private subagentCardLoadId = 0;
   private includeCurrentFileForSession: boolean;
   private resumableTask: ResumableTaskState | null = null;
   private resumableAutomationTaskId = "";
@@ -28764,6 +29350,7 @@ class CancipView extends ItemView {
   private foregroundWarmupCancel: (() => void) | null = null;
   private newChatPromise: Promise<void> | null = null;
   private lastNewChatTriggerAt = 0;
+  private scoreActiveStartedAt = 0;
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -28793,6 +29380,8 @@ class CancipView extends ItemView {
     const reviewItemsForPendingAction = this.reviewItemsForPendingAction.bind(this);
     const createToolRun = this.createToolRun.bind(this);
     const refreshToolRunLineDeltasFromAction = this.refreshToolRunLineDeltasFromAction.bind(this);
+    const subagentElapsedMs = this.subagentElapsedMs.bind(this);
+    const todoElapsedMs = this.todoElapsedMs.bind(this);
     Object.defineProperties(target, {
       "promptPayloadPolicy": { configurable: true, value: promptPayloadPolicy },
       "programmaticReadOnlyActionsForPrompt": { configurable: true, value: programmaticReadOnlyActionsForPrompt },
@@ -28818,7 +29407,20 @@ class CancipView extends ItemView {
       "personalizationTimestampMatchesTier": { configurable: true, value: personalizationTimestampMatchesTier },
       "localPersonalizationCache": { configurable: true, value: localPersonalizationCache },
       "isVaultCurationDateLikeBasename": { configurable: true, value: isVaultCurationDateLikeBasename },
-      "vaultCurationSkippedPathsFromResult": { configurable: true, value: vaultCurationSkippedPathsFromResult }
+      "vaultCurationSkippedPathsFromResult": { configurable: true, value: vaultCurationSkippedPathsFromResult },
+      "responseStartsParallelSubagents": { configurable: true, value: responseStartsParallelSubagents },
+      "shouldAutoDelegateToSubagents": { configurable: true, value: shouldAutoDelegateToSubagents },
+      "fallbackPlanAndMultiAgentActionResponse": { configurable: true, value: fallbackPlanAndMultiAgentActionResponse },
+      "scoreAfterSaturatedDelta": { configurable: true, value: scoreAfterSaturatedDelta },
+      "calculateTotalScore": { configurable: true, value: calculateTotalScore },
+      "normalizeScoreState": { configurable: true, value: normalizeScoreState },
+      "subagentElapsedMs": { configurable: true, value: subagentElapsedMs },
+      "todoElapsedMs": { configurable: true, value: todoElapsedMs },
+      "deterministicContextCompactionSummary": { configurable: true, value: deterministicContextCompactionSummary },
+      "normalizeContextCompactionState": { configurable: true, value: normalizeContextCompactionState },
+      "contextCompactionMessagesHash": { configurable: true, value: contextCompactionMessagesHash },
+      "sessionHistoryEntryFromSnapshot": { configurable: true, value: sessionHistoryEntryFromSnapshot },
+      "mergeSessionHistoryEntry": { configurable: true, value: mergeSessionHistoryEntry }
     });
   }
 
@@ -29166,6 +29768,7 @@ class CancipView extends ItemView {
   async onOpen(): Promise<void> {
     this.render();
     if (this.isBackgroundAutomationRunner()) return;
+    this.scoreActiveStartedAt = Date.now();
     this.registerEvent(this.app.workspace.on("file-open", () => this.renderContextChips()));
     this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.renderContextChips()));
     this.registerDomEvent(activeDocument, "pointerdown", (event) => this.handleMobileFirstPointerDown(event), true);
@@ -29190,6 +29793,16 @@ class CancipView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    if (this.scoreActiveStartedAt > 0) {
+      this.plugin.recordScoreEvent({
+        key: "feature:chat",
+        kind: "feature",
+        label: "Cancip Chat",
+        outcome: "active",
+        activeMs: Date.now() - this.scoreActiveStartedAt
+      });
+      this.scoreActiveStartedAt = 0;
+    }
     const keepsBackgroundWorker = this.ownsAnySessionRequest();
     if (!keepsBackgroundWorker) this.clearLiveTimers();
     this.clearMobileFirstTouch();
@@ -29272,12 +29885,20 @@ class CancipView extends ItemView {
     this.subagentRole = "";
     this.subagentGoal = "";
     this.subagentProgress = "";
+    this.subagentPlanStepId = "";
+    this.subagentAcceptance = "";
+    this.subagentDeadlineAt = "";
+    this.subagentAttempt = 0;
+    this.subagentStartedAt = "";
+    this.subagentCompletedAt = "";
     this.draftContext = [];
     this.composerCapabilities.clear();
     this.composerPlanPrompts.clear();
+    this.composerMultiAgentPrompts.clear();
     this.includeCurrentFileForSession = inheritedIncludeCurrentFile;
     this.manualTodos = [];
     this.taskControl = null;
+    this.contextCompaction = null;
     this.lastResponsesState = null;
     this.currentSessionStatus = "idle";
     this.currentSessionCompletedNotice = false;
@@ -31645,6 +32266,7 @@ class CancipView extends ItemView {
       { icon: "paperclip", label: this.t("addAttachment"), shortLabel: this.t("addAttachment"), action: () => this.openAttachmentPicker() },
       { icon: "file-code-2", label: this.t("commandCreateInteractiveHtml"), shortLabel: "HTML", action: () => this.prepareOneClickHtmlComposer() },
       { icon: "list-todo", label: this.t("planPanelTitle"), shortLabel: this.t("planPanelTitle"), action: () => this.preparePlanComposer() },
+      { icon: "users", label: this.t("settingsMultiAgent"), shortLabel: this.t("subagentLabel"), action: () => this.prepareMultiAgentComposer() },
       { icon: "file-search", label: this.t("addFileFolder"), shortLabel: this.t("mentionFile"), detail: "@", action: () => this.startMentionQuery("", "menu") },
       { icon: "plug", label: this.t("addPlugin"), shortLabel: "Plugin", detail: "@plugin", action: () => this.startMentionQuery("plugin", "menu") },
       { icon: "sparkles", label: this.t("addSkill"), shortLabel: "Skill", detail: "@skill", action: () => this.startMentionQuery("skill", "menu") },
@@ -32882,6 +33504,12 @@ class CancipView extends ItemView {
       if (typeof patch.subagentRole === "string") snapshot.subagentRole = patch.subagentRole;
       if (typeof patch.subagentGoal === "string") snapshot.subagentGoal = patch.subagentGoal;
       if (typeof patch.subagentProgress === "string") snapshot.subagentProgress = patch.subagentProgress;
+      if (typeof patch.subagentPlanStepId === "string") snapshot.subagentPlanStepId = patch.subagentPlanStepId;
+      if (typeof patch.subagentAcceptance === "string") snapshot.subagentAcceptance = patch.subagentAcceptance;
+      if (typeof patch.subagentDeadlineAt === "string") snapshot.subagentDeadlineAt = patch.subagentDeadlineAt;
+      if (typeof patch.subagentAttempt === "number") snapshot.subagentAttempt = patch.subagentAttempt;
+      if (typeof patch.subagentStartedAt === "string") snapshot.subagentStartedAt = patch.subagentStartedAt;
+      if (typeof patch.subagentCompletedAt === "string") snapshot.subagentCompletedAt = patch.subagentCompletedAt;
       await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
     } catch (error) {
       console.warn("Cancip session snapshot patch failed", error);
@@ -33144,6 +33772,7 @@ class CancipView extends ItemView {
         const text = input.value.trim();
         if (!text) return;
         this.manualTodos.push({ id: crypto.randomUUID(), text, done: false, sendToModel: true, source: "manual", createdAt: new Date().toISOString() });
+        this.syncTodoTimingState();
         input.value = "";
         void this.saveCurrentSession();
         this.openPlanMenu();
@@ -33721,6 +34350,7 @@ class CancipView extends ItemView {
       };
       await this.app.vault.adapter.write(path, `${existing}${JSON.stringify(payload)}\n`);
       await this.plugin.recordReviewFeedback({ ...payload, source: "cancip.review-panel" });
+      this.plugin.recordReviewDecisionScore(item, decision);
       await this.plugin.markReviewGateItemsDecided(`${folder}/manifest.json`, [item.path]);
       await this.plugin.handlePersonalizationReviewDecision(item, decision);
       this.plugin.syncOpenReviewGateDecision(`${folder}/manifest.json`);
@@ -33927,12 +34557,21 @@ class CancipView extends ItemView {
     if (!readonly && todo) {
       check.addEventListener("click", () => {
         todo.done = !todo.done;
+        this.syncTodoTimingState();
         void this.saveCurrentSession();
         this.openPlanMenu();
       });
     }
     row.createSpan({ cls: "obcc-todo-index", text: index >= 0 ? `${index + 1}.` : "" });
-    if (todo) row.createSpan({ cls: "obcc-todo-source", text: todo.source === "programmatic" ? "AI" : this.t("manualTodos") });
+    if (todo) {
+      const meta = row.createSpan({ cls: "obcc-todo-meta" });
+      meta.createSpan({ cls: "obcc-todo-source", text: todo.source === "programmatic" ? "AI" : this.t("manualTodos") });
+      meta.createSpan({
+        cls: "obcc-todo-timer",
+        text: this.todoElapsedText(todo),
+        attr: { "data-todo-timer-id": todo.id, title: this.todoTimingTitle(todo) }
+      });
+    }
     if (!readonly && todo && this.editingManualTodoId === todo.id) {
       const editor = row.createEl("input", {
         cls: "obcc-manual-todo-input is-inline",
@@ -33969,6 +34608,8 @@ class CancipView extends ItemView {
   }
 
   private renderTodoList(parent: HTMLElement, todos: ManualTodo[]): void {
+    this.syncTodoTimingState();
+    const loadId = ++this.subagentCardLoadId;
     parent.empty();
     if (!todos.length) {
       parent.createDiv({ cls: "obcc-mention-empty", text: this.t("noManualTodos") });
@@ -33976,6 +34617,130 @@ class CancipView extends ItemView {
     }
     for (const [index, todo] of todos.entries()) {
       this.renderTodoRow(parent, todo.text, false, todo, index, false, todos);
+      parent.createDiv({
+        cls: "obcc-subagent-step-cards is-hidden",
+        attr: { "data-subagent-step-id": todo.id }
+      });
+    }
+    void this.hydrateSubagentCards(parent, todos, loadId);
+  }
+
+  private async hydrateSubagentCards(parent: HTMLElement, todos: ManualTodo[], loadId: number): Promise<void> {
+    const entries = await this.readSessionHistoryIndex({ force: true });
+    if (loadId !== this.subagentCardLoadId || !parent.isConnected || this.activeHeaderMenu !== "plan") return;
+    const linked = new Set(this.subagentIds);
+    const children = entries
+      .filter((entry) => entry.parentSessionId === this.sessionId || linked.has(entry.id))
+      .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
+    const knownSteps = new Set(todos.map((todo) => todo.id));
+    const grouped = new Map<string, SessionHistoryEntry[]>();
+    for (const child of children) {
+      const stepId = child.subagentPlanStepId && knownSteps.has(child.subagentPlanStepId)
+        ? child.subagentPlanStepId
+        : "__unassigned__";
+      const rows = grouped.get(stepId) ?? [];
+      rows.push(child);
+      grouped.set(stepId, rows);
+    }
+    for (const todo of todos) {
+      const shell = parent.querySelector<HTMLElement>(`[data-subagent-step-id="${cssEscapeAttr(todo.id)}"]`);
+      const rows = grouped.get(todo.id) ?? [];
+      if (!shell || !rows.length) continue;
+      shell.removeClass("is-hidden");
+      await this.renderSubagentCardTrack(shell, rows, loadId);
+    }
+    const unassigned = grouped.get("__unassigned__") ?? [];
+    if (unassigned.length && loadId === this.subagentCardLoadId && parent.isConnected) {
+      const shell = parent.createDiv({ cls: "obcc-subagent-step-cards is-unassigned" });
+      shell.createDiv({ cls: "obcc-subagent-track-label", text: this.t("subagentLabel") });
+      await this.renderSubagentCardTrack(shell, unassigned, loadId);
+    }
+  }
+
+  private async renderSubagentCardTrack(parent: HTMLElement, entries: SessionHistoryEntry[], loadId: number): Promise<void> {
+    if (loadId !== this.subagentCardLoadId || !parent.isConnected) return;
+    parent.empty();
+    const track = parent.createDiv({ cls: "obcc-subagent-track" });
+    for (const entry of entries) {
+      if (loadId !== this.subagentCardLoadId || !track.isConnected) return;
+      await this.renderSubagentCard(track, entry);
+    }
+  }
+
+  private async renderSubagentCard(parent: HTMLElement, entry: SessionHistoryEntry): Promise<void> {
+    const status = this.displaySessionStatus(entry);
+    const card = parent.createDiv({
+      cls: `obcc-subagent-card is-${status}`,
+      attr: { "data-subagent-session-id": entry.id }
+    });
+    const head = card.createDiv({ cls: "obcc-subagent-card-head" });
+    const identity = head.createDiv({ cls: "obcc-subagent-card-identity" });
+    identity.createSpan({ cls: "obcc-subagent-role", text: entry.subagentRole || this.t("subagentDefaultRole") });
+    identity.createSpan({ cls: `obcc-subagent-status is-${status}`, text: this.sessionStatusLabel(status) });
+    head.createSpan({
+      cls: "obcc-subagent-timer",
+      text: this.subagentElapsedText(entry),
+      attr: { "data-subagent-timer-id": entry.id, title: entry.subagentStartedAt || entry.startedAt || entry.createdAt }
+    });
+    const actions = head.createDiv({ cls: "obcc-subagent-card-actions" });
+    this.createSubagentCardButton(actions, "external-link", this.t("subagentOpen"), () => {
+      void this.openSubagentCommand({ sessionId: entry.id });
+    });
+    if (status === "running") {
+      this.createSubagentCardButton(actions, "square", this.t("subagentStopped"), () => {
+        void this.stopSubagentCommand({ sessionId: entry.id }).then(() => this.openPlanMenu());
+      });
+    }
+    this.createSubagentCardButton(actions, "rotate-ccw", this.t("subagentRestart"), () => {
+      void this.restartSubagentCommand({ sessionId: entry.id }).then(() => this.openPlanMenu());
+    });
+    this.createSubagentCardButton(actions, "trash-2", this.t("subagentDelete"), () => {
+      void this.deleteSubagentCommand({ sessionId: entry.id }).then(() => this.openPlanMenu());
+    });
+
+    card.createDiv({ cls: "obcc-subagent-task", text: entry.subagentGoal || entry.title });
+    const meta = card.createDiv({ cls: "obcc-subagent-meta" });
+    if (entry.subagentAcceptance) meta.createDiv({ text: `${this.t("subagentAcceptance")}: ${entry.subagentAcceptance}` });
+    if (entry.subagentDeadlineAt) meta.createDiv({ text: `${this.t("subagentDeadline")}: ${entry.subagentDeadlineAt}` });
+    meta.createDiv({ text: `${isChineseLanguage(this.plugin.language()) ? "尝试" : "Attempt"}: ${entry.subagentAttempt ?? 1}` });
+    if (entry.subagentProgress) meta.createDiv({ text: `${this.t("subagentProgress")}: ${entry.subagentProgress}` });
+
+    const transcript = card.createEl("details", { cls: "obcc-subagent-transcript" });
+    transcript.createEl("summary", { text: isChineseLanguage(this.plugin.language()) ? "原始收发" : "Raw exchange" });
+    const body = transcript.createDiv({ cls: "obcc-subagent-transcript-body" });
+    await this.renderSubagentRawExchange(body, entry);
+  }
+
+  private createSubagentCardButton(parent: HTMLElement, icon: string, title: string, action: () => void): void {
+    const button = parent.createEl("button", {
+      cls: "obcc-icon-button obcc-subagent-action",
+      attr: { type: "button", title, "aria-label": title }
+    });
+    setIcon(button, icon);
+    button.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      action();
+    });
+  }
+
+  private async renderSubagentRawExchange(parent: HTMLElement, entry: SessionHistoryEntry): Promise<void> {
+    try {
+      if (!(await this.app.vault.adapter.exists(entry.path))) {
+        parent.setText(this.t("none"));
+        return;
+      }
+      const snapshot = JSON.parse(await this.app.vault.adapter.read(entry.path)) as Record<string, unknown>;
+      const messages = Array.isArray(snapshot.messages) ? snapshot.messages.filter(isRecord) : [];
+      const exchanges = messages.filter((message) => (message.role === "user" || message.role === "assistant") && typeof message.content === "string");
+      for (const message of exchanges) {
+        const section = parent.createDiv({ cls: `obcc-subagent-exchange is-${message.role}` });
+        section.createDiv({ cls: "obcc-subagent-exchange-label", text: message.role === "user" ? this.t("rawSent") : this.t("rawReceived") });
+        section.createEl("pre", { text: String(message.content) });
+      }
+      if (!exchanges.length) parent.setText(this.t("none"));
+    } catch (error) {
+      parent.setText(error instanceof Error ? error.message : String(error));
     }
   }
 
@@ -34460,8 +35225,15 @@ class CancipView extends ItemView {
       this.subagentRole = typeof snapshot.subagentRole === "string" ? snapshot.subagentRole.trim() : entry.subagentRole ?? "";
       this.subagentGoal = typeof snapshot.subagentGoal === "string" ? snapshot.subagentGoal.trim() : entry.subagentGoal ?? "";
       this.subagentProgress = typeof snapshot.subagentProgress === "string" ? snapshot.subagentProgress.trim() : entry.subagentProgress ?? "";
+      this.subagentPlanStepId = typeof snapshot.subagentPlanStepId === "string" ? snapshot.subagentPlanStepId.trim() : entry.subagentPlanStepId ?? "";
+      this.subagentAcceptance = typeof snapshot.subagentAcceptance === "string" ? snapshot.subagentAcceptance.trim() : entry.subagentAcceptance ?? "";
+      this.subagentDeadlineAt = typeof snapshot.subagentDeadlineAt === "string" ? snapshot.subagentDeadlineAt.trim() : entry.subagentDeadlineAt ?? "";
+      this.subagentAttempt = typeof snapshot.subagentAttempt === "number" ? Math.max(0, Math.round(snapshot.subagentAttempt)) : entry.subagentAttempt ?? 0;
+      this.subagentStartedAt = typeof snapshot.subagentStartedAt === "string" ? snapshot.subagentStartedAt.trim() : entry.subagentStartedAt ?? "";
+      this.subagentCompletedAt = typeof snapshot.subagentCompletedAt === "string" ? snapshot.subagentCompletedAt.trim() : entry.subagentCompletedAt ?? "";
       this.mode = normalizeComposerMode(snapshot.mode) ?? normalizeComposerMode(entry.mode) ?? "ask";
       this.taskControl = this.normalizeTaskControlState(snapshot.taskControl);
+      this.contextCompaction = normalizeContextCompactionState(snapshot.contextCompaction);
       this.resumableTask = normalizeResumableTask(snapshot.resumableTask);
       const snapshotAutomationTaskId = typeof snapshot.automationTaskId === "string" ? snapshot.automationTaskId.trim() : "";
       const snapshotAutomationNotifyMode = isAutomationNotifyMode(snapshot.automationNotifyMode) ? snapshot.automationNotifyMode : "inherit";
@@ -34480,6 +35252,7 @@ class CancipView extends ItemView {
         : [];
       this.composerCapabilities.clear();
       this.composerPlanPrompts.clear();
+      this.composerMultiAgentPrompts.clear();
       this.includeCurrentFileForSession = typeof snapshot.includeCurrentFileForSession === "boolean"
         ? snapshot.includeCurrentFileForSession
         : this.plugin.settings.includeCurrentFile;
@@ -34685,6 +35458,7 @@ class CancipView extends ItemView {
     this.draftContext = [];
     this.manualTodos = [];
     this.taskControl = null;
+    this.contextCompaction = null;
     this.includeCurrentFileForSession = false;
     await this.saveCurrentSession();
     let entry = (await this.readSessionHistoryIndex({ force: true, mergeFiles: false })).find((item) => item.id === sessionId && !item.eventOnly);
@@ -34887,6 +35661,7 @@ class CancipView extends ItemView {
     const legacyHtmlPrefix = rawPrompt.toLowerCase().startsWith(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().toLowerCase());
     const htmlRequested = this.composerCapabilities.has("html") || legacyHtmlPrefix;
     const planRequested = this.composerCapabilities.has("plan");
+    const multiAgentRequested = this.composerCapabilities.has("multi-agent");
     if (htmlRequested) {
       const requirement = legacyHtmlPrefix
         ? rawPrompt.slice(ONE_CLICK_HTML_COMPOSER_PREFIX.trim().length).trim()
@@ -34900,12 +35675,13 @@ class CancipView extends ItemView {
       this.clearAutocompleteSuggestion();
       this.handleComposerInputChanged();
       this.renderContextChips();
-      await this.startOneClickHtml(requirement, planRequested);
+      await this.startOneClickHtml(requirement, planRequested, multiAgentRequested);
       return;
     }
     this.inputEl.value = "";
     this.composerCapabilities.clear();
     if (planRequested) this.composerPlanPrompts.add(rawPrompt);
+    if (multiAgentRequested) this.composerMultiAgentPrompts.add(rawPrompt);
     this.clearAutocompleteSuggestion();
     this.resizeInput();
     this.renderContextChips();
@@ -35102,6 +35878,7 @@ class CancipView extends ItemView {
       const run = message?.toolRuns?.find((item) => item.id === runId);
       if (!run || run.status !== "pending") throw new Error(this.t("toolRunNoPending"));
       await this.executeToolRun(run);
+      if ((run.status as ToolRunStatus) === "executed") this.plugin.recordScoreEvent({ key: "feature:contextual-edit", kind: "feature", label: this.t("settingsContextualEditing"), outcome: "accept", weight: 2 });
       return;
     }
     await this.runPendingToolRun(messageId, runId);
@@ -35115,6 +35892,7 @@ class CancipView extends ItemView {
       run.status = "rejected";
       run.executedAt = new Date().toISOString();
       run.error = this.t("toolRunRejectedNotice");
+      this.plugin.recordScoreEvent({ key: "feature:contextual-edit", kind: "feature", label: this.t("settingsContextualEditing"), outcome: "reject", weight: 1.5 });
       return;
     }
     await this.rejectPendingToolRun(messageId, runId);
@@ -35183,7 +35961,19 @@ class CancipView extends ItemView {
     this.focusInput();
   }
 
-  async startOneClickHtml(requirementOverride = "", requirePlan = false): Promise<void> {
+  private prepareMultiAgentComposer(): void {
+    if (!this.plugin.settings.multiAgentEnabled) {
+      new Notice(this.t("settingsMultiAgentDisabled"));
+      return;
+    }
+    this.composerCapabilities.add("multi-agent");
+    this.closeCommandMenu();
+    this.closeMentionPopup();
+    this.renderContextChips();
+    this.focusInput();
+  }
+
+  async startOneClickHtml(requirementOverride = "", requirePlan = false, requireMultiAgent = false): Promise<void> {
     const requirement = requirementOverride.trim();
     if (!requirement) {
       this.prepareOneClickHtmlComposer();
@@ -35193,6 +35983,7 @@ class CancipView extends ItemView {
     const outputPath = await this.oneClickHtmlOutputPath(requirement);
     const prompt = buildOneClickHtmlPrompt(requirement, outputPath, isChineseLanguage(this.plugin.language()));
     if (requirePlan) this.composerPlanPrompts.add(prompt);
+    if (requireMultiAgent) this.composerMultiAgentPrompts.add(prompt);
     this.closeCommandMenu();
     this.closeMentionPopup();
     if (this.activeRequest) {
@@ -35373,6 +36164,11 @@ class CancipView extends ItemView {
   private async sendPromptNow(rawPrompt: string): Promise<void> {
     const startedAt = Date.now();
     const requirePlanPanel = this.composerPlanPrompts.delete(rawPrompt);
+    const requireMultiAgent = this.composerMultiAgentPrompts.delete(rawPrompt);
+    const suggestMultiAgent = !requireMultiAgent
+      && this.plugin.settings.multiAgentEnabled
+      && this.plugin.settings.multiAgentAutoDelegate
+      && shouldAutoDelegateToSubagents(rawPrompt);
     this.turnModelUsage = null;
     this.drainQueueAfterRequest = true;
     void this.recordSessionEvent({ kind: "prompt.send", detail: rawPrompt });
@@ -35399,12 +36195,17 @@ class CancipView extends ItemView {
     this.noteTaskControlPrompt(rawPrompt);
     this.ensureTaskControl(rawPrompt, taskGoal);
     const baseModelPrompt = this.modelPromptForTurn(rawPrompt, taskGoal);
-    const modelPrompt = requirePlanPanel
-      ? [
-          baseModelPrompt,
-          "This turn was explicitly sent through Cancip's Plan control. Analyze the task yourself, then create the real Plan panel with a todo set containing at least 3 ordered, concrete, verifiable items. In the same action batch immediately include the first non-todo action needed to execute the plan. Do not substitute a Markdown checklist or prose plan."
-        ].join("\n\n")
-      : baseModelPrompt;
+    const modelPrompt = [
+      baseModelPrompt,
+      requirePlanPanel
+        ? "This turn was explicitly sent through Cancip's Plan control. Analyze the task yourself, then create the real Plan panel with a todo set containing at least 3 ordered, concrete, verifiable items. In the same action batch immediately include the first non-todo action needed to execute the plan. Do not substitute a Markdown checklist or prose plan."
+        : "",
+      requireMultiAgent
+        ? `This turn explicitly requests real multi-agent execution. Use cancip.subagents.parallel in the first executable action batch with ${Math.max(2, this.plugin.settings.multiAgentDefaultAgents)} distinct agents, a real planStepId when a Plan item exists, concrete roles/tasks/acceptance criteria, timeoutMinutes, wait:true, and consensus:true. Do not simulate roles in one answer and do not substitute prose.`
+        : suggestMultiAgent
+          ? `This task may benefit from parallel work. When one concrete Plan step can be split into independent evidence-producing branches, use cancip.subagents.parallel with 2-${this.plugin.settings.multiAgentMaxAgents} real child sessions and consensus:true; otherwise continue normally without fake agents.`
+          : ""
+    ].filter(Boolean).join("\n\n");
     const readOnlyOnly = false;
     const suppressToolActions = false;
     this.syncSessionChrome();
@@ -35428,6 +36229,8 @@ class CancipView extends ItemView {
       this.setStatus(this.t("preparingContext"));
       context = await this.buildContext(taskGoal, rawPrompt);
       if (request.signal.aborted || !this.hasRequest(request)) return;
+      const compactionStatus = await this.ensureContextCompaction();
+      if (request.signal.aborted || !this.hasRequest(request)) return;
       // The context summary is process detail, not a second model exchange.
       // The actual request body is recorded by the API call itself below.
       contextStep.processAuditSections = undefined;
@@ -35436,7 +36239,8 @@ class CancipView extends ItemView {
         this.contextPreparationHeadline(taskGoal),
         [
           this.formatInitialContextAuditDetail(taskGoal),
-          this.formatContextAuditDetail(rawPrompt, taskGoal, modelPrompt, context)
+          this.formatContextAuditDetail(rawPrompt, taskGoal, modelPrompt, context),
+          compactionStatus
         ].filter(Boolean).join("\n\n")
       );
 
@@ -35473,10 +36277,15 @@ class CancipView extends ItemView {
         this.modelStreamProgressUpdater(generationStep, this.t("generating"))
       );
       if (request.signal.aborted || !this.hasRequest(request)) return;
-      if (requirePlanPanel && !responseCreatesTrackedPlan(answer, 3)) {
+      const needsPlanCorrection = requirePlanPanel && !responseCreatesTrackedPlan(answer, 3);
+      const needsMultiAgentCorrection = requireMultiAgent && !responseStartsParallelSubagents(answer, 2);
+      if (needsPlanCorrection || needsMultiAgentCorrection) {
         const correctionPrompt = [
           modelPrompt,
-          "Protocol correction: the previous response did not create the real Cancip Plan panel. Return one executable cancip-action response containing a todo set with at least 3 specific items. The todo action may be the only action in this response; Cancip will immediately continue with the first real step. Preserve the user's task; do not return prose or a Markdown checklist.",
+          `Protocol correction: the previous response did not satisfy ${[
+            needsPlanCorrection ? "the real Plan panel with at least 3 tracked todos" : "",
+            needsMultiAgentCorrection ? "cancip.subagents.parallel with at least 2 real child sessions" : ""
+          ].filter(Boolean).join(" and ")}. Return one executable cancip-action response that preserves the user's task. Include concrete roles, tasks, acceptance criteria, timeout, planStepId when available, wait:true, and consensus:true. Do not return prose, a Markdown checklist, or simulated agents.`,
           `Previous response:\n${trimContext(redactSensitiveText(answer), 2400)}`
         ].join("\n\n");
         answer = await this.callModelWithRetries(
@@ -35490,11 +36299,16 @@ class CancipView extends ItemView {
           this.modelStreamProgressUpdater(generationStep, this.t("generating"))
         );
         if (request.signal.aborted || !this.hasRequest(request)) return;
-        if (!responseCreatesTrackedPlan(answer, 3)) {
-          // A malformed plan response must not terminate the user's task. Keep
-          // the model's useful steps when possible, then create a real Plan
-          // action so the normal continuation loop can execute the work.
-          answer = fallbackPlanActionResponse(rawPrompt, answer);
+        if ((requirePlanPanel && !responseCreatesTrackedPlan(answer, 3))
+          || (requireMultiAgent && !responseStartsParallelSubagents(answer, 2))) {
+          answer = fallbackPlanAndMultiAgentActionResponse(
+            rawPrompt,
+            answer,
+            requirePlanPanel,
+            requireMultiAgent,
+            this.plugin.settings.multiAgentDefaultAgents,
+            this.plugin.settings.multiAgentTimeoutMinutes
+          );
         }
       }
       const requestSessionId = this.requestSessionId(request);
@@ -38020,6 +38834,12 @@ class CancipView extends ItemView {
       const subagentRole = this.subagentRole;
       const subagentGoal = this.subagentGoal;
       const subagentProgress = this.subagentProgress;
+      const subagentPlanStepId = this.subagentPlanStepId;
+      const subagentAcceptance = this.subagentAcceptance;
+      const subagentDeadlineAt = this.subagentDeadlineAt;
+      const subagentAttempt = this.subagentAttempt;
+      const subagentStartedAt = this.subagentStartedAt;
+      const subagentCompletedAt = this.subagentCompletedAt;
       const path = `${SESSION_HISTORY_DIR}/${sessionId}.json`;
       const snapshot = this.sessionExportSnapshot(now);
       await ensureFolder(adapter, SESSION_HISTORY_DIR);
@@ -38111,6 +38931,12 @@ class CancipView extends ItemView {
         subagentRole: subagentRole || previous?.subagentRole,
         subagentGoal: subagentGoal || previous?.subagentGoal,
         subagentProgress: subagentProgress || previous?.subagentProgress,
+        subagentPlanStepId: subagentPlanStepId || previous?.subagentPlanStepId,
+        subagentAcceptance: subagentAcceptance || previous?.subagentAcceptance,
+        subagentDeadlineAt: subagentDeadlineAt || previous?.subagentDeadlineAt,
+        subagentAttempt: subagentAttempt || previous?.subagentAttempt,
+        subagentStartedAt: subagentStartedAt || previous?.subagentStartedAt,
+        subagentCompletedAt: subagentCompletedAt || previous?.subagentCompletedAt,
         path
       };
       if (!previous || sessionHistoryEntryPersistenceSignature(previous) !== sessionHistoryEntryPersistenceSignature(nextHistoryEntry)) {
@@ -38331,6 +39157,11 @@ class CancipView extends ItemView {
     if (!goal) throw new Error("cancip.subagents.start requires args.goal or args.prompt");
     const role = stringArg(args.role) || this.t("subagentDefaultRole");
     const parentSessionId = stringArg(args.parentSessionId) || this.sessionId;
+    const planStepId = stringArg(args.planStepId) || stringArg(args.stepId);
+    const acceptance = stringArg(args.acceptance) || stringArg(args.acceptanceCriteria)
+      || (isChineseLanguage(this.plugin.language()) ? "给出可核对证据、明确结论、阻塞和下一步" : "Return verifiable evidence, a clear conclusion, blockers, and the next step");
+    const timeoutMinutes = clampInt(args.timeoutMinutes, this.plugin.settings.multiAgentTimeoutMinutes, 1, 120);
+    const attempt = clampInt(args.attempt, 1, 1, 99);
     const entries = await this.readSessionHistoryIndex();
     const parentEntry = entries.find((entry) => entry.id === parentSessionId);
     const parentTitle = parentSessionId === this.sessionId ? this.sessionTitle() : parentEntry?.title ?? parentSessionId;
@@ -38339,13 +39170,17 @@ class CancipView extends ItemView {
     const childPath = `${SESSION_HISTORY_DIR}/${childSessionId}.json`;
     const title = trimContext(stringArg(args.title) || `${this.t("subagentLabel")}：${goal}`, 54);
     const nowIso = created.toISOString();
-    const modelPrompt = this.subagentModelPrompt(goal, role, parentSessionId, parentTitle);
+    const deadlineAt = new Date(created.getTime() + timeoutMinutes * 60000).toISOString();
+    const modelPrompt = this.subagentModelPrompt(goal, role, parentSessionId, parentTitle, acceptance, deadlineAt, attempt);
     const visiblePrompt = [
       `${this.t("subagentLabel")} ${role}`,
       "",
       `${this.t("subagentParent")}: ${parentSessionId}`,
-      `${this.t("subagentGoal")}: ${goal}`
-    ].join("\n");
+      `${this.t("subagentGoal")}: ${goal}`,
+      planStepId ? `${this.t("planPanelTitle")}: ${planStepId}` : "",
+      `${this.t("subagentAcceptance")}: ${acceptance}`,
+      `${this.t("subagentDeadline")}: ${deadlineAt}`
+    ].filter(Boolean).join("\n");
     const snapshot: Record<string, unknown> = {
       schemaVersion: SESSION_EXPORT_SCHEMA_VERSION,
       plugin: PLUGIN_NAME,
@@ -38362,6 +39197,11 @@ class CancipView extends ItemView {
       subagentRole: role,
       subagentGoal: goal,
       subagentProgress: this.t("preparingContext"),
+      subagentPlanStepId: planStepId || undefined,
+      subagentAcceptance: acceptance,
+      subagentDeadlineAt: deadlineAt,
+      subagentAttempt: attempt,
+      subagentStartedAt: nowIso,
       mode: this.exportModeId(this.mode),
       accessMode: this.plugin.settings.accessMode,
       includeCurrentFileForSession: this.includeCurrentFileForSession,
@@ -38419,6 +39259,11 @@ class CancipView extends ItemView {
       subagentRole: role,
       subagentGoal: goal,
       subagentProgress: this.t("preparingContext"),
+      subagentPlanStepId: planStepId || undefined,
+      subagentAcceptance: acceptance,
+      subagentDeadlineAt: deadlineAt,
+      subagentAttempt: attempt,
+      subagentStartedAt: nowIso,
       path: childPath
     });
     const request = new AbortController();
@@ -38452,17 +39297,31 @@ class CancipView extends ItemView {
       `- ${this.t("sessionIdLabel")} ${childSessionId}`,
       `- ${this.t("subagentParent")}: ${parentSessionId}`,
       `- ${this.t("subagentGoal")}: ${goal}`,
+      planStepId ? `- ${this.t("planPanelTitle")}: ${planStepId}` : "",
+      `- ${this.t("subagentAcceptance")}: ${acceptance}`,
+      `- ${this.t("subagentDeadline")}: ${deadlineAt}`,
       `- ${this.t("subagentHistoryHint")}`
-    ].join("\n");
+    ].filter(Boolean).join("\n");
   }
 
-  private subagentModelPrompt(goal: string, role: string, parentSessionId: string, parentTitle: string): string {
+  private subagentModelPrompt(
+    goal: string,
+    role: string,
+    parentSessionId: string,
+    parentTitle: string,
+    acceptance: string,
+    deadlineAt: string,
+    attempt: number
+  ): string {
     return [
       `${this.t("subagentLabel")} ${role}`,
       "",
       `Parent session: ${parentSessionId}`,
       `Parent title: ${parentTitle}`,
+      `Attempt: ${attempt}`,
+      `Deadline: ${deadlineAt}`,
       `Goal: ${goal}`,
+      `Acceptance criteria: ${acceptance}`,
       "",
       "Work independently and return a concise, useful report for the parent session.",
       "Do not claim you changed files or executed tools unless the provided context proves it.",
@@ -38566,11 +39425,15 @@ class CancipView extends ItemView {
     if (!(await adapter.exists(path))) return;
     const raw = await adapter.read(path);
     const snapshot = JSON.parse(raw) as Record<string, unknown>;
+    const now = new Date().toISOString();
     snapshot.status = status;
     snapshot.subagentProgress = progress;
+    if (!snapshot.subagentStartedAt) snapshot.subagentStartedAt = now;
+    if (status === "completed" || status === "failed" || status === "stopped") snapshot.subagentCompletedAt = now;
     snapshot.completedNotice = completedNotice;
     snapshot.unread = completedNotice && (status === "completed" || status === "failed" || status === "stopped");
-    snapshot.updatedAt = new Date().toISOString();
+    snapshot.updatedAt = now;
+    cancipApplySessionStatusTimes(snapshot, status, now);
     await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
     const entry = sessionHistoryEntryFromSnapshot(snapshot, path);
     if (entry) await this.upsertSessionHistoryIndex(entry);
@@ -38599,9 +39462,20 @@ class CancipView extends ItemView {
     snapshot.unread = true;
     snapshot.metadataUpdatedAt = new Date().toISOString();
     snapshot.subagentProgress = this.t("subagentFailed");
+    snapshot.subagentCompletedAt = new Date().toISOString();
     snapshot.resumableTask = { prompt, reason: "failed", at: Date.now(), detail: reason };
     snapshot.updatedAt = new Date().toISOString();
     await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
+    const role = typeof snapshot.subagentRole === "string" && snapshot.subagentRole.trim()
+      ? snapshot.subagentRole.trim()
+      : this.t("subagentDefaultRole");
+    this.plugin.recordScoreEvent({
+      key: `feature:subagent-role:${stableTextHash(role).slice(0, 16)}`,
+      kind: "feature",
+      label: `${this.t("subagentLabel")} ${role}`,
+      outcome: "reject",
+      weight: 0.5
+    });
     const entry = sessionHistoryEntryFromSnapshot(snapshot, path);
     if (entry) await this.upsertSessionHistoryIndex(entry);
     await this.refreshOpenSessionFromDisk(sessionId, this.t("subagentFailed"));
@@ -38610,9 +39484,14 @@ class CancipView extends ItemView {
 
   private async stopSubagentCommand(args: Record<string, unknown>): Promise<string> {
     const targetId = stringArg(args.sessionId) || stringArg(args.id);
+    const targetIds = Array.isArray(args.sessionIds)
+      ? args.sessionIds.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
+      : [];
     const parentSessionId = stringArg(args.parentSessionId) || (!targetId ? this.sessionId : "");
     const entries = await this.readSessionHistoryIndex();
-    const ids = targetId
+    const ids = targetIds.length
+      ? targetIds
+      : targetId
       ? [targetId]
       : entries
           .filter((entry) => entry.parentSessionId === parentSessionId || (entries.find((parent) => parent.id === parentSessionId)?.subagentIds ?? []).includes(entry.id))
@@ -38627,6 +39506,14 @@ class CancipView extends ItemView {
       request?.abort();
       this.plugin.clearSessionRequest(id, request);
       await this.updateDetachedSubagentProgress(id, this.t("stopped"), "stopped", true);
+      const role = entries.find((entry) => entry.id === id)?.subagentRole || this.t("subagentDefaultRole");
+      this.plugin.recordScoreEvent({
+        key: `feature:subagent-role:${stableTextHash(role).slice(0, 16)}`,
+        kind: "feature",
+        label: `${this.t("subagentLabel")} ${role}`,
+        outcome: "reject",
+        weight: 0.2
+      });
       stopped.push(id);
       void this.recordSessionEvent({ kind: "session.status", sessionId: id, status: "stopped", detail: "subagent stopped" });
     }
@@ -38672,6 +39559,300 @@ class CancipView extends ItemView {
     return `${this.t("sessionLoaded")}\n${sessionId}`;
   }
 
+  private async parallelSubagentsCommand(args: Record<string, unknown>): Promise<string> {
+    if (!this.plugin.settings.multiAgentEnabled) throw new Error(this.t("settingsMultiAgentDisabled"));
+    const goal = stringArg(args.goal) || stringArg(args.prompt) || stringArg(args.task);
+    if (!goal) throw new Error("cancip.subagents.parallel requires args.goal");
+    const configuredMin = clampInt(this.plugin.settings.multiAgentMinAgents, 2, 2, 10);
+    const configuredMax = clampInt(this.plugin.settings.multiAgentMaxAgents, 10, configuredMin, 10);
+    const requestedRows = Array.isArray(args.agents) ? args.agents.filter(isRecord) : [];
+    const requestedCount = clampInt(args.count, this.plugin.settings.multiAgentDefaultAgents, configuredMin, configuredMax);
+    const count = Math.max(configuredMin, Math.min(configuredMax, requestedRows.length || requestedCount));
+    const parentSessionId = stringArg(args.parentSessionId) || this.sessionId;
+    const requestedStepId = stringArg(args.planStepId) || stringArg(args.stepId);
+    const planStepId = await this.ensureSubagentPlanStep(goal, requestedStepId, parentSessionId);
+    const defaultTimeout = clampInt(args.timeoutMinutes, this.plugin.settings.multiAgentTimeoutMinutes, 1, 120);
+    const fallbackRoles = [
+      ["implementation", "给出最直接可执行路线"],
+      ["verification", "独立核验证据、边界和完成条件"],
+      ["critic", "寻找错误假设、遗漏和回归"],
+      ["performance", "寻找更快、更低 Token 且不降质的路线"],
+      ["user-experience", "检查用户可见流程和移动端交互"],
+      ["security", "检查权限、数据完整性和安全风险"],
+      ["compatibility", "检查桌面与移动端兼容性"],
+      ["maintainability", "检查复用、范围和长期维护"],
+      ["evidence", "收集独立、可复现证据"],
+      ["adversarial-review", "尝试推翻完成结论并给出反例"]
+    ];
+    const specs: SubagentStartSpec[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const row = requestedRows[index] ?? {};
+      const fallback = fallbackRoles[index] ?? fallbackRoles[fallbackRoles.length - 1];
+      const role = stringArg(row.role) || fallback[0];
+      const task = stringArg(row.task) || stringArg(row.goal) || `${fallback[1]}：${goal}`;
+      specs.push({
+        goal: task,
+        role,
+        title: stringArg(row.title),
+        parentSessionId,
+        planStepId,
+        acceptance: stringArg(row.acceptance) || stringArg(row.acceptanceCriteria)
+          || (isChineseLanguage(this.plugin.language()) ? "给出可核对证据、明确结论、阻塞和下一步" : "Return verifiable evidence, a clear conclusion, blockers, and the next step"),
+        timeoutMinutes: clampInt(row.timeoutMinutes, defaultTimeout, 1, 120),
+        attempt: clampInt(row.attempt, 1, 1, 99)
+      });
+    }
+
+    const startedIds: string[] = [];
+    for (const spec of specs) {
+      const result = await this.startSubagentCommand(spec as unknown as Record<string, unknown>);
+      const id = result.match(/\bsession-[^\s]+-sub-[a-f0-9]{8}\b/i)?.[0] ?? "";
+      if (id) startedIds.push(id);
+    }
+    if (startedIds.length < 2) throw new Error(`parallel subagent start incomplete: ${startedIds.length}/${count}`);
+    this.plugin.recordScoreEvent({ key: "feature:multi-agent", kind: "feature", label: this.t("settingsMultiAgent"), outcome: "use", weight: 1.5 });
+    this.refreshPlanPanelIfOpen();
+    const wait = args.wait !== false;
+    if (!wait) return this.parallelSubagentStartSummary(startedIds, planStepId);
+
+    const timeoutMs = Math.max(...specs.map((spec) => spec.timeoutMinutes)) * 60000;
+    let terminal = await this.waitForSubagentTerminals(startedIds, timeoutMs);
+    const stillRunning = terminal.filter((entry) => entry.status === "running").map((entry) => entry.id);
+    if (stillRunning.length) {
+      await this.stopSubagentCommand({ parentSessionId, sessionIds: stillRunning });
+      const stoppedIds = new Set(startedIds);
+      terminal = (await this.readSessionHistoryIndex({ force: true })).filter((entry) => stoppedIds.has(entry.id));
+    }
+    const consensusRequested = args.consensus !== false && this.plugin.settings.multiAgentCrossReview;
+    const consensus = consensusRequested
+      ? await this.consensusSubagentsCommand({ parentSessionId, sessionIds: startedIds, goal, planStepId })
+      : "";
+    return [
+      this.parallelSubagentStartSummary(startedIds, planStepId),
+      "",
+      ...terminal.map((entry, index) => this.formatSubagentEntryLine(entry, index + 1)),
+      consensus ? "" : "",
+      consensus ? `${this.t("subagentConsensus")}:\n${consensus}` : ""
+    ].filter(Boolean).join("\n");
+  }
+
+  private parallelSubagentStartSummary(ids: string[], planStepId: string): string {
+    return [
+      `${this.t("subagentStarted")}: ${ids.length}`,
+      `${this.t("planPanelTitle")}: ${planStepId}`,
+      ...ids.map((id) => `- ${id}`)
+    ].join("\n");
+  }
+
+  private async ensureSubagentPlanStep(goal: string, requestedStepId: string, parentSessionId: string): Promise<string> {
+    if (parentSessionId === this.sessionId) {
+      const existing = requestedStepId ? this.findTodoById(requestedStepId) : this.modelPlanTodos().find((todo) => !todo.done);
+      if (existing) return existing.id;
+      const id = requestedStepId || `agent-step-${stableTextHash(`${Date.now()}:${goal}`).slice(0, 8)}`;
+      this.manualTodos.push({
+        id,
+        text: `${isChineseLanguage(this.plugin.language()) ? "并行执行" : "Parallel execution"}：${trimContext(goal, 240)}`,
+        done: false,
+        sendToModel: true,
+        source: "programmatic",
+        createdAt: new Date().toISOString()
+      });
+      this.syncTodoTimingState();
+      await this.saveCurrentSession();
+      return id;
+    }
+    return requestedStepId || `agent-step-${stableTextHash(`${Date.now()}:${goal}`).slice(0, 8)}`;
+  }
+
+  private async waitForSubagentTerminals(sessionIds: string[], timeoutMs: number): Promise<SessionHistoryEntry[]> {
+    const ids = new Set(sessionIds);
+    const deadline = Date.now() + Math.max(1000, timeoutMs);
+    let matches: SessionHistoryEntry[] = [];
+    while (Date.now() < deadline) {
+      const entries = await this.readSessionHistoryIndex({ force: true });
+      matches = entries.filter((entry) => ids.has(entry.id));
+      this.refreshPlanPanelIfOpen();
+      if (matches.length === ids.size && matches.every((entry) => entry.status !== "running")) return matches;
+      await sleep(800);
+    }
+    const entries = await this.readSessionHistoryIndex({ force: true });
+    return entries.filter((entry) => ids.has(entry.id));
+  }
+
+  private async restartSubagentCommand(args: Record<string, unknown>): Promise<string> {
+    const sessionId = stringArg(args.sessionId) || stringArg(args.id);
+    if (!sessionId) throw new Error("cancip.subagents.restart requires args.sessionId");
+    const entry = (await this.readSessionHistoryIndex({ force: true })).find((item) => item.id === sessionId);
+    if (!entry || !entry.subagentGoal) throw new Error(`subagent not found: ${sessionId}`);
+    if (entry.status === "running" || this.isSessionRunning(sessionId)) await this.stopSubagentCommand({ sessionId });
+    return await this.startSubagentCommand({
+      goal: entry.subagentGoal,
+      role: entry.subagentRole,
+      parentSessionId: entry.parentSessionId,
+      planStepId: entry.subagentPlanStepId,
+      acceptance: entry.subagentAcceptance,
+      timeoutMinutes: this.remainingSubagentTimeoutMinutes(entry),
+      attempt: (entry.subagentAttempt ?? 1) + 1,
+      title: entry.title.replace(/\s*\(.*?\)\s*$/, "")
+    });
+  }
+
+  private async deleteSubagentCommand(args: Record<string, unknown>): Promise<string> {
+    const sessionId = stringArg(args.sessionId) || stringArg(args.id);
+    if (!sessionId) throw new Error("cancip.subagents.delete requires args.sessionId");
+    const entries = await this.readSessionHistoryIndex({ force: true });
+    const entry = entries.find((item) => item.id === sessionId);
+    if (!entry?.parentSessionId) throw new Error(`subagent not found: ${sessionId}`);
+    const unfinished = entry.status === "running" || entry.status === "failed" || entry.status === "stopped";
+    if (this.isSessionRunning(sessionId)) await this.stopSubagentCommand({ sessionId });
+    if (unfinished && entry.subagentGoal) await this.returnSubagentGoalToParent(entry);
+    await this.removeSubagentLinkFromParent(entry.parentSessionId, sessionId);
+    const adapter = this.app.vault.adapter;
+    if (await adapter.exists(entry.path)) await adapter.remove(entry.path);
+    const remaining = entries.filter((item) => item.id !== sessionId && !item.eventOnly).sort(compareSessionHistoryEntries);
+    await adapter.write(SESSION_HISTORY_INDEX_PATH, `${JSON.stringify({ schemaVersion: SESSION_HISTORY_SCHEMA_VERSION, entries: remaining }, null, 2)}\n`);
+    this.sessionHistoryCache = { at: Date.now(), mergeFiles: false, entries: remaining };
+    this.sessionHistoryReadPromise = null;
+    this.plugin.clearSessionRequest(sessionId);
+    if (unfinished) {
+      const role = entry.subagentRole || this.t("subagentDefaultRole");
+      this.plugin.recordScoreEvent({
+        key: `feature:subagent-role:${stableTextHash(role).slice(0, 16)}`,
+        kind: "feature",
+        label: `${this.t("subagentLabel")} ${role}`,
+        outcome: "reject",
+        weight: 0.25
+      });
+    }
+    this.refreshPlanPanelIfOpen();
+    return `${this.t("subagentDelete")}: ${sessionId}${unfinished ? `\n${isChineseLanguage(this.plugin.language()) ? "主 Agent 已接管未完成目标" : "The main agent took over the unfinished goal"}` : ""}`;
+  }
+
+  private async returnSubagentGoalToParent(entry: SessionHistoryEntry): Promise<void> {
+    const text = `${isChineseLanguage(this.plugin.language()) ? "主 Agent 接管" : "Main agent takeover"}：${entry.subagentGoal}`;
+    if (entry.parentSessionId === this.sessionId) {
+      if (!this.manualTodos.some((todo) => normalizeUiButtonLabel(todo.text) === normalizeUiButtonLabel(text))) {
+        this.manualTodos.push({
+          id: `takeover-${stableTextHash(`${entry.id}:${entry.subagentGoal}`).slice(0, 8)}`,
+          text,
+          done: false,
+          sendToModel: true,
+          source: "programmatic",
+          createdAt: new Date().toISOString()
+        });
+        this.syncTodoTimingState();
+        await this.saveCurrentSession();
+      }
+      return;
+    }
+    const parent = (await this.readSessionHistoryIndex()).find((item) => item.id === entry.parentSessionId);
+    const path = parent?.path || `${SESSION_HISTORY_DIR}/${entry.parentSessionId}.json`;
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(path))) return;
+    const snapshot = JSON.parse(await adapter.read(path)) as Record<string, unknown>;
+    const todos = normalizeManualTodos(snapshot.manualTodos);
+    if (!todos.some((todo) => normalizeUiButtonLabel(todo.text) === normalizeUiButtonLabel(text))) {
+      todos.push({ id: `takeover-${stableTextHash(`${entry.id}:${entry.subagentGoal}`).slice(0, 8)}`, text, done: false, sendToModel: true, source: "programmatic", createdAt: new Date().toISOString() });
+      snapshot.manualTodos = todos;
+      snapshot.updatedAt = new Date().toISOString();
+      await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
+    }
+  }
+
+  private async removeSubagentLinkFromParent(parentSessionId: string, childSessionId: string): Promise<void> {
+    if (parentSessionId === this.sessionId) {
+      this.subagentIds.delete(childSessionId);
+      await this.saveCurrentSession();
+      return;
+    }
+    const parent = (await this.readSessionHistoryIndex()).find((item) => item.id === parentSessionId);
+    const path = parent?.path || `${SESSION_HISTORY_DIR}/${parentSessionId}.json`;
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(path))) return;
+    const snapshot = JSON.parse(await adapter.read(path)) as Record<string, unknown>;
+    const ids = (Array.isArray(snapshot.subagentIds) ? snapshot.subagentIds : [])
+      .filter((item): item is string => typeof item === "string" && item !== childSessionId);
+    snapshot.subagentIds = ids;
+    snapshot.updatedAt = new Date().toISOString();
+    await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
+    if (parent) await this.upsertSessionHistoryIndex({ ...parent, subagentIds: ids, updatedAt: String(snapshot.updatedAt) });
+  }
+
+  private async consensusSubagentsCommand(args: Record<string, unknown>): Promise<string> {
+    const parentSessionId = stringArg(args.parentSessionId) || this.sessionId;
+    const requested = Array.isArray(args.sessionIds) ? args.sessionIds.filter((item): item is string => typeof item === "string") : [];
+    const entries = await this.readSessionHistoryIndex({ force: true });
+    const ids = new Set(requested);
+    const children = entries.filter((entry) => requested.length ? ids.has(entry.id) : entry.parentSessionId === parentSessionId);
+    const reports: string[] = [];
+    for (const entry of children.slice(0, 10)) {
+      const result = await this.subagentTerminalResult(entry);
+      reports.push([
+        `## ${entry.subagentRole || this.t("subagentLabel")} · ${entry.id}`,
+        `status: ${entry.status ?? "idle"}`,
+        `task: ${entry.subagentGoal ?? ""}`,
+        `acceptance: ${entry.subagentAcceptance ?? ""}`,
+        `elapsed: ${this.subagentElapsedText(entry)}`,
+        result || "No terminal result"
+      ].join("\n"));
+    }
+    if (reports.length < 2) return isChineseLanguage(this.plugin.language()) ? "至少需要两个子 Agent 结果才能生成共识。" : "At least two subagent results are required for consensus.";
+    const goal = stringArg(args.goal) || children[0]?.subagentGoal || this.resolveTaskGoal("");
+    const prompt = [
+      "You are the consensus arbiter for real Cancip child sessions.",
+      `Goal: ${goal}`,
+      "Compare only the supplied evidence. Challenge unsupported claims, identify agreement and conflicts, rank evidence strength, preserve unresolved risks, and produce one concise refined conclusion with the exact next action. Do not invent tool execution or file changes.",
+      ...reports.map((report) => trimContext(report, 2600))
+    ].join("\n\n");
+    const profile = this.plugin.activeApiProfile();
+    if (!profile.apiUrl || !profile.apiKey || !profile.model) return reports.join("\n\n");
+    const saved = { audit: this.lastModelCallAudit, stats: this.activeModelCharStats, usage: this.turnModelUsage };
+    try {
+      const answer = await this.callModelWithRetries(
+        prompt,
+        { system: "Synthesize independent subagent evidence into a falsifiable consensus.", contextText: "", images: [] },
+        prompt,
+        "subagent consensus timed out",
+        this.modelCallTimeoutForPrompt(goal)
+      );
+      return visibleAssistantAnswer(answer, false) || trimContext(answer, 6000);
+    } finally {
+      this.lastModelCallAudit = saved.audit;
+      this.activeModelCharStats = saved.stats;
+      this.turnModelUsage = saved.usage;
+    }
+  }
+
+  private async subagentTerminalResult(entry: SessionHistoryEntry): Promise<string> {
+    try {
+      if (!(await this.app.vault.adapter.exists(entry.path))) return "";
+      const snapshot = JSON.parse(await this.app.vault.adapter.read(entry.path)) as Record<string, unknown>;
+      const messages = Array.isArray(snapshot.messages) ? snapshot.messages.filter(isRecord) : [];
+      const terminal = [...messages].reverse().find((message) => message.role === "assistant" && typeof message.content === "string" && !prepareMessageDisplay(redactSensitiveText(message.content)).processOnly);
+      return terminal && typeof terminal.content === "string" ? trimContext(redactSensitiveText(terminal.content), 5000) : "";
+    } catch {
+      return "";
+    }
+  }
+
+  private remainingSubagentTimeoutMinutes(entry: SessionHistoryEntry): number {
+    const deadline = Date.parse(entry.subagentDeadlineAt || "");
+    if (!Number.isFinite(deadline)) return this.plugin.settings.multiAgentTimeoutMinutes;
+    return Math.max(1, Math.ceil((deadline - Date.now()) / 60000));
+  }
+
+  private subagentElapsedMs(entry: SessionHistoryEntry): number {
+    const start = Date.parse(entry.subagentStartedAt || entry.startedAt || entry.createdAt);
+    if (!Number.isFinite(start)) return 0;
+    const completed = Date.parse(entry.subagentCompletedAt || entry.completedAt || entry.failedAt || entry.stoppedAt || "");
+    const end = entry.status === "running" || !Number.isFinite(completed) ? Date.now() : completed;
+    return Math.max(0, end - start);
+  }
+
+  private subagentElapsedText(entry: SessionHistoryEntry): string {
+    return formatElapsed(this.subagentElapsedMs(entry));
+  }
+
   async openSavedSessionById(sessionId: string): Promise<boolean> {
     return await this.loadSessionById(sessionId);
   }
@@ -38711,6 +39892,11 @@ class CancipView extends ItemView {
       entry.parentSessionId ? `${this.t("subagentParent")}: ${entry.parentSessionId}` : "",
       entry.subagentRole ? `${this.t("subagentRole")}: ${entry.subagentRole}` : "",
       entry.subagentGoal ? `${this.t("subagentGoal")}: ${trimContext(entry.subagentGoal, 140)}` : "",
+      entry.subagentPlanStepId ? `${this.t("planPanelTitle")}: ${entry.subagentPlanStepId}` : "",
+      entry.subagentAcceptance ? `${this.t("subagentAcceptance")}: ${trimContext(entry.subagentAcceptance, 180)}` : "",
+      entry.subagentDeadlineAt ? `${this.t("subagentDeadline")}: ${entry.subagentDeadlineAt}` : "",
+      `${isChineseLanguage(this.plugin.language()) ? "尝试" : "Attempt"}: ${entry.subagentAttempt ?? 1}`,
+      `${isChineseLanguage(this.plugin.language()) ? "耗时" : "Elapsed"}: ${this.subagentElapsedText(entry)}`,
       entry.subagentProgress ? `${this.t("subagentProgress")}: ${trimContext(entry.subagentProgress, 160)}` : "",
       `id: ${entry.id}`,
       `path: ${entry.path}`
@@ -38762,6 +39948,12 @@ class CancipView extends ItemView {
       subagentRole: typeof snapshot.subagentRole === "string" ? snapshot.subagentRole : existing?.subagentRole,
       subagentGoal: typeof snapshot.subagentGoal === "string" ? snapshot.subagentGoal : existing?.subagentGoal,
       subagentProgress: typeof snapshot.subagentProgress === "string" ? snapshot.subagentProgress : existing?.subagentProgress,
+      subagentPlanStepId: typeof snapshot.subagentPlanStepId === "string" ? snapshot.subagentPlanStepId : existing?.subagentPlanStepId,
+      subagentAcceptance: typeof snapshot.subagentAcceptance === "string" ? snapshot.subagentAcceptance : existing?.subagentAcceptance,
+      subagentDeadlineAt: typeof snapshot.subagentDeadlineAt === "string" ? snapshot.subagentDeadlineAt : existing?.subagentDeadlineAt,
+      subagentAttempt: typeof snapshot.subagentAttempt === "number" ? snapshot.subagentAttempt : existing?.subagentAttempt,
+      subagentStartedAt: typeof snapshot.subagentStartedAt === "string" ? snapshot.subagentStartedAt : existing?.subagentStartedAt,
+      subagentCompletedAt: typeof snapshot.subagentCompletedAt === "string" ? snapshot.subagentCompletedAt : existing?.subagentCompletedAt,
       path
     });
     await this.refreshOpenSessionFromDisk(sessionId, this.sessionStatusLabel(status));
@@ -38805,9 +39997,22 @@ class CancipView extends ItemView {
     snapshot.completedNotice = true;
     snapshot.unread = true;
     snapshot.subagentProgress = isEmptyApiReply ? this.t("callFailed") : this.t("done");
+    snapshot.subagentCompletedAt = new Date().toISOString();
     snapshot.resumableTask = isEmptyApiReply ? { prompt: rawPrompt, reason: "failed", at: Date.now(), detail: "detached api response empty" } : null;
     snapshot.updatedAt = new Date().toISOString();
     await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
+    if (typeof snapshot.parentSessionId === "string" && snapshot.parentSessionId.trim()) {
+      const role = typeof snapshot.subagentRole === "string" && snapshot.subagentRole.trim()
+        ? snapshot.subagentRole.trim()
+        : this.t("subagentDefaultRole");
+      this.plugin.recordScoreEvent({
+        key: `feature:subagent-role:${stableTextHash(role).slice(0, 16)}`,
+        kind: "feature",
+        label: `${this.t("subagentLabel")} ${role}`,
+        outcome: isEmptyApiReply ? "reject" : "use",
+        weight: isEmptyApiReply ? 0.5 : 0.7
+      });
+    }
     const existing = (await this.readSessionHistoryIndex()).find((entry) => entry.id === sessionId);
     await this.upsertSessionHistoryIndex({
       id: sessionId,
@@ -38830,6 +40035,12 @@ class CancipView extends ItemView {
       subagentRole: typeof snapshot.subagentRole === "string" ? snapshot.subagentRole : existing?.subagentRole,
       subagentGoal: typeof snapshot.subagentGoal === "string" ? snapshot.subagentGoal : existing?.subagentGoal,
       subagentProgress: typeof snapshot.subagentProgress === "string" ? snapshot.subagentProgress : existing?.subagentProgress,
+      subagentPlanStepId: typeof snapshot.subagentPlanStepId === "string" ? snapshot.subagentPlanStepId : existing?.subagentPlanStepId,
+      subagentAcceptance: typeof snapshot.subagentAcceptance === "string" ? snapshot.subagentAcceptance : existing?.subagentAcceptance,
+      subagentDeadlineAt: typeof snapshot.subagentDeadlineAt === "string" ? snapshot.subagentDeadlineAt : existing?.subagentDeadlineAt,
+      subagentAttempt: typeof snapshot.subagentAttempt === "number" ? snapshot.subagentAttempt : existing?.subagentAttempt,
+      subagentStartedAt: typeof snapshot.subagentStartedAt === "string" ? snapshot.subagentStartedAt : existing?.subagentStartedAt,
+      subagentCompletedAt: typeof snapshot.subagentCompletedAt === "string" ? snapshot.subagentCompletedAt : existing?.subagentCompletedAt,
       path
     });
     await this.refreshOpenSessionFromDisk(sessionId, isEmptyApiReply ? this.t("sessionFailed") : this.t("sessionCompleted"));
@@ -39228,6 +40439,12 @@ class CancipView extends ItemView {
       subagentRole: this.subagentRole || undefined,
       subagentGoal: this.subagentGoal || undefined,
       subagentProgress: this.subagentProgress || undefined,
+      subagentPlanStepId: this.subagentPlanStepId || undefined,
+      subagentAcceptance: this.subagentAcceptance || undefined,
+      subagentDeadlineAt: this.subagentDeadlineAt || undefined,
+      subagentAttempt: this.subagentAttempt || undefined,
+      subagentStartedAt: this.subagentStartedAt || undefined,
+      subagentCompletedAt: this.subagentCompletedAt || undefined,
       mode: this.exportModeId(this.mode),
       accessMode: this.plugin.settings.accessMode,
       includeCurrentFileForSession: this.includeCurrentFileForSession,
@@ -39240,6 +40457,7 @@ class CancipView extends ItemView {
         hasApiKey: sessionProfile.hasApiKey
       },
       taskControl: this.taskControl ? { ...this.taskControl } : null,
+      contextCompaction: this.contextCompaction ? { ...this.contextCompaction } : null,
       resumableTask: this.resumableTask ? { ...this.resumableTask } : null,
       automationTaskId: this.activeAutomationTaskId || this.resumableAutomationTaskId || undefined,
       automationNotifyMode: this.activeAutomationTaskId ? this.activeAutomationNotifyMode : this.resumableAutomationNotifyMode,
@@ -39302,6 +40520,8 @@ class CancipView extends ItemView {
         text: todo.text,
         done: todo.done,
         createdAt: todo.createdAt,
+        startedAt: todo.startedAt,
+        completedAt: todo.completedAt,
         sendToModel: todo.sendToModel !== false,
         planOnly: todo.planOnly === true,
         source: todo.source ?? "manual"
@@ -39912,6 +41132,9 @@ class CancipView extends ItemView {
     if (!directVaultFileTask && !vaultTargetOpenTask && !externalPath && !policy.compactStateChange && (policy.includeToolCatalog || policy.includeMemoryIndex || policy.includeWorkingState)) {
       sections.push(this.resourceRetrievalPolicyPrompt());
     }
+    if (!directVaultFileTask && !vaultTargetOpenTask && !externalPath && policy.intent === "implementation" && (policy.includeToolProtocol || policy.includeWorkingState)) {
+      sections.push(this.plugin.scorePolicyPrompt());
+    }
     if (policy.includeAccessPrompt) {
       sections.push(accessPrompt);
       if (!directVaultFileTask && !boundedUiButtonWorkflow) sections.push(this.t("vaultNoteReviewPrompt"));
@@ -40154,10 +41377,12 @@ class CancipView extends ItemView {
     }
     const policy = this.promptPayloadPolicy(prompt);
     const anchors = policy.includeHistoryAnchors ? this.conversationAnchors() : "";
+    const compacted = this.contextCompaction?.summary.trim() ?? "";
     const recent = policy.includeRecentTranscript ? this.recentConversationForModel(rawPrompt) : "";
     const control = policy.includeWorkingState ? this.taskControlBlockForModel(rawPrompt, prompt) : "";
     return [
       anchors ? `${this.t("conversationAnchors")}:\n${anchors}` : "",
+      compacted ? `## Compacted conversation state\n${compacted}` : "",
       recent ? `## Recent conversation\n${recent}` : "",
       control,
       `${this.t("userQuestion")}：${prompt}`,
@@ -40203,6 +41428,101 @@ class CancipView extends ItemView {
       selected.push(`${message.role}: ${trimContext(visible, 360)}${runSummary ? ` | tools ${runSummary}` : ""}`);
     }
     return trimPromptPayload(selected.reverse().join("\n\n"), 2200);
+  }
+
+  private async ensureContextCompaction(): Promise<string> {
+    const settings = this.plugin.settings;
+    if (!settings.contextCompactionEnabled || this.activeAutomationTaskId) return "";
+    const conversation = this.messages.filter((message) => message.role === "user" || message.role === "assistant");
+    const sourceTokens = estimateTextTokens(conversation.map((message) => message.content).join("\n\n"));
+    if (sourceTokens < settings.contextCompactionTriggerTokens) return "";
+    const keep = Math.max(2, Math.min(settings.contextCompactionKeepRecentMessages, conversation.length));
+    const oldMessages = conversation.slice(0, Math.max(0, conversation.length - keep));
+    if (!oldMessages.length) return "";
+    const through = oldMessages[oldMessages.length - 1];
+    const existingThroughIndex = this.contextCompaction
+      ? oldMessages.findIndex((message) => message.id === this.contextCompaction?.throughMessageId)
+      : -1;
+    const prefix = existingThroughIndex >= 0 ? oldMessages.slice(0, existingThroughIndex + 1) : [];
+    const prefixHash = prefix.length ? contextCompactionMessagesHash(prefix) : "";
+    const incremental = Boolean(this.contextCompaction && existingThroughIndex >= 0 && prefixHash === this.contextCompaction.sourceHash);
+    const pending = incremental ? oldMessages.slice(existingThroughIndex + 1) : oldMessages;
+    if (!pending.length && this.contextCompaction?.throughMessageId === through.id) {
+      return this.contextCompactionStatusText(this.contextCompaction);
+    }
+    const source = pending.map((message) => this.contextCompactionMessageText(message)).filter(Boolean).join("\n\n");
+    const previousSummary = incremental ? this.contextCompaction?.summary ?? "" : "";
+    const targetChars = Math.max(2200, Math.min(30000, settings.contextCompactionTargetTokens * 3));
+    let summary = deterministicContextCompactionSummary(previousSummary, source, targetChars, this.plugin.language());
+    if (settings.contextCompactionUseModel && source.trim()) {
+      const profile = this.activeRequestApiProfile ?? this.plugin.activeApiProfile();
+      if (profile.apiUrl && profile.apiKey && profile.model) {
+        try {
+          const prompt = [
+            "Create an incremental structured conversation-state summary for a coding agent.",
+            "Preserve only durable facts needed to continue: user goals, explicit constraints and preferences, decisions, completed actions, tool evidence, failures/blockers, unfinished numbered work, exact paths/IDs, and verification results.",
+            "Never invent completion. Keep unresolved conflicts explicit. Do not include hidden reasoning, generic narration, raw request JSON, duplicate wording, greetings, or recommendations.",
+            `Maximum output: about ${Math.max(400, settings.contextCompactionTargetTokens)} tokens.`,
+            previousSummary ? `Previous compacted state:\n${trimContext(previousSummary, targetChars)}` : "",
+            `New older messages to merge:\n${trimContext(source, 80000)}`
+          ].filter(Boolean).join("\n\n");
+          const modelSummary = await this.callModelWithRetries(
+            prompt,
+            { system: "Return only the compact structured state in concise Markdown. No tool calls and no cancip-choices marker.", contextText: "", images: [] },
+            prompt,
+            "context compaction timed out",
+            120000,
+            undefined,
+            profile,
+            undefined,
+            true,
+            false
+          );
+          const cleaned = visibleAssistantAnswer(modelSummary, true).trim();
+          if (cleaned) summary = trimContext(cleaned, targetChars);
+        } catch (error) {
+          console.warn("Cancip model context compaction fell back to local summary", error);
+        }
+      }
+    }
+    const sourceHash = contextCompactionMessagesHash(oldMessages);
+    this.contextCompaction = {
+      schemaVersion: 1,
+      throughMessageId: through.id,
+      throughCreatedAt: through.createdAt,
+      sourceHash,
+      summary,
+      updatedAt: new Date().toISOString(),
+      sourceChars: oldMessages.reduce((total, message) => total + message.content.length, 0),
+      compactedChars: summary.length,
+      estimatedSourceTokens: estimateTextTokens(oldMessages.map((message) => message.content).join("\n\n")),
+      estimatedCompactedTokens: estimateTextTokens(summary)
+    };
+    this.plugin.recordScoreEvent({ key: "feature:context-compaction", kind: "feature", label: this.t("settingsContextCompaction"), outcome: "use" });
+    this.scheduleLiveSessionSave();
+    return this.contextCompactionStatusText(this.contextCompaction);
+  }
+
+  private contextCompactionMessageText(message: ChatMessage): string {
+    const display = prepareMessageDisplay(redactSensitiveText(message.content));
+    const visible = display.processOnly ? "" : trimContext(display.visibleContent.replace(/\s+/g, " ").trim(), 1200);
+    const runs = (message.toolRuns ?? [])
+      .filter((run) => run.status !== "pending" && run.status !== "executing")
+      .slice(-6)
+      .map((run) => `${run.status}: ${trimContext(describeActionPlain(run.action), 180)}${run.result ? ` => ${trimContext(redactSensitiveText(run.result), 260)}` : run.error ? ` => ${trimContext(redactSensitiveText(run.error), 260)}` : ""}`)
+      .join("\n");
+    return [`${message.role.toUpperCase()} ${new Date(message.createdAt).toISOString()}`, visible, runs].filter(Boolean).join("\n");
+  }
+
+  private contextCompactionStatusText(state: ContextCompactionState): string {
+    if (!this.plugin.settings.contextCompactionShowStats) return "";
+    return this.formatAuditSections([{
+      title: this.t("settingsContextCompaction"),
+      content: this.t("contextCompactionStats", {
+        source: state.estimatedSourceTokens,
+        target: state.estimatedCompactedTokens
+      })
+    }]);
   }
 
   private executionGuideForPrompt(prompt: string): string {
@@ -41292,6 +42612,7 @@ class CancipView extends ItemView {
         "- Vault 搜索：使用 command cancip.searchVault，args={query,scope:'filename'|'content'|'both',limit:8}。多个独立查询放入同一个 actions 数组并列执行；只有查 Obsidian 命令时才用 obsidian.listCommands。示例：{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"关键词\",\"scope\":\"content\",\"limit\":8}}]}。",
         "- Obsidian 命令：找候选用 obsidian.listCommands，必须传 args={query:'用户给的名称、ID 片段或用途',limit:8}；解析一个明确候选用 obsidian.resolveCommand；只有用户要求执行时才用 obsidian.execute，执行后核对可见状态。",
         "- 会话历史：列最近/全部会话用 cancip.sessionHistory，args={all:true,mode:'summary',limit:12}；读指定旧会话用 args={sessionId:'完整 session-... ID',mode:'full'}，只有确需当时上下文时才加 includeContext:true。省略 all/sessionId 只会读取当前会话。",
+        "- 多 Agent：适合并行的复杂步骤用 cancip.subagents.parallel，显式调用至少 2 个真实子会话；给每个 Agent 不同角色/任务/验收/时限，依赖结果时 wait:true，交叉复核时 consensus:true。",
         "- 改：最小读取 -> patch/write/config/command -> outcome.verify；权限由 UI 处理。",
         "- 运行时 UI/按钮：用 obsidian.ui.buttons 和 obsidian.ui.buttonRules 读当前状态，用 obsidian.ui.applyButtonRules 修改；这是权威入口，不搜 Vault、不猜配置文件或源码。拿到按钮和规则后直接 apply，再按同 selector 定向读回；需要恢复时只 reset 本次规则后再读回。",
         "- 插件、Skill、附件、自动化、GitHub、TTS：先查对应 help/list，再按需读取具体入口。",
@@ -41305,6 +42626,7 @@ class CancipView extends ItemView {
       "- Vault search: use command cancip.searchVault with args={query,scope:'filename'|'content'|'both',limit:8}. Put independent queries in one actions array; obsidian.listCommands is only for Obsidian command lookup. Example: {\"actions\":[{\"type\":\"command\",\"command\":\"cancip.searchVault\",\"args\":{\"query\":\"term\",\"scope\":\"content\",\"limit\":8}}]}.",
       "- Obsidian commands: find candidates with obsidian.listCommands and args={query:'user name, ID fragment, or purpose',limit:8}; resolve one candidate with obsidian.resolveCommand; use obsidian.execute only when execution was requested, then verify visible state.",
       "- Session history: list recent/all sessions with cancip.sessionHistory args={all:true,mode:'summary',limit:12}; read one saved session with args={sessionId:'full session-... ID',mode:'full'}, adding includeContext:true only when its original context is required. Omitting both all and sessionId reads only the current session.",
+      "- Multi-agent: use cancip.subagents.parallel for a complex independently parallelizable step. Explicit invocation needs at least two real child sessions with distinct roles, tasks, acceptance criteria, and deadlines; use wait:true for dependent work and consensus:true for cross-review.",
       "- Change: focused read -> patch/write/config/command -> outcome.verify; UI handles access.",
       "- Runtime UI/buttons: read current state with obsidian.ui.buttons and obsidian.ui.buttonRules, mutate with obsidian.ui.applyButtonRules. These runtime commands are authoritative: do not search the Vault or guess config/source files. After button and rule evidence, apply directly, verify with the same selector, and reset only the new rule when restoration is required.",
       "- Plugins, Skills, attachments, automations, GitHub, and TTS start with the matching help/list entry.",
@@ -41335,7 +42657,7 @@ class CancipView extends ItemView {
         "- GitHub：先查 github.help，再用 github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin。",
         "- 自动化/新闻/Vault/记忆维护：用 cancip.automation.templates/list/add/update/addTemplate/run/remove、cancip.newsBrief、cancip.vaultDailyReport、cancip.memoryDream。",
         `- 验收/变异测试/回归：先用 cancip.acceptance.plan 或 status 读取当前版本矩阵；每次用 cancip.acceptance.record 写入 ${CANCIP_ACCEPTANCE_LEDGER_PATH}，明确 classId、caseSlot(B/V1/V2/V3)、status、quality、prompt、actual、evidence。程序补模型、耗时、步骤、token，并同步可读报告。四个槽位的最新结果均为 high/pass 才完成；失败后修通用根因再复测原槽位。`,
-        "- 子 agent/并行拆分：需要分头查资料、长任务拆段或后台试探时，用 cancip.subagents.start；用 list/status 查进度，用 stop 停止，用 open 跳转子会话。",
+        "- 子 Agent/并行拆分：单分支后台分析用 cancip.subagents.start；复杂且可并行的计划步骤优先 cancip.subagents.parallel，显式多 Agent 至少创建 2 个真实子会话，每个给不同角色/方法、具体任务、验收标准和时限；需要等结果再推进时用 wait:true，需要交叉挑错和精炼共识时用 consensus:true。用 list/status 查进度，stop 停止，open 跳转，restart 重开，delete 删除并把未完成目标交回主 Agent，consensus 可重新汇总。",
         "- 审核/结果/历史/自修复：AI 改普通笔记会自动标记审核并备份原文；执行后用 cancip.outcome.observe/verify/capture 获取状态和视觉证据，只针对失败差异有限校正，达到上限就停止并交审核；PDF 证据走 cancip.outcome.exportPdf；手动审核数据用 cancip.reviewGate/list；历史上下文用 sessionEvents/sessionHistory。",
         "如果目标或命令不明确，先运行 cancip.findTarget；如果路线不明显，运行 cancip.capability.resolve {query,scope:'auto',limit:4}（或无 query 的 cancip.tools.index）；如果动作格式不清楚，再运行 cancip.tools.help。不要把全库泛搜当默认发现步骤；外部知识不足时可 web.search/web.fetch。"
       ].join("\n");
@@ -41359,7 +42681,7 @@ class CancipView extends ItemView {
       "- GitHub: use github.help first, then github.status/repo/issues/pulls/releases/workflowRuns/branches/file/createIssue/installObsidianPlugin.",
       "- Automation/news/vault/memory maintenance: use cancip.automation.templates/list/add/update/addTemplate/run/remove, cancip.newsBrief, cancip.vaultDailyReport, and cancip.memoryDream.",
       `- Acceptance/variant/regression testing: call cancip.acceptance.plan or status for the current version matrix. Record each observed case in ${CANCIP_ACCEPTANCE_LEDGER_PATH} with classId, caseSlot(B/V1/V2/V3), status, quality, prompt, actual, and evidence. Cancip fills model/time/steps/tokens and the readable report. A class completes only when the latest result in every slot is high/pass.`,
-      "- Subagents/parallel delegation: use cancip.subagents.start for split research, long-task chunks, or background probes; list/status for progress, stop to cancel, open to jump to a child session.",
+      "- Subagents/parallel delegation: use cancip.subagents.start for one background analysis branch. For a complex Plan step that can run independently, prefer cancip.subagents.parallel; an explicit multi-agent request must create at least two real child sessions with distinct roles/methods, concrete tasks, acceptance criteria, and deadlines. Use wait:true before dependent work and consensus:true for cross-critique and a refined consensus. Use list/status for progress, stop to cancel, open to inspect, restart to rerun, delete to return unfinished work to the parent, and consensus to resynthesize.",
       "- Review/outcome/history/self-repair: AI note edits are review-marked with rollback. Use cancip.outcome.observe/verify/capture after execution, correct only failed differences within the attempt limit, and stop with evidence for review when the limit is reached; use cancip.outcome.exportPdf for installed-exporter PDF evidence. Use reviewGate/list and sessionEvents/sessionHistory for review/history.",
       "If the target or command is unclear, run cancip.findTarget first; if no route is obvious, run cancip.capability.resolve {query,scope:'auto',limit:4} (or cancip.tools.index without a query); if the action format is unclear, run cancip.tools.help. Do not do a broad vault search as the default discovery step; use web.search/web.fetch when external knowledge is the missing piece."
     ].join("\n");
@@ -42128,10 +43450,14 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.sessionEvents", "cancip.sessionEvents", ["session", "events", "audit", "trace", "history", "log", "会话", "事件", "审计", "日志", "复盘"], 83),
       commandTarget("command:cancip.sessionHistory", "cancip.sessionHistory", ["session", "history", "transcript", "messages", "context", "会话", "历史", "上下文", "聊天记录", "按需"], 84),
       commandTarget("command:cancip.subagents.start", "cancip.subagents.start", ["subagent", "agent", "child", "parallel", "delegate", "子agent", "子代理", "并行", "分头", "委派"], 84),
+      commandTarget("command:cancip.subagents.parallel", "cancip.subagents.parallel", ["subagent", "multi agent", "parallel", "consensus", "cross review", "多agent", "子agent", "并行", "共识", "交叉复核"], 92),
       commandTarget("command:cancip.subagents.list", "cancip.subagents.list", ["subagent", "agent", "child", "status", "list", "子agent", "子代理", "进度", "列表"], 82),
       commandTarget("command:cancip.subagents.status", "cancip.subagents.status", ["subagent", "agent", "child", "status", "progress", "子agent", "子代理", "状态", "进度"], 82),
       commandTarget("command:cancip.subagents.stop", "cancip.subagents.stop", ["subagent", "agent", "child", "stop", "cancel", "子agent", "子代理", "停止", "取消"], 80),
       commandTarget("command:cancip.subagents.open", "cancip.subagents.open", ["subagent", "agent", "child", "open", "jump", "子agent", "子代理", "打开", "跳转"], 78),
+      commandTarget("command:cancip.subagents.restart", "cancip.subagents.restart", ["subagent", "restart", "retry", "子agent", "重启", "重试"], 82),
+      commandTarget("command:cancip.subagents.delete", "cancip.subagents.delete", ["subagent", "delete", "takeover", "子agent", "删除", "主agent接管"], 80),
+      commandTarget("command:cancip.subagents.consensus", "cancip.subagents.consensus", ["subagent", "consensus", "cross review", "arbiter", "子agent", "共识", "交叉复核", "仲裁"], 86),
       commandTarget("command:cancip.installedPlugins", "cancip.installedPlugins", ["plugin", "plugins", "installed", "enabled", "obsidian", "插件", "已安装", "启用", "清单", "列表"], 84),
       commandTarget("command:cancip.pluginCapabilities", "cancip.pluginCapabilities", ["plugin", "plugins", "capability", "api", "commands", "ui", "notedraw", "notdraw", "excalidraw", "quickadd", "dataview", "runjs", "插件", "插件能力", "插件api", "插件命令", "涂鸦", "高亮"], 88),
       commandTarget("command:cancip.pluginRoute", "cancip.pluginRoute", ["plugin", "plugins", "route", "auto", "adapter", "api", "commands", "new plugin", "插件", "插件路由", "自动接入", "新插件", "插件api", "插件命令"], 89),
@@ -42425,10 +43751,14 @@ class CancipView extends ItemView {
       "cancip.sessionEvents": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.sessionEvents\",\"args\":{\"limit\":50}}]}",
       "cancip.sessionHistory": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.sessionHistory\",\"args\":{\"mode\":\"summary\",\"limit\":12}}]}",
       "cancip.subagents.start": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.start\",\"args\":{\"goal\":\"分头检查这个问题的相关资料\",\"role\":\"researcher\"}}]}",
+      "cancip.subagents.parallel": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.parallel\",\"args\":{\"goal\":\"核对并完成当前复杂任务\",\"planStepId\":\"step-2\",\"wait\":true,\"consensus\":true,\"agents\":[{\"role\":\"implementation\",\"task\":\"给出可执行方案\",\"acceptance\":\"提供证据和结论\",\"timeoutMinutes\":10},{\"role\":\"critic\",\"task\":\"寻找反例和遗漏\",\"acceptance\":\"列出可复现风险\",\"timeoutMinutes\":10}]}}]}",
       "cancip.subagents.list": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.list\",\"args\":{\"parentSessionId\":\"session-...\"}}]}",
       "cancip.subagents.status": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.status\",\"args\":{\"sessionId\":\"session-...\"}}]}",
       "cancip.subagents.stop": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.stop\",\"args\":{\"sessionId\":\"session-...\"}}]}",
       "cancip.subagents.open": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.open\",\"args\":{\"sessionId\":\"session-...\"}}]}",
+      "cancip.subagents.restart": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.restart\",\"args\":{\"sessionId\":\"session-...\"}}]}",
+      "cancip.subagents.delete": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.delete\",\"args\":{\"sessionId\":\"session-...\"}}]}",
+      "cancip.subagents.consensus": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.subagents.consensus\",\"args\":{\"parentSessionId\":\"session-...\"}}]}",
       "cancip.installedPlugins": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.installedPlugins\"}]}",
       "cancip.pluginCapabilities": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.pluginCapabilities\",\"args\":{\"query\":\"notedraw 涂鸦 高亮\",\"includeApi\":true,\"includeFiles\":true,\"commandLimit\":20}}]}",
       "cancip.pluginRoute": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.pluginRoute\",\"args\":{\"query\":\"插件名或功能词\",\"includeApi\":true}}]}",
@@ -44461,6 +45791,7 @@ class CancipView extends ItemView {
       this.syncToolRunAcrossMessages(run);
       this.renderMessagesAfterMutation();
       await this.recordToolFeedback({ status: "executed", summary: run.summary, detail: finalResult, at: run.executedAt, action: run.action });
+      this.recordToolScore(run.action, "use", run.cached ? 0.15 : 1);
       void this.recordSessionEvent({ kind: "tool.finish", runId: run.id, toolStatus: run.status, summary: run.summary, detail: finalResult });
       void this.saveCurrentSession();
       this.plugin.refreshStatusBarAttention();
@@ -44495,11 +45826,31 @@ class CancipView extends ItemView {
       this.syncToolRunAcrossMessages(run);
       this.renderMessagesAfterMutation();
       await this.recordToolFeedback({ status: "failed", summary: run.summary, detail: reason, at: run.executedAt, action: run.action });
+      this.recordToolScore(run.action, "reject", 0.45);
       void this.recordSessionEvent({ kind: "tool.finish", runId: run.id, toolStatus: run.status, summary: run.summary, detail: reason });
       void this.saveCurrentSession();
       this.plugin.refreshStatusBarAttention();
       return this.t("actionFailed", { reason });
     }
+  }
+
+  private recordToolScore(action: CancipAction, outcome: ScoreEvent["outcome"], weight = 1): void {
+    if (action.type === "command") {
+      const command = normalizeCommandBusName(action.command) || action.command;
+      const skillPath = /^cancip\.skills\.(?:read|run|execute)$/i.test(command)
+        ? stringArg(action.args?.path) || stringArg(action.args?.id) || stringArg(action.args?.name)
+        : "";
+      this.plugin.recordScoreEvent({
+        key: skillPath ? `skill:${skillPath}` : `tool:${command}`,
+        kind: skillPath ? "skill" : "tool",
+        label: skillPath || command,
+        outcome,
+        weight
+      });
+      return;
+    }
+    const label = action.type === "automation" ? `automation.${action.op}` : action.type === "todo" ? `todo.${action.op}` : action.type;
+    this.plugin.recordScoreEvent({ key: `tool:${label}`, kind: "tool", label, outcome, weight });
   }
 
   private shouldCaptureAiVaultMutationsForAction(action: CancipAction): boolean {
@@ -47347,7 +48698,10 @@ class CancipView extends ItemView {
       || command === "cancip.automation.run"
       || command === "cancip.automation.remove"
       || command === "cancip.subagents.start"
+      || command === "cancip.subagents.parallel"
       || command === "cancip.subagents.stop"
+      || command === "cancip.subagents.restart"
+      || command === "cancip.subagents.delete"
       || command === "github.createIssue"
       || command === "github.installObsidianPlugin";
   }
@@ -47777,6 +49131,7 @@ class CancipView extends ItemView {
       this.syncToolRunAcrossMessages(run);
     }
     await this.executeToolRun(run);
+    if ((run.status as ToolRunStatus) === "executed") this.recordToolScore(run.action, "accept", 1.8);
     await this.saveCurrentSession();
     this.renderMessages();
     this.setStatus(this.t("toolRunFinished"));
@@ -48551,6 +49906,7 @@ class CancipView extends ItemView {
     this.syncToolRunAcrossMessages(run);
     this.renderMessages();
     await this.recordToolFeedback({ status: "rejected", summary: run.summary, detail: run.error, at: run.executedAt, action: run.action });
+    this.recordToolScore(run.action, "reject", 1.5);
     void this.recordSessionEvent({ kind: "tool.reject", runId: run.id, toolStatus: run.status, summary: run.summary, detail: run.error });
     await this.saveCurrentSession();
     this.setStatus(this.t("toolRunRejectedNotice"));
@@ -49305,6 +50661,7 @@ class CancipView extends ItemView {
   }
 
   private commitAgentPlanMutation(): void {
+    this.syncTodoTimingState();
     this.renderQueueStatus();
     this.refreshPlanPanelIfOpen();
     void this.saveCurrentSession();
@@ -49743,6 +51100,10 @@ class CancipView extends ItemView {
       return this.t("commandExecuted", { command: normalized, result: await this.startSubagentCommand(args) });
     }
 
+    if (normalized === "cancip.subagents.parallel") {
+      return this.t("commandExecuted", { command: normalized, result: await this.parallelSubagentsCommand(args) });
+    }
+
     if (normalized === "cancip.subagents.stop") {
       return this.t("commandExecuted", { command: normalized, result: await this.stopSubagentCommand(args) });
     }
@@ -49757,6 +51118,18 @@ class CancipView extends ItemView {
 
     if (normalized === "cancip.subagents.open") {
       return this.t("commandExecuted", { command: normalized, result: await this.openSubagentCommand(args) });
+    }
+
+    if (normalized === "cancip.subagents.restart") {
+      return this.t("commandExecuted", { command: normalized, result: await this.restartSubagentCommand(args) });
+    }
+
+    if (normalized === "cancip.subagents.delete") {
+      return this.t("commandExecuted", { command: normalized, result: await this.deleteSubagentCommand(args) });
+    }
+
+    if (normalized === "cancip.subagents.consensus") {
+      return this.t("commandExecuted", { command: normalized, result: await this.consensusSubagentsCommand(args) });
     }
 
     if (normalized === "cancip.installedPlugins") {
@@ -55136,7 +56509,7 @@ class CancipView extends ItemView {
   }
 
   private syncHeaderSessionTimer(): void {
-    const running = Boolean(this.activeRequest) || this.currentSessionStatus === "running";
+    const running = Boolean(this.activeRequest) || this.currentSessionStatus === "running" || this.hasRunningTodoTimer() || this.hasRunningSubagents();
     if (!running) {
       this.stopHeaderSessionTimer();
       if (this.headerLiveStatusEl) {
@@ -55158,7 +56531,8 @@ class CancipView extends ItemView {
 
   private renderHeaderSessionTimer(): void {
     const status = this.headerLiveStatusEl;
-    if (!status || !(this.activeRequest || this.currentSessionStatus === "running")) return;
+    this.refreshTodoTimerDom();
+    if (!status || !(this.activeRequest || this.currentSessionStatus === "running" || this.hasRunningTodoTimer() || this.hasRunningSubagents())) return;
     const parsed = Date.parse(this.sessionStartedAt);
     const elapsed = formatElapsed(Math.max(0, Date.now() - (Number.isFinite(parsed) ? parsed : Date.now())));
     status.empty();
@@ -55168,6 +56542,63 @@ class CancipView extends ItemView {
       attr: { title: this.sessionTitle(), "aria-label": `${this.t("sessionRunning")} ${elapsed}` }
     });
     pill.createSpan({ cls: "obcc-header-live-label", text: elapsed });
+  }
+
+  private syncTodoTimingState(at = new Date().toISOString()): void {
+    const todos = this.modelPlanTodos();
+    const current = todos.find((todo) => !todo.done && todo.planOnly !== true) ?? todos.find((todo) => !todo.done);
+    for (const todo of todos) {
+      if (todo.done) {
+        if (!todo.startedAt) todo.startedAt = todo.createdAt || at;
+        if (!todo.completedAt) todo.completedAt = at;
+        continue;
+      }
+      todo.completedAt = undefined;
+      if (todo === current && !todo.startedAt) todo.startedAt = at;
+    }
+  }
+
+  private hasRunningTodoTimer(): boolean {
+    return this.modelPlanTodos().some((todo) => !todo.done && Boolean(todo.startedAt));
+  }
+
+  private hasRunningSubagents(): boolean {
+    return [...this.subagentIds].some((sessionId) => this.activeRequests.has(sessionId));
+  }
+
+  private todoElapsedMs(todo: ManualTodo): number {
+    const startedAt = Date.parse(todo.startedAt || "");
+    if (!Number.isFinite(startedAt)) return 0;
+    const completedAt = Date.parse(todo.completedAt || "");
+    const end = todo.done && Number.isFinite(completedAt) ? completedAt : Date.now();
+    return Math.max(0, end - startedAt);
+  }
+
+  private todoElapsedText(todo: ManualTodo): string {
+    return formatElapsed(this.todoElapsedMs(todo));
+  }
+
+  private todoTimingTitle(todo: ManualTodo): string {
+    return [
+      todo.startedAt ? `${isChineseLanguage(this.plugin.language()) ? "开始" : "Started"}: ${todo.startedAt}` : "",
+      todo.completedAt ? `${isChineseLanguage(this.plugin.language()) ? "完成" : "Completed"}: ${todo.completedAt}` : ""
+    ].filter(Boolean).join("\n");
+  }
+
+  private refreshTodoTimerDom(): void {
+    if (!this.headerMenuEl || this.activeHeaderMenu !== "plan" || this.headerMenuEl.hasClass("is-hidden")) return;
+    for (const timer of Array.from(this.headerMenuEl.querySelectorAll<HTMLElement>("[data-todo-timer-id]"))) {
+      const todo = this.findTodoById(timer.dataset.todoTimerId ?? "");
+      if (!todo) continue;
+      timer.setText(this.todoElapsedText(todo));
+      timer.setAttr("title", this.todoTimingTitle(todo));
+    }
+    const entries = this.sessionHistoryCache?.entries ?? [];
+    for (const timer of Array.from(this.headerMenuEl.querySelectorAll<HTMLElement>("[data-subagent-timer-id]"))) {
+      const entry = entries.find((item) => item.id === timer.dataset.subagentTimerId);
+      if (!entry) continue;
+      timer.setText(this.subagentElapsedText(entry));
+    }
   }
 
   private toolRunProcessExplanation(run: ToolRun, count = 1): string {
@@ -55638,13 +57069,20 @@ class CancipView extends ItemView {
     const capabilities = [...this.composerCapabilities];
     this.contextEl.toggleClass("is-hidden", !chips.length && !capabilities.length);
     for (const capability of capabilities) {
-      const label = capability === "html" ? "HTML" : this.t("planPanelTitle");
+      const label = capability === "html"
+        ? "HTML"
+        : capability === "multi-agent"
+          ? this.t("subagentLabel")
+          : this.t("planPanelTitle");
       const item = this.contextEl.createDiv({
         cls: `obcc-context-chip is-capability is-${capability}`,
         attr: { title: label }
       });
       const display = item.createDiv({ cls: "obcc-context-open", attr: { "aria-label": label } });
-      setIcon(display.createSpan({ cls: "obcc-context-chip-icon" }), capability === "html" ? "file-code-2" : "list-todo");
+      setIcon(
+        display.createSpan({ cls: "obcc-context-chip-icon" }),
+        capability === "html" ? "file-code-2" : capability === "multi-agent" ? "users" : "list-todo"
+      );
       display.createSpan({ cls: "obcc-context-chip-name", text: label });
       const removeButton = item.createEl("button", {
         cls: "obcc-context-remove",
@@ -56317,6 +57755,7 @@ class CancipSettingTab extends PluginSettingTab {
         { id: "notifications", label: this.plugin.t("settingsGroupNotifications"), render: (parent) => this.displayNotificationSettings(parent) },
         { id: "tts", label: this.plugin.t("settingsGroupTts"), render: (parent) => this.displayTtsSettings(parent) },
         { id: "ocr", label: this.plugin.t("settingsGroupOcr"), render: (parent) => this.displayOcrSettings(parent) },
+        { id: "advanced", label: this.plugin.t("settingsGroupAdvanced"), render: (parent) => this.displayAdvancedSettings(parent) },
         { id: "export", label: this.plugin.t("settingsGroupExport"), render: (parent) => this.displayExportSettings(parent) }
       ];
       if (!pages.some((page) => page.id === this.activeSettingsPage)) this.activeSettingsPage = "common";
@@ -56703,6 +58142,126 @@ class CancipSettingTab extends PluginSettingTab {
       await this.plugin.saveSettings();
       this.plugin.refreshOpenViews();
     }, "settingsProcessRecordRuntimeCollapsedDesc");
+  }
+
+  private displayAdvancedSettings(parent: HTMLElement): void {
+    const compaction = this.createPersistentDetails(
+      parent,
+      "advanced:context-compaction",
+      "obcc-settings-group obcc-advanced-settings-group",
+      this.plugin.t("settingsContextCompaction"),
+      true
+    );
+    compaction.createEl("p", { cls: "obcc-settings-group-desc", text: this.plugin.t("settingsContextCompactionDesc") });
+    const compactionBody = compaction.createDiv({ cls: "obcc-settings-group-body" });
+    this.addToggleSetting(compactionBody, "settingsContextCompactionEnabled", this.plugin.settings.contextCompactionEnabled, async (value) => {
+      this.plugin.settings.contextCompactionEnabled = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(compactionBody, "settingsContextCompactionTriggerTokens", this.plugin.settings.contextCompactionTriggerTokens, "12000", 2000, 200000, async (value) => {
+      this.plugin.settings.contextCompactionTriggerTokens = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(compactionBody, "settingsContextCompactionTargetTokens", this.plugin.settings.contextCompactionTargetTokens, "5000", 1000, 100000, async (value) => {
+      this.plugin.settings.contextCompactionTargetTokens = Math.min(value, this.plugin.settings.contextCompactionTriggerTokens);
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(compactionBody, "settingsContextCompactionKeepRecent", this.plugin.settings.contextCompactionKeepRecentMessages, "8", 2, 40, async (value) => {
+      this.plugin.settings.contextCompactionKeepRecentMessages = value;
+      await this.plugin.saveSettings();
+    });
+    this.addToggleSetting(compactionBody, "settingsContextCompactionUseModel", this.plugin.settings.contextCompactionUseModel, async (value) => {
+      this.plugin.settings.contextCompactionUseModel = value;
+      await this.plugin.saveSettings();
+    });
+    this.addToggleSetting(compactionBody, "settingsContextCompactionShowStats", this.plugin.settings.contextCompactionShowStats, async (value) => {
+      this.plugin.settings.contextCompactionShowStats = value;
+      await this.plugin.saveSettings();
+    });
+
+    const multiAgent = this.createPersistentDetails(
+      parent,
+      "advanced:multi-agent",
+      "obcc-settings-group obcc-advanced-settings-group",
+      this.plugin.t("settingsMultiAgent"),
+      true
+    );
+    multiAgent.createEl("p", { cls: "obcc-settings-group-desc", text: this.plugin.t("settingsMultiAgentDesc") });
+    const multiAgentBody = multiAgent.createDiv({ cls: "obcc-settings-group-body" });
+    this.addToggleSetting(multiAgentBody, "settingsMultiAgentEnabled", this.plugin.settings.multiAgentEnabled, async (value) => {
+      this.plugin.settings.multiAgentEnabled = value;
+      await this.plugin.saveSettings();
+    });
+    this.addToggleSetting(multiAgentBody, "settingsMultiAgentAutoDelegate", this.plugin.settings.multiAgentAutoDelegate, async (value) => {
+      this.plugin.settings.multiAgentAutoDelegate = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(multiAgentBody, "settingsMultiAgentMinAgents", this.plugin.settings.multiAgentMinAgents, "2", 2, 10, async (value) => {
+      this.plugin.settings.multiAgentMinAgents = Math.min(value, this.plugin.settings.multiAgentMaxAgents);
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(multiAgentBody, "settingsMultiAgentMaxAgents", this.plugin.settings.multiAgentMaxAgents, "10", 2, 10, async (value) => {
+      this.plugin.settings.multiAgentMaxAgents = Math.max(value, this.plugin.settings.multiAgentMinAgents);
+      this.plugin.settings.multiAgentDefaultAgents = Math.min(this.plugin.settings.multiAgentDefaultAgents, this.plugin.settings.multiAgentMaxAgents);
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(multiAgentBody, "settingsMultiAgentDefaultAgents", this.plugin.settings.multiAgentDefaultAgents, "3", 2, 10, async (value) => {
+      this.plugin.settings.multiAgentDefaultAgents = Math.max(this.plugin.settings.multiAgentMinAgents, Math.min(value, this.plugin.settings.multiAgentMaxAgents));
+      await this.plugin.saveSettings();
+    });
+    this.addToggleSetting(multiAgentBody, "settingsMultiAgentCrossReview", this.plugin.settings.multiAgentCrossReview, async (value) => {
+      this.plugin.settings.multiAgentCrossReview = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(multiAgentBody, "settingsMultiAgentTimeout", this.plugin.settings.multiAgentTimeoutMinutes, "10", 1, 120, async (value) => {
+      this.plugin.settings.multiAgentTimeoutMinutes = value;
+      await this.plugin.saveSettings();
+    });
+
+    const score = this.createPersistentDetails(
+      parent,
+      "advanced:score",
+      "obcc-settings-group obcc-advanced-settings-group obcc-score-settings-group",
+      this.plugin.t("settingsScore"),
+      true
+    );
+    score.createEl("p", { cls: "obcc-settings-group-desc", text: this.plugin.t("settingsScoreDesc") });
+    const summary = this.plugin.scoreSummary();
+    const scoreHero = score.createDiv({ cls: "obcc-score-hero" });
+    scoreHero.createDiv({ cls: "obcc-score-value", text: summary.total.toFixed(2) });
+    const scoreMeta = scoreHero.createDiv({ cls: "obcc-score-meta" });
+    scoreMeta.createDiv({ text: this.plugin.t("scoreTotal") });
+    scoreMeta.createDiv({ text: summary.strategy === "growth" ? this.plugin.t("scoreStrategyGrowth") : this.plugin.t("scoreStrategyConservative") });
+    scoreMeta.createDiv({ text: `${this.plugin.t("scoreFeatureCount")}: ${summary.entities}` });
+    const scoreBody = score.createDiv({ cls: "obcc-settings-group-body" });
+    this.addToggleSetting(scoreBody, "settingsScoreEnabled", this.plugin.settings.scoreEnabled, async (value) => {
+      this.plugin.settings.scoreEnabled = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(scoreBody, "settingsScoreAccuracyWeight", this.plugin.settings.scoreAccuracyWeight, "60", 0, 100, async (value) => {
+      this.plugin.settings.scoreAccuracyWeight = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(scoreBody, "settingsScoreUsageWeight", this.plugin.settings.scoreUsageWeight, "40", 0, 100, async (value) => {
+      this.plugin.settings.scoreUsageWeight = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(scoreBody, "settingsScoreDecayDays", this.plugin.settings.scoreDecayDays, "14", 1, 365, async (value) => {
+      this.plugin.settings.scoreDecayDays = value;
+      await this.plugin.saveSettings();
+    });
+    this.addToggleSetting(scoreBody, "settingsScoreLayoutSuggestions", this.plugin.settings.scoreLayoutSuggestions, async (value) => {
+      this.plugin.settings.scoreLayoutSuggestions = value;
+      await this.plugin.saveSettings();
+    });
+    if (summary.top.length || summary.low.length) {
+      const rows = score.createDiv({ cls: "obcc-score-entity-list" });
+      for (const entity of uniqueScoreEntities([...summary.top, ...summary.low]).slice(0, 8)) {
+        const row = rows.createDiv({ cls: "obcc-score-entity-row" });
+        row.createSpan({ text: entity.label || entity.key });
+        row.createSpan({ text: entity.score.toFixed(2) });
+      }
+    }
   }
 
   private displayDocumentWorkbenchSettings(parent: HTMLElement): void {
@@ -63518,10 +65077,14 @@ const CANONICAL_COMMAND_BUS_NAMES = new Map([
   "cancip.sessionEvents",
   "cancip.sessionHistory",
   "cancip.subagents.start",
+  "cancip.subagents.parallel",
   "cancip.subagents.stop",
   "cancip.subagents.list",
   "cancip.subagents.status",
   "cancip.subagents.open",
+  "cancip.subagents.restart",
+  "cancip.subagents.delete",
+  "cancip.subagents.consensus",
   "cancip.installedPlugins",
   "cancip.pluginCapabilities",
   "cancip.pluginRoute",
@@ -66382,8 +67945,23 @@ function runtimeI18nTemplate(key: I18nKey, template: string): string {
     .replace(
       /可用 obsidian\.tabs 查看工作区标签页，/,
       "可用 obsidian.files.pins 查看原生文件列表置顶顺序，用 obsidian.files.pin/unpin/movePin/reorderPins 修改同文件夹置顶顺序且不替换普通文件原生排序。可用 obsidian.tabs 查看工作区标签页，"
+    )
+    .replace(
+      /cancip\.subagents\.start\/list\/status\/stop\/open/g,
+      "cancip.subagents.start/parallel/list/status/stop/open/restart/delete/consensus"
+    )
+    .replace(
+      /Use cancip\.subagents\.start\/parallel\/list\/status\/stop\/open\/restart\/delete\/consensus to split long work into child sessions; children are visible under their parent in session history\./,
+      "Use cancip.subagents.start for one child analysis or cancip.subagents.parallel for two to ten real independent child sessions. Parallel agents need distinct roles/tasks, acceptance criteria, deadlines, wait:true when their results gate the next action, and consensus:true for cross-review. Use list/status/open/stop/restart/delete/consensus to inspect and intervene; deleting unfinished work returns it to the parent Plan."
+    )
+    .replace(
+      /用 cancip\.subagents\.start\/parallel\/list\/status\/stop\/open\/restart\/delete\/consensus 可把长任务拆成子会话；子会话会在父会话历史下默认折叠显示。/,
+      "单个后台分析用 cancip.subagents.start，可并行复杂步骤用 cancip.subagents.parallel 创建 2-10 个真实独立子会话；每个 Agent 必须有不同角色/任务、验收标准和时限，后续依赖结果时用 wait:true，交叉挑错时用 consensus:true。用 list/status/open/stop/restart/delete/consensus 查看和干预；删除未完成 Agent 会把目标交回父会话计划。"
     );
-  return `${normalized} ${normalized.startsWith("工具协议")
+  const adaptiveProtocol = normalized.startsWith("工具协议")
+    ? "复杂且适合并行的计划步骤优先 parallel；显式多 Agent 不得用单回答模拟角色。按钮读取/修改优先 obsidian.ui.buttons、obsidian.ui.buttonRules、obsidian.ui.applyButtonRules。Score 只参与排序、奖惩和生成审核候选，禁止静默隐藏、移动按钮或删除记忆/Skill。"
+    : "Prefer parallel for a complex independently parallelizable Plan step; never simulate an explicit multi-agent request in one answer. Use obsidian.ui.buttons, obsidian.ui.buttonRules, and obsidian.ui.applyButtonRules for button inspection and mutation. Score may rank, reward, penalize, and create Review candidates, but must never silently hide/reorder buttons or delete memory/Skills.";
+  return `${normalized} ${adaptiveProtocol} ${normalized.startsWith("工具协议")
     ? "执行写入、命令、插件或界面任务后，不能只信返回值；用 cancip.outcome.observe/verify 读取活动视图、DOM、文件、插件和工作区实际结果。结构化证据不足时再用 cancip.outcome.capture 截取活动区域，PDF 证据用 cancip.outcome.exportPdf。验收失败只修差异并以同一 loopId、递增 attempt 有限重试；达到 maxAttempts 后停止并保留证据交审核。"
     : "After writes, commands, plugin actions, or UI work, do not trust the return value alone. Use cancip.outcome.observe/verify to read actual active-view, DOM, file, plugin, and workspace state. Use cancip.outcome.capture for the active region only when structured evidence is insufficient, and cancip.outcome.exportPdf for PDF evidence. On failure correct only measured differences, retry with the same loopId and incremented attempt, then stop at maxAttempts with evidence for review."}`;
 }
@@ -67874,6 +69452,162 @@ function isTtsOverlayPosition(value: unknown): value is { left: number; top: num
     && Number.isFinite(value.top);
 }
 
+function emptyScoreState(): ScoreState {
+  return {
+    schemaVersion: CANCIP_SCORE_SCHEMA_VERSION,
+    updatedAt: new Date().toISOString(),
+    totalScore: 100,
+    entities: {}
+  };
+}
+
+function normalizeScoreKey(value: string): string {
+  return trimContext(value.trim().replace(/\s+/g, " "), 220) || "feature:unknown";
+}
+
+function roundScore(value: number): number {
+  return Math.round(Math.max(CANCIP_SCORE_MIN, Math.min(CANCIP_SCORE_MAX, value)) * 100) / 100;
+}
+
+function scoreAfterSaturatedDelta(score: number, delta: number): number {
+  const current = roundScore(Number.isFinite(score) ? score : 100);
+  const room = delta >= 0
+    ? Math.max(0.04, (CANCIP_SCORE_MAX - current) / 100)
+    : Math.max(0.04, current / 100);
+  return roundScore(current + delta * room);
+}
+
+function normalizeScoreState(raw: unknown): ScoreState {
+  if (!isRecord(raw) || !isRecord(raw.entities)) return emptyScoreState();
+  const entities: Record<string, ScoreEntityState> = {};
+  for (const [rawKey, value] of Object.entries(raw.entities)) {
+    if (!isRecord(value)) continue;
+    const key = normalizeScoreKey(typeof value.key === "string" ? value.key : rawKey);
+    const kind: ScoreEntityKind = value.kind === "tool" || value.kind === "button" || value.kind === "autocomplete" || value.kind === "skill" ? value.kind : "feature";
+    entities[key] = {
+      key,
+      kind,
+      label: typeof value.label === "string" ? trimContext(value.label, 100) : key.replace(/^[^:]+:/, ""),
+      selector: typeof value.selector === "string" ? trimContext(value.selector, 600) : undefined,
+      scope: value.scope === "active" || value.scope === "cancip" || value.scope === "global" ? value.scope : undefined,
+      targetKey: typeof value.targetKey === "string" ? trimContext(value.targetKey, 400) : undefined,
+      layoutReviewAt: typeof value.layoutReviewAt === "string" ? value.layoutReviewAt : undefined,
+      score: roundScore(typeof value.score === "number" ? value.score : 100),
+      uses: Math.max(0, Number.parseInt(String(value.uses ?? 0), 10) || 0),
+      accepts: Math.max(0, Number.parseInt(String(value.accepts ?? 0), 10) || 0),
+      rejects: Math.max(0, Number.parseInt(String(value.rejects ?? 0), 10) || 0),
+      corrections: Math.max(0, Number.parseInt(String(value.corrections ?? 0), 10) || 0),
+      activeMs: Math.max(0, Number(value.activeMs) || 0),
+      lastUsedAt: typeof value.lastUsedAt === "string" ? value.lastUsedAt : "",
+      lastDecayAt: typeof value.lastDecayAt === "string" ? value.lastDecayAt : "",
+      updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : ""
+    };
+  }
+  const state: ScoreState = {
+    schemaVersion: CANCIP_SCORE_SCHEMA_VERSION,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
+    totalScore: roundScore(typeof raw.totalScore === "number" ? raw.totalScore : 100),
+    entities
+  };
+  return state;
+}
+
+function calculateTotalScore(state: ScoreState, settings: Settings): number {
+  const rows = Object.values(state.entities);
+  if (!rows.length) return 100;
+  const accuracyWeight = Math.max(0, settings.scoreAccuracyWeight);
+  const usageWeight = Math.max(0, settings.scoreUsageWeight);
+  const weightTotal = accuracyWeight + usageWeight || 100;
+  let weightedScore = 0;
+  let totalConfidence = 0;
+  for (const row of rows) {
+    const accuracySamples = row.accepts + row.rejects + row.corrections;
+    const acceptedRatio = accuracySamples
+      ? row.accepts / Math.max(1, row.accepts + row.rejects + row.corrections * 0.75)
+      : 0.5;
+    const accuracyRaw = 200 * Math.max(0, Math.min(1, acceptedRatio));
+    const accuracyConfidence = 1 - Math.exp(-accuracySamples / 8);
+    const accuracy = 100 + (accuracyRaw - 100) * accuracyConfidence;
+    const usageSignal = row.uses + row.activeMs / 900000;
+    const usage = 100 + 100 * (1 - Math.exp(-usageSignal / 24));
+    const combined = (accuracy * accuracyWeight + usage * usageWeight) / weightTotal;
+    const eventConfidence = Math.max(0.08, 1 - Math.exp(-(accuracySamples + row.uses * 0.25 + row.activeMs / 3600000) / 10));
+    const entityScore = (combined * 0.7) + (row.score * 0.3);
+    weightedScore += entityScore * eventConfidence;
+    totalConfidence += eventConfidence;
+  }
+  const observed = totalConfidence ? weightedScore / totalConfidence : 100;
+  const globalConfidence = Math.min(1, totalConfidence / Math.max(3, rows.length * 0.75));
+  return roundScore(100 + (observed - 100) * globalConfidence);
+}
+
+function uniqueScoreEntities(rows: ScoreEntityState[]): ScoreEntityState[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.key)) return false;
+    seen.add(row.key);
+    return true;
+  });
+}
+
+function normalizeContextCompactionState(raw: unknown): ContextCompactionState | null {
+  if (!isRecord(raw) || raw.schemaVersion !== 1) return null;
+  const throughMessageId = typeof raw.throughMessageId === "string" ? raw.throughMessageId : "";
+  const summary = typeof raw.summary === "string" ? raw.summary.trim() : "";
+  if (!throughMessageId || !summary) return null;
+  return {
+    schemaVersion: 1,
+    throughMessageId,
+    throughCreatedAt: typeof raw.throughCreatedAt === "number" && Number.isFinite(raw.throughCreatedAt) ? raw.throughCreatedAt : 0,
+    sourceHash: typeof raw.sourceHash === "string" ? raw.sourceHash : "",
+    summary,
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : "",
+    sourceChars: Math.max(0, Number(raw.sourceChars) || 0),
+    compactedChars: Math.max(0, Number(raw.compactedChars) || summary.length),
+    estimatedSourceTokens: Math.max(0, Number(raw.estimatedSourceTokens) || estimateTextTokens(summary)),
+    estimatedCompactedTokens: Math.max(0, Number(raw.estimatedCompactedTokens) || estimateTextTokens(summary))
+  };
+}
+
+function contextCompactionMessagesHash(messages: ChatMessage[]): string {
+  return stableTextHash(messages.map((message) => `${message.id}:${message.createdAt}:${stableTextHash(message.content)}`).join("|"));
+}
+
+function deterministicContextCompactionSummary(previousSummary: string, source: string, maxChars: number, language: Language): string {
+  const chinese = isChineseLanguage(language);
+  const buckets = new Map<string, string[]>();
+  const add = (bucket: string, value: string): void => {
+    const cleaned = trimContext(value.replace(/\s+/g, " ").trim(), 520);
+    if (!cleaned) return;
+    const values = buckets.get(bucket) ?? [];
+    if (!values.some((item) => stableTextHash(item.toLowerCase()) === stableTextHash(cleaned.toLowerCase()))) values.push(cleaned);
+    buckets.set(bucket, values.slice(-24));
+  };
+  if (previousSummary.trim()) add(chinese ? "此前压缩状态" : "Previous compacted state", trimContext(previousSummary, Math.floor(maxChars * 0.45)));
+  const blocks = source.split(/\n(?=(?:USER|ASSISTANT)\s+\d{4}-)/);
+  for (const block of blocks) {
+    const role = block.startsWith("USER") ? "user" : "assistant";
+    const lines = block.split(/\r?\n/).slice(1).filter(Boolean);
+    for (const line of lines) {
+      if (/^(?:executed|failed|blocked|rejected|stopped):/i.test(line)) {
+        add(chinese ? "工具证据与故障" : "Tool evidence and failures", line);
+      } else if (role === "user") {
+        add(chinese ? "用户目标与约束" : "User goals and constraints", line);
+      } else if (/(?:未完成|阻塞|失败|pending|todo|plan|next|remaining|blocked|failed)/i.test(line)) {
+        add(chinese ? "未完成与阻塞" : "Open work and blockers", line);
+      } else {
+        add(chinese ? "决定与完成结果" : "Decisions and completed results", line);
+      }
+    }
+  }
+  const sections: string[] = [];
+  for (const [title, values] of buckets) {
+    if (!values.length) continue;
+    sections.push(`## ${title}`, ...values.map((value) => `- ${value}`), "");
+  }
+  return trimContext(sections.join("\n").trim(), maxChars);
+}
+
 function normalizeSettings(input: Partial<Settings>): Settings {
   const merged = { ...DEFAULT_SETTINGS, ...input };
   const temperature = Number(merged.temperature);
@@ -67886,6 +69620,16 @@ function normalizeSettings(input: Partial<Settings>): Settings {
   const maxMentionFolderFiles = Number.parseInt(String(merged.maxMentionFolderFiles), 10);
   const maxFileContextChars = Number.parseInt(String(merged.maxFileContextChars), 10);
   const maxFolderFileContextChars = Number.parseInt(String(merged.maxFolderFileContextChars), 10);
+  const contextCompactionTriggerTokens = Number.parseInt(String(merged.contextCompactionTriggerTokens), 10);
+  const contextCompactionTargetTokens = Number.parseInt(String(merged.contextCompactionTargetTokens), 10);
+  const contextCompactionKeepRecentMessages = Number.parseInt(String(merged.contextCompactionKeepRecentMessages), 10);
+  const multiAgentMinAgents = Number.parseInt(String(merged.multiAgentMinAgents), 10);
+  const multiAgentMaxAgents = Number.parseInt(String(merged.multiAgentMaxAgents), 10);
+  const multiAgentDefaultAgents = Number.parseInt(String(merged.multiAgentDefaultAgents), 10);
+  const multiAgentTimeoutMinutes = Number.parseInt(String(merged.multiAgentTimeoutMinutes), 10);
+  const scoreAccuracyWeight = Number(merged.scoreAccuracyWeight);
+  const scoreUsageWeight = Number(merged.scoreUsageWeight);
+  const scoreDecayDays = Number.parseInt(String(merged.scoreDecayDays), 10);
   const maxAutoSkills = Number.parseInt(String(merged.maxAutoSkills), 10);
   const maxSkillContextChars = Number.parseInt(String(merged.maxSkillContextChars), 10);
   const maxAutoSkillContextChars = Number.parseInt(String(merged.maxAutoSkillContextChars), 10);
@@ -68047,6 +69791,24 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     maxMentionFolderFiles: Number.isFinite(maxMentionFolderFiles) ? Math.max(1, Math.min(30, maxMentionFolderFiles)) : DEFAULT_SETTINGS.maxMentionFolderFiles,
     maxFileContextChars: Number.isFinite(maxFileContextChars) ? Math.max(500, Math.min(50000, maxFileContextChars)) : DEFAULT_SETTINGS.maxFileContextChars,
     maxFolderFileContextChars: Number.isFinite(maxFolderFileContextChars) ? Math.max(300, Math.min(20000, maxFolderFileContextChars)) : DEFAULT_SETTINGS.maxFolderFileContextChars,
+    contextCompactionEnabled: typeof merged.contextCompactionEnabled === "boolean" ? merged.contextCompactionEnabled : DEFAULT_SETTINGS.contextCompactionEnabled,
+    contextCompactionTriggerTokens: Number.isFinite(contextCompactionTriggerTokens) ? Math.max(2000, Math.min(200000, contextCompactionTriggerTokens)) : DEFAULT_SETTINGS.contextCompactionTriggerTokens,
+    contextCompactionTargetTokens: Number.isFinite(contextCompactionTargetTokens) ? Math.max(1000, Math.min(100000, contextCompactionTargetTokens)) : DEFAULT_SETTINGS.contextCompactionTargetTokens,
+    contextCompactionKeepRecentMessages: Number.isFinite(contextCompactionKeepRecentMessages) ? Math.max(2, Math.min(40, contextCompactionKeepRecentMessages)) : DEFAULT_SETTINGS.contextCompactionKeepRecentMessages,
+    contextCompactionUseModel: typeof merged.contextCompactionUseModel === "boolean" ? merged.contextCompactionUseModel : DEFAULT_SETTINGS.contextCompactionUseModel,
+    contextCompactionShowStats: typeof merged.contextCompactionShowStats === "boolean" ? merged.contextCompactionShowStats : DEFAULT_SETTINGS.contextCompactionShowStats,
+    multiAgentEnabled: typeof merged.multiAgentEnabled === "boolean" ? merged.multiAgentEnabled : DEFAULT_SETTINGS.multiAgentEnabled,
+    multiAgentAutoDelegate: typeof merged.multiAgentAutoDelegate === "boolean" ? merged.multiAgentAutoDelegate : DEFAULT_SETTINGS.multiAgentAutoDelegate,
+    multiAgentMinAgents: Number.isFinite(multiAgentMinAgents) ? Math.max(2, Math.min(10, multiAgentMinAgents)) : DEFAULT_SETTINGS.multiAgentMinAgents,
+    multiAgentMaxAgents: Number.isFinite(multiAgentMaxAgents) ? Math.max(2, Math.min(10, multiAgentMaxAgents)) : DEFAULT_SETTINGS.multiAgentMaxAgents,
+    multiAgentDefaultAgents: Number.isFinite(multiAgentDefaultAgents) ? Math.max(2, Math.min(10, multiAgentDefaultAgents)) : DEFAULT_SETTINGS.multiAgentDefaultAgents,
+    multiAgentCrossReview: typeof merged.multiAgentCrossReview === "boolean" ? merged.multiAgentCrossReview : DEFAULT_SETTINGS.multiAgentCrossReview,
+    multiAgentTimeoutMinutes: Number.isFinite(multiAgentTimeoutMinutes) ? Math.max(1, Math.min(120, multiAgentTimeoutMinutes)) : DEFAULT_SETTINGS.multiAgentTimeoutMinutes,
+    scoreEnabled: typeof merged.scoreEnabled === "boolean" ? merged.scoreEnabled : DEFAULT_SETTINGS.scoreEnabled,
+    scoreAccuracyWeight: Number.isFinite(scoreAccuracyWeight) ? Math.max(0, Math.min(100, scoreAccuracyWeight)) : DEFAULT_SETTINGS.scoreAccuracyWeight,
+    scoreUsageWeight: Number.isFinite(scoreUsageWeight) ? Math.max(0, Math.min(100, scoreUsageWeight)) : DEFAULT_SETTINGS.scoreUsageWeight,
+    scoreDecayDays: Number.isFinite(scoreDecayDays) ? Math.max(1, Math.min(365, scoreDecayDays)) : DEFAULT_SETTINGS.scoreDecayDays,
+    scoreLayoutSuggestions: typeof merged.scoreLayoutSuggestions === "boolean" ? merged.scoreLayoutSuggestions : DEFAULT_SETTINGS.scoreLayoutSuggestions,
     skillsEnabled: typeof merged.skillsEnabled === "boolean" ? merged.skillsEnabled : DEFAULT_SETTINGS.skillsEnabled,
     skillRoots: normalizeSkillRoots(merged.skillRoots),
     skillAutoSelect: typeof merged.skillAutoSelect === "boolean" ? merged.skillAutoSelect : DEFAULT_SETTINGS.skillAutoSelect,
@@ -68172,6 +69934,24 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     maxMentionFolderFiles: settings.maxMentionFolderFiles,
     maxFileContextChars: settings.maxFileContextChars,
     maxFolderFileContextChars: settings.maxFolderFileContextChars,
+    contextCompactionEnabled: settings.contextCompactionEnabled,
+    contextCompactionTriggerTokens: settings.contextCompactionTriggerTokens,
+    contextCompactionTargetTokens: settings.contextCompactionTargetTokens,
+    contextCompactionKeepRecentMessages: settings.contextCompactionKeepRecentMessages,
+    contextCompactionUseModel: settings.contextCompactionUseModel,
+    contextCompactionShowStats: settings.contextCompactionShowStats,
+    multiAgentEnabled: settings.multiAgentEnabled,
+    multiAgentAutoDelegate: settings.multiAgentAutoDelegate,
+    multiAgentMinAgents: settings.multiAgentMinAgents,
+    multiAgentMaxAgents: settings.multiAgentMaxAgents,
+    multiAgentDefaultAgents: settings.multiAgentDefaultAgents,
+    multiAgentCrossReview: settings.multiAgentCrossReview,
+    multiAgentTimeoutMinutes: settings.multiAgentTimeoutMinutes,
+    scoreEnabled: settings.scoreEnabled,
+    scoreAccuracyWeight: settings.scoreAccuracyWeight,
+    scoreUsageWeight: settings.scoreUsageWeight,
+    scoreDecayDays: settings.scoreDecayDays,
+    scoreLayoutSuggestions: settings.scoreLayoutSuggestions,
     skillsEnabled: settings.skillsEnabled,
     skillRoots: settings.skillRoots,
     skillAutoSelect: settings.skillAutoSelect,
@@ -68309,6 +70089,24 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.maxMentionFolderFiles === "number" || typeof raw.maxMentionFolderFiles === "string") config.maxMentionFolderFiles = Number.parseInt(String(raw.maxMentionFolderFiles), 10);
   if (typeof raw.maxFileContextChars === "number" || typeof raw.maxFileContextChars === "string") config.maxFileContextChars = Number.parseInt(String(raw.maxFileContextChars), 10);
   if (typeof raw.maxFolderFileContextChars === "number" || typeof raw.maxFolderFileContextChars === "string") config.maxFolderFileContextChars = Number.parseInt(String(raw.maxFolderFileContextChars), 10);
+  if (typeof raw.contextCompactionEnabled === "boolean") config.contextCompactionEnabled = raw.contextCompactionEnabled;
+  if (typeof raw.contextCompactionTriggerTokens === "number" || typeof raw.contextCompactionTriggerTokens === "string") config.contextCompactionTriggerTokens = Number.parseInt(String(raw.contextCompactionTriggerTokens), 10);
+  if (typeof raw.contextCompactionTargetTokens === "number" || typeof raw.contextCompactionTargetTokens === "string") config.contextCompactionTargetTokens = Number.parseInt(String(raw.contextCompactionTargetTokens), 10);
+  if (typeof raw.contextCompactionKeepRecentMessages === "number" || typeof raw.contextCompactionKeepRecentMessages === "string") config.contextCompactionKeepRecentMessages = Number.parseInt(String(raw.contextCompactionKeepRecentMessages), 10);
+  if (typeof raw.contextCompactionUseModel === "boolean") config.contextCompactionUseModel = raw.contextCompactionUseModel;
+  if (typeof raw.contextCompactionShowStats === "boolean") config.contextCompactionShowStats = raw.contextCompactionShowStats;
+  if (typeof raw.multiAgentEnabled === "boolean") config.multiAgentEnabled = raw.multiAgentEnabled;
+  if (typeof raw.multiAgentAutoDelegate === "boolean") config.multiAgentAutoDelegate = raw.multiAgentAutoDelegate;
+  if (typeof raw.multiAgentMinAgents === "number" || typeof raw.multiAgentMinAgents === "string") config.multiAgentMinAgents = Number.parseInt(String(raw.multiAgentMinAgents), 10);
+  if (typeof raw.multiAgentMaxAgents === "number" || typeof raw.multiAgentMaxAgents === "string") config.multiAgentMaxAgents = Number.parseInt(String(raw.multiAgentMaxAgents), 10);
+  if (typeof raw.multiAgentDefaultAgents === "number" || typeof raw.multiAgentDefaultAgents === "string") config.multiAgentDefaultAgents = Number.parseInt(String(raw.multiAgentDefaultAgents), 10);
+  if (typeof raw.multiAgentCrossReview === "boolean") config.multiAgentCrossReview = raw.multiAgentCrossReview;
+  if (typeof raw.multiAgentTimeoutMinutes === "number" || typeof raw.multiAgentTimeoutMinutes === "string") config.multiAgentTimeoutMinutes = Number.parseInt(String(raw.multiAgentTimeoutMinutes), 10);
+  if (typeof raw.scoreEnabled === "boolean") config.scoreEnabled = raw.scoreEnabled;
+  if (typeof raw.scoreAccuracyWeight === "number" || typeof raw.scoreAccuracyWeight === "string") config.scoreAccuracyWeight = Number(raw.scoreAccuracyWeight);
+  if (typeof raw.scoreUsageWeight === "number" || typeof raw.scoreUsageWeight === "string") config.scoreUsageWeight = Number(raw.scoreUsageWeight);
+  if (typeof raw.scoreDecayDays === "number" || typeof raw.scoreDecayDays === "string") config.scoreDecayDays = Number.parseInt(String(raw.scoreDecayDays), 10);
+  if (typeof raw.scoreLayoutSuggestions === "boolean") config.scoreLayoutSuggestions = raw.scoreLayoutSuggestions;
   if (typeof raw.skillsEnabled === "boolean") config.skillsEnabled = raw.skillsEnabled;
   if (Array.isArray(raw.skillRoots) || typeof raw.skillRoots === "string") config.skillRoots = normalizeSkillRoots(raw.skillRoots);
   if (typeof raw.skillAutoSelect === "boolean") config.skillAutoSelect = raw.skillAutoSelect;
@@ -68393,6 +70191,16 @@ const CANCIP_CONFIG_NUMBER_KEYS = new Set([
   "maxMentionFolderFiles",
   "maxFileContextChars",
   "maxFolderFileContextChars",
+  "contextCompactionTriggerTokens",
+  "contextCompactionTargetTokens",
+  "contextCompactionKeepRecentMessages",
+  "multiAgentMinAgents",
+  "multiAgentMaxAgents",
+  "multiAgentDefaultAgents",
+  "multiAgentTimeoutMinutes",
+  "scoreAccuracyWeight",
+  "scoreUsageWeight",
+  "scoreDecayDays",
   "maxAutoSkills",
   "maxSkillContextChars",
   "maxAutoSkillContextChars",
@@ -68423,6 +70231,14 @@ const CANCIP_CONFIG_BOOLEAN_KEYS = new Set([
   "personalizedGreetingEnabled",
   "personalizedDiaryEnabled",
   "processRecordRuntimeCollapsed",
+  "contextCompactionEnabled",
+  "contextCompactionUseModel",
+  "contextCompactionShowStats",
+  "multiAgentEnabled",
+  "multiAgentAutoDelegate",
+  "multiAgentCrossReview",
+  "scoreEnabled",
+  "scoreLayoutSuggestions",
   "composerAutocompleteEnabled",
   "composerAutocompletePrefetchEnabled",
   "forceStatusBarVisible",
@@ -68866,6 +70682,12 @@ function sessionHistoryEntryFromSnapshot(raw: unknown, path: string): SessionHis
     subagentRole: typeof raw.subagentRole === "string" ? raw.subagentRole : undefined,
     subagentGoal: typeof raw.subagentGoal === "string" ? raw.subagentGoal : undefined,
     subagentProgress: typeof raw.subagentProgress === "string" ? raw.subagentProgress : undefined,
+    subagentPlanStepId: typeof raw.subagentPlanStepId === "string" ? raw.subagentPlanStepId : undefined,
+    subagentAcceptance: typeof raw.subagentAcceptance === "string" ? raw.subagentAcceptance : undefined,
+    subagentDeadlineAt: typeof raw.subagentDeadlineAt === "string" ? raw.subagentDeadlineAt : undefined,
+    subagentAttempt: typeof raw.subagentAttempt === "number" && Number.isFinite(raw.subagentAttempt) ? Math.max(1, Math.round(raw.subagentAttempt)) : undefined,
+    subagentStartedAt: typeof raw.subagentStartedAt === "string" ? raw.subagentStartedAt : undefined,
+    subagentCompletedAt: typeof raw.subagentCompletedAt === "string" ? raw.subagentCompletedAt : undefined,
     path
   };
 }
@@ -68901,6 +70723,12 @@ function mergeSessionHistoryEntry(existing: SessionHistoryEntry | undefined, fro
     subagentRole: primary.subagentRole || secondary.subagentRole,
     subagentGoal: primary.subagentGoal || secondary.subagentGoal,
     subagentProgress: primary.subagentProgress || secondary.subagentProgress,
+    subagentPlanStepId: primary.subagentPlanStepId || secondary.subagentPlanStepId,
+    subagentAcceptance: primary.subagentAcceptance || secondary.subagentAcceptance,
+    subagentDeadlineAt: primary.subagentDeadlineAt || secondary.subagentDeadlineAt,
+    subagentAttempt: primary.subagentAttempt || secondary.subagentAttempt,
+    subagentStartedAt: primary.subagentStartedAt || secondary.subagentStartedAt,
+    subagentCompletedAt: primary.subagentCompletedAt || secondary.subagentCompletedAt,
     eventOnly: false,
     path: primary.path || secondary.path
   };
@@ -69078,7 +70906,9 @@ function normalizeManualTodos(raw: unknown): ManualTodo[] {
       sendToModel: typeof item.sendToModel === "boolean" ? item.sendToModel : true,
       planOnly: typeof item.planOnly === "boolean" ? item.planOnly : false,
       source: item.source === "programmatic" ? "programmatic" as const : "manual" as const,
-      createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+      createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+      startedAt: typeof item.startedAt === "string" ? item.startedAt : undefined,
+      completedAt: typeof item.completedAt === "string" ? item.completedAt : undefined
     }))
     .filter((item) => item.text));
 }
@@ -72259,6 +74089,70 @@ function responseCreatesTrackedPlan(answer: string, minimumItems: number): boole
     && (action.items ?? []).filter((item) => item.text.trim()).length >= minimumItems
   );
   return createsPlan;
+}
+
+function responseStartsParallelSubagents(answer: string, minimumAgents: number): boolean {
+  return extractCancipActions(answer).some((action) => {
+    if (action.type !== "command" || normalizeCommandBusName(action.command) !== "cancip.subagents.parallel") return false;
+    const agents = Array.isArray(action.args?.agents) ? action.args?.agents : [];
+    const count = typeof action.args?.count === "number" ? Math.round(action.args.count) : agents.length;
+    return Math.max(agents.length, count) >= minimumAgents;
+  });
+}
+
+function shouldAutoDelegateToSubagents(prompt: string): boolean {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+  if (normalized.length < 90 || classifyPromptIntent(normalized) !== "implementation") return false;
+  return /(?:并行|多\s*agent|子\s*agent|交叉(?:验证|复核)|互相(?:挑错|审核)|多种方法|方案对比|深度分析|全面检查|复杂任务|parallel|multi[- ]?agent|cross[- ]?(?:check|review)|compare approaches|independent verification)/i.test(normalized)
+    || (normalized.length >= 260 && /(?:检查|修复|实现|开发|分析|验证|测试|迭代|优化|review|fix|implement|build|analy[sz]e|verify|test|optimi[sz]e)/i.test(normalized));
+}
+
+function fallbackPlanAndMultiAgentActionResponse(
+  prompt: string,
+  previousAnswer: string,
+  requirePlan: boolean,
+  requireMultiAgent: boolean,
+  defaultAgents: number,
+  timeoutMinutes: number
+): string {
+  const actions: CancipAction[] = [];
+  if (requirePlan) {
+    const plan = extractCancipActions(fallbackPlanActionResponse(prompt, previousAnswer))
+      .find((action): action is TodoAction => action.type === "todo");
+    if (plan) actions.push(plan);
+  }
+  if (requireMultiAgent) {
+    const count = clampInt(defaultAgents, 3, 2, 10);
+    const roles = [
+      ["implementation", "produce the most direct executable solution"],
+      ["verification", "independently verify evidence, edge cases, and completion"],
+      ["critic", "challenge assumptions and find regressions or missing requirements"],
+      ["performance", "find a faster and lower-token route without reducing quality"],
+      ["user-experience", "check the visible workflow and mobile interaction"],
+      ["security", "check safety, permission, and data-integrity risks"],
+      ["compatibility", "check Obsidian desktop/mobile compatibility"],
+      ["maintainability", "check scope, reuse, and future maintenance"],
+      ["evidence", "collect independent, reproducible evidence"],
+      ["adversarial-review", "try to falsify the proposed completion claim"]
+    ];
+    actions.push({
+      type: "command",
+      command: "cancip.subagents.parallel",
+      args: {
+        goal: prompt,
+        planStepId: "step-1",
+        wait: true,
+        consensus: true,
+        agents: roles.slice(0, count).map(([role, method]) => ({
+          role,
+          task: `${method}: ${trimContext(prompt.replace(/\s+/g, " ").trim(), 500)}`,
+          acceptance: "Return a concise conclusion with concrete evidence, blockers, and the exact next action.",
+          timeoutMinutes: clampInt(timeoutMinutes, 10, 1, 120)
+        }))
+      }
+    });
+  }
+  return `<!-- cancip-action ${JSON.stringify({ actions })} -->`;
 }
 
 function fallbackPlanActionResponse(prompt: string, previousAnswer: string): string {
