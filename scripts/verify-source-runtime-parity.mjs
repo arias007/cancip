@@ -39,6 +39,7 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "noteDrawControllerForStage",
   "noteDrawRuntime",
   "reviewGateTerminalDecisionPaths",
+  "renderReviewBlockControls",
   "schedulePersonalizedDiaryButtons",
   "scheduleNativeNoteDrawSurfaceSync",
   "shouldGenerateModelChoiceOptions",

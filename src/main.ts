@@ -26571,8 +26571,9 @@ class CancipReviewLeafView extends ItemView {
   private reviewSessionEntries: ReviewGatePendingEntry[] | null = null;
   private reviewSessionStale = false;
   private reviewSessionLoadPromise: Promise<ReviewGatePendingEntry[]> | null = null;
-  private sourceMode: "source" | "render" = "render";
+  private sourceMode: "source" | "render" = "source";
   private reviewViewMode: "diff" | "source" = "diff";
+  private openReviewSwipe: { row: HTMLElement; close: () => void } | null = null;
   private keyboardLockHeight = 0;
   private keyboardLockedElements: HTMLElement[] = [];
   private reviewTreeResizeObserver: ResizeObserver | null = null;
@@ -26610,6 +26611,7 @@ class CancipReviewLeafView extends ItemView {
   }
 
   async onClose(): Promise<void> {
+    this.openReviewSwipe = null;
     this.reviewTreeResizeObserver?.disconnect();
     this.reviewTreeResizeObserver = null;
   }
@@ -26622,7 +26624,7 @@ class CancipReviewLeafView extends ItemView {
       this.packagePath = "";
     }
     this.selectedItemPath = itemPath.trim() ? normalizePath(itemPath.replace(/\\/g, "/")) : "";
-    this.sourceMode = "render";
+    this.sourceMode = "source";
     this.reviewViewMode = "diff";
     if (refreshSession || this.reviewSessionStale || !this.reviewSessionEntries) {
       this.renderReviewSessionLoading();
@@ -26719,6 +26721,7 @@ class CancipReviewLeafView extends ItemView {
   }
 
   private async render(): Promise<void> {
+    this.openReviewSwipe = null;
     this.unlockReviewKeyboardLayout();
     this.keyboardLockHeight = 0;
     const root = this.contentEl;
@@ -26922,7 +26925,7 @@ class CancipReviewLeafView extends ItemView {
     button.addEventListener("click", () => {
       this.packagePath = packagePath;
       this.selectedItemPath = item.path;
-      this.sourceMode = "render";
+      this.sourceMode = "source";
       this.reviewViewMode = "diff";
       void this.render().catch((error) => new Notice(error instanceof Error ? error.message : String(error)));
     });
@@ -27204,21 +27207,19 @@ class CancipReviewLeafView extends ItemView {
       });
       changes.createEl("summary", { text: this.t(isConfigReview ? "reviewGateConfigRaw" : "reviewGateContentChanges") });
       const changesBody = changes.createDiv({ cls: "obcc-review-changes-body" });
-      const blockControls = changesBody.createDiv({ cls: "obcc-review-block-controls" });
-      this.renderReviewBlockControls(blockControls, data, item, (text) => openCorrectionForText(text));
       diffBody = changesBody.createDiv({ cls: "obcc-review-diff is-hidden" });
       let diffSourceReady = false;
       ensureDiffSource = () => {
         if (diffSourceReady || !diffBody) return;
         diffSourceReady = true;
-        this.renderReviewDiff(diffBody, item.old_text, item.new_text);
+        this.renderReviewDiff(diffBody, data, item);
       };
       diffRender = changesBody.createDiv({ cls: "obcc-review-diff-render markdown-rendered" });
       let diffRendered = false;
       ensureDiffRendered = () => {
         if (diffRendered || !diffRender) return;
         diffRendered = true;
-        void this.renderReviewDiffMarkdown(diffRender, item.old_text, item.new_text);
+        void this.renderReviewDiffMarkdown(diffRender, data, item);
       };
       sources = main.createDiv({ cls: `obcc-review-sources obcc-review-sources-paired${isConfigReview ? " obcc-review-config-raw-sources" : ""}` });
       newPane = this.renderReviewSource(sources, this.t("reviewGateNew"), item.new_text, true, true);
@@ -27392,48 +27393,149 @@ class CancipReviewLeafView extends ItemView {
     if (change.reason) card.createDiv({ cls: "obcc-review-structure-reason", text: change.reason });
   }
 
-  private renderReviewBlockControls(
+  private renderReviewSwipeBlock(
     parent: HTMLElement,
     data: ReviewGatePackageData,
     item: ReviewGateManifestItem,
-    correct: (text: string) => void
+    block: ReviewDiffBlock,
+    index: number,
+    rows: Map<string, HTMLElement>
+  ): HTMLElement {
+    const row = parent.createDiv({ cls: "obcc-review-swipe-block" });
+    rows.set(block.id, row);
+    const actions = row.createDiv({ cls: "obcc-review-swipe-actions" });
+    const approve = actions.createEl("button", {
+      cls: "obcc-review-swipe-action is-approve",
+      attr: {
+        type: "button",
+        title: `${this.t("reviewGateApprove")} ${index + 1}`,
+        "aria-label": `${this.t("reviewGateApprove")} ${index + 1}`
+      }
+    });
+    setIcon(approve, "check");
+    const reject = actions.createEl("button", {
+      cls: "obcc-review-swipe-action is-reject",
+      attr: {
+        type: "button",
+        title: `${this.t("reviewGateCancel")} ${index + 1}`,
+        "aria-label": `${this.t("reviewGateCancel")} ${index + 1}`
+      }
+    });
+    setIcon(reject, "x");
+    const surface = row.createDiv({
+      cls: "obcc-review-swipe-surface",
+      attr: {
+        tabindex: "0",
+        role: "group",
+        "aria-label": `${this.t("reviewGateContentChanges")} ${index + 1}`,
+        "aria-expanded": "false"
+      }
+    });
+
+    let currentOffset = 0;
+    let opened = false;
+    let pointerId: number | null = null;
+    let startX = 0;
+    let startY = 0;
+    let startOffset = 0;
+    let horizontalDrag = false;
+    const actionWidth = () => Math.max(76, Math.round(actions.getBoundingClientRect().width) || 84);
+    const setOffset = (offset: number) => {
+      currentOffset = Math.max(-actionWidth(), Math.min(0, offset));
+      surface.setCssProps({ "--obcc-review-swipe-offset": `${currentOffset}px` });
+    };
+    let close = (): void => undefined;
+    const setOpen = (open: boolean) => {
+      if (open && this.openReviewSwipe?.row !== row) this.openReviewSwipe?.close();
+      opened = open;
+      row.toggleClass("is-open", open);
+      surface.setAttr("aria-expanded", open ? "true" : "false");
+      setOffset(open ? -actionWidth() : 0);
+      if (open) this.openReviewSwipe = { row, close };
+      else if (this.openReviewSwipe?.row === row) this.openReviewSwipe = null;
+    };
+    close = () => setOpen(false);
+    const resetPointer = (event?: PointerEvent) => {
+      if (event && surface.hasPointerCapture?.(event.pointerId)) surface.releasePointerCapture(event.pointerId);
+      pointerId = null;
+      horizontalDrag = false;
+      row.removeClass("is-dragging");
+    };
+    surface.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      pointerId = event.pointerId;
+      startX = event.clientX;
+      startY = event.clientY;
+      startOffset = opened ? -actionWidth() : 0;
+      horizontalDrag = false;
+    });
+    surface.addEventListener("pointermove", (event) => {
+      if (pointerId !== event.pointerId) return;
+      const dx = event.clientX - startX;
+      const dy = event.clientY - startY;
+      if (!horizontalDrag) {
+        if (Math.abs(dx) < 7 && Math.abs(dy) < 7) return;
+        if (Math.abs(dy) >= Math.abs(dx)) {
+          resetPointer();
+          return;
+        }
+        horizontalDrag = true;
+        row.addClass("is-dragging");
+        surface.setPointerCapture?.(event.pointerId);
+      }
+      event.preventDefault();
+      setOffset(startOffset + dx);
+    });
+    const finishPointer = (event: PointerEvent) => {
+      if (pointerId !== event.pointerId) return;
+      if (horizontalDrag) setOpen(currentOffset <= -(actionWidth() * 0.42));
+      else if (opened) setOpen(false);
+      resetPointer(event);
+    };
+    surface.addEventListener("pointerup", finishPointer);
+    surface.addEventListener("pointercancel", finishPointer);
+    surface.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setOpen(true);
+      } else if (event.key === "ArrowRight" || event.key === "Escape") {
+        event.preventDefault();
+        setOpen(false);
+      }
+    });
+
+    const decide = async (decision: "approved" | "cancelled") => {
+      approve.disabled = true;
+      reject.disabled = true;
+      row.toggleClass("is-approved", decision === "approved");
+      row.toggleClass("is-cancelled", decision === "cancelled");
+      try {
+        await this.saveReviewGateBlockDecision(data, item, block, decision);
+      } catch (error) {
+        approve.disabled = false;
+        reject.disabled = false;
+        row.removeClass("is-approved");
+        row.removeClass("is-cancelled");
+        new Notice(this.t("reviewGateFailed", { reason: error instanceof Error ? error.message : String(error) }));
+      }
+    };
+    approve.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void decide("approved");
+    });
+    reject.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void decide("cancelled");
+    });
+    return surface;
+  }
+
+  private hydrateReviewSwipeDecisions(
+    parent: HTMLElement,
+    data: ReviewGatePackageData,
+    item: ReviewGateManifestItem,
+    rows: Map<string, HTMLElement>
   ): void {
-    const blocks = reviewDiffBlocks(item.old_text, item.new_text);
-    if (!blocks.length) {
-      parent.addClass("is-hidden");
-      return;
-    }
-    const rows = new Map<string, HTMLElement>();
-    for (const [index, block] of blocks.entries()) {
-      const row = parent.createDiv({ cls: "obcc-review-block-row" });
-      rows.set(block.id, row);
-      const removed = block.lines.filter((line) => line.kind === "removed").map((line) => line.text).join("\n");
-      const added = block.lines.filter((line) => line.kind === "added").map((line) => line.text).join("\n");
-      const summary = [removed ? `- ${trimContext(removed, 90)}` : "", added ? `+ ${trimContext(added, 90)}` : ""].filter(Boolean).join("  ");
-      row.createSpan({ cls: "obcc-review-block-index", text: String(index + 1) });
-      row.createSpan({ cls: "obcc-review-block-summary", text: summary || this.t("reviewGateContentChanges") });
-      const actions = row.createDiv({ cls: "obcc-review-block-actions" });
-      const approve = actions.createEl("button", { cls: "obcc-review-icon-button", attr: { type: "button", title: "通过此块", "aria-label": "通过此块" } });
-      setIcon(approve, "check");
-      const reject = actions.createEl("button", { cls: "obcc-review-icon-button is-danger", attr: { type: "button", title: "拒绝此块", "aria-label": "拒绝此块" } });
-      setIcon(reject, "x");
-      const correction = actions.createEl("button", { cls: "obcc-review-icon-button", attr: { type: "button", title: this.t("reviewGateCorrection"), "aria-label": this.t("reviewGateCorrection") } });
-      setIcon(correction, "edit-3");
-      const decide = (decision: "approved" | "cancelled") => {
-        approve.disabled = true;
-        reject.disabled = true;
-        correction.disabled = true;
-        void this.saveReviewGateBlockDecision(data, item, block, decision).catch((error) => {
-          approve.disabled = false;
-          reject.disabled = false;
-          correction.disabled = false;
-          new Notice(this.t("reviewGateFailed", { reason: error instanceof Error ? error.message : String(error) }));
-        });
-      };
-      approve.addEventListener("click", () => decide("approved"));
-      reject.addEventListener("click", () => decide("cancelled"));
-      correction.addEventListener("click", () => correct([removed, added].filter(Boolean).join(" -> ")));
-    }
     void this.loadReviewGateBlockDecisionState(data.folder, item).then((state) => {
       if (!parent.isConnected) return;
       for (const [id, row] of rows) {
@@ -27531,39 +27633,65 @@ class CancipReviewLeafView extends ItemView {
     this.plugin.refreshStatusBarAttention();
   }
 
-  private renderReviewDiff(parent: HTMLElement, oldText: string, newText: string): void {
-    const hunks = reviewDiffHunks(oldText, newText);
-    if (!hunks.length) {
+  private renderReviewDiff(parent: HTMLElement, data: ReviewGatePackageData, item: ReviewGateManifestItem): void {
+    const lines = makeReviewDiffLines(item.old_text, item.new_text);
+    const blocks = reviewDiffBlocks(item.old_text, item.new_text);
+    if (!blocks.length) {
       parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
       return;
     }
-    for (const hunk of hunks) {
-      const hunkEl = parent.createDiv({ cls: "obcc-review-diff-hunk" });
-      for (const line of hunk.lines) {
-        const row = hunkEl.createDiv({ cls: `obcc-review-diff-row is-${line.kind}` });
+    const rows = new Map<string, HTMLElement>();
+    let blockIndex = 0;
+    let cursor = 0;
+    while (cursor < lines.length) {
+      if (lines[cursor].kind === "context") {
+        const line = lines[cursor];
+        const row = parent.createDiv({ cls: "obcc-review-diff-row is-context" });
         row.createSpan({ cls: "obcc-review-line-no", text: line.oldLine ? String(line.oldLine) : "" });
         row.createSpan({ cls: "obcc-review-line-no", text: line.newLine ? String(line.newLine) : "" });
-        row.createSpan({ cls: "obcc-review-diff-prefix", text: line.kind === "added" ? "+" : line.kind === "removed" ? "-" : " " });
+        row.createSpan({ cls: "obcc-review-diff-prefix", text: " " });
+        row.createEl("pre", { cls: "obcc-review-diff-text", text: line.text || " " });
+        cursor += 1;
+        continue;
+      }
+      const block = blocks[blockIndex];
+      if (!block) break;
+      const surface = this.renderReviewSwipeBlock(parent, data, item, block, blockIndex, rows);
+      for (const line of block.lines) {
+        const row = surface.createDiv({ cls: `obcc-review-diff-row is-${line.kind}` });
+        row.createSpan({ cls: "obcc-review-line-no", text: line.oldLine ? String(line.oldLine) : "" });
+        row.createSpan({ cls: "obcc-review-line-no", text: line.newLine ? String(line.newLine) : "" });
+        row.createSpan({ cls: "obcc-review-diff-prefix", text: line.kind === "added" ? "+" : "-" });
         row.createEl("pre", { cls: "obcc-review-diff-text", text: line.text || " " });
       }
+      cursor += block.lines.length;
+      blockIndex += 1;
     }
+    this.hydrateReviewSwipeDecisions(parent, data, item, rows);
   }
 
-  private async renderReviewDiffMarkdown(parent: HTMLElement, oldText: string, newText: string): Promise<void> {
-    const rows = reviewChangedMarkdownRows(oldText, newText);
-    if (!rows.length) {
+  private async renderReviewDiffMarkdown(parent: HTMLElement, data: ReviewGatePackageData, item: ReviewGateManifestItem): Promise<void> {
+    const blocks = reviewDiffBlocks(item.old_text, item.new_text);
+    if (!blocks.length) {
       parent.createDiv({ cls: "obcc-review-no-diff", text: this.t("reviewGateNoDiff") });
       return;
     }
-    for (const row of rows) {
-      const card = parent.createDiv({ cls: `obcc-review-diff-render-row is-${row.kind}` });
-      const gutter = card.createDiv({ cls: "obcc-review-diff-render-gutter" });
-      gutter.createSpan({ cls: "obcc-review-line-no", text: row.oldLine ? String(row.oldLine) : "" });
-      gutter.createSpan({ cls: "obcc-review-line-no", text: row.newLine ? String(row.newLine) : "" });
-      gutter.createSpan({ cls: "obcc-review-diff-prefix", text: row.kind === "added" ? "+" : row.kind === "removed" ? "-" : " " });
-      const body = card.createDiv({ cls: "obcc-review-diff-render-body markdown-rendered" });
-      await MarkdownRenderer.render(this.app, row.markdown || " ", body, this.markdownSourcePath(), this);
+    const rows = new Map<string, HTMLElement>();
+    const oldLines = item.old_text.split(/\r?\n/);
+    const newLines = item.new_text.split(/\r?\n/);
+    for (const [index, block] of blocks.entries()) {
+      const surface = this.renderReviewSwipeBlock(parent, data, item, block, index, rows);
+      for (const line of block.lines) {
+        const card = surface.createDiv({ cls: `obcc-review-diff-render-row is-${line.kind}` });
+        const gutter = card.createDiv({ cls: "obcc-review-diff-render-gutter" });
+        gutter.createSpan({ cls: "obcc-review-line-no", text: line.oldLine ? String(line.oldLine) : "" });
+        gutter.createSpan({ cls: "obcc-review-line-no", text: line.newLine ? String(line.newLine) : "" });
+        gutter.createSpan({ cls: "obcc-review-diff-prefix", text: line.kind === "added" ? "+" : "-" });
+        const body = card.createDiv({ cls: "obcc-review-diff-render-body markdown-rendered" });
+        await MarkdownRenderer.render(this.app, reviewMarkdownForDiffLine(line, oldLines, newLines) || " ", body, this.markdownSourcePath(), this);
+      }
     }
+    this.hydrateReviewSwipeDecisions(parent, data, item, rows);
   }
 
   private renderReviewSource(parent: HTMLElement, title: string, content: string, emphasize = false, deferRender = false): ReviewGateSourcePane {
@@ -27691,7 +27819,7 @@ class CancipReviewLeafView extends ItemView {
     const next = orderedCandidates.map((entry) => remainingByIdentity.get(identity(entry))).find(Boolean) ?? remaining[0];
     this.packagePath = next.packagePath;
     this.selectedItemPath = next.item.path;
-    this.sourceMode = "render";
+    this.sourceMode = "source";
     this.reviewViewMode = "diff";
     await this.render();
   }
@@ -60633,26 +60761,26 @@ function markdownReviewTestItem(): ReviewGateManifestItem {
     "这是一份用于测试审核面板变化渲染的新版 Markdown。",
     "",
     "## 任务列表",
-    "- [x] 新任务：检查差异面板只显示变化",
+    "- [x] 新任务：检查完整文件和变化块",
     "- [x] 已完成：基础对照",
     "- [ ] 新增：渲染模式检查表格、代码和 callout",
     "",
     "## 表格",
     "| 模块 | 状态 | 备注 |",
     "| --- | --- | --- |",
-    "| Diff | 新 | 只显示增删变化 |",
+    "| Diff | 新 | 完整上下文与变化块 |",
     "| Render | 新 | 支持变化渲染 |",
     "| Review | 新增 | 手机上查看更紧凑 |",
     "",
     "## 代码块",
     "```ts",
     "const mode = \"render\";",
-    "console.log({ mode, changedOnly: true });",
+    "console.log({ mode, fullFile: true });",
     "```",
     "",
     "> [!success] 新提示",
     "> 这里是新的 callout 内容。",
-    "> 支持审核时快速识别新增块。",
+    "> 完整文件保留上下文，变化块可左滑决定。",
     "",
     "<div class=\"cancip-test\">新版 HTML 块</div>",
     "",

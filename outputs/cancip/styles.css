@@ -6182,64 +6182,79 @@ details.obcc-process-step {
   display: none;
 }
 
-.obcc-review-block-controls {
-  display: grid;
-  gap: 4px;
-  padding: 5px;
-  border-bottom: 1px solid var(--background-modifier-border);
-  background: var(--background-secondary);
-}
-
-.obcc-review-block-controls.is-hidden {
-  display: none;
-}
-
-.obcc-review-block-row {
-  display: grid;
-  grid-template-columns: 22px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 5px;
+.obcc-review-swipe-block {
+  position: relative;
   min-width: 0;
-  min-height: 30px;
-  padding: 2px 4px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
+  overflow: hidden;
   background: var(--background-primary);
 }
 
-.obcc-review-block-row.is-approved {
-  border-color: color-mix(in srgb, var(--color-green) 58%, var(--background-modifier-border));
+.obcc-review-swipe-block.is-approved {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-green) 72%, transparent);
 }
 
-.obcc-review-block-row.is-cancelled {
-  border-color: color-mix(in srgb, var(--color-red) 55%, var(--background-modifier-border));
+.obcc-review-swipe-block.is-cancelled {
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--color-red) 72%, transparent);
 }
 
-.obcc-review-block-index {
-  color: var(--text-faint);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
+.obcc-review-swipe-actions {
+  position: absolute;
+  z-index: 0;
+  inset-block: 0;
+  inset-inline-end: 0;
+  display: grid;
+  grid-template-columns: repeat(2, 42px);
+  width: 84px;
+  min-height: 100%;
 }
 
-.obcc-review-block-summary {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--text-muted);
-  font-family: var(--font-monospace);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.obcc-review-block-actions {
+.obcc-review-swipe-action {
   display: inline-flex;
-  gap: 2px;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  min-width: 42px;
+  height: 100%;
+  min-height: 42px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  color: white;
 }
 
-.obcc-review-block-actions .obcc-review-icon-button {
-  width: 26px;
-  height: 26px;
-  min-width: 26px;
+.obcc-review-swipe-action.is-approve {
+  background: var(--color-green);
+}
+
+.obcc-review-swipe-action.is-reject {
+  background: var(--color-red);
+}
+
+.obcc-review-swipe-action svg {
+  width: 18px;
+  height: 18px;
+}
+
+.obcc-review-swipe-surface {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  background: var(--background-primary);
+  transform: translate3d(var(--obcc-review-swipe-offset, 0), 0, 0);
+  transition: transform 150ms ease-out;
+  touch-action: pan-y;
+  user-select: text;
+}
+
+.obcc-review-swipe-block.is-dragging .obcc-review-swipe-surface {
+  transition: none;
+  user-select: none;
+}
+
+.obcc-review-swipe-surface:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: -2px;
 }
 
 .obcc-review-diff-hunk {
