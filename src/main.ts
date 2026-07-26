@@ -250,7 +250,7 @@ const OCR_COMPONENT_SOURCES: ReadonlyArray<{
   { relative: "eng.traineddata.gz", url: "https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int/eng.traineddata.gz", sha256: "45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91" },
   { relative: "manifest.json", url: "", sha256: "cb1363d83065ed9029178d1ee987f80e8849ad5d2908fa81add8d7038a3fb65e" }
 ];
-const OCR_CACHE_SCHEMA_VERSION = 2;
+const OCR_CACHE_SCHEMA_VERSION = 3;
 const OCR_RUNTIME_IDLE_DISPOSE_MS = 30000;
 const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
 const BUILTIN_PRIME_TTS_PREFETCH_AHEAD = 5;
@@ -1102,8 +1102,9 @@ type OcrIndexEntry = {
   height: number;
   text: string;
   description: string;
+  semanticTags: string[];
   blocks: OcrLayoutBlock[];
-  pages?: Array<{ page: number; text: string; description: string; confidence: number }>;
+  pages?: Array<{ page: number; text: string; description: string; confidence: number; semanticTags: string[] }>;
 };
 
 type ComposerWorkflowHint = {
@@ -3782,7 +3783,7 @@ const CANCIP_ARCHIVE_SESSION_SCAN_BATCH = 36;
 const CANCIP_ARCHIVE_SESSION_MOVE_BATCH = 12;
 let UNIVERSAL_SEARCH_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/universal-search.json`;
 let UNIVERSAL_SEARCH_INDEX_DIR = `${CANCIP_MACHINE_INDEX_DIR}/universal-search`;
-const UNIVERSAL_SEARCH_SCHEMA_VERSION = 4;
+const UNIVERSAL_SEARCH_SCHEMA_VERSION = 5;
 const UNIVERSAL_SEARCH_INDEX_KINDS: readonly UniversalSearchDocumentKind[] = ["memory", "note", "session", "file", "pdf", "image", "office", "archive", "config"];
 const UNIVERSAL_SEARCH_BLOOM_BITS = 4096;
 const UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT = 900;
@@ -4652,7 +4653,7 @@ const EN = {
   emptyContext: "No context",
   sourceAdded: "Added to context",
   modePromptSearch: "Current mode: Search. List matched note paths first, then answer.",
-  modePromptPlan: "Plan feature: the model decides whether a Plan is useful. For a multi-step task, organize the user's requirements into ordered, verifiable todos with stable step IDs, keep their order aligned with the Plan panel, update each completed step from real results, and do not stop while another concrete action can advance an unfinished step. Trivial answers need no Plan. Plan is not a mode and does not change permissions: access mode still decides whether read/write tool actions run or need approval. Do not claim execution unless a tool result confirms it.",
+  modePromptPlan: "Plan feature: the model decides whether a Plan is useful. Use the real Plan tool only when there are at least 3 concrete, ordered, verifiable todos; 1-2 actions must be executed directly without creating a Plan. Keep todo order aligned with the Plan panel, update each completed step from real results, and do not stop while another concrete action can advance an unfinished step. Trivial answers need no Plan. Plan is not a mode and does not change permissions: access mode still decides whether read/write tool actions run or need approval. Do not claim execution unless a tool result confirms it.",
   modePromptEdit: "Current mode: Edit. Provide copyable patches or Markdown edit suggestions. If a Vault write action is needed, follow the current access mode and the Vault note review rule.",
   modePromptAsk: "Current mode: Cancip. Answer directly and cite source paths when useful.",
   settingsLanguage: "Language",
@@ -5730,7 +5731,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     emptyContext: "暂无上下文",
     sourceAdded: "已加入上下文",
     modePromptSearch: "当前模式：Search。先列出命中的笔记路径，再回答。",
-    modePromptPlan: "计划功能：是否需要计划由模型判断。多步骤任务把用户要求整理成有顺序、可验收、带稳定步骤 ID 的待办，顺序与计划面板保持一致；每次根据真实结果更新已完成步骤，只要未完成步骤仍能推进就继续执行。简单回答不要建计划。计划不是模式，也不改变权限；读写动作是否执行或排队确认，只由确认/全权访问模式决定。除非工具结果确认，否则不要声称已执行。",
+    modePromptPlan: "计划功能：是否需要计划由模型判断。只有至少 3 项具体、有序、可验收的任务才调用计划工具；1-2 项直接执行，不创建计划。顺序与计划面板保持一致；每次根据真实结果更新已完成步骤，只要未完成步骤仍能推进就继续执行。简单回答不要建计划。计划不是模式，也不改变权限；读写动作是否执行或排队确认，只由确认/全权访问模式决定。除非工具结果确认，否则不要声称已执行。",
     modePromptEdit: "当前模式：Edit。给出可复制补丁/Markdown 修改建议；若要写入 Vault，按当前权限和 Vault 笔记审核规则执行。",
     modePromptAsk: "当前模式：Cancip。直接回答，必要时引用来源路径。",
     settingsLanguage: "语言",
@@ -12116,29 +12117,16 @@ export default class CancipPlugin extends Plugin {
   private updateTtsSourceHighlight(): void {
     const displayIndex = this.activeTtsHighlightDisplayIndex();
     const displayText = (this.activeTtsDisplayParts[displayIndex] ?? "").trim();
-    const playText = (this.activeTtsParts[this.activeTtsHighlightPartIndex] ?? displayText).trim();
-    const keyText = playText || displayText;
-    const key = `${this.activeTtsSourcePath}:${this.activeTtsHighlightPartIndex}:${normalizeTtsHighlightText(keyText).slice(0, 220)}`;
-    if (this.activeTtsHighlightPartIndex < 0 || !keyText || !this.activeTtsSourcePath) {
+    const key = `${this.activeTtsSourcePath}:${displayIndex}:${normalizeTtsHighlightText(displayText).slice(0, 220)}`;
+    if (this.activeTtsHighlightPartIndex < 0 || !displayText || !this.activeTtsSourcePath) {
       this.clearTtsSourceHighlight();
       return;
     }
     if (this.activeTtsHighlightKey === key) return;
     this.clearTtsSourceHighlight();
-    const syntheticPrefixUnits = ttsSyntheticTaskPrefixRemainingUnits(
-      this.activeTtsParts,
-      this.activeTtsDisplayIndexByPart,
-      this.activeTtsHighlightPartIndex,
-      displayIndex,
-      displayText
-    );
-    for (const candidate of ttsHighlightCandidateTexts(playText, displayText, syntheticPrefixUnits)) {
-      const highlightedRendered = this.highlightActiveRenderedTtsPart(candidate);
-      const highlightedEditor = highlightedRendered ? false : this.highlightActiveEditorTtsPart(candidate);
-      if (!highlightedRendered && !highlightedEditor) continue;
-      this.activeTtsHighlightKey = key;
-      return;
-    }
+    const highlightedRendered = this.highlightActiveRenderedTtsPart(displayText);
+    const highlightedEditor = highlightedRendered ? false : this.highlightActiveEditorTtsPart(displayText);
+    if (highlightedRendered || highlightedEditor) this.activeTtsHighlightKey = key;
   }
 
   private highlightActiveEditorTtsPart(current: string): boolean {
@@ -12641,9 +12629,13 @@ export default class CancipPlugin extends Plugin {
     try {
       if (!(await adapter.exists(path))) return null;
       const entry = normalizeOcrIndexEntry(JSON.parse(await adapter.read(path)) as unknown);
-      if (!entry || entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION || entry.engineVersion !== OCR_LITE_PACKAGE_VERSION || entry.sourceKey !== sourceKey) return null;
+      if (!entry || entry.engineVersion !== OCR_LITE_PACKAGE_VERSION || entry.sourceKey !== sourceKey) return null;
       if (source === "vault" && (entry.mtime !== mtime || entry.size !== size)) return null;
-      return entry;
+      if (entry.schemaVersion === OCR_CACHE_SCHEMA_VERSION) return entry;
+      if (entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION - 1) return null;
+      const migrated = migrateOcrIndexEntry(entry);
+      await adapter.write(path, `${JSON.stringify(migrated)}\n`);
+      return migrated;
     } catch {
       return null;
     }
@@ -12726,6 +12718,8 @@ export default class CancipPlugin extends Plugin {
     });
     const text = normalizeExtractedText(recognized.data.text ?? "");
     const blocks = ocrLayoutBlocks(recognized.data.blocks, prepared.width, prepared.height);
+    const visualTags = await detectBrowserVisualSemanticTags(prepared.blob);
+    const semanticTags = inferOcrSemanticTags(text, sourceKey, prepared.width, prepared.height, blocks, visualTags);
     return {
       schemaVersion: OCR_CACHE_SCHEMA_VERSION,
       engineVersion: OCR_LITE_PACKAGE_VERSION,
@@ -12740,7 +12734,8 @@ export default class CancipPlugin extends Plugin {
       width: prepared.width,
       height: prepared.height,
       text: trimContext(text, 30000),
-      description: describeOcrLayout(prepared.width, prepared.height, blocks, text),
+      description: describeOcrLayout(prepared.width, prepared.height, blocks, text, semanticTags),
+      semanticTags,
       blocks
     };
   }
@@ -12769,7 +12764,7 @@ export default class CancipPlugin extends Plugin {
         if (sidecar) {
           this.ocrRuntimeStatus = `recognizing cached PDF page ${pageNumber}/${pageLimit}: ${sourceKey}`;
           const pageEntry = await this.ocrImageFile(sidecar, source, `${sourceKey}#page=${pageNumber}`, mtime, false);
-          pages.push({ page: pageNumber, text: pageEntry.text, description: `${pageEntry.description}\nSource: cached PDF page image`, confidence: pageEntry.confidence });
+          pages.push({ page: pageNumber, text: pageEntry.text, description: `${pageEntry.description}\nSource: cached PDF page image`, confidence: pageEntry.confidence, semanticTags: pageEntry.semanticTags });
           allBlocks.push(...pageEntry.blocks.map((block) => ({ ...block, page: pageNumber })));
           width = Math.max(width, pageEntry.width);
           height += pageEntry.height;
@@ -12795,14 +12790,14 @@ export default class CancipPlugin extends Plugin {
         } catch (error) {
           renderTask.cancel?.();
           const reason = error instanceof Error ? error.message : String(error);
-          pages.push({ page: pageNumber, text: "", description: `OCR unavailable: ${reason}`, confidence: 0 });
+          pages.push({ page: pageNumber, text: "", description: `OCR unavailable: ${reason}`, confidence: 0, semanticTags: [] });
           this.ocrRuntimeStatus = `PDF page skipped: ${reason}`;
           continue;
         }
         this.ocrRuntimeStatus = `encoding PDF page ${pageNumber}/${pageLimit}: ${sourceKey}`;
         const blob = await canvasElementToBlob(canvas, "image/jpeg", 0.88);
         const pageEntry = await this.ocrImageFile(new File([blob], `${file.name}-page-${pageNumber}.jpg`, { type: "image/jpeg" }), source, `${sourceKey}#page=${pageNumber}`, mtime, false);
-        pages.push({ page: pageNumber, text: pageEntry.text, description: pageEntry.description, confidence: pageEntry.confidence });
+        pages.push({ page: pageNumber, text: pageEntry.text, description: pageEntry.description, confidence: pageEntry.confidence, semanticTags: pageEntry.semanticTags });
         allBlocks.push(...pageEntry.blocks.map((block) => ({ ...block, page: pageNumber })));
         width = Math.max(width, pageEntry.width);
         height += pageEntry.height;
@@ -12817,6 +12812,8 @@ export default class CancipPlugin extends Plugin {
       `PDF pages OCR-indexed: ${pages.length}/${document.numPages}`,
       ...pages.map((page) => `Page ${page.page}: ${page.description}`)
     ].join("\n");
+    const pageSemanticTags = uniqueStrings(pages.flatMap((page) => page.semanticTags));
+    const semanticTags = inferOcrSemanticTags(text, sourceKey, width, height, allBlocks, pageSemanticTags);
     return {
       schemaVersion: OCR_CACHE_SCHEMA_VERSION,
       engineVersion: OCR_LITE_PACKAGE_VERSION,
@@ -12832,6 +12829,7 @@ export default class CancipPlugin extends Plugin {
       height,
       text: trimContext(text, 30000),
       description: trimContext(description, 5000),
+      semanticTags,
       blocks: allBlocks.slice(0, 240),
       pages
     };
@@ -13096,14 +13094,19 @@ export default class CancipPlugin extends Plugin {
         }
       }
     }
-    const elements = uniqueElements(matched.map((entry) => entry.node.parentElement).filter((element): element is HTMLElement => Boolean(element)));
-    if (!elements.length) return false;
-    for (const element of elements) {
-      element.addClass("obcc-tts-source-highlight");
-      this.activeTtsSourceClassNodes.push(element);
+    const matchedNodes = matched.map((entry) => entry.node);
+    const firstElement = matchedNodes[0]?.parentElement;
+    if (!firstElement) return false;
+    const blockSelector = "li, p, blockquote, h1, h2, h3, h4, h5, h6, td, th, pre, figcaption, caption, .metadata-property, .cm-line";
+    let block = firstElement.closest<HTMLElement>(blockSelector);
+    while (block && !matchedNodes.every((entry) => block?.contains(entry))) {
+      block = block.parentElement?.closest<HTMLElement>(blockSelector) ?? null;
     }
+    if (!block) return false;
+    block.addClass("obcc-tts-source-highlight");
+    this.activeTtsSourceClassNodes.push(block);
     this.recordTtsHighlightMatch(match.index, matchEnd);
-    scrollTtsHighlightIntoView(elements[0]);
+    scrollTtsHighlightIntoView(block);
     return true;
   }
 
@@ -17348,6 +17351,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const selectionChange = () => {
       window.setTimeout(() => {
         const bubble = this.contextEditBubbleEl;
+        if (bubble?.contains(bubble.ownerDocument.activeElement)) return;
         if (bubble && this.contextEditBubbleSurface && !bubble.hasClass("is-loading") && !bubble.querySelector(".obcc-context-edit-proposal")) {
           const refreshed = this.contextEditSelectionAnchor(doc) ?? this.contextEditAnchorForTarget(this.contextEditBubbleSurface);
           if (refreshed?.kind === "selection") {
@@ -17508,6 +17512,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       const selectionChange = () => {
         window.setTimeout(() => {
           const bubble = this.contextEditBubbleEl;
+          if (bubble?.contains(bubble.ownerDocument.activeElement)) return;
           if (!doc || !bubble || bubble.hasClass("is-loading") || bubble.querySelector(".obcc-context-edit-proposal")) return;
           const selection = doc.defaultView?.getSelection();
           const selectionElement = selection?.anchorNode?.nodeType === Node.ELEMENT_NODE
@@ -17835,6 +17840,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   private refreshContextualEditAnchorGeometry(anchor: ContextualEditAnchor): boolean {
     if (!anchor.surface.isConnected) return false;
     const doc = anchor.surface.ownerDocument;
+    const bubbleOwnsFocus = Boolean(this.contextEditBubbleEl?.contains(this.contextEditBubbleEl.ownerDocument.activeElement));
     const candidates: Array<Pick<DOMRect, "left" | "top" | "width" | "height">> = [];
     if (anchor.domRange) {
       try {
@@ -17844,7 +17850,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         // The editor may recycle a CodeMirror line while scrolling.
       }
     }
-    if (anchor.kind === "selection" && anchor.surface.closest(".markdown-source-view")) {
+    if (anchor.kind === "selection" && anchor.surface.closest(".markdown-source-view") && !bubbleOwnsFocus) {
       const selections = Array.from(anchor.surface.querySelectorAll<HTMLElement>(".cm-selectionBackground"))
         .map((element) => element.getBoundingClientRect())
         .filter((rect) => rect.width > 0 && rect.height > 0);
@@ -17862,6 +17868,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         }
       }
     }
+    if (!candidates.length && bubbleOwnsFocus && anchor.kind === "selection" && anchor.screenRects?.length) return true;
     if (!candidates.length && anchor.domElement?.isConnected) {
       const rect = anchor.domElement.getBoundingClientRect();
       if (rect.width > 0 || rect.height > 0) candidates.push(rect);
@@ -35382,6 +35389,22 @@ class CancipView extends ItemView {
     ].includes(normalizeCommandBusName(run.action.command)));
   }
 
+  private processStepPlanReference(step: ProcessRecordStep): string {
+    for (const run of uniqueToolRunsById([
+      ...(step.rendered.message.toolRuns ?? []),
+      ...(step.rendered.message.changedFileRuns ?? [])
+    ])) {
+      if (run.action.type === "command") {
+        const args = isRecord(run.action.args) ? run.action.args : {};
+        const reference = stringArg(args.planStepId) || stringArg(args.stepId);
+        if (reference) return reference;
+      } else if (run.action.type === "todo") {
+        return run.action.items?.[0]?.id?.trim() || "plan";
+      }
+    }
+    return "";
+  }
+
   private async hydrateProcessSubagentCards(parent: HTMLElement, step: ProcessRecordStep): Promise<void> {
     const runs = this.processStepSubagentRuns(step);
     if (!runs.length) return;
@@ -40103,6 +40126,8 @@ class CancipView extends ItemView {
       subagentStartedAt: nowIso,
       path: childPath
     });
+    // Make the child visible in the parent process record before its model call finishes.
+    if (parentSessionId === this.sessionId) this.renderMessagesAfterMutation();
     this.refreshPlanPanelIfOpen();
     const request = new AbortController();
     this.plugin.setSessionRequest(childSessionId, request, this);
@@ -43632,8 +43657,8 @@ class CancipView extends ItemView {
   private toolPromptForPolicy(policy: PromptPayloadPolicy): string {
     const routeIndex = policy.includeDetailedToolProtocol ? this.actionRouteIndexPrompt() : this.compactActionRouteIndexPrompt();
     const responseContract = isChineseLanguage(this.plugin.language())
-      ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；多步骤任务由你把用户要求整理成有顺序、可验收的 2-8 项；用户已明确列出更多独立要求时应完整保留，最多 20 项。在同一 actions 数组先给 todo set，每项使用稳定 id（step-1、step-2……），紧接第一项实际动作，不能只建待办。只有用户目标本身只是创建、查看或管理待办时，才给 todo 动作加 planOnly:true 并结束。简单任务不要建待办。后续每轮把真实工具结果与对应待办核对：完成一项就在同一 actions 数组用相同 id 做 todo update done:true，再紧接下一项实际动作；失败但仍可推进时换路线，不得提前结束。最终复核时，complete 要求所有执行型待办已完成；最终回答按相同序号和顺序逐项写具体结果、验证或精确阻塞。todo 只维护计划面板并立即生效，不批准后续文件或命令动作。无需工具时直接给最终回答。简短问候要像熟人一样自然短答，不自我介绍 Cancip、不列能力、不用“有什么可以帮你”“需要我做什么”“随时准备”等客服式邀约、不复述系统定位；没有具体近况时简单打招呼或关心近况即可。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
-      : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. For a multi-step task, organize the user's requirements into 2-8 ordered, verifiable items; preserve a longer explicit list of independent requirements when the user supplied one, up to 20 items. In the same actions array put a todo set first, using stable IDs step-1, step-2, and so on, then immediately include the first real action; never stop after creating todos. Only when the user's requested outcome is itself creating, viewing, or managing todos may the todo action use planOnly:true and end. Do not create todos for simple tasks. On every continuation, compare the real tool result with the matching todo: when one item is complete, update that same ID with done:true and include the next real action in the same actions array. If work can still advance after a failure, change route instead of ending early. A complete final review requires every executable todo to be done, and the final answer must use the same numbering and order with one concrete result, verification, or exact blocker per item. Todo actions update the Plan panel immediately but never approve subsequent file or command actions. Otherwise answer directly. Keep brief greetings natural and familiar: do not introduce Cancip, list capabilities, invite the user to ask for help, say that you are ready to help, or restate the system role. Without concrete recent context, simply greet the user or ask how they are. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
+      ? "响应协议：你直接判断本轮是回答、单步行动还是多步骤任务。需要工具时只输出一个 cancip-action 动作块；只有至少 3 项具体、有序、可验收的任务才调用 todo 计划工具，1-2 项直接执行，不创建计划；多步骤任务由你把用户要求整理成有顺序、可验收的 3-20 项；用户已明确列出更多独立要求时应完整保留，最多 20 项。在同一 actions 数组先给 todo set，每项使用稳定 id（step-1、step-2……），紧接第一项实际动作，不能只建待办。只有用户目标本身只是创建、查看或管理待办时，才给 todo 动作加 planOnly:true 并结束。简单任务不要建待办。后续每轮把真实工具结果与对应待办核对：完成一项就在同一 actions 数组用相同 id 做 todo update done:true，再紧接下一项实际动作；失败但仍可推进时换路线，不得提前结束。最终复核时，complete 要求所有执行型待办已完成；最终回答按相同序号和顺序逐项写具体结果、验证或精确阻塞。todo 只维护计划面板并立即生效，不批准后续文件或命令动作。无需工具时直接给最终回答。简短问候要像熟人一样自然短答，不自我介绍 Cancip、不列能力、不用“有什么可以帮你”“需要我做什么”“随时准备”等客服式邀约、不复述系统定位；没有具体近况时简单打招呼或关心近况即可。不要用文字承诺稍后执行。最终回答只写新增的具体有效信息，不复述问题或默认机制，不加套话。Cancip 只执行你的结构化决定，不按用户提示词关键词替你判断。"
+      : "Response protocol: decide whether this turn needs a direct answer, one action, or a multi-step task. When tools are needed, output exactly one cancip-action block. Use the todo Plan tool only for at least 3 concrete, ordered, verifiable items; execute 1-2 items directly without creating a Plan. For a multi-step task, organize the user's requirements into 3-20 items and preserve a longer explicit list of independent requirements when the user supplied one, up to 20 items. In the same actions array put a todo set first, using stable IDs step-1, step-2, and so on, then immediately include the first real action; never stop after creating todos. Only when the user's requested outcome is itself creating, viewing, or managing todos may the todo action use planOnly:true and end. On every continuation, compare the real tool result with the matching todo: when one item is complete, update that same ID with done:true and include the next real action in the same actions array. If work can still advance after a failure, change route instead of ending early. A complete final review requires every executable todo to be done, and the final answer must use the same numbering and order with one concrete result, verification, or exact blocker per item. Todo actions update the Plan panel immediately but never approve subsequent file or command actions. Otherwise answer directly. Keep brief greetings natural and familiar: do not introduce Cancip, list capabilities, invite the user to ask for help, say that you are ready to help, or restate the system role. Without concrete recent context, simply greet the user or ask how they are. Do not promise later execution. Final answers contain only new concrete information, with no restatement, default-mechanism explanation, or filler. Cancip executes your structured decision and does not infer complexity from prompt keywords.";
     const explicitCapabilityContract = isChineseLanguage(this.plugin.language())
       ? "用户明确指定工具、Skill、插件命令或 Cancip 面板时，必须先确认真实入口并实际调用；不能用普通文字清单或模拟结果代替。"
       : "When the user explicitly names a tool, Skill, plugin command, or Cancip panel, resolve and invoke the real capability; never substitute a prose checklist or simulated result.";
@@ -44698,7 +44723,7 @@ class CancipView extends ItemView {
           "action:plan": "用户提及 Cancip 功能：计划功能。输出可执行计划、风险和需要确认的动作，不要声称已执行。",
           "action:review-gate": "用户提及 OB Review Gate 审核门。必须用 command cancip.reviewGate 程序化生成 Cancip 原生审核面板数据；不要只输出提示词，不要引导外部 HTML。可传 paths/items/maxFiles/output。",
           "action:outcome-verification": "用户要求 Cancip 替他把任务做到可审核状态。执行后用 cancip.outcome.verify 对照预期检查活动视图、DOM、文件读回、插件和工作区；结构化证据不足时再用 cancip.outcome.capture 或 visualReview:true 截取活动视图。失败时只修正差异并有限重试，达到上限就保留证据并停止。PDF 用 cancip.outcome.exportPdf 走已安装导出插件后再验收。",
-          "action:plan-todos": "用户提及功能：结构化计划待办。可以用 cancip-action 的 todo 动作维护 Plan 面板，例如 {\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用修改\"}]}，也支持 add/update/remove/list/clear。",
+          "action:plan-todos": "用户提及功能：结构化计划待办。仅当有至少 3 项时用 todo 动作维护 Plan 面板；1-2 项直接执行。例如 {\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"检查文件\"},{\"text\":\"应用修改\"},{\"text\":\"读回验证\"}]}，也支持 add/update/remove/list/clear。",
           "action:edit": "用户提及 Cancip 功能：Edit 模式。给出可复制修改建议；写入 Vault 前必须遵守访问模式。",
           "action:add-current-file": "用户提及功能：把当前活动笔记作为上下文。",
           "action:preview-vault-search": "用户提及功能：预览 Vault Search 命中结果。",
@@ -44721,7 +44746,7 @@ class CancipView extends ItemView {
           "action:plan": "Mentioned Cancip function: Plan panel. Produce an executable plan, risks, and actions needing confirmation.",
           "action:review-gate": "Mentioned OB Review Gate. Use command cancip.reviewGate to programmatically build native Cancip review-panel data; do not output prompt-only review or external HTML instructions. Args can include paths/items/maxFiles/output.",
           "action:outcome-verification": "Finish work to a reviewable state. After execution call cancip.outcome.verify for active view, DOM, file readback, plugin, and workspace expectations. Capture the active view only when structured evidence is insufficient, correct only the measured difference, retry within the declared limit, then preserve evidence and stop. Use cancip.outcome.exportPdf through the installed exporter when PDF evidence is needed.",
-          "action:plan-todos": "Mentioned function: structured plan todos. Use cancip-action todo actions to maintain the Plan panel, for example {\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply changes\"}]}. Supported ops: add/update/remove/list/clear.",
+          "action:plan-todos": "Mentioned function: structured plan todos. Use todo actions only for at least 3 items; execute 1-2 actions directly. For example {\"type\":\"todo\",\"op\":\"set\",\"items\":[{\"text\":\"inspect files\"},{\"text\":\"apply changes\"},{\"text\":\"verify results\"}]}. Supported ops: add/update/remove/list/clear.",
           "action:edit": "Mentioned Cancip function: Edit mode. Provide copyable edits; obey the access mode before Vault writes.",
           "action:add-current-file": "Mentioned function: include the current active note as context.",
           "action:preview-vault-search": "Mentioned function: preview Vault Search hits.",
@@ -49107,7 +49132,7 @@ class CancipView extends ItemView {
       : counts.length === 1 ? `${counts[0][0]} -> ${counts[0][1]}` : "";
     if (isChineseLanguage(this.plugin.language())) {
       const peerVerification = isolationRequired ? "；同名非目标位置与改动前逐项一致" : "";
-      if (planTodos.length) {
+      if (planTodos.length > 1) {
         return planTodos.map((todo, index) => {
           if (/(恢复|还原|复原|撤销|重置)/i.test(todo.text)) {
             return `${index + 1}. 已撤销本次临时规则并验证按钮恢复可见${peerVerification}${countTrace ? `；规则数 ${countTrace}` : ""}。`;
@@ -49136,7 +49161,7 @@ class CancipView extends ItemView {
         `Verified: the post-change state reported [hidden]${peerVerification}${countTrace ? `; rule count ${countTrace}` : ""}.`
       ].join("\n");
     }
-    if (planTodos.length) {
+    if (planTodos.length > 1) {
       return planTodos.map((todo, index) => {
         if (/(restore|revert|reset|undo)/i.test(todo.text)) {
           return `${index + 1}. Removed only the temporary rule and verified that the button is visible again${peerVerification}${countTrace ? `; rule count ${countTrace}` : ""}.`;
@@ -49283,7 +49308,9 @@ class CancipView extends ItemView {
         const protocolIssue = cancipActionProtocolIssue(answer);
         const reviewStatus = finalReviewStatusFromAnswer(answer);
         const rawVisible = hasActions || protocolIssue ? "" : visibleAssistantAnswer(answer, false);
-        const visibleAnswer = isToolPrefaceOnlyAnswer(rawVisible) || isPromptishProgressNoteLine(rawVisible) ? "" : rawVisible;
+        const visibleAnswer = isToolPrefaceOnlyAnswer(rawVisible) || isPromptishProgressNoteLine(rawVisible)
+          ? ""
+          : normalizeSingleConclusionNumbering(rawVisible);
         this.updateModelProcessAuditSections(finalStep, answer, visibleAnswer);
         this.updateProgressStep(finalStep, this.generationStepSummary(finalDecisionStatus, this.currentModelCharUsageText()), this.formatGenerationAuditDetail(prompt, finalContext, this.activeRequestApiProfile ?? this.plugin.activeApiProfile(), answer, visibleAnswer, originalPrompt));
         const reviewFailure = hasActions
@@ -49379,7 +49406,7 @@ class CancipView extends ItemView {
     const display = prepareMessageDisplay(redactSensitiveText(lastAssistant.content));
     if (this.finalAnswerRequirementFailure(display.visibleContent, originalPrompt, this.currentTaskToolRuns())) return false;
     if (hasFinalConclusion(lastAssistant.content)) {
-      lastAssistant.content = this.appendFinalRunStats(lastAssistant.content, startedAt);
+      lastAssistant.content = this.appendFinalRunStats(normalizeSingleConclusionNumbering(lastAssistant.content), startedAt);
       void this.saveCurrentSession();
       this.renderMessages();
       return true;
@@ -49408,7 +49435,7 @@ class CancipView extends ItemView {
       ? prepareMessageDisplay(redactSensitiveText(visibleAfterTools.content)).visibleContent.trim()
       : "";
     if (visibleAfterTools && !replaceVisible && !replaceActionOnlyFallback && !this.finalAnswerRequirementFailure(visibleAfterToolsText, originalPrompt, effectiveResult.runs)) {
-      const enriched = this.ensureFinalAnswerAuditSections(visibleAfterTools.content, effectiveResult.runs, originalPrompt, visibleAfterToolsText);
+      const enriched = normalizeSingleConclusionNumbering(this.ensureFinalAnswerAuditSections(visibleAfterTools.content, effectiveResult.runs, originalPrompt, visibleAfterToolsText));
       visibleAfterTools.content = this.withInlineChoiceMetadata(this.appendFinalRunStats(enriched, startedAt), originalPrompt || enriched);
       visibleAfterTools.changedFileRuns = this.finalConclusionChangedFileRuns(effectiveResult.runs);
       void this.saveCurrentSession();
@@ -51950,14 +51977,10 @@ class CancipView extends ItemView {
   }
 
   private executeTodoAction(action: TodoAction): string {
-    const omitSingleAutomationPlan = (clearExisting = false): string => {
-      if (clearExisting) {
-        this.manualTodos = this.manualTodos.filter((todo) => todo.source !== "programmatic");
-        this.commitAgentPlanMutation();
-      }
+    const omitShortPlan = (): string => {
       return isChineseLanguage(this.plugin.language())
-        ? "单动作自动化无需计划待办，已直接执行任务。"
-        : "This one-action automation does not need a Plan; the task continues directly.";
+        ? "1-2 项任务无需计划待办，继续直接执行。"
+        : "A 1-2 action task does not need a Plan; continue by executing it directly.";
     };
     if (action.op === "list") {
       return this.t("todoActionResult", { summary: this.planTodosSummary() });
@@ -51971,9 +51994,8 @@ class CancipView extends ItemView {
 
     if (action.op === "set") {
       const items = action.items ?? [];
-      if (this.activeAutomationTaskId && items.filter((item) => item.text.trim()).length < 2) {
-        return omitSingleAutomationPlan(true);
-      }
+      const concreteCount = items.filter((item) => item.text.trim()).length;
+      if (concreteCount < 3) return omitShortPlan();
       const now = new Date().toISOString();
       const nextAgentTodos = items
         .map((item, index) => ({
@@ -51994,11 +52016,8 @@ class CancipView extends ItemView {
     if (action.op === "add") {
       const text = action.text?.trim() || action.items?.map((item) => item.text.trim()).filter(Boolean).join("\n");
       if (!text) throw new Error("todo add requires text");
-      if (this.activeAutomationTaskId
-        && this.agentPlanTodos().length === 0
-        && text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean).length < 2) {
-        return omitSingleAutomationPlan();
-      }
+      const addedCount = text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean).length;
+      if (this.agentPlanTodos().length + addedCount < 3) return omitShortPlan();
       const sendToModel = action.items?.some((item) => item.sendToModel === false) ? false : true;
       const now = new Date().toISOString();
       for (const line of text.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
@@ -52019,7 +52038,7 @@ class CancipView extends ItemView {
         else if (typeof action.items?.[0]?.sendToModel === "boolean") todo.sendToModel = action.items[0].sendToModel;
         if (typeof action.planOnly === "boolean") todo.planOnly = action.planOnly;
       } else {
-        if (this.activeAutomationTaskId) return omitSingleAutomationPlan();
+        if (this.agentPlanTodos().length < 2) return omitShortPlan();
         const fallbackText = action.text?.trim() || action.items?.map((item) => item.text.trim()).find(Boolean) || action.id?.trim();
         if (fallbackText) {
           const nextIndex = this.agentPlanTodos().length + 1;
@@ -57041,7 +57060,7 @@ class CancipView extends ItemView {
       const stepFoldKey = `${processFoldKey}:step-${stepInfo.rendered.message.id}`;
       const step = body.createEl("details", { cls: "obcc-process-step" });
       const subagentRuns = this.processStepSubagentRuns(stepInfo);
-      this.wireDetails(step, `process-step:${stepFoldKey}`, liveProcessRecord && subagentRuns.length > 0, false, true);
+      this.wireDetails(step, `process-step:${stepFoldKey}`, false, false, true);
       const stepHead = this.createProcessSummary(step, "");
       stepHead.addClass("obcc-process-step-head");
       stepHead.createSpan({ cls: "obcc-process-step-index", text: String(index + 1) });
@@ -57055,6 +57074,29 @@ class CancipView extends ItemView {
         automationBadge.createSpan({ text: trimContext(stepInfo.rendered.message.automationTitle, 28) });
       }
       stepTitle.createSpan({ text: stepInfo.count > 1 ? `${stepInfo.headline} x${stepInfo.count}` : stepInfo.headline });
+      const planReference = this.processStepPlanReference(stepInfo);
+      if (planReference) {
+        const todos = this.modelPlanTodos();
+        const done = todos.filter((todo) => todo.done).length;
+        const current = todos.length ? Math.max(1, Math.min(todos.length, done + 1)) : index + 1;
+        const planButton = stepHead.createEl("button", {
+          cls: "obcc-process-step-plan-button",
+          attr: {
+            type: "button",
+            title: this.t("planPanelTitle"),
+            "aria-label": `${this.t("planPanelTitle")} ${index + 1}`,
+            "data-plan-step-reference": planReference
+          }
+        });
+        setIcon(planButton.createSpan({ cls: "obcc-process-step-plan-icon" }), "list-checks");
+        planButton.createSpan({ text: todos.length ? this.t("planProgress", { current, total: todos.length }) : this.t("planPanelTitle") });
+        planButton.createSpan({ cls: "obcc-process-step-plan-number", text: `#${index + 1}` });
+        planButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          this.togglePlanMenu();
+        });
+      }
       const fallbackElapsed = index + 1 < steps.length
         ? Math.max(0, steps[index + 1].rendered.message.createdAt - stepInfo.rendered.message.createdAt)
         : 0;
@@ -57125,29 +57167,13 @@ class CancipView extends ItemView {
   }
 
   private renderProcessRecordMeta(parent: HTMLElement, items: RenderedMessage[]): void {
-    const todos = this.modelPlanTodos();
     const processRuns = uniqueToolRunsById(items.flatMap((item) => [
       ...(item.message.toolRuns ?? []),
       ...(item.message.changedFileRuns ?? [])
     ]));
     const files = this.changedFileEntriesForRuns(processRuns);
-    if (!todos.length && !files.length) return;
+    if (!files.length) return;
     const meta = parent.createDiv({ cls: "obcc-process-record-meta" });
-    if (todos.length) {
-      const done = todos.filter((todo) => todo.done).length;
-      const current = Math.max(1, Math.min(todos.length, done + 1));
-      const label = this.t("planProgress", { current, total: todos.length });
-      const button = meta.createEl("button", {
-        cls: "obcc-process-record-meta-button is-plan",
-        attr: { type: "button", title: label, "aria-label": label }
-      });
-      button.createSpan({ text: label });
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.togglePlanMenu();
-      });
-    }
     if (files.length) {
       const totals = this.liveChangedFileTotals(files);
       const compact = [
@@ -58775,6 +58801,32 @@ class CancipView extends ItemView {
       this.plugin.recordScoreEvent({ key: "feature:search", kind: "feature", label: this.t("modeSearch"), outcome, weight });
     };
     let activeHighlightSignals: string[] = [];
+    let keywordHits: SearchHit[] = [];
+    let semanticHits: SearchHit[] = [];
+    const hitKey = (hit: SearchHit): string => `${hit.kind}:${normalizePath(hit.path)}`;
+    const appendUniqueHits = (target: SearchHit[], incoming: SearchHit[], hiddenKeys: Set<string> = new Set()): number => {
+      const known = new Set([...hiddenKeys, ...target.map(hitKey)]);
+      let added = 0;
+      for (const hit of incoming) {
+        const key = hitKey(hit);
+        if (!key || known.has(key)) continue;
+        known.add(key);
+        target.push(hit);
+        added += 1;
+      }
+      return added;
+    };
+    const rememberKeywordHits = (hits: SearchHit[], reset = false): void => {
+      if (reset) {
+        keywordHits = [];
+        semanticHits = [];
+      }
+      appendUniqueHits(keywordHits, hits.map((hit) => ({ ...hit, reason: "", relation: undefined })));
+    };
+    const rememberSemanticHits = (hits: SearchHit[]): number => (
+      appendUniqueHits(semanticHits, hits, new Set(keywordHits.map(hitKey)))
+    );
+    const visibleSearchHits = (): SearchHit[] => [...keywordHits, ...semanticHits];
     const renderHits = (parent: HTMLElement, hits: SearchHit[]): void => {
       const previousScrollTop = parent.scrollTop;
       const highlightTerms = searchHighlightTerms(input.value, activeHighlightSignals);
@@ -58821,6 +58873,8 @@ class CancipView extends ItemView {
         status.setText("");
         aiExplanation.setText("");
         aiSummaryLabel.setText(aiEnabled.checked ? this.t("searchFuzzy") : this.t("searchOpen"));
+        keywordHits = [];
+        semanticHits = [];
         renderHits(aiResults, []);
         return;
       }
@@ -58838,27 +58892,31 @@ class CancipView extends ItemView {
         };
         const fastHits = await this.fastIndexedVaultSearchHits(query, aiEnabled.checked ? 36 : 48, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
-        renderHits(aiResults, fastHits);
-        aiSummaryLabel.setText(`${this.t("searchOpen")} · ${fastHits.length}`);
-        aiExplanation.setText(isChineseLanguage(this.plugin.language()) ? "本地索引已返回；正在核对正文…" : "Local index returned; verifying document text...");
-        status.setText(this.t("hitCount", { count: fastHits.length }));
+        rememberKeywordHits(fastHits, true);
+        renderHits(aiResults, visibleSearchHits());
+        aiSummaryLabel.setText(`${this.t("searchOpen")} · ${keywordHits.length}`);
+        aiExplanation.setText("");
+        status.setText(this.t("hitCount", { count: keywordHits.length }));
         const hardHits = await this.searchVault(query, aiEnabled.checked ? 36 : 48, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        rememberKeywordHits(hardHits.filter((hit) => hit.route !== "soft"));
         if (!aiEnabled.checked) {
-          renderHits(aiResults, hardHits);
-          aiSummaryLabel.setText(`${this.t("searchOpen")} · ${hardHits.length}`);
+          rememberKeywordHits(hardHits);
+          renderHits(aiResults, visibleSearchHits());
+          aiSummaryLabel.setText(`${this.t("searchOpen")} · ${keywordHits.length}`);
           aiExplanation.setText("");
-          status.setText(this.t("hitCount", { count: hardHits.length }));
+          status.setText(this.t("hitCount", { count: keywordHits.length }));
           recordSearchScore(query, "use", 0.5);
           return;
         }
         const exactHits = hardHits.filter((hit) => hit.route !== "soft");
         // Show verified Vault matches immediately. Semantic expansion can then
         // refine the same pane without leaving it blank while a model times out.
-        renderHits(aiResults, exactHits);
-        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${exactHits.length}`);
-        status.setText(this.t("hitCount", { count: exactHits.length }));
-        aiExplanation.setText(isChineseLanguage(this.plugin.language()) ? "正在理解查询含义…" : "Interpreting query...");
+        rememberKeywordHits(exactHits);
+        renderHits(aiResults, visibleSearchHits());
+        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${keywordHits.length}`);
+        status.setText(this.t("hitCount", { count: keywordHits.length }));
+        aiExplanation.setText("");
         const aiSearch = await this.searchAiVault(query, exactHits, configs.checked, archived.checked, (progress) => {
           if (currentRequestId !== requestId || !this.searchPopoverEl) return;
           activeHighlightSignals = uniqueStrings([
@@ -58866,20 +58924,24 @@ class CancipView extends ItemView {
             ...progress.expansion.concepts,
             ...progress.expansion.styleSignals
           ]);
-          renderHits(aiResults, progress.hits);
-          aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${progress.hits.length}`);
+          rememberSemanticHits(progress.hits);
+          const visibleHits = visibleSearchHits();
+          renderHits(aiResults, visibleHits);
+          aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${visibleHits.length}`);
           const phase = progress.phase === "expansion"
             ? (isChineseLanguage(this.plugin.language()) ? "语义线索已生成；正在检索…" : "Semantic signals ready; retrieving...")
             : progress.phase === "retrieval"
               ? (isChineseLanguage(this.plugin.language()) ? "RAG 与相近主题结果已返回；正在整理排序…" : "RAG and related-topic results returned; ranking...")
               : (isChineseLanguage(this.plugin.language()) ? "深度搜索完成" : "Deep search complete");
-          aiExplanation.setText([progress.expansion.intent, phase].filter(Boolean).join(" · "));
-          status.setText(this.t("hitCount", { count: progress.hits.length }));
+          aiExplanation.setText(semanticHits.length ? [progress.expansion.intent, phase].filter(Boolean).join(" · ") : "");
+          status.setText(this.t("hitCount", { count: visibleHits.length }));
         });
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const aiHits = aiSearch.hits;
-        renderHits(aiResults, aiHits);
-        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${aiHits.length}`);
+        rememberSemanticHits(aiHits);
+        const visibleHits = visibleSearchHits();
+        renderHits(aiResults, visibleHits);
+        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${visibleHits.length}`);
         const semanticSignals = uniqueStrings([
           ...aiSearch.expansion.queries,
           ...aiSearch.expansion.concepts,
@@ -58888,15 +58950,15 @@ class CancipView extends ItemView {
         const terms = semanticSignals.length
           ? (isChineseLanguage(this.plugin.language()) ? `线索：${semanticSignals.join("、")}` : `Signals: ${semanticSignals.join(", ")}`)
           : "";
-        aiExplanation.setText([aiSearch.expansion.intent, terms].filter(Boolean).join(" · "));
-        status.setText(this.t("hitCount", { count: aiHits.length }));
+        aiExplanation.setText(semanticHits.length ? [aiSearch.expansion.intent, terms].filter(Boolean).join(" · ") : "");
+        status.setText(this.t("hitCount", { count: visibleHits.length }));
         recordSearchScore(query, "use", 0.7);
       } catch (error) {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const reason = error instanceof Error ? error.message : String(error);
         status.setText(reason);
-        aiExplanation.setText(reason);
-        renderHits(aiResults, []);
+        aiExplanation.setText(semanticHits.length ? reason : "");
+        renderHits(aiResults, visibleSearchHits());
         recordSearchScore(query, "reject", 0.2);
       }
     };
@@ -68194,6 +68256,26 @@ function hasFinalConclusion(content: string): boolean {
     || (/(^|\n)\s*1[.、]\s+/.test(content) && /(^|\n)\s*(结果和提醒|结果|Result|Verification|Reminders)\s*[:：]/i.test(content));
 }
 
+function normalizeSingleConclusionNumbering(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const numbered: Array<{ index: number; number: number }> = [];
+  let fenced = false;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index] ?? "";
+    if (/^\s*```/.test(line)) {
+      fenced = !fenced;
+      continue;
+    }
+    if (fenced || /^\s*<!--/.test(line)) continue;
+    const match = line.match(/^\s*(?:\*\*)?(\d+)[.、)）．](?:\*\*)?\s+/);
+    if (match) numbered.push({ index, number: Number.parseInt(match[1], 10) });
+  }
+  if (numbered.length !== 1 || numbered[0].number !== 1) return content;
+  const target = numbered[0].index;
+  lines[target] = (lines[target] ?? "").replace(/^(\s*)(?:\*\*)?1[.、)）．](?:\*\*)?\s+/, "$1");
+  return lines.join("\n");
+}
+
 function looksLikeHumanFinalAnswer(content: string): boolean {
   const text = stripStructuredChoices(stripProgrammaticRunStats(content).content)
     .replace(/\s+/g, " ")
@@ -74056,7 +74138,10 @@ function primeTtsSynthesisStallMs(text: string): number {
 
 function splitPrimeTtsDisplayText(input: string): string[] {
   const normalized = normalizeTtsInputText(input);
-  return splitPrimeTtsPhraseText(normalized, PRIME_TTS_DISPLAY_TARGET_CHARS, PRIME_TTS_DISPLAY_MAX_CHARS);
+  return splitPrimeTtsSentenceFragments(normalized)
+    .map((fragment) => fragment.text.trim())
+    .filter(hasPrimeTtsReadableToken)
+    .slice(0, TTS_MAX_PARTS);
 }
 
 function splitPrimeTtsPhraseText(input: string, targetLength: number, maxLength: number): string[] {
@@ -78578,10 +78663,13 @@ function normalizeOcrIndexEntry(raw: unknown): OcrIndexEntry | null {
     page: Math.max(1, Math.floor(finiteNumber(page.page, 1))),
     text: typeof page.text === "string" ? trimContext(page.text, 30000) : "",
     description: typeof page.description === "string" ? trimContext(page.description, 1200) : "",
-    confidence: finiteNumber(page.confidence)
+    confidence: finiteNumber(page.confidence),
+    semanticTags: Array.isArray(page.semanticTags)
+      ? uniqueStrings(page.semanticTags.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))).slice(0, 80)
+      : []
   })) : undefined;
   return {
-    schemaVersion: finiteNumber(raw.schemaVersion) === OCR_CACHE_SCHEMA_VERSION ? OCR_CACHE_SCHEMA_VERSION : 0,
+    schemaVersion: Math.max(0, Math.floor(finiteNumber(raw.schemaVersion))),
     engineVersion: typeof raw.engineVersion === "string" ? raw.engineVersion : "",
     source: raw.source,
     path: typeof raw.path === "string" ? raw.path : "",
@@ -78595,6 +78683,9 @@ function normalizeOcrIndexEntry(raw: unknown): OcrIndexEntry | null {
     height: finiteNumber(raw.height),
     text: typeof raw.text === "string" ? trimContext(raw.text, 30000) : "",
     description: typeof raw.description === "string" ? trimContext(raw.description, 5000) : "",
+    semanticTags: Array.isArray(raw.semanticTags)
+      ? uniqueStrings(raw.semanticTags.filter((item): item is string => typeof item === "string" && Boolean(item.trim()))).slice(0, 80)
+      : [],
     blocks,
     ...(pages?.length ? { pages } : {})
   };
@@ -78735,7 +78826,106 @@ function ocrRecognitionScore(data: { text?: string | null; confidence?: number |
   return finiteNumber(data.confidence) + Math.min(8, readable / 6);
 }
 
-function describeOcrLayout(width: number, height: number, blocks: OcrLayoutBlock[], text: string): string {
+async function detectBrowserVisualSemanticTags(blob: Blob): Promise<string[]> {
+  type Detector = { detect: (source: ImageBitmap) => Promise<unknown[]> };
+  type DetectorConstructor = new (options?: Record<string, unknown>) => Detector;
+  const browser = globalThis as unknown as {
+    FaceDetector?: DetectorConstructor;
+    BarcodeDetector?: DetectorConstructor;
+  };
+  if (!browser.FaceDetector && !browser.BarcodeDetector) return [];
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await createImageBitmap(blob);
+    const tags: string[] = [];
+    if (browser.FaceDetector) {
+      try {
+        const faces = await new browser.FaceDetector({ fastMode: true, maxDetectedFaces: 8 }).detect(bitmap);
+        if (faces.length) tags.push("人物", "人脸", "肖像", "person", "face", "portrait");
+      } catch {
+        // Shape Detection APIs are optional in Obsidian WebView builds.
+      }
+    }
+    if (browser.BarcodeDetector) {
+      try {
+        const codes = await new browser.BarcodeDetector().detect(bitmap);
+        if (codes.length) tags.push("条码", "二维码", "barcode", "QR code");
+      } catch {
+        // Keep OCR available when the platform detector rejects this image format.
+      }
+    }
+    return uniqueStrings(tags);
+  } catch {
+    return [];
+  } finally {
+    bitmap?.close();
+  }
+}
+
+function migrateOcrIndexEntry(entry: OcrIndexEntry): OcrIndexEntry {
+  const pages = entry.pages?.map((page) => {
+    const blocks = entry.blocks.filter((block) => block.page === page.page);
+    const semanticTags = inferOcrSemanticTags(
+      page.text,
+      `${entry.sourceKey}#page=${page.page}`,
+      entry.width,
+      entry.height,
+      blocks,
+      page.semanticTags
+    );
+    return { ...page, semanticTags };
+  });
+  const inherited = uniqueStrings([
+    ...entry.semanticTags,
+    ...(pages?.flatMap((page) => page.semanticTags) ?? [])
+  ]);
+  return {
+    ...entry,
+    schemaVersion: OCR_CACHE_SCHEMA_VERSION,
+    semanticTags: inferOcrSemanticTags(entry.text, entry.sourceKey, entry.width, entry.height, entry.blocks, inherited),
+    ...(pages?.length ? { pages } : {})
+  };
+}
+
+function inferOcrSemanticTags(
+  text: string,
+  sourceKey: string,
+  width: number,
+  height: number,
+  blocks: OcrLayoutBlock[],
+  visualTags: string[] = []
+): string[] {
+  const source = `${sourceKey}\n${text}`.normalize("NFKC");
+  const tags = [...visualTags];
+  const add = (...values: string[]) => tags.push(...values);
+  if (/(?:中华人民共和国\s*居民身份证|居民身份证|公民身份号码|身份证号码|身份证|签发机关[\s\S]{0,80}有效期限|性别[\s\S]{0,30}民族[\s\S]{0,100}(?:出生|住址))/i.test(source)) {
+    add("身份证", "居民身份证", "身份证件", "证件", "卡片", "identity card", "ID card", "identity document");
+  }
+  if (/(?:护照|passport|国籍[\s\S]{0,50}护照号码)/i.test(source)) add("护照", "证件", "passport", "travel document");
+  if (/(?:驾驶证|机动车驾驶证|准驾车型|driver'?s? license)/i.test(source)) add("驾驶证", "证件", "车辆", "driver license");
+  if (/(?:社会保障卡|社保卡|social security card)/i.test(source)) add("社保卡", "证件", "社会保障", "social security card");
+  if (/(?:银行卡|信用卡|借记卡|开户行|bank card|credit card|debit card)/i.test(source)) add("银行卡", "卡片", "金融", "bank card");
+  if (/(?:发票|增值税|invoice|税额|购买方|销售方)/i.test(source)) add("发票", "票据", "财务", "invoice", "receipt");
+  if (/(?:收据|小票|合计|实付|receipt)/i.test(source)) add("收据", "小票", "票据", "receipt");
+  if (/(?:病历|诊断|检查报告|检验报告|医院|medical|patient)/i.test(source)) add("医疗文档", "病历", "检查报告", "medical document");
+  if (/(?:名片|职位|手机[:：]|电话[:：]|email[:：]|business card)/i.test(source)) add("名片", "联系方式", "人物", "business card", "contact");
+  if (/(?:姓名|name)\s*[:：]?[^\n]{1,24}[\s\S]{0,120}(?:性别|出生|年龄|民族|gender|birth|age)/i.test(source)) {
+    add("人物", "个人", "个人资料", "person", "personal information");
+  }
+  if (/(?:车辆|车牌|机动车|汽车|轿车|vehicle|license plate)/i.test(source)) add("车辆", "汽车", "vehicle", "car");
+  if (/(?:菜单|菜品|配料|食品|饮料|menu|ingredients|food)/i.test(source)) add("食品", "菜单", "食物", "food", "menu");
+  if (/(?:证书|资格证|毕业证|学位证|certificate|diploma)/i.test(source)) add("证书", "证件", "certificate", "diploma");
+  if (/(?:车票|机票|登机牌|火车票|boarding pass|ticket)/i.test(source)) add("票据", "车票", "行程", "ticket", "boarding pass");
+  const shortBlocks = blocks.filter((block) => block.text.length <= 24).length;
+  const numericBlocks = blocks.filter((block) => /\d/.test(block.text)).length;
+  const alignedColumns = new Set(blocks.map((block) => Math.round(block.x * 10))).size;
+  if (blocks.length >= 6 && numericBlocks >= 3 && alignedColumns >= 3) add("表格", "表单", "table", "form");
+  if (blocks.length >= 8 && shortBlocks / Math.max(1, blocks.length) >= 0.65) add("截图", "界面", "screenshot", "interface");
+  if (width > height * 1.35 && blocks.length >= 4 && tags.some((tag) => /证件|card|passport|license/i.test(tag))) add("横向卡片", "card-like image");
+  return uniqueStrings(tags.map((tag) => tag.trim()).filter(Boolean)).slice(0, 80);
+}
+
+function describeOcrLayout(width: number, height: number, blocks: OcrLayoutBlock[], text: string, semanticTags: string[] = []): string {
   const orientation = width && height ? (width > height * 1.15 ? "landscape" : height > width * 1.15 ? "portrait" : "square") : "unknown";
   const shortBlocks = blocks.filter((block) => block.text.length <= 24).length;
   const numericBlocks = blocks.filter((block) => /\d/.test(block.text)).length;
@@ -78747,6 +78937,7 @@ function describeOcrLayout(width: number, height: number, blocks: OcrLayoutBlock
   return [
     `Visual layout: ${orientation} ${width || "?"}x${height || "?"}`,
     `Detected structure: ${kind}; text regions=${blocks.length}; short labels=${shortBlocks}; numeric regions=${numericBlocks}`,
+    semanticTags.length ? `Detected semantic tags: ${semanticTags.join(", ")}` : "",
     urlCount ? `Detected URL-like text: ${urlCount}` : ""
   ].filter(Boolean).join("\n");
 }
@@ -78758,6 +78949,7 @@ function ocrEntrySearchText(entry: OcrIndexEntry, maxChars: number): string {
   return trimContext([
     `OCR source: ${entry.sourceKey}`,
     `OCR engine: local tesseract.js lite ${entry.engineVersion}; languages=${entry.languages}; confidence=${entry.confidence}`,
+    entry.semanticTags.length ? `Semantic tags: ${entry.semanticTags.join(", ")}` : "",
     entry.description,
     ocrEntryFullText(entry),
     blocks.length ? `Layout regions:\n${blocks.join("\n")}` : ""

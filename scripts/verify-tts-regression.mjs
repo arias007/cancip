@@ -42,6 +42,7 @@ const roots = [
   "ttsScrollProgressCursor",
   "splitPrimeTtsMicroPlayText",
   "primeTtsSynthesisText",
+  "splitPrimeTtsDisplayText",
   "makeTtsPartPlan",
   "findSequentialNormalizedNeedleMatch",
   "normalizeTtsHighlightText",
@@ -122,6 +123,16 @@ assert.ok(!api.markdownToTtsText(longMarkdown).includes(endMarker), "The fixture
 const plan = api.makeTtsPartPlan(fullText, "builtin-prime-tts", 96);
 assert.ok(plan.playParts.at(-1)?.includes(endMarker), "PrimeTTS play plan must include the real file ending");
 assert.ok(plan.playParts.length < 50000, "Short sentences must not exhaust the PrimeTTS part limit");
+
+const sentenceDisplayParts = Array.from(api.splitPrimeTtsDisplayText("第一句，逗号不能切蓝标。第二句！\n第三行没有句号"));
+assert.deepEqual(
+  sentenceDisplayParts,
+  ["第一句，逗号不能切蓝标。", "第二句！", "第三行没有句号"],
+  "PrimeTTS display parts must follow full sentence/newline boundaries instead of micro playback chunks"
+);
+const sentencePlan = api.makeTtsPartPlan("这是一个包含多个微发声片段但只允许一个整句蓝标的测试句子。下一句。", "builtin-prime-tts", 64);
+assert.equal(sentencePlan.displayParts.length, 2, "Two sentences must produce exactly two display highlight parts");
+assert.ok(sentencePlan.displayIndexByPlayIndex.filter((index) => index === 0).length > 1, "Multiple micro playback parts must map to the same sentence highlight");
 
 const anchoredFull = `${"前".repeat(300)}游标之后继续朗读。${"中".repeat(300)}${endMarker}`;
 const anchored = api.sliceTtsTextFromAnchorToEnd(

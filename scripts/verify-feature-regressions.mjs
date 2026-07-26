@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import process from "node:process";
+import ts from "typescript";
 
 const source = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
 const styles = await readFile(new URL("../outputs/cancip/styles.css", import.meta.url), "utf8");
@@ -8,6 +9,57 @@ const localGreetingSource = source.slice(
   source.indexOf("function normalizePersonalizationCache(")
 );
 
+const parsedSource = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const functionSource = (name) => {
+  let match = "";
+  const visit = (node) => {
+    if (!match && ts.isFunctionDeclaration(node) && node.name?.text === name) match = node.getText(parsedSource);
+    if (!match) ts.forEachChild(node, visit);
+  };
+  visit(parsedSource);
+  if (!match) throw new Error(`Missing source function: ${name}`);
+  return match;
+};
+const ocrSemanticModule = ts.transpileModule([
+  "const OCR_CACHE_SCHEMA_VERSION = 3;",
+  functionSource("uniqueStrings"),
+  functionSource("inferOcrSemanticTags"),
+  functionSource("migrateOcrIndexEntry"),
+  "export { inferOcrSemanticTags, migrateOcrIndexEntry };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const ocrSemanticApi = await import(`data:text/javascript;base64,${Buffer.from(ocrSemanticModule).toString("base64")}`);
+const identityCardTags = ocrSemanticApi.inferOcrSemanticTags(
+  "中华人民共和国居民身份证\n姓名 张三\n性别 男 民族 汉\n住址 北京市朝阳区\n公民身份号码 110101199001011234\n签发机关 北京市公安局\n有效期限 2020.01.01-2040.01.01",
+  "附件/IMG_20260727.jpg",
+  856,
+  540,
+  [
+    { text: "姓名 张三", confidence: 96, x: 0.15, y: 0.2, width: 0.3, height: 0.08 },
+    { text: "公民身份号码 110101199001011234", confidence: 94, x: 0.1, y: 0.72, width: 0.72, height: 0.08 }
+  ]
+);
+const migratedIdentityCache = ocrSemanticApi.migrateOcrIndexEntry({
+  schemaVersion: 2,
+  engineVersion: "1",
+  source: "vault",
+  path: "附件/IMG_20260727.jpg",
+  sourceKey: "附件/IMG_20260727.jpg",
+  mtime: 1,
+  size: 1,
+  indexedAt: "",
+  languages: "chi_sim+eng",
+  confidence: 95,
+  width: 856,
+  height: 540,
+  text: "中华人民共和国居民身份证\n公民身份号码 110101199001011234",
+  description: "",
+  semanticTags: [],
+  blocks: [],
+  pages: []
+});
+
 const checks = [
   ["OCR command", source.includes('id: "recognize-active-file-ocr"')],
   ["OCR file-menu action", source.includes('setIcon("scan-text")') && source.includes("void this.openOcrResult(file)")],
@@ -15,12 +67,15 @@ const checks = [
   ["OCR cache keeps every page", /const pages = Array\.isArray\(raw\.pages\)[\s\S]*?\}\)\) : undefined;/.test(source)],
   ["OCR modal exposes rename and Markdown extraction", source.includes("class CancipOcrResultModal") && source.includes("renameFileFromOcr") && source.includes("extractOcrMarkdown")],
   ["OCR Markdown keeps one visible source link and hidden data", source.includes("[${visibleName}](<${file.path}>)") && source.includes('"<!-- cancip-ocr"')],
+  ["OCR semantic index recognizes identity cards and optional local faces", identityCardTags.includes("身份证") && identityCardTags.includes("ID card") && identityCardTags.includes("证件") && source.includes("detectBrowserVisualSemanticTags") && source.includes('tags.push("人物", "人脸", "肖像"') && source.includes("entry.semanticTags.join")],
+  ["PDF OCR preserves page visual semantics in its searchable index", source.includes("semanticTags: pageEntry.semanticTags") && source.includes("pages.flatMap((page) => page.semanticTags)") && source.includes("allBlocks, pageSemanticTags")],
+  ["legacy OCR caches gain semantic tags without repeating recognition", migratedIdentityCache.schemaVersion === 3 && migratedIdentityCache.semanticTags.includes("身份证") && source.includes("entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION - 1") && source.includes("await adapter.write(path")],
   ["background index shares automation startup grace and only fills missing image OCR", source.includes("Math.max(delayMs, UNIVERSAL_SEARCH_MOBILE_BACKGROUND_DELAY_MS, startupDelay)") && source.includes("missingImageOcr") && source.includes("ocrIndexed: true") && source.includes("rescheduleUniversalSearchBuildForStartupGrace")],
   ["search UI has no hard-result pane", !source.includes('const hardSection = results.createEl("details"') && !source.includes("renderHits(hardResults")],
   ["AI search checkbox is visible and enabled by default", source.includes('const aiEnabled = aiLabel.createEl("input"') && source.includes("aiEnabled.checked = true") && source.includes('aiEnabled.addEventListener("change"')],
-  ["one search pane also renders base results when AI is off", source.includes("if (!aiEnabled.checked)") && source.includes("renderHits(aiResults, hardHits)")],
+  ["one search pane also renders base results when AI is off", source.includes("if (!aiEnabled.checked)") && source.includes("rememberKeywordHits(hardHits)") && source.includes("renderHits(aiResults, visibleSearchHits())")],
   ["single search pane overrides the legacy split grid and scrolls", styles.includes("grid-template-rows: minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-body") && styles.includes("grid-template-rows: auto minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-results") && styles.includes("overflow-y: auto")],
-  ["AI search renders text matches before attachment-aware semantic expansion", source.includes("includeAttachments: !aiEnabled.checked") && source.includes("renderHits(aiResults, exactHits)") && source.includes('aiExplanation.setText(isChineseLanguage(this.plugin.language()) ? "正在理解查询含义…"')],
+  ["AI search keeps keyword results first and only appends semantic/RAG hits", source.includes("includeAttachments: !aiEnabled.checked") && source.includes("rememberKeywordHits(exactHits)") && source.includes("rememberSemanticHits(progress.hits)") && source.includes("visibleSearchHits") && source.includes('aiExplanation.setText(semanticHits.length ?')],
   ["search renders fast local hits then incremental AI/RAG phases", source.includes("private async fastIndexedVaultSearchHits") && source.includes('phase: "expansion"') && source.includes('phase: "retrieval"') && source.includes("onProgress?.({ phase: \"ranked\"") && source.includes("expansion.styleSignals.slice(0, 2)") && source.includes("Math.ceil(resultLimit / 2)")],
   ["search highlights multi-character and word-root matches", source.includes("function searchHighlightTerms") && source.includes("function searchWordRootVariants") && source.includes("appendHighlightedSearchText") && styles.includes(".obcc-search-match")],
   ["AI expansion re-enters Vault content search", source.includes("softQueries: expandedSignals") && source.includes("alwaysRunOnDemand: true") && source.includes("alwaysRunAttachments: true")],
@@ -29,7 +84,7 @@ const checks = [
   ["on-demand search scans every eligible text file and full content", source.includes("Scan every eligible text") && source.includes("const contents = await Promise.all(batch.map") && source.includes("scoreSearchText(file.path, file.basename, content, tokens)")],
   ["total timer starts synchronously and cannot trail a running step", source.includes("this.ensureCurrentSessionTimelineStatus(status, now)") && source.indexOf("this.ensureCurrentSessionTimelineStatus(status, now)") < source.indexOf("const index = await this.readSessionHistoryIndex({ mergeFiles: false })") && source.includes("private headerSessionTimerStartMs")],
   ["timers use milliseconds below one second, tenths below one minute, and whole seconds after one minute", source.includes('if (safe < 1000) return `${safe}ms`') && source.includes("(safe / 1000).toFixed(1)") && source.includes('String(Math.floor((safe % 60000) / 1000)).padStart(2, "0")')],
-  ["numbered process steps have right-aligned bordered timers", source.includes('cls: "obcc-process-step-timer"') && styles.includes(".obcc-process-step-timer") && styles.includes("min-width: 46px") && styles.includes("justify-self: end") && styles.includes("grid-template-columns: 14px 20px minmax(0, 1fr) max-content")],
+  ["numbered process steps have right-aligned bordered timers", source.includes('cls: "obcc-process-step-timer"') && styles.includes(".obcc-process-step-timer") && styles.includes("min-width: 46px") && styles.includes("justify-self: end") && styles.includes("grid-template-columns: 14px 20px minmax(0, 1fr) max-content max-content")],
   ["live progress avoids unconditional Markdown rerender", source.includes("signature !== renderedSignature && now >= nextRenderAt")],
   ["subagents launch concurrently", source.includes("await Promise.allSettled(specs.map((spec)")],
   ["explicit multi-agent lets the main agent choose strategy but requires real children", source.includes("Your first executable action batch must call cancip.subagents.parallel with at least 2 real child sessions") && source.includes("price, latency, capability, recent success, and current availability") && source.includes("!responseStartsParallelSubagents(answer, 2)")],
@@ -44,17 +99,19 @@ const checks = [
   ["terminal recommendation repair preserves one final message", source.includes("private async repairFinalChoicesForCandidate") && source.includes("repaired terminal recommendations") && source.includes("this.attachChoiceSource(assistantMessage, choiceSource)")],
   ["parallel session index writes are merged without rescanning or frozen timer waits", source.includes("sessionHistoryWriteQueue: Promise<void>") && source.includes("const run = this.sessionHistoryWriteQueue.then") && source.includes("readSessionHistoryIndexUncached(false)") && !source.includes("Math.max(0, 650 - (Date.now() - this.sessionSaveLastAt))")],
   ["subagent cards render inside their launching process step, not the Plan panel", source.includes("obcc-process-subagent-cards") && source.includes("hydrateProcessSubagentCards") && !source.includes("data-subagent-step-id") && styles.includes(".obcc-subagent-track") && styles.includes("overflow-x: auto")],
+  ["subagent cards appear as soon as child sessions are created", source.includes("Make the child visible in the parent process record before its model call finishes") && source.includes("if (parentSessionId === this.sessionId) this.renderMessagesAfterMutation()")],
+  ["process details default folded and Plan button stays on its numbered step", source.includes('this.wireDetails(step, `process-step:${stepFoldKey}`, false') && source.includes("processStepPlanReference") && source.includes("obcc-process-step-plan-button") && source.includes('text: `#${index + 1}`') && !source.includes('cls: "obcc-process-record-meta-button is-plan"')],
   ["composer add-menu buttons have stable IDs", source.includes('id: "interactive-html"') && source.includes('id: "multi-agent"') && source.includes("row.dataset.cancipButtonId = `composer:${kind}:${item.id")],
   ["nested icon/label targets resolve to the stable button host", source.includes('el.closest<HTMLElement>("[data-cancip-button-id]")')],
   ["disconnected stable Cancip buttons remain verifiable", source.includes("const stableDescriptor = Boolean(stableSelectorId") && source.includes("connectedTarget || stableDescriptor")],
   ["legacy button rules remain compatible", source.includes('legacyTargetKey: ["v2"') && source.includes("legacyTargetKeyV1")],
-  ["TTS highlight records real sequential play-part matches", source.includes("activeTtsLastHighlightPartIndex") && source.includes("findSequentialNormalizedNeedleMatch") && source.includes("recordTtsHighlightMatch(matchStart, matchEnd)") && source.includes("this.activeTtsHighlightPartIndex")],
+  ["TTS highlight uses one strict sentence key while playback remains micro-chunked", source.includes("splitPrimeTtsSentenceFragments(normalized)") && source.includes('const key = `${this.activeTtsSourcePath}:${displayIndex}') && source.includes("highlightActiveRenderedTtsPart(displayText)") && !source.includes("for (const candidate of ttsHighlightCandidateTexts(playText, displayText")],
   ["TTS reads properties and expands embedded Markdown notes", source.includes("ttsSourceWithReadableFrontmatter") && source.includes("expandMarkdownTtsEmbeds") && source.includes("markdownTtsEmbedReferences")],
   ["context edit tracks live anchors and excludes native reading view", source.includes("startContextEditAnchorTracking") && source.includes("refreshContextualEditAnchorGeometry") && source.includes('containingLeaf?.view instanceof MarkdownView && element.closest(".markdown-preview-view, .markdown-rendered")')],
   ["final verification uses concrete results without generic success filler", source.includes('sections.push(`验证结果：${verificationLines[0]}`)') && source.includes("private concreteVerificationResult") && !source.includes("命令/界面动作已返回成功") && !source.includes("写入/修改已验证成功")],
-  ["one conclusion stays unnumbered while multiple Plan results stay numbered", source.includes("if (planTodos.length > 1)") && source.includes("Do not number a single conclusion") && source.includes("一个结论不编号")],
+  ["one conclusion stays unnumbered while multiple Plan results stay numbered", source.includes("if (planTodos.length > 1)") && source.includes("normalizeSingleConclusionNumbering") && source.includes("numbered.length !== 1") && source.includes("Do not number a single conclusion") && source.includes("一个结论不编号")],
   ["greeting fallback is time-only and model greetings reject stock continuation templates", !localGreetingSource.includes("刚看到") && !localGreetingSource.includes("Continue from there") && source.includes("isTemplateLikePersonalizationGreeting") && source.includes("could not be produced from the filename alone")],
-  ["automation stays background and omits a one-item Plan", !source.includes("if (!this.settings.preventAutomaticSessionOpen && !task.silent") && source.includes("单动作自动化无需计划待办") && source.includes("items.filter((item) => item.text.trim()).length < 2")],
+  ["automation stays background and 1-2 actions never create a Plan", !source.includes("if (!this.settings.preventAutomaticSessionOpen && !task.silent") && source.includes("1-2 项任务无需计划待办") && source.includes("if (concreteCount < 3) return omitShortPlan()")],
   ["automation process keeps recent raw exchanges and shows a task badge", source.includes("const protectedTail = this.messages.slice(-12)") && source.includes("automationTitle?: string") && source.includes("obcc-process-automation-badge") && styles.includes(".obcc-process-automation-badge")],
   ["subagents are hidden from ordinary history but retained for process cards", !source.includes("const renderSubagentGroup") && source.includes("!entry.parentSessionId") && source.includes("includeSubagents = args.includeSubagents === true") && source.includes("entry.eventOnly || entry.parentSessionId")],
   ["verified successful workflows retain a reusable route", source.includes("Reusable verified route:") && source.includes('run.status === "executed"')]
