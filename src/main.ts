@@ -601,6 +601,79 @@ function promptHtmlRequirementModal(
   });
 }
 
+class CancipOcrResultModal extends Modal {
+  private sourceFile: TFile;
+
+  constructor(
+    app: App,
+    private readonly plugin: CancipPlugin,
+    file: TFile,
+    private readonly entry: OcrIndexEntry
+  ) {
+    super(app);
+    this.sourceFile = file;
+  }
+
+  onOpen(): void {
+    const chinese = isChineseLanguage(this.plugin.language());
+    this.setTitle(chinese ? "OCR 识别结果" : "OCR result");
+    this.modalEl.addClass("obcc-ocr-result-modal");
+    const summary = this.contentEl.createDiv({ cls: "obcc-ocr-result-summary" });
+    summary.createEl("strong", { text: this.sourceFile.name });
+    summary.createSpan({
+      text: chinese
+        ? `置信度 ${this.entry.confidence.toFixed(1)} · ${formatFileSize(this.entry.size)}${this.entry.pages?.length ? ` · ${this.entry.pages.length} 页` : ""}`
+        : `Confidence ${this.entry.confidence.toFixed(1)} · ${formatFileSize(this.entry.size)}${this.entry.pages?.length ? ` · ${this.entry.pages.length} pages` : ""}`
+    });
+    this.renderResultSection(chinese ? "提取文字" : "Extracted text", ocrEntryFullText(this.entry));
+    this.renderResultSection(chinese ? "元素与版面" : "Elements and layout", ocrEntryElementDescription(this.entry));
+
+    const actions = this.contentEl.createDiv({ cls: "obcc-ocr-result-actions" });
+    this.createActionButton(actions, "file-pen-line", chinese ? "重命名" : "Rename", async () => {
+      const renamed = await this.plugin.renameFileFromOcr(this.sourceFile, this.entry);
+      if (renamed) {
+        this.sourceFile = renamed;
+        summary.querySelector("strong")?.setText(renamed.name);
+      }
+    });
+    this.createActionButton(actions, "file-output", chinese ? "提取为 Markdown" : "Extract to Markdown", async () => {
+      await this.plugin.extractOcrMarkdown(this.sourceFile, this.entry);
+    });
+    this.createActionButton(actions, "x", chinese ? "关闭" : "Close", async () => this.close());
+  }
+
+  onClose(): void {
+    this.contentEl.empty();
+  }
+
+  private renderResultSection(title: string, content: string): void {
+    const section = this.contentEl.createEl("section", { cls: "obcc-ocr-result-section" });
+    section.createEl("h3", { text: title });
+    section.createEl("textarea", {
+      cls: "obcc-ocr-result-text",
+      text: content,
+      attr: { readonly: "true", spellcheck: "false", "aria-label": title }
+    });
+  }
+
+  private createActionButton(parent: HTMLElement, icon: string, label: string, run: () => Promise<void>): void {
+    const button = parent.createEl("button", { attr: { type: "button", title: label, "aria-label": label } });
+    setIcon(button, icon);
+    button.createSpan({ text: label });
+    button.addEventListener("click", async () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      try {
+        await run();
+      } catch (error) {
+        new Notice(error instanceof Error ? error.message : String(error), 8000);
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+}
+
 type ModelEditModalResult = {
   model: string;
   profileId: string;
@@ -1598,6 +1671,7 @@ type ProcessRecordStep = {
   auditSections: ProcessAuditSection[];
   hasDetail: boolean;
   count: number;
+  elapsedMs: number;
 };
 
 type ToolRunDisplayGroup = {
@@ -1744,6 +1818,9 @@ type SubagentStartSpec = {
   acceptance: string;
   timeoutMinutes: number;
   attempt: number;
+  model: string;
+  apiProfileId: string;
+  fallbackModels: string[];
 };
 
 type StartedSubagent = {
@@ -1806,6 +1883,8 @@ type UniversalSearchOptions = {
   includeAttachments?: boolean;
   softQueries?: string[];
   alwaysRunSoft?: boolean;
+  alwaysRunOnDemand?: boolean;
+  alwaysRunAttachments?: boolean;
   preserveRouteDuplicates?: boolean;
 };
 
@@ -1875,6 +1954,7 @@ type ActiveMention = {
 };
 
 type ComposerMenuItem = {
+  id?: string;
   icon: string;
   label: string;
   shortLabel?: string;
@@ -2346,12 +2426,14 @@ type UiButtonRule = {
 };
 
 type UiButtonIdentity = {
+  stableId?: string;
   viewType: string;
   commandGuard?: string;
   iconGuard?: string;
   menuGroupGuard?: string;
   targetKey: string;
   legacyTargetKey: string;
+  legacyTargetKeyV1: string;
 };
 
 type UiButtonRuleWindow = Window;
@@ -9113,6 +9195,17 @@ export default class CancipPlugin extends Plugin {
     });
 
     this.addCommand({
+      id: "recognize-active-file-ocr",
+      name: isChineseLanguage(this.language()) ? "OCR 识别当前图片或 PDF" : "OCR current image or PDF",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (!(file instanceof TFile) || !isOcrSupportedPath(file.path)) return false;
+        if (!checking) void this.openOcrResult(file);
+        return true;
+      }
+    });
+
+    this.addCommand({
       id: "toggle-pin-active-file",
       name: this.t("commandTogglePinActiveFile"),
       checkCallback: (checking) => {
@@ -9196,6 +9289,16 @@ export default class CancipPlugin extends Plugin {
               : this.activateDocumentWorkbench(file, "markdown"));
           });
       });
+      if (isOcrSupportedPath(file.path)) {
+        menu.addItem((item) => {
+          item
+            .setTitle(isChineseLanguage(this.language()) ? "OCR 识别" : "Run OCR")
+            .setIcon("scan-text")
+            .onClick(() => {
+              void this.openOcrResult(file);
+            });
+        });
+      }
     }));
 
     this.registerEvent(this.app.workspace.on("file-menu", (menu: Menu, file: TAbstractFile) => {
@@ -12308,13 +12411,15 @@ export default class CancipPlugin extends Plugin {
     return written;
   }
 
-  async readOcrForVaultFile(file: TFile, force = false, pdfPageLimit?: number): Promise<OcrIndexEntry | null> {
+  async readOcrForVaultFile(file: TFile, force = false, pdfPageLimit?: number, allPdfPages = false): Promise<OcrIndexEntry | null> {
     if (!this.settings.ocrEnabled || !isOcrSupportedPath(file.path)) return null;
     const maxBytes = this.settings.ocrMaxFileMb * 1024 * 1024;
     if (file.stat.size > maxBytes) return null;
     const sourceKey = normalizePath(file.path);
     const cached = force ? null : await this.readOcrCache("vault", sourceKey, file.stat.mtime, file.stat.size);
-    const requestedPdfPages = Math.max(1, Math.min(this.settings.ocrMaxPdfPages, pdfPageLimit ?? this.settings.ocrMaxPdfPages));
+    const requestedPdfPages = allPdfPages
+      ? Number.MAX_SAFE_INTEGER
+      : Math.max(1, Math.min(this.settings.ocrMaxPdfPages, pdfPageLimit ?? this.settings.ocrMaxPdfPages));
     if (cached && (!isPdfPath(file.path) || ocrPdfCacheCoversLimit(cached, requestedPdfPages))) return cached;
     if ((await this.missingOcrPackageAssets()).length) return null;
     const buffer = await this.app.vault.adapter.readBinary(file.path);
@@ -12324,6 +12429,81 @@ export default class CancipPlugin extends Plugin {
       : await this.ocrImageFile(webFile, "vault", sourceKey, file.stat.mtime);
     await this.writeOcrCache(entry);
     return entry;
+  }
+
+  async openOcrResult(file: TFile): Promise<void> {
+    const chinese = isChineseLanguage(this.language());
+    if (!this.settings.ocrEnabled) {
+      new Notice(chinese ? "请先在 Cancip 设置中启用 OCR" : "Enable OCR in Cancip settings first", 6000);
+      return;
+    }
+    if ((await this.missingOcrPackageAssets()).length) await this.installOcrPackage(true);
+    const progress = new Notice(chinese ? `正在识别 ${file.name}…` : `Recognizing ${file.name}...`, 0);
+    try {
+      const entry = await this.readOcrForVaultFile(file, false, undefined, true);
+      if (!entry) throw new Error(chinese ? "OCR 未返回结果，请检查文件大小和本地 OCR 包" : "OCR returned no result; check file size and the local OCR package");
+      new CancipOcrResultModal(this.app, this, file, entry).open();
+    } finally {
+      progress.hide();
+    }
+  }
+
+  async renameFileFromOcr(file: TFile, entry: OcrIndexEntry): Promise<TFile | null> {
+    const chinese = isChineseLanguage(this.language());
+    const suggested = suggestOcrFileBaseName(entry, file.basename);
+    const requested = await promptTextModal(this.app, chinese ? "根据 OCR 重命名" : "Rename from OCR", suggested);
+    if (requested === null) return null;
+    const basename = safeVaultFileName(requested.trim()).replace(/\.[^.]+$/, "").trim();
+    if (!basename) throw new Error(chinese ? "文件名不能为空" : "File name cannot be empty");
+    const folder = vaultPathParent(file.path);
+    const nextPath = normalizePath(`${folder ? `${folder}/` : ""}${basename}.${file.extension}`);
+    if (nextPath === file.path) return file;
+    if (this.app.vault.getAbstractFileByPath(nextPath)) throw new Error(chinese ? `已存在：${nextPath}` : `Already exists: ${nextPath}`);
+    const oldSourceKey = entry.sourceKey;
+    await this.app.fileManager.renameFile(file, nextPath);
+    entry.path = nextPath;
+    entry.sourceKey = nextPath;
+    entry.mtime = file.stat.mtime;
+    await this.writeOcrCache(entry);
+    const oldCache = ocrCachePath("vault", oldSourceKey);
+    if (oldCache !== ocrCachePath("vault", nextPath) && await this.app.vault.adapter.exists(oldCache)) {
+      await this.app.vault.adapter.remove(oldCache).catch(() => undefined);
+    }
+    new Notice(chinese ? `已重命名为 ${file.name}` : `Renamed to ${file.name}`);
+    return file;
+  }
+
+  async extractOcrMarkdown(file: TFile, entry: OcrIndexEntry): Promise<TFile> {
+    const chinese = isChineseLanguage(this.language());
+    const folder = vaultPathParent(file.path);
+    const path = this.availableOcrMarkdownPath(folder, file.basename);
+    const visibleName = file.name.replace(/([\\\]])/g, "\\$1");
+    const sourcePath = normalizePath(file.path).replace(/-->/g, "-- >");
+    const hidden = [
+      "<!-- cancip-ocr",
+      `source: ${sourcePath}`,
+      `confidence: ${entry.confidence.toFixed(1)}`,
+      "elements:",
+      ocrEntryElementDescription(entry),
+      "text:",
+      ocrEntryFullText(entry),
+      "-->"
+    ].join("\n").replace(/-->/g, "-- >").replace(/-- >$/u, "-->");
+    const content = `[${visibleName}](<${file.path}>)\n\n${hidden}\n`;
+    const created = await this.app.vault.create(path, content);
+    if (await this.app.vault.read(created) !== content) throw new Error(`OCR Markdown verification failed: ${path}`);
+    await this.app.workspace.getLeaf("tab").openFile(created);
+    new Notice(chinese ? `已提取：${path}` : `Extracted: ${path}`);
+    return created;
+  }
+
+  private availableOcrMarkdownPath(folder: string, basename: string): string {
+    for (let index = 0; index < 1000; index += 1) {
+      const suffix = index ? `-${index + 1}` : "";
+      const candidate = normalizePath(`${folder ? `${folder}/` : ""}${basename} OCR${suffix}.md`);
+      if (!this.app.vault.getAbstractFileByPath(candidate)) return candidate;
+    }
+    throw new Error(`No available OCR Markdown path for ${basename}`);
   }
 
   async readOcrForRemoteUrl(url: string, pdfPageLimit?: number): Promise<OcrIndexEntry | null> {
@@ -18278,6 +18458,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   describeUiButtonEditTarget(target: HTMLElement): UiButtonEditDescriptor {
+    this.ensureStableUiButtonId(target);
     const customRule = this.customUiButtonRuleForTarget(target);
     const selector = customRule?.selector || stableSelectorForElement(target);
     const scope = customRule?.scope ?? this.inferUiButtonRuleScope(target);
@@ -18351,24 +18532,64 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private uiButtonIdentityForElement(target: HTMLElement | null | undefined, label = ""): UiButtonIdentity {
+    const stableId = target?.closest<HTMLElement>("[data-cancip-button-id]")?.dataset.cancipButtonId?.trim() ?? "";
     const commandGuard = (target?.closest("[data-command]") ?? target?.querySelector?.("[data-command]"))?.getAttribute("data-command")?.trim() || "";
     const iconGuard = uiElementIconName(target);
     const viewType = this.uiButtonViewTypeForTarget(target);
     const normalizedLabel = normalizeUiButtonLabel(label || (target ? uiElementLabel(target) : "") || "");
     const menuGroupGuard = this.uiButtonMenuGroupGuardForElement(target, normalizedLabel);
     return {
+      stableId: stableId || undefined,
       viewType,
       commandGuard: commandGuard || undefined,
       iconGuard: iconGuard || undefined,
       menuGroupGuard: menuGroupGuard || undefined,
-      targetKey: ["v2", viewType, commandGuard, menuGroupGuard, normalizedLabel].join("|"),
-      legacyTargetKey: [viewType, commandGuard, iconGuard, normalizedLabel].join("|")
+      targetKey: stableId
+        ? ["v3", viewType, stableId, commandGuard, iconGuard, menuGroupGuard].join("|")
+        : ["v2", viewType, commandGuard, menuGroupGuard, normalizedLabel].join("|"),
+      legacyTargetKey: ["v2", viewType, commandGuard, menuGroupGuard, normalizedLabel].join("|"),
+      legacyTargetKeyV1: [viewType, commandGuard, iconGuard, normalizedLabel].join("|")
     };
+  }
+
+  private ensureStableUiButtonId(target: HTMLElement): string {
+    const host = target.closest<HTMLElement>("button, [role='button'], .clickable-icon, .nav-action-button, .view-action, .menu-item, [role='menuitem']") ?? target;
+    const existing = host.dataset.cancipButtonId?.trim() ?? "";
+    if (existing) return existing;
+    const viewType = this.uiButtonViewTypeForTarget(host) || "global";
+    const command = (host.getAttribute("data-command") || host.querySelector<HTMLElement>("[data-command]")?.getAttribute("data-command") || "").trim();
+    const icon = uiElementIconName(host);
+    const roleClass = Array.from(host.classList).find((value) => /^(?:menu-item|nav-action-button|view-action|workspace-ribbon-action|clickable-icon|document-search-button|obcc-[a-z0-9-]+)$/i.test(value)) ?? host.tagName.toLowerCase();
+    if (!command && !icon && roleClass === host.tagName.toLowerCase()) return "";
+    const siblings = host.parentElement
+      ? Array.from(host.parentElement.children).filter((item): item is HTMLElement => (
+          item.nodeType === Node.ELEMENT_NODE
+          && (item as HTMLElement).matches("button, [role='button'], .clickable-icon, .nav-action-button, .view-action, .menu-item, [role='menuitem']")
+        )) as HTMLElement[]
+      : [];
+    const peers = siblings.filter((item) => {
+      const itemCommand = (item.getAttribute("data-command") || item.querySelector<HTMLElement>("[data-command]")?.getAttribute("data-command") || "").trim();
+      return command ? itemCommand === command : uiElementIconName(item) === icon;
+    });
+    const index = Math.max(0, peers.indexOf(host));
+    const stableId = ["ui", viewType, command || icon || roleClass, String(index)]
+      .map((value) => value.replace(/[^a-zA-Z0-9_.:-]+/g, "-").replace(/^-+|-+$/g, ""))
+      .join(":");
+    host.dataset.cancipButtonId = stableId;
+    return stableId;
+  }
+
+  private annotateStableUiButtonIds(root: ParentNode): void {
+    const selector = "button, [role='button'], .clickable-icon, .nav-action-button, .view-action, .menu-item, [role='menuitem']";
+    const elements: HTMLElement[] = [];
+    if (root.nodeType === Node.ELEMENT_NODE && (root as HTMLElement).matches(selector)) elements.push(root as HTMLElement);
+    elements.push(...Array.from(root.querySelectorAll<HTMLElement>(selector)));
+    for (const element of elements) this.ensureStableUiButtonId(element);
   }
 
   private uiButtonRuleMatchesElement(rule: UiButtonRule, target: HTMLElement | null | undefined): boolean {
     if (!target) return false;
-    const requiresLabel = uiButtonRuleHasLabelGuard(rule);
+    const requiresLabel = uiButtonRuleHasLabelGuard(rule) && !rule.targetKey?.startsWith("v3|");
     if (requiresLabel && !uiButtonElementMatchesRuleLabel(rule, target)) return false;
     const identity = this.uiButtonIdentityForElement(target, rule.label);
     const storedTargetParts = rule.targetKey?.startsWith("v2|") ? rule.targetKey.split("|") : [];
@@ -18380,7 +18601,11 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       return true;
     }
     if (rule.iconGuard && identity.iconGuard && rule.iconGuard !== identity.iconGuard) return false;
-    return !(rule.targetKey && identity.targetKey && rule.targetKey !== identity.targetKey && rule.targetKey !== identity.legacyTargetKey);
+    return !(rule.targetKey
+      && identity.targetKey
+      && rule.targetKey !== identity.targetKey
+      && rule.targetKey !== identity.legacyTargetKey
+      && rule.targetKey !== identity.legacyTargetKeyV1);
   }
 
   uiButtonEditTargetStatus(descriptor: UiButtonEditDescriptor): { expectedLabel: string; selectorCount: number; labelCount: number; seenLabels: string[]; verified: boolean } {
@@ -18388,8 +18613,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const wanted = normalizeUiButtonLabel(expectedLabel);
     const elements = this.uiRuleElementsBySelector(descriptor.selector, descriptor.scope);
     const seenLabels = uniqueStrings(elements.map((el) => uiElementLabel(el)).filter(Boolean)).slice(0, 5);
-    const exactTargetCount = descriptor.target?.isConnected && elements.includes(descriptor.target) ? 1 : 0;
-    const requiresLabel = uiButtonSelectorRequiresLabelGuard(descriptor.selector);
+    const connectedTarget = Boolean(descriptor.target?.isConnected);
+    const exactTargetCount = connectedTarget && elements.includes(descriptor.target!) ? 1 : 0;
+    const requiresLabel = uiButtonSelectorRequiresLabelGuard(descriptor.selector) && !descriptor.targetKey?.startsWith("v3|");
     const labelCount = exactTargetCount
       || (!requiresLabel || !wanted || wanted === normalizeUiButtonLabel(descriptor.selector)
         ? elements.length
@@ -18399,10 +18625,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       : 0;
     return {
       expectedLabel,
-      selectorCount: elements.length,
-      labelCount: labelCount || snapshotLabelCount,
+      selectorCount: Math.max(elements.length, connectedTarget ? 1 : 0),
+      labelCount: labelCount || snapshotLabelCount || (connectedTarget ? 1 : 0),
       seenLabels: seenLabels.length ? seenLabels : snapshotLabelCount ? [expectedLabel] : [],
-      verified: (elements.length > 0 && labelCount > 0) || snapshotLabelCount > 0
+      verified: connectedTarget || (elements.length > 0 && labelCount > 0) || snapshotLabelCount > 0
     };
   }
 
@@ -22406,6 +22632,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         for (const node of Array.from(mutation.addedNodes)) {
           if (node.nodeType !== Node.ELEMENT_NODE) continue;
           const el = node as HTMLElement;
+          this.annotateStableUiButtonIds(el);
+          roots.add(el);
           if (el.matches(menuSelector)) roots.add(el);
           for (const child of Array.from(el.querySelectorAll<HTMLElement>(menuSelector))) roots.add(child);
         }
@@ -22442,6 +22670,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       this.uiButtonRuleApplying = false;
     };
     try {
+      for (const document of this.uiButtonDocuments()) this.annotateStableUiButtonIds(document);
       this.clearUiRuleMarks();
       const rules = this.settings.uiButtonManagementEnabled
         ? this.settings.uiButtonRules.filter(uiButtonRuleHasChanges)
@@ -29359,6 +29588,7 @@ class CancipView extends ItemView {
   private processDetailScrollLeft = new Map<string, number>();
   private headerLiveStatusSignature = "";
   private headerLiveStatusTimer: number | null = null;
+  private headerLiveElapsedText = "";
   private mentionItems: MentionTarget[] = [];
   private mentionActiveIndex = 0;
   private mentionRequestId = 0;
@@ -29437,6 +29667,7 @@ class CancipView extends ItemView {
   private subagentCompletedAt = "";
   private sessionHistoryCache: { at: number; mergeFiles: boolean; entries: SessionHistoryEntry[] } | null = null;
   private sessionHistoryReadPromise: { mergeFiles: boolean; promise: Promise<SessionHistoryEntry[]> } | null = null;
+  private sessionHistoryWriteQueue: Promise<void> = Promise.resolve();
   private syncedSessionHistoryPaths = new Set<string>();
   private sessionHistoryRefreshIndexedFiles = false;
   private historyMenuRefreshTimer: number | null = null;
@@ -29446,7 +29677,6 @@ class CancipView extends ItemView {
   private experienceHarvestTimer: number | null = null;
   private experienceRecordedSessionIds = new Set<string>();
   private headerMenuLoadId = 0;
-  private subagentCardLoadId = 0;
   private includeCurrentFileForSession: boolean;
   private resumableTask: ResumableTaskState | null = null;
   private resumableAutomationTaskId = "";
@@ -32382,16 +32612,17 @@ class CancipView extends ItemView {
 
   private toggleAddMenu(): void {
     const items: ComposerMenuItem[] = [
-      { icon: "paperclip", label: this.t("addAttachment"), shortLabel: this.t("addAttachment"), action: () => this.openAttachmentPicker() },
-      { icon: "file-code-2", label: this.t("commandCreateInteractiveHtml"), shortLabel: "HTML", action: () => this.prepareOneClickHtmlComposer() },
-      { icon: "list-todo", label: this.t("planPanelTitle"), shortLabel: this.t("planPanelTitle"), action: () => this.preparePlanComposer() },
-      { icon: "users", label: this.t("settingsMultiAgent"), shortLabel: this.t("subagentLabel"), action: () => this.prepareMultiAgentComposer() },
-      { icon: "file-search", label: this.t("addFileFolder"), shortLabel: this.t("mentionFile"), detail: "@", action: () => this.startMentionQuery("", "menu") },
-      { icon: "plug", label: this.t("addPlugin"), shortLabel: "Plugin", detail: "@plugin", action: () => this.startMentionQuery("plugin", "menu") },
-      { icon: "sparkles", label: this.t("addSkill"), shortLabel: "Skill", detail: "@skill", action: () => this.startMentionQuery("skill", "menu") },
-      { icon: "file-plus", label: this.t("addCurrentFile"), shortLabel: this.t("currentFile"), action: () => void this.addCurrentFileContext() },
-      { icon: "calendar-clock", label: this.t("automationTask"), shortLabel: this.t("automationTask"), detail: "@automation", action: () => this.startMentionQuery("automation", "menu") },
+      { id: "attachment", icon: "paperclip", label: this.t("addAttachment"), shortLabel: this.t("addAttachment"), action: () => this.openAttachmentPicker() },
+      { id: "interactive-html", icon: "file-code-2", label: this.t("commandCreateInteractiveHtml"), shortLabel: "HTML", action: () => this.prepareOneClickHtmlComposer() },
+      { id: "plan", icon: "list-todo", label: this.t("planPanelTitle"), shortLabel: this.t("planPanelTitle"), action: () => this.preparePlanComposer() },
+      { id: "multi-agent", icon: "users", label: this.t("settingsMultiAgent"), shortLabel: this.t("subagentLabel"), action: () => this.prepareMultiAgentComposer() },
+      { id: "file-folder", icon: "file-search", label: this.t("addFileFolder"), shortLabel: this.t("mentionFile"), detail: "@", action: () => this.startMentionQuery("", "menu") },
+      { id: "plugin", icon: "plug", label: this.t("addPlugin"), shortLabel: "Plugin", detail: "@plugin", action: () => this.startMentionQuery("plugin", "menu") },
+      { id: "skill", icon: "sparkles", label: this.t("addSkill"), shortLabel: "Skill", detail: "@skill", action: () => this.startMentionQuery("skill", "menu") },
+      { id: "current-file", icon: "file-plus", label: this.t("addCurrentFile"), shortLabel: this.t("currentFile"), action: () => void this.addCurrentFileContext() },
+      { id: "automation", icon: "calendar-clock", label: this.t("automationTask"), shortLabel: this.t("automationTask"), detail: "@automation", action: () => this.startMentionQuery("automation", "menu") },
       {
+        id: "pursue-goal",
         icon: "target",
         label: this.t("addPursueGoal"),
         shortLabel: this.t("addPursueGoal"),
@@ -32404,6 +32635,7 @@ class CancipView extends ItemView {
     ];
     if (this.plugin.settings.commandBusEnabled) {
       items.splice(3, 0, {
+        id: "command-bus",
         icon: "terminal",
         label: this.t("commandBus"),
         shortLabel: this.t("mentionCommand"),
@@ -32808,11 +33040,12 @@ class CancipView extends ItemView {
     this.menuEl.removeClass("is-hidden");
     this.placeCommandMenu();
 
-    for (const item of items) {
+    for (const [index, item] of items.entries()) {
       const row = this.menuEl.createEl("button", {
         cls: `obcc-command-item ${item.active ? "is-active" : ""}`,
         attr: { type: "button", title: item.detail ? `${item.label} · ${item.detail}` : item.label, "aria-label": item.label }
       });
+      row.dataset.cancipButtonId = `composer:${kind}:${item.id || `${item.icon}:${index}`}`;
       setIcon(row.createSpan({ cls: "obcc-command-icon" }), item.icon);
       row.createSpan({ cls: "obcc-command-title", text: item.shortLabel ?? item.label });
       if (item.active) setIcon(row.createSpan({ cls: "obcc-command-check" }), "check");
@@ -34728,7 +34961,6 @@ class CancipView extends ItemView {
 
   private renderTodoList(parent: HTMLElement, todos: ManualTodo[]): void {
     this.syncTodoTimingState();
-    const loadId = ++this.subagentCardLoadId;
     parent.empty();
     if (!todos.length) {
       parent.createDiv({ cls: "obcc-mention-empty", text: this.t("noManualTodos") });
@@ -34741,12 +34973,12 @@ class CancipView extends ItemView {
         attr: { "data-subagent-step-id": todo.id }
       });
     }
-    void this.hydrateSubagentCards(parent, todos, loadId);
+    void this.hydrateSubagentCards(parent, todos);
   }
 
-  private async hydrateSubagentCards(parent: HTMLElement, todos: ManualTodo[], loadId: number): Promise<void> {
+  private async hydrateSubagentCards(parent: HTMLElement, todos: ManualTodo[]): Promise<void> {
     const entries = await this.readSessionHistoryIndex({ force: true });
-    if (loadId !== this.subagentCardLoadId || !parent.isConnected || this.activeHeaderMenu !== "plan") return;
+    if (!parent.isConnected || this.activeHeaderMenu !== "plan") return;
     const linked = new Set(this.subagentIds);
     const children = entries
       .filter((entry) => entry.parentSessionId === this.sessionId || linked.has(entry.id))
@@ -34766,22 +34998,22 @@ class CancipView extends ItemView {
       const rows = grouped.get(todo.id) ?? [];
       if (!shell || !rows.length) continue;
       shell.removeClass("is-hidden");
-      await this.renderSubagentCardTrack(shell, rows, loadId);
+      await this.renderSubagentCardTrack(shell, rows);
     }
     const unassigned = grouped.get("__unassigned__") ?? [];
-    if (unassigned.length && loadId === this.subagentCardLoadId && parent.isConnected) {
+    if (unassigned.length && parent.isConnected) {
       const shell = parent.createDiv({ cls: "obcc-subagent-step-cards is-unassigned" });
       shell.createDiv({ cls: "obcc-subagent-track-label", text: this.t("subagentLabel") });
-      await this.renderSubagentCardTrack(shell, unassigned, loadId);
+      await this.renderSubagentCardTrack(shell, unassigned);
     }
   }
 
-  private async renderSubagentCardTrack(parent: HTMLElement, entries: SessionHistoryEntry[], loadId: number): Promise<void> {
-    if (loadId !== this.subagentCardLoadId || !parent.isConnected) return;
+  private async renderSubagentCardTrack(parent: HTMLElement, entries: SessionHistoryEntry[]): Promise<void> {
+    if (!parent.isConnected) return;
     parent.empty();
     const track = parent.createDiv({ cls: "obcc-subagent-track" });
     for (const entry of entries) {
-      if (loadId !== this.subagentCardLoadId || !track.isConnected) return;
+      if (!track.isConnected) return;
       await this.renderSubagentCard(track, entry);
     }
   }
@@ -34823,6 +35055,7 @@ class CancipView extends ItemView {
 
     card.createDiv({ cls: "obcc-subagent-task", text: entry.subagentGoal || entry.title });
     const meta = card.createDiv({ cls: "obcc-subagent-meta" });
+    if (entry.model) meta.createDiv({ text: `${isChineseLanguage(this.plugin.language()) ? "模型" : "Model"}: ${entry.model}` });
     if (entry.subagentAcceptance) meta.createDiv({ text: `${this.t("subagentAcceptance")}: ${entry.subagentAcceptance}` });
     if (entry.subagentDeadlineAt) meta.createDiv({ text: `${this.t("subagentDeadline")}: ${entry.subagentDeadlineAt}` });
     meta.createDiv({ text: `${isChineseLanguage(this.plugin.language()) ? "尝试" : "Attempt"}: ${entry.subagentAttempt ?? 1}` });
@@ -36951,17 +37184,26 @@ class CancipView extends ItemView {
 
   private startProgressStepTimer(message: ChatMessage, summary: ProgressStepSummary, detail: string, status: string): void {
     this.stopProgressStepTimer(message.id);
+    let renderedSignature = stableTextHash(`${this.resolveProgressStepSummary(summary)}\n${detail}\n${status}`);
+    let nextRenderAt = Date.now() + 300;
     const tick = () => {
       const current = this.messages.find((item) => item.id === message.id);
       if (!current) {
         this.stopProgressStepTimer(message.id);
         return;
       }
-      current.content = this.formatProgressStep(this.resolveProgressStepSummary(summary), detail, status, Date.now() - current.createdAt);
-      this.refreshLiveMessageContent(current);
+      const now = Date.now();
+      const resolvedSummary = this.resolveProgressStepSummary(summary);
+      current.content = this.formatProgressStep(resolvedSummary, detail, status, now - current.createdAt);
+      const signature = stableTextHash(`${resolvedSummary}\n${detail}\n${status}`);
+      if (signature !== renderedSignature && now >= nextRenderAt) {
+        renderedSignature = signature;
+        nextRenderAt = now + 300;
+        this.refreshLiveMessageContent(current);
+      }
     };
     tick();
-    this.progressStepTimers.set(message.id, window.setInterval(tick, 1000));
+    this.progressStepTimers.set(message.id, window.setInterval(tick, 100));
   }
 
   private refreshLiveMessageContent(message: ChatMessage): void {
@@ -36997,7 +37239,7 @@ class CancipView extends ItemView {
   }
 
   private formatProgressStep(summary: string, detail: string, status: string, elapsedMs?: number): string {
-    const elapsed = typeof elapsedMs === "number" ? this.t("elapsedSuffix", { elapsed: formatElapsed(elapsedMs) }) : "";
+    const elapsed = typeof elapsedMs === "number" ? this.t("elapsedSuffix", { elapsed: formatStepElapsed(elapsedMs) }) : "";
     const headline = [this.t("progressStep", { status, summary }), elapsed].filter(Boolean).join(" · ");
     const trimmed = isTrivialProgressDetail(detail) ? "" : detail.trim();
     if (!trimmed) return [PROGRESS_STEP_MARKER, PROCESS_MESSAGE_MARKER, headline].filter(Boolean).join("\n");
@@ -39299,6 +39541,15 @@ class CancipView extends ItemView {
       || (isChineseLanguage(this.plugin.language()) ? "给出可核对证据、明确结论、阻塞和下一步" : "Return verifiable evidence, a clear conclusion, blockers, and the next step");
     const timeoutMinutes = clampInt(args.timeoutMinutes, this.plugin.settings.multiAgentTimeoutMinutes, 1, 120);
     const attempt = clampInt(args.attempt, 1, 1, 99);
+    const requestedModel = stringArg(args.model);
+    const requestedProfileId = stringArg(args.apiProfileId) || stringArg(args.profileId);
+    const profile = requestedModel || requestedProfileId
+      ? this.plugin.apiProfileForModel(requestedModel || this.plugin.settings.model, requestedProfileId)
+      : this.plugin.activeApiProfile();
+    const requestedFallbackModels = Array.isArray(args.fallbackModels)
+      ? args.fallbackModels.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim())
+      : [];
+    const fallbackProfiles = this.subagentFallbackProfiles(profile, requestedFallbackModels);
     const entries = await this.readSessionHistoryIndex();
     const parentEntry = entries.find((entry) => entry.id === parentSessionId);
     const parentTitle = parentSessionId === this.sessionId ? this.sessionTitle() : parentEntry?.title ?? parentSessionId;
@@ -39342,7 +39593,7 @@ class CancipView extends ItemView {
       mode: this.exportModeId(this.mode),
       accessMode: this.plugin.settings.accessMode,
       includeCurrentFileForSession: this.includeCurrentFileForSession,
-      apiProfile: this.redactedApiProfile(this.plugin.activeApiProfile()),
+      apiProfile: this.redactedApiProfile(profile),
       taskControl: {
         originalPrompt: goal,
         taskGoal: goal,
@@ -39363,7 +39614,7 @@ class CancipView extends ItemView {
           contextText: "",
           mode: this.exportModeId(this.mode),
           accessMode: this.plugin.settings.accessMode,
-          apiProfile: this.redactedApiProfile(this.plugin.activeApiProfile())
+          apiProfile: this.redactedApiProfile(profile)
         },
         {
           id: crypto.randomUUID(),
@@ -39384,7 +39635,7 @@ class CancipView extends ItemView {
       updatedAt: nowIso,
       messageCount: 2,
       mode: this.mode,
-      model: this.plugin.activeApiProfile().model,
+      model: profile.model,
       status: "running",
       completedNotice: false,
       unread: false,
@@ -39403,6 +39654,7 @@ class CancipView extends ItemView {
       subagentStartedAt: nowIso,
       path: childPath
     });
+    this.refreshPlanPanelIfOpen();
     const request = new AbortController();
     this.plugin.setSessionRequest(childSessionId, request, this);
     void this.recordSessionEvent({
@@ -39422,7 +39674,9 @@ class CancipView extends ItemView {
       goal,
       modelPrompt,
       startedAt: Date.now(),
-      request
+      request,
+      profile,
+      fallbackProfiles
     });
     this.syncRequestControls();
     this.plugin.refreshStatusBarAttention();
@@ -39434,11 +39688,39 @@ class CancipView extends ItemView {
       `- ${this.t("sessionIdLabel")} ${childSessionId}`,
       `- ${this.t("subagentParent")}: ${parentSessionId}`,
       `- ${this.t("subagentGoal")}: ${goal}`,
+      `- ${isChineseLanguage(this.plugin.language()) ? "模型" : "Model"}: ${profile.name} · ${profile.model}`,
       planStepId ? `- ${this.t("planPanelTitle")}: ${planStepId}` : "",
       `- ${this.t("subagentAcceptance")}: ${acceptance}`,
       `- ${this.t("subagentDeadline")}: ${deadlineAt}`,
       `- ${this.t("subagentHistoryHint")}`
     ].filter(Boolean).join("\n");
+  }
+
+  private availableSubagentProfiles(preferredModels: string[] = []): ApiProfile[] {
+    const active = this.plugin.activeApiProfile();
+    const models = uniqueStrings([
+      ...preferredModels,
+      active.model,
+      ...this.plugin.settings.modelOptions
+    ]);
+    const candidates = [
+      active,
+      ...models.map((model) => this.plugin.apiProfileForModel(model))
+    ];
+    const seen = new Set<string>();
+    return candidates.filter((profile) => {
+      const key = `${profile.id}:${profile.model}`;
+      if (seen.has(key) || !profile.apiUrl.trim() || !profile.apiKey.trim() || !profile.model.trim()) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private subagentFallbackProfiles(primary: ApiProfile, preferredModels: string[] = []): ApiProfile[] {
+    const primaryKey = `${primary.id}:${primary.model}`;
+    return this.availableSubagentProfiles(preferredModels)
+      .filter((profile) => `${profile.id}:${profile.model}` !== primaryKey)
+      .slice(0, 2);
   }
 
   private subagentModelPrompt(
@@ -39478,6 +39760,8 @@ class CancipView extends ItemView {
     modelPrompt: string;
     startedAt: number;
     request: AbortController;
+    profile: ApiProfile;
+    fallbackProfiles: ApiProfile[];
   }): Promise<void> {
     const isActive = () => this.activeRequests.get(args.childSessionId) === args.request && !args.request.signal.aborted;
     try {
@@ -39496,24 +39780,48 @@ class CancipView extends ItemView {
           baseContext.contextText
         ].filter((part) => part.trim()).join("\n\n---\n\n")
       };
-      await this.updateDetachedSubagentProgress(args.childSessionId, this.t("generating"), "running", false);
-      const profile = this.plugin.activeApiProfile();
-      if (!profile.apiUrl || !profile.apiKey || !profile.model) throw new Error(this.t("missingApi"));
-      const savedModelState = {
-        audit: this.lastModelCallAudit,
-        stats: this.activeModelCharStats,
-        usage: this.turnModelUsage
-      };
+      const profiles = [args.profile, ...args.fallbackProfiles];
       let answer = "";
-      try {
-        answer = await this.callModelWithRetries(args.modelPrompt, context, args.modelPrompt, "subagent model request timed out");
-      } finally {
-        this.lastModelCallAudit = savedModelState.audit;
-        this.activeModelCharStats = savedModelState.stats;
-        this.turnModelUsage = savedModelState.usage;
+      let completedProfile = args.profile;
+      const failures: string[] = [];
+      for (const [profileIndex, profile] of profiles.entries()) {
+        if (!isActive()) return;
+        if (!profile.apiUrl || !profile.apiKey || !profile.model) continue;
+        const progress = profileIndex === 0
+          ? this.t("generating")
+          : `${isChineseLanguage(this.plugin.language()) ? "切换模型重试" : "Retrying with fallback model"} · ${profile.name} · ${profile.model}`;
+        await this.updateDetachedSubagentProgress(args.childSessionId, progress, "running", false);
+        const savedModelState = {
+          audit: this.lastModelCallAudit,
+          stats: this.activeModelCharStats,
+          usage: this.turnModelUsage
+        };
+        try {
+          const candidate = await this.callModelWithRetries(
+            args.modelPrompt,
+            context,
+            args.modelPrompt,
+            "subagent model request timed out",
+            MODEL_CALL_TIMEOUT_MS,
+            undefined,
+            profile
+          );
+          if (!visibleAssistantAnswer(candidate, false).trim()) throw new Error(this.t("emptyApiReply"));
+          answer = candidate;
+          completedProfile = profile;
+          break;
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          failures.push(`${profile.name}/${profile.model}: ${reason}`);
+        } finally {
+          this.lastModelCallAudit = savedModelState.audit;
+          this.activeModelCharStats = savedModelState.stats;
+          this.turnModelUsage = savedModelState.usage;
+        }
       }
+      if (!answer) throw new Error(failures.join(" | ") || this.t("missingApi"));
       if (!isActive()) return;
-      await this.completeDetachedApiResponse(args.childSessionId, args.modelPrompt, answer, args.startedAt, false);
+      await this.completeDetachedApiResponse(args.childSessionId, args.modelPrompt, answer, args.startedAt, false, completedProfile);
     } catch (error) {
       if (!isActive()) return;
       const reason = error instanceof Error ? error.message : String(error);
@@ -39713,6 +40021,10 @@ class CancipView extends ItemView {
     const requestedStepId = stringArg(args.planStepId) || stringArg(args.stepId);
     const planStepId = await this.ensureSubagentPlanStep(goal, requestedStepId, parentSessionId);
     const defaultTimeout = clampInt(args.timeoutMinutes, this.plugin.settings.multiAgentTimeoutMinutes, 1, 120);
+    const requestedModels = Array.isArray(args.models)
+      ? args.models.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim())
+      : [];
+    const availableProfiles = this.availableSubagentProfiles(requestedModels);
     const fallbackRoles = [
       ["implementation", "给出最直接可执行路线"],
       ["verification", "独立核验证据、边界和完成条件"],
@@ -39731,6 +40043,17 @@ class CancipView extends ItemView {
       const fallback = fallbackRoles[index] ?? fallbackRoles[fallbackRoles.length - 1];
       const role = stringArg(row.role) || fallback[0];
       const task = stringArg(row.task) || stringArg(row.goal) || `${fallback[1]}：${goal}`;
+      const requestedProfileId = stringArg(row.apiProfileId) || stringArg(row.profileId);
+      const explicitSource = requestedProfileId
+        ? this.plugin.settings.apiProfiles.find((profile) => profile.id === resolveApiProfileId(requestedProfileId, this.plugin.settings.apiProfiles))
+        : undefined;
+      const requestedModel = stringArg(row.model) || requestedModels[index] || explicitSource?.model || "";
+      const assignedProfile = requestedModel || requestedProfileId
+        ? this.plugin.apiProfileForModel(requestedModel || this.plugin.settings.model, requestedProfileId)
+        : availableProfiles[index % Math.max(1, availableProfiles.length)] ?? this.plugin.activeApiProfile();
+      const fallbackModels = Array.isArray(row.fallbackModels)
+        ? row.fallbackModels.filter((item): item is string => typeof item === "string" && Boolean(item.trim())).map((item) => item.trim())
+        : [];
       specs.push({
         goal: task,
         role,
@@ -39740,29 +40063,42 @@ class CancipView extends ItemView {
         acceptance: stringArg(row.acceptance) || stringArg(row.acceptanceCriteria)
           || (isChineseLanguage(this.plugin.language()) ? "给出可核对证据、明确结论、阻塞和下一步" : "Return verifiable evidence, a clear conclusion, blockers, and the next step"),
         timeoutMinutes: clampInt(row.timeoutMinutes, defaultTimeout, 1, 120),
-        attempt: clampInt(row.attempt, 1, 1, 99)
+        attempt: clampInt(row.attempt, 1, 1, 99),
+        model: assignedProfile.model,
+        apiProfileId: assignedProfile.id,
+        fallbackModels
       });
     }
 
-    const startedIds: string[] = [];
-    try {
-      for (const spec of specs) {
-        const result = await this.startSubagentCommand(spec as unknown as Record<string, unknown>);
-        const id = result.match(/\bsession-[^\s]+-sub-[a-f0-9]{8}\b/i)?.[0] ?? "";
-        if (id) startedIds.push(id);
-      }
-      if (startedIds.length < 2) throw new Error(`parallel subagent start incomplete: ${startedIds.length}/${count}`);
-    } catch (error) {
-      if (startedIds.length) {
-        await this.stopSubagentCommand({ parentSessionId, sessionIds: startedIds });
-        await this.returnSubagentGoalsToParent(startedIds);
-      }
-      throw error;
+    const launchedAt = Date.now();
+    const beforeIds = new Set(this.subagentIds);
+    const startResults = await Promise.allSettled(specs.map((spec) => (
+      this.startSubagentCommand(spec as unknown as Record<string, unknown>)
+    )));
+    const failures = startResults
+      .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+      .map((result) => result.reason instanceof Error ? result.reason.message : String(result.reason));
+    const returnedIds = startResults
+      .filter((result): result is PromiseFulfilledResult<string> => result.status === "fulfilled")
+      .map((result) => result.value.match(/\bsession-[^\s]+-sub-[a-f0-9-]{8,}\b/i)?.[0] ?? "")
+      .filter(Boolean);
+    const linkedEntries = (await this.readSessionHistoryIndex({ force: true }))
+      .filter((entry) => entry.parentSessionId === parentSessionId && Date.parse(entry.createdAt) >= launchedAt - 2000)
+      .map((entry) => entry.id);
+    const linkedInMemory = parentSessionId === this.sessionId
+      ? [...this.subagentIds].filter((id) => !beforeIds.has(id))
+      : [];
+    const startedIds = uniqueStrings([...returnedIds, ...linkedEntries, ...linkedInMemory]).slice(0, count);
+    if (!startedIds.length) {
+      throw new Error(`parallel subagent start failed: ${failures.join(" | ") || `0/${count}`}`);
     }
     this.plugin.recordScoreEvent({ key: "feature:multi-agent", kind: "feature", label: this.t("settingsMultiAgent"), outcome: "use", weight: 1.5 });
     this.refreshPlanPanelIfOpen();
     const wait = args.wait !== false;
-    if (!wait) return this.parallelSubagentStartSummary(startedIds, planStepId);
+    if (!wait) return [
+      this.parallelSubagentStartSummary(startedIds, planStepId),
+      failures.length ? `${this.t("subagentFailed")}: ${failures.join(" | ")}` : ""
+    ].filter(Boolean).join("\n");
 
     const timeoutMs = Math.max(...specs.map((spec) => spec.timeoutMinutes)) * 60000;
     let terminal = await this.waitForSubagentTerminals(startedIds, timeoutMs);
@@ -39781,6 +40117,7 @@ class CancipView extends ItemView {
       this.parallelSubagentStartSummary(startedIds, planStepId),
       "",
       ...terminal.map((entry, index) => this.formatSubagentEntryLine(entry, index + 1)),
+      failures.length ? `${this.t("subagentFailed")}: ${failures.join(" | ")}` : "",
       consensus ? "" : "",
       consensus ? `${this.t("subagentConsensus")}:\n${consensus}` : ""
     ].filter(Boolean).join("\n");
@@ -39843,6 +40180,7 @@ class CancipView extends ItemView {
       acceptance: entry.subagentAcceptance,
       timeoutMinutes: this.remainingSubagentTimeoutMinutes(entry),
       attempt: (entry.subagentAttempt ?? 1) + 1,
+      model: entry.model,
       title: entry.title.replace(/\s*\(.*?\)\s*$/, "")
     });
   }
@@ -40010,7 +40348,7 @@ class CancipView extends ItemView {
   }
 
   private subagentElapsedText(entry: SessionHistoryEntry): string {
-    return formatElapsed(this.subagentElapsedMs(entry));
+    return formatStepElapsed(this.subagentElapsedMs(entry));
   }
 
   async openSavedSessionById(sessionId: string): Promise<boolean> {
@@ -40124,7 +40462,8 @@ class CancipView extends ItemView {
     rawPrompt: string,
     answer: string,
     startedAt: number,
-    suppressToolActions: boolean
+    suppressToolActions: boolean,
+    completedProfile?: ApiProfile
   ): Promise<void> {
     this.plugin.clearSessionRequest(sessionId);
     this.syncRequestControls();
@@ -40157,6 +40496,7 @@ class CancipView extends ItemView {
     snapshot.completedNotice = true;
     snapshot.unread = true;
     snapshot.subagentProgress = isEmptyApiReply ? this.t("callFailed") : this.t("done");
+    if (completedProfile) snapshot.apiProfile = this.redactedApiProfile(completedProfile);
     snapshot.subagentCompletedAt = new Date().toISOString();
     snapshot.resumableTask = isEmptyApiReply ? { prompt: rawPrompt, reason: "failed", at: Date.now(), detail: "detached api response empty" } : null;
     snapshot.updatedAt = new Date().toISOString();
@@ -40181,7 +40521,7 @@ class CancipView extends ItemView {
       updatedAt: String(snapshot.updatedAt),
       messageCount: messages.length,
       mode: normalizeComposerMode(snapshot.mode) ?? "ask",
-      model: this.plugin.activeApiProfile().model,
+      model: completedProfile?.model || existing?.model || this.plugin.activeApiProfile().model,
       status: isEmptyApiReply ? "failed" : "completed",
       completedNotice: true,
       unread: true,
@@ -40236,19 +40576,23 @@ class CancipView extends ItemView {
   }
 
   private async writeSessionHistoryEntries(entries: SessionHistoryEntry[]): Promise<void> {
-    const requestedIds = new Set(entries.map((entry) => entry.id));
-    const currentEntries = await this.readSessionHistoryIndexUncached(true);
-    const persistedEntries = [...entries, ...currentEntries.filter((entry) => !requestedIds.has(entry.id))]
-      .filter((entry) => !entry.eventOnly)
-      .sort(compareSessionHistoryEntries)
-      .slice(0, SESSION_HISTORY_LIMIT);
-    const payload = {
-      schemaVersion: SESSION_HISTORY_SCHEMA_VERSION,
-      entries: persistedEntries
-    };
-    await this.app.vault.adapter.write(SESSION_HISTORY_INDEX_PATH, `${JSON.stringify(payload, null, 2)}\n`);
-    this.sessionHistoryCache = { at: Date.now(), mergeFiles: false, entries: persistedEntries };
-    this.sessionHistoryReadPromise = null;
+    const run = this.sessionHistoryWriteQueue.then(async () => {
+      const requestedIds = new Set(entries.map((entry) => entry.id));
+      const currentEntries = await this.readSessionHistoryIndexUncached(true);
+      const persistedEntries = [...entries, ...currentEntries.filter((entry) => !requestedIds.has(entry.id))]
+        .filter((entry) => !entry.eventOnly)
+        .sort(compareSessionHistoryEntries)
+        .slice(0, SESSION_HISTORY_LIMIT);
+      const payload = {
+        schemaVersion: SESSION_HISTORY_SCHEMA_VERSION,
+        entries: persistedEntries
+      };
+      await this.app.vault.adapter.write(SESSION_HISTORY_INDEX_PATH, `${JSON.stringify(payload, null, 2)}\n`);
+      this.sessionHistoryCache = { at: Date.now(), mergeFiles: false, entries: persistedEntries };
+      this.sessionHistoryReadPromise = null;
+    });
+    this.sessionHistoryWriteQueue = run.catch(() => undefined);
+    await run;
   }
 
   private async updateCurrentSessionStatus(status: NonNullable<SessionHistoryEntry["status"]>, completedNotice: boolean): Promise<void> {
@@ -44048,6 +44392,9 @@ class CancipView extends ItemView {
       if (!includeAttachments && universalSearchBinaryDocumentKind(document.kind)) return false;
       return true;
     });
+    const unindexedPaths = new Set(
+      documents.filter((document) => !document.bloom).map((document) => normalizePath(document.path))
+    );
     const runQuery = async (routeQuery: string, route: "hard" | "soft"): Promise<SearchHit[]> => {
       const routeStartedAt = Date.now();
       const terms = universalSearchQueryTerms(routeQuery);
@@ -44113,7 +44460,7 @@ class CancipView extends ItemView {
         .filter((item): item is string => typeof item === "string")
         .map((item) => item.trim())
         .filter((item) => item && item.normalize("NFKC").toLowerCase() !== normalizedQuery.normalize("NFKC").toLowerCase())
-    ).slice(0, 4);
+    ).slice(0, 8);
     const softHits: SearchHit[] = [];
     if (options.alwaysRunSoft || hardHits.length < neededHardHits) {
       const softStartedAt = Date.now();
@@ -44122,12 +44469,19 @@ class CancipView extends ItemView {
         softHits.push(...await runQuery(softQuery, "soft"));
       }
     }
+    const fallbackQuery = uniqueStrings([normalizedQuery, ...softQueries]).join(" ");
     const onDemandStartedAt = Date.now();
-    const onDemandHits = hardHits.length + softHits.length < neededHardHits
-      ? await this.onDemandVaultSearchHits(normalizedQuery, Math.max(limit, 8), onDemandStartedAt, { includeArchived, includeConfigs, includeAttachments })
+    const onDemandHits = options.alwaysRunOnDemand || !index.complete || unindexedPaths.size > 0 || hardHits.length + softHits.length < neededHardHits
+      ? await this.onDemandVaultSearchHits(
+          fallbackQuery,
+          Math.max(limit, 8),
+          onDemandStartedAt,
+          { includeArchived, includeConfigs, includeAttachments },
+          unindexedPaths
+        )
       : [];
-    const attachmentHits = includeAttachments && hardHits.length + softHits.length + onDemandHits.length < neededHardHits
-      ? await this.attachmentContentSearchHits(normalizedQuery, Math.max(limit, 8), Date.now())
+    const attachmentHits = includeAttachments && (options.alwaysRunAttachments || hardHits.length + softHits.length + onDemandHits.length < neededHardHits)
+      ? await this.attachmentContentSearchHits(fallbackQuery, Math.max(limit, 8), Date.now())
       : [];
     if (options.preserveRouteDuplicates) {
       const hardByPath = new Map<string, SearchHit>();
@@ -44160,15 +44514,30 @@ class CancipView extends ItemView {
       .slice(0, Math.max(1, limit));
   }
 
-  private async searchAiVault(query: string, hardHits: SearchHit[], includeConfigs: boolean): Promise<{ expansion: AiSearchExpansion; hits: SearchHit[] }> {
+  private async searchAiVault(query: string, hardHits: SearchHit[], includeConfigs: boolean, includeArchived: boolean): Promise<{ expansion: AiSearchExpansion; hits: SearchHit[] }> {
     const index = await this.plugin.readUniversalSearchIndex();
-    const cacheKey = stableCacheKey({ query: query.normalize("NFKC").toLowerCase(), includeConfigs, updatedAt: index.updatedAt });
+    const cacheKey = stableCacheKey({ query: query.normalize("NFKC").toLowerCase(), includeConfigs, includeArchived, updatedAt: index.updatedAt });
     const cached = this.aiVaultSearchCache.get(cacheKey);
     if (cached && Date.now() - cached.at < 10 * 60 * 1000) {
       return { expansion: cached.expansion, hits: cached.hits.map((hit) => ({ ...hit })) };
     }
     const expansion = await this.expandAiVaultSearch(query, hardHits, index);
-    const candidates = this.aiVaultSearchCandidates(query, expansion, index, hardHits, [], includeConfigs);
+    const expandedSignals = uniqueStrings([
+      ...expansion.queries,
+      ...expansion.concepts,
+      ...expansion.styleSignals
+    ]).slice(0, 8);
+    const expandedHits = await this.searchVault(query, 32, {
+      includeArchived,
+      includeConfigs,
+      includeAttachments: true,
+      softQueries: expandedSignals,
+      alwaysRunSoft: true,
+      alwaysRunOnDemand: true,
+      alwaysRunAttachments: true,
+      preserveRouteDuplicates: true
+    });
+    const candidates = this.aiVaultSearchCandidates(query, expansion, index, hardHits, expandedHits, includeConfigs);
     const hits = await this.rankAiVaultSearchCandidates(query, expansion, candidates);
     this.aiVaultSearchCache.set(cacheKey, { at: Date.now(), expansion, hits: hits.map((hit) => ({ ...hit })) });
     if (this.aiVaultSearchCache.size > 12) {
@@ -44316,7 +44685,7 @@ class CancipView extends ItemView {
       const terms = uniqueStrings([...tokenize(value), ...universalSearchQueryTerms(value)]);
       return terms.length > 0 && scoreSearchText(hit.path, hit.title, hit.excerpt, terms) > 0;
     }).slice(0, 3);
-    return candidates.slice(0, 12).map((hit) => {
+    return candidates.slice(0, 24).map((hit) => {
       if (hit.relation === "direct" && hit.reason) return hit;
       const styles = matchingSignals(hit, expansion.styleSignals);
       const concepts = matchingSignals(hit, expansion.concepts);
@@ -44336,7 +44705,13 @@ class CancipView extends ItemView {
     });
   }
 
-  private async onDemandVaultSearchHits(query: string, limit: number, startedAt: number, options: Required<Pick<UniversalSearchOptions, "includeArchived" | "includeConfigs" | "includeAttachments">>): Promise<SearchHit[]> {
+  private async onDemandVaultSearchHits(
+    query: string,
+    limit: number,
+    startedAt: number,
+    options: Required<Pick<UniversalSearchOptions, "includeArchived" | "includeConfigs" | "includeAttachments">>,
+    preferredPaths: ReadonlySet<string> = new Set<string>()
+  ): Promise<SearchHit[]> {
     const tokens = uniqueStrings([...tokenize(query), ...universalSearchQueryTerms(query)]);
     if (!tokens.length) return [];
     const maxCandidates = Platform.isMobileApp ? Math.max(18, limit * 2) : Math.max(36, limit * 4);
@@ -44351,11 +44726,12 @@ class CancipView extends ItemView {
         return true;
       })
       .map((file) => {
+        const preferred = preferredPaths.has(normalizePath(file.path));
         const kind = universalSearchDocumentKind(file.path, this.plugin.settings.memoryFolder, this.plugin.obsidianConfigDir());
         const pathScore = scoreVaultTargetPath(file.path, file.basename, isContextTextFile(file) ? "file" : "attachment", query, tokens);
         const recency = Math.max(0, Math.min(24, Math.round((Date.now() - file.stat.mtime) / -3600000 + 24)));
         const textCandidateBoost = isContextTextFile(file) && file.stat.size <= (Platform.isMobileApp ? 384 * 1024 : 1024 * 1024) ? 8 : 0;
-        return { file, kind, pathScore, rank: pathScore * 10 + recency + textCandidateBoost };
+        return { file, kind, pathScore, preferred, rank: (preferred ? 5000 : 0) + pathScore * 10 + recency + textCandidateBoost };
       })
       .filter((item) => item.pathScore > 0 || isContextTextFile(item.file) || (options.includeAttachments && isVaultParseableAttachmentPath(item.file.path)))
       .sort((a, b) => b.rank - a.rank || b.file.stat.mtime - a.file.stat.mtime || a.file.path.localeCompare(b.file.path))
@@ -44371,7 +44747,7 @@ class CancipView extends ItemView {
         } catch {
           content = "";
         }
-      } else if (options.includeAttachments && item.pathScore > 0) {
+      } else if (options.includeAttachments && (item.pathScore > 0 || item.preferred)) {
         try {
           const parsed = await withTimeout(
             this.readVaultAttachmentText(file, Platform.isMobileApp ? 6000 : 12000),
@@ -55752,7 +56128,8 @@ class CancipView extends ItemView {
       blocks: [...blockMap.values()],
       auditSections: [...auditMap.values()],
       hasDetail: left.hasDetail || right.hasDetail,
-      count: Math.max(left.count, right.count)
+      count: Math.max(left.count, right.count),
+      elapsedMs: Math.max(left.elapsedMs, right.elapsedMs)
     };
   }
 
@@ -55798,7 +56175,17 @@ class CancipView extends ItemView {
           || auditSections.length > 0
           || Boolean(normalizedRendered.message.toolRuns?.length)
           || Boolean(normalizedRendered.message.changedFileRuns?.length);
-        return { rendered: normalizedRendered, headline, readableDetail: visibleDetail, detail, blocks, auditSections, hasDetail, count: 1 };
+        return {
+          rendered: normalizedRendered,
+          headline,
+          readableDetail: visibleDetail,
+          detail,
+          blocks,
+          auditSections,
+          hasDetail,
+          count: 1,
+          elapsedMs: this.processRecordStepElapsedMs(normalizedRendered.message)
+        };
       })
       .filter((step) => step.headline && (step.hasDetail || step.headline.length > 0));
     const steps = this.dedupeProcessRecordSteps(rawSteps);
@@ -55822,6 +56209,14 @@ class CancipView extends ItemView {
       stepHead.addClass("obcc-process-step-head");
       stepHead.createSpan({ cls: "obcc-process-step-index", text: String(index + 1) });
       stepHead.createSpan({ cls: "obcc-process-step-title", text: stepInfo.count > 1 ? `${stepInfo.headline} x${stepInfo.count}` : stepInfo.headline });
+      const fallbackElapsed = index + 1 < steps.length
+        ? Math.max(0, steps[index + 1].rendered.message.createdAt - stepInfo.rendered.message.createdAt)
+        : 0;
+      stepHead.createSpan({
+        cls: "obcc-process-step-timer",
+        text: formatStepElapsed(stepInfo.elapsedMs || fallbackElapsed),
+        attr: { "data-process-step-timer-message-id": stepInfo.rendered.message.id }
+      });
       if (!stepInfo.hasDetail) continue;
       const stepBody = step.createDiv({ cls: "obcc-process-step-detail-body" });
       if (stepInfo.readableDetail) {
@@ -55837,6 +56232,19 @@ class CancipView extends ItemView {
       this.renderToolRuns(stepBody, stepInfo.rendered.message, true);
     }
     this.renderProcessRecordMeta(body, items);
+  }
+
+  private processRecordStepElapsedMs(message: ChatMessage): number {
+    const runs = uniqueToolRunsById([...(message.toolRuns ?? []), ...(message.changedFileRuns ?? [])]);
+    if (runs.length) {
+      const starts = runs.map((run) => Date.parse(run.startedAt || run.createdAt)).filter(Number.isFinite);
+      const running = runs.some((run) => run.status === "pending" || run.status === "executing");
+      const ends = runs.map((run) => Date.parse(run.executedAt || "")).filter(Number.isFinite);
+      if (starts.length) return Math.max(0, (running ? Date.now() : Math.max(...ends, ...starts)) - Math.min(...starts));
+    }
+    const stored = progressElapsedMsFromContent(message.content);
+    if (stored !== null) return stored;
+    return this.progressStepTimers.has(message.id) ? Math.max(0, Date.now() - message.createdAt) : 0;
   }
 
   private processRecordMetaLabel(items: RenderedMessage[]): string {
@@ -56693,23 +57101,33 @@ class CancipView extends ItemView {
     }
     this.renderHeaderSessionTimer();
     if (this.headerLiveStatusTimer === null) {
-      this.headerLiveStatusTimer = window.setInterval(() => this.renderHeaderSessionTimer(), 1000);
+      this.headerLiveStatusTimer = window.setInterval(() => this.renderHeaderSessionTimer(), 100);
     }
   }
 
   private stopHeaderSessionTimer(): void {
     if (this.headerLiveStatusTimer !== null) window.clearInterval(this.headerLiveStatusTimer);
     this.headerLiveStatusTimer = null;
+    this.headerLiveElapsedText = "";
   }
 
   private renderHeaderSessionTimer(): void {
     const status = this.headerLiveStatusEl;
     this.refreshTodoTimerDom();
+    this.refreshProcessStepTimerDom();
     if (!status || !(this.activeRequest || this.currentSessionStatus === "running" || this.hasRunningTodoTimer() || this.hasRunningSubagents())) return;
     const parsed = Date.parse(this.sessionStartedAt);
-    const elapsed = formatElapsed(Math.max(0, Date.now() - (Number.isFinite(parsed) ? parsed : Date.now())));
-    status.empty();
+    const elapsed = formatElapsedSeconds(Math.max(0, Date.now() - (Number.isFinite(parsed) ? parsed : Date.now())));
     status.removeClass("is-hidden");
+    const existingLabel = status.querySelector<HTMLElement>(".obcc-header-live-label");
+    if (existingLabel && this.headerLiveElapsedText === elapsed) return;
+    this.headerLiveElapsedText = elapsed;
+    if (existingLabel) {
+      existingLabel.setText(elapsed);
+      existingLabel.parentElement?.setAttr("aria-label", `${this.t("sessionRunning")} ${elapsed}`);
+      return;
+    }
+    status.empty();
     const pill = status.createDiv({
       cls: "obcc-header-live-pill",
       attr: { title: this.sessionTitle(), "aria-label": `${this.t("sessionRunning")} ${elapsed}` }
@@ -56748,7 +57166,7 @@ class CancipView extends ItemView {
   }
 
   private todoElapsedText(todo: ManualTodo): string {
-    return formatElapsed(this.todoElapsedMs(todo));
+    return formatStepElapsed(this.todoElapsedMs(todo));
   }
 
   private todoTimingTitle(todo: ManualTodo): string {
@@ -56788,6 +57206,15 @@ class CancipView extends ItemView {
     for (const progressEl of Array.from(this.headerMenuEl.querySelectorAll<HTMLElement>("[data-subagent-progress-id]"))) {
       const entry = entries.find((item) => item.id === progressEl.dataset.subagentProgressId);
       if (entry?.subagentProgress) progressEl.setText(`${this.t("subagentProgress")}: ${entry.subagentProgress}`);
+    }
+  }
+
+  private refreshProcessStepTimerDom(): void {
+    if (!this.messagesEl) return;
+    for (const timer of Array.from(this.messagesEl.querySelectorAll<HTMLElement>("[data-process-step-timer-message-id]"))) {
+      const message = this.messages.find((item) => item.id === timer.dataset.processStepTimerMessageId);
+      if (!message) continue;
+      timer.setText(formatStepElapsed(this.processRecordStepElapsedMs(message)));
     }
   }
 
@@ -57439,10 +57866,6 @@ class CancipView extends ItemView {
       attr: { type: "search", placeholder: this.t("searchPlaceholder"), autocomplete: "off", spellcheck: "false" }
     });
     const options = popover.createDiv({ cls: "obcc-search-options" });
-    const fuzzyLabel = options.createEl("label", { cls: "obcc-search-option" });
-    const fuzzy = fuzzyLabel.createEl("input", { attr: { type: "checkbox" } });
-    fuzzy.checked = true;
-    fuzzyLabel.createSpan({ text: this.t("searchFuzzy") });
     const archivedLabel = options.createEl("label", { cls: "obcc-search-option" });
     const archived = archivedLabel.createEl("input", { attr: { type: "checkbox" } });
     archived.checked = false;
@@ -57461,43 +57884,8 @@ class CancipView extends ItemView {
     const aiBody = aiSection.createDiv({ cls: "obcc-search-section-body" });
     const aiExplanation = aiBody.createDiv({ cls: "obcc-search-section-explanation" });
     const aiResults = aiBody.createDiv({ cls: "obcc-search-section-results" });
-    const hardSection = results.createEl("details", { cls: "obcc-search-section is-hard" });
-    hardSection.open = true;
-    const hardSummary = hardSection.createEl("summary", { cls: "obcc-search-section-summary" });
-    const hardSummaryLabel = hardSummary.createSpan({ text: this.t("searchHard") });
-    const hardBody = hardSection.createDiv({ cls: "obcc-search-section-body" });
-    const hardResults = hardBody.createDiv({ cls: "obcc-search-section-results" });
-    let paneState: SearchPaneState = this.plugin.settings.searchPaneState;
-    const applySearchPaneState = (next: SearchPaneState, persist: boolean): void => {
-      paneState = next;
-      aiSection.open = next !== "hard";
-      hardSection.open = next !== "ai";
-      aiSummary.setAttr("aria-expanded", aiSection.open ? "true" : "false");
-      hardSummary.setAttr("aria-expanded", hardSection.open ? "true" : "false");
-      results.toggleClass("is-layout-split", next === "split");
-      results.toggleClass("is-layout-ai", next === "ai");
-      results.toggleClass("is-layout-hard", next === "hard");
-      results.toggleClass("is-ai-collapsed", next === "hard");
-      results.toggleClass("is-hard-collapsed", next === "ai");
-      results.toggleClass("is-ai-hidden", aiSection.hasClass("is-hidden"));
-      if (persist && this.plugin.settings.searchPaneState !== next) {
-        this.plugin.settings.searchPaneState = next;
-        void this.plugin.saveSettings();
-      }
-    };
-    aiSummary.addEventListener("click", (event) => {
-      event.preventDefault();
-      applySearchPaneState(paneState === "split" || paneState === "ai" ? "hard" : "split", true);
-    });
-    hardSummary.addEventListener("click", (event) => {
-      event.preventDefault();
-      applySearchPaneState(paneState === "split" || paneState === "hard" ? "ai" : "split", true);
-    });
-    for (const scrollPane of [aiResults, hardResults]) {
-      scrollPane.addEventListener("wheel", (event) => event.stopPropagation(), { passive: true });
-      scrollPane.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
-    }
-    applySearchPaneState(paneState, false);
+    aiResults.addEventListener("wheel", (event) => event.stopPropagation(), { passive: true });
+    aiResults.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
     let requestId = 0;
     let timer: number | null = null;
     const scoredQueries = new Set<string>();
@@ -57546,12 +57934,10 @@ class CancipView extends ItemView {
       const query = input.value.trim();
       const currentRequestId = ++requestId;
       if (!query) {
-        status.setText(this.t("searchHard"));
+        status.setText("");
         aiExplanation.setText("");
         aiSummaryLabel.setText(this.t("searchFuzzy"));
-        hardSummaryLabel.setText(this.t("searchHard"));
         renderHits(aiResults, []);
-        renderHits(hardResults, []);
         return;
       }
       status.setText(this.t("searchSearching"));
@@ -57564,17 +57950,8 @@ class CancipView extends ItemView {
         const hardHits = await this.searchVault(query, 12, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const exactHits = hardHits.filter((hit) => hit.route !== "soft");
-        renderHits(hardResults, exactHits);
-        hardSummaryLabel.setText(`${this.t("searchHard")} · ${exactHits.length}`);
-        aiSection.toggleClass("is-hidden", !fuzzy.checked);
-        applySearchPaneState(paneState, false);
-        if (!fuzzy.checked) {
-          recordSearchScore(query, "use", 0.5);
-          status.setText(`${this.t("searchHard")} · ${this.t("hitCount", { count: exactHits.length })}`);
-          return;
-        }
         aiExplanation.setText(isChineseLanguage(this.plugin.language()) ? "正在理解查询含义…" : "Interpreting query...");
-        const aiSearch = await this.searchAiVault(query, exactHits, configs.checked);
+        const aiSearch = await this.searchAiVault(query, exactHits, configs.checked, archived.checked);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const aiHits = aiSearch.hits;
         renderHits(aiResults, aiHits);
@@ -57588,7 +57965,7 @@ class CancipView extends ItemView {
           ? (isChineseLanguage(this.plugin.language()) ? `线索：${semanticSignals.join("、")}` : `Signals: ${semanticSignals.join(", ")}`)
           : "";
         aiExplanation.setText([aiSearch.expansion.intent, terms].filter(Boolean).join(" · "));
-        status.setText(this.t("hitCount", { count: aiHits.length + exactHits.length }));
+        status.setText(this.t("hitCount", { count: aiHits.length }));
         recordSearchScore(query, "use", 0.7);
       } catch (error) {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
@@ -57596,7 +57973,6 @@ class CancipView extends ItemView {
         status.setText(reason);
         aiExplanation.setText(reason);
         renderHits(aiResults, []);
-        renderHits(hardResults, []);
         recordSearchScore(query, "reject", 0.2);
       }
     };
@@ -57614,7 +57990,6 @@ class CancipView extends ItemView {
         this.closeSearchPopover();
       }
     });
-    fuzzy.addEventListener("change", () => void run());
     archived.addEventListener("change", () => void run());
     configs.addEventListener("change", () => void run());
     const viewWindow = this.containerEl.ownerDocument.defaultView ?? window;
@@ -69668,6 +70043,29 @@ function emptyScoreState(): ScoreState {
   };
 }
 
+function formatElapsedSeconds(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+function formatStepElapsed(ms: number): string {
+  const safe = Math.max(0, Math.round(ms));
+  if (safe < 1000) return `${safe}ms`;
+  if (safe < 60000) return `${(safe / 1000).toFixed(3)}s`;
+  const minutes = Math.floor(safe / 60000);
+  return `${minutes}m${((safe % 60000) / 1000).toFixed(3).padStart(6, "0")}s`;
+}
+
+function progressElapsedMsFromContent(content: string): number | null {
+  const minuteMatch = content.match(/(?:耗时|elapsed)\s+(\d+)m(\d+(?:\.\d+)?)s/i);
+  if (minuteMatch) return Number(minuteMatch[1]) * 60000 + Number(minuteMatch[2]) * 1000;
+  const match = content.match(/(?:耗时|elapsed)\s+(\d+(?:\.\d+)?)(ms|s)/i);
+  if (!match) return null;
+  return Number(match[1]) * (match[2].toLowerCase() === "s" ? 1000 : 1);
+}
+
 function normalizeScoreKey(value: string): string {
   return trimContext(value.trim().replace(/\s+/g, " "), 220) || "feature:unknown";
 }
@@ -73862,8 +74260,12 @@ function guessUiButtonCommandIcon(id: string, name: string): string {
 function stableSelectorForElement(el: HTMLElement): string {
   const snapshotSelector = el.dataset.cancipUiRuleSelector;
   if (snapshotSelector) return snapshotSelector;
-  const customButtonId = el.dataset.cancipUiCustomButtonId;
-  if (customButtonId) return uniqueSelectorForElement(el, `[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`);
+  const stableButton = el.closest<HTMLElement>("[data-cancip-button-id]");
+  const stableButtonId = stableButton?.dataset.cancipButtonId;
+  if (stableButton && stableButtonId) return uniqueSelectorForElement(stableButton, `[data-cancip-button-id="${cssEscapeAttr(stableButtonId)}"]`);
+  const customButton = el.closest<HTMLElement>("[data-cancip-ui-custom-button-id]");
+  const customButtonId = customButton?.dataset.cancipUiCustomButtonId;
+  if (customButton && customButtonId) return uniqueSelectorForElement(customButton, `[data-cancip-ui-custom-button-id="${cssEscapeAttr(customButtonId)}"]`);
   if (el.matches(".status-bar")) return ".status-bar";
   if (el.matches(".status-bar-item, .obcc-statusbar") || el.closest(".status-bar")) {
     const statusItem = el.closest<HTMLElement>(".status-bar-item, .obcc-statusbar") ?? el;
@@ -76776,7 +77178,7 @@ function normalizeOcrIndexEntry(raw: unknown): OcrIndexEntry | null {
     text: typeof page.text === "string" ? trimContext(page.text, 30000) : "",
     description: typeof page.description === "string" ? trimContext(page.description, 1200) : "",
     confidence: finiteNumber(page.confidence)
-  })).slice(0, 20) : undefined;
+  })) : undefined;
   return {
     schemaVersion: finiteNumber(raw.schemaVersion) === OCR_CACHE_SCHEMA_VERSION ? OCR_CACHE_SCHEMA_VERSION : 0,
     engineVersion: typeof raw.engineVersion === "string" ? raw.engineVersion : "",
@@ -76956,9 +77358,30 @@ function ocrEntrySearchText(entry: OcrIndexEntry, maxChars: number): string {
     `OCR source: ${entry.sourceKey}`,
     `OCR engine: local tesseract.js lite ${entry.engineVersion}; languages=${entry.languages}; confidence=${entry.confidence}`,
     entry.description,
-    entry.text,
+    ocrEntryFullText(entry),
     blocks.length ? `Layout regions:\n${blocks.join("\n")}` : ""
   ].filter(Boolean).join("\n\n"), maxChars);
+}
+
+function ocrEntryFullText(entry: OcrIndexEntry): string {
+  if (entry.pages?.length) return entry.pages.map((page) => `Page ${page.page}\n${page.text}`).join("\n\n");
+  return entry.text;
+}
+
+function ocrEntryElementDescription(entry: OcrIndexEntry): string {
+  const pages = entry.pages?.map((page) => `Page ${page.page}: ${page.description}`).join("\n") ?? "";
+  const regions = entry.blocks.map((block, index) => (
+    `Region ${index + 1}${block.page ? ` page=${block.page}` : ""} [x=${block.x.toFixed(3)}, y=${block.y.toFixed(3)}, w=${block.width.toFixed(3)}, h=${block.height.toFixed(3)}, confidence=${block.confidence.toFixed(1)}]: ${block.text}`
+  )).join("\n");
+  return [entry.description, pages, regions].filter(Boolean).join("\n\n");
+}
+
+function suggestOcrFileBaseName(entry: OcrIndexEntry, fallback: string): string {
+  const line = ocrEntryFullText(entry)
+    .split(/\r?\n/)
+    .map((value) => value.replace(/^Page\s+\d+\s*$/i, "").trim())
+    .find((value) => value.length >= 2 && value.length <= 48 && /[\p{L}\p{N}\p{Script=Han}]/u.test(value));
+  return safeVaultFileName(line || fallback).replace(/\.[^.]+$/, "").trim() || fallback;
 }
 
 const DOCUMENT_PARSE_MAX_BYTES = 48 * 1024 * 1024;

@@ -11523,3 +11523,106 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   overscroll-behavior-y: contain !important;
   -webkit-overflow-scrolling: touch !important;
 }
+.obcc-ocr-result-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(78vh, 760px);
+  overflow: auto;
+}
+
+.obcc-ocr-result-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.obcc-ocr-result-summary > span {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.obcc-ocr-result-section h3 {
+  margin: 0 0 6px;
+  font-size: var(--font-ui-small);
+}
+
+.obcc-ocr-result-text {
+  display: block;
+  width: 100%;
+  min-height: 132px;
+  max-height: 30vh;
+  resize: vertical;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+.obcc-ocr-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.obcc-ocr-result-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+@media (max-width: 520px) {
+  .obcc-ocr-result-modal {
+    width: calc(100vw - 20px);
+  }
+
+  .obcc-ocr-result-text {
+    min-height: 112px;
+    max-height: 26vh;
+  }
+}
+
+/* AI search is a single evidence-backed result pane; exact matching remains an internal retrieval route. */
+.obcc-search-results,
+.obcc-search-results.is-layout-split,
+.obcc-search-results.is-layout-ai,
+.obcc-search-results.is-layout-hard {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-columns: none;
+}
+
+.obcc-search-section.is-ai {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  width: 100%;
+}
+
+.obcc-search-section.is-ai[open] {
+  flex-direction: column;
+}
+
+.obcc-search-section.is-ai .obcc-search-section-body {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.obcc-search-section.is-ai .obcc-search-section-results {
+  min-height: 0;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+}
+
+.obcc-process-step-timer {
+  flex: 0 0 auto;
+  margin-inline-start: auto;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
