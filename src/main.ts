@@ -117,10 +117,18 @@ type ScoreEntityState = {
   updatedAt: string;
 };
 
+type ScoreActivityState = {
+  totalClicks: number;
+  cancipClicks: number;
+  totalActiveMs: number;
+  cancipActiveMs: number;
+};
+
 type ScoreState = {
-  schemaVersion: 1;
+  schemaVersion: number;
   updatedAt: string;
   totalScore: number;
+  activity: ScoreActivityState;
   entities: Record<string, ScoreEntityState>;
 };
 
@@ -3606,7 +3614,7 @@ function memoryPathForFolder(folder: string, fileName: string): string {
 }
 let PERSONALIZATION_USAGE_PATH = `${CANCIP_CONFIG_DIR}/personalization-usage.json`;
 let CANCIP_SCORE_STATE_PATH = `${CANCIP_CONFIG_DIR}/score-state.json`;
-const CANCIP_SCORE_SCHEMA_VERSION = 1;
+const CANCIP_SCORE_SCHEMA_VERSION = 2;
 const CANCIP_SCORE_WRITE_DEBOUNCE_MS = 20000;
 const CANCIP_SCORE_MIN = 0.01;
 const CANCIP_SCORE_MAX = 200;
@@ -8714,6 +8722,9 @@ export default class CancipPlugin extends Plugin {
   private scoreWriteTimer: number | null = null;
   private scoreDirty = false;
   private scoreWriteQueue: Promise<void> = Promise.resolve();
+  private scoreActivityAnchorAt = 0;
+  private scoreActivityAnchorVisible = false;
+  private scoreActivityAnchorCancip = false;
   private personalizationGreetingSelections = new Map<string, { timeKey: string; index: number }>();
   private personalizationLastGreetingIndex = -1;
   private personalizationLastGreetingTimeKey = "";
@@ -8980,6 +8991,7 @@ export default class CancipPlugin extends Plugin {
     this.registerView(CANCIP_AUTOMATION_RUNNER_VIEW_TYPE, (leaf) => new CancipView(leaf, this, CANCIP_AUTOMATION_RUNNER_VIEW_TYPE));
     this.registerView(CANCIP_REVIEW_VIEW_TYPE, (leaf) => new CancipReviewLeafView(leaf, this));
     this.registerView(CANCIP_DOCUMENT_VIEW_TYPE, (leaf) => new CancipDocumentWorkbenchView(leaf, this));
+    this.installScoreActivityTracking();
     void this.restoreDocumentWorkbenchLeaves();
     this.ensureDocumentWorkbenchExtensions();
     this.app.workspace.onLayoutReady(() => {
@@ -10844,6 +10856,7 @@ export default class CancipPlugin extends Plugin {
 
   onunload(): void {
     this.unloading = true;
+    this.settleScoreActivity(false);
     this.universalSearchUnloaded = true;
     this.universalSearchBuildGeneration += 1;
     this.universalSearchBuildRequested = false;
@@ -14669,15 +14682,84 @@ export default class CancipPlugin extends Plugin {
       if (await adapter.exists(CANCIP_SCORE_STATE_PATH)) {
         this.scoreState = normalizeScoreState(JSON.parse(await adapter.read(CANCIP_SCORE_STATE_PATH)) as unknown);
       }
+      const recalculated = calculateTotalScore(this.scoreState, this.settings);
+      if (recalculated !== this.scoreState.totalScore) {
+        this.scoreState.totalScore = recalculated;
+        this.scoreDirty = true;
+      }
       if (this.applyScoreDecay()) this.scheduleScoreWrite();
+      else if (this.scoreDirty) this.scheduleScoreWrite();
     } catch (error) {
       console.warn("Cancip score state load failed", error);
       this.scoreState = emptyScoreState();
     }
   }
 
+  private installScoreActivityTracking(): void {
+    const sync = () => this.settleScoreActivity(true);
+    this.scoreActivityAnchorAt = Date.now();
+    this.scoreActivityAnchorVisible = activeDocument.visibilityState !== "hidden";
+    this.scoreActivityAnchorCancip = this.isCancipScoreSurfaceActive();
+    this.registerEvent(this.app.workspace.on("active-leaf-change", sync));
+    this.registerDomEvent(activeDocument, "visibilitychange", sync);
+    const win = activeDocument.defaultView;
+    if (win) {
+      win.addEventListener("focus", sync);
+      win.addEventListener("blur", sync);
+      this.register(() => {
+        win.removeEventListener("focus", sync);
+        win.removeEventListener("blur", sync);
+      });
+    }
+    this.register(() => this.settleScoreActivity(false));
+  }
+
+  private isCancipScoreSurfaceActive(): boolean {
+    const type = this.app.workspace.activeLeaf?.view?.getViewType?.() ?? "";
+    if (type === VIEW_TYPE || type === LEGACY_CANCIP_CHAT_VIEW_TYPE || type === CANCIP_REVIEW_VIEW_TYPE || type === CANCIP_DOCUMENT_VIEW_TYPE) return true;
+    return Boolean(activeDocument.querySelector(".modal-container .obcc-settings-tab, .modal-container .obcc-button-edit-modal"));
+  }
+
+  private settleScoreActivity(reclassify: boolean): void {
+    const now = Date.now();
+    if (!this.settings.scoreEnabled) {
+      this.scoreActivityAnchorAt = now;
+      if (reclassify) {
+        this.scoreActivityAnchorVisible = activeDocument.visibilityState !== "hidden";
+        this.scoreActivityAnchorCancip = this.isCancipScoreSurfaceActive();
+      }
+      return;
+    }
+    if (this.scoreActivityAnchorAt > 0 && this.scoreActivityAnchorVisible) {
+      const elapsed = Math.max(0, Math.min(4 * 60 * 60 * 1000, now - this.scoreActivityAnchorAt));
+      if (elapsed > 0) {
+        this.scoreState.activity.totalActiveMs += elapsed;
+        if (this.scoreActivityAnchorCancip) this.scoreState.activity.cancipActiveMs += elapsed;
+        this.scoreState.totalScore = calculateTotalScore(this.scoreState, this.settings);
+        this.scoreState.updatedAt = new Date(now).toISOString();
+        this.scoreDirty = true;
+        this.scheduleScoreWrite();
+      }
+    }
+    this.scoreActivityAnchorAt = now;
+    if (reclassify) {
+      this.scoreActivityAnchorVisible = activeDocument.visibilityState !== "hidden";
+      this.scoreActivityAnchorCancip = this.isCancipScoreSurfaceActive();
+    }
+  }
+
+  private recordScoreActivityClick(element: HTMLElement): void {
+    if (!this.settings.scoreEnabled) return;
+    this.settleScoreActivity(true);
+    this.scoreState.activity.totalClicks += 1;
+    const cancipClick = Boolean(element.closest("[class*='obcc-'], [data-cancip-ui-custom-button-id], .plugin-cancip"))
+      || this.isCancipScoreSurfaceActive();
+    if (cancipClick) this.scoreState.activity.cancipClicks += 1;
+  }
+
   recordScoreEvent(event: ScoreEvent): void {
     if (!this.settings.scoreEnabled || !event.key.trim()) return;
+    this.settleScoreActivity(false);
     const now = new Date().toISOString();
     const key = normalizeScoreKey(event.key);
     const current = this.scoreState.entities[key] ?? {
@@ -14752,14 +14834,21 @@ export default class CancipPlugin extends Plugin {
     };
   }
 
-  scoreSummary(): { total: number; entities: number; strategy: "growth" | "conservative"; top: ScoreEntityState[]; low: ScoreEntityState[] } {
+  scoreSummary(): { total: number; entities: number; strategy: "growth" | "conservative"; top: ScoreEntityState[]; low: ScoreEntityState[]; activity: ScoreActivityState & { clickShare: number; activeShare: number } } {
+    this.settleScoreActivity(false);
     const rows = Object.values(this.scoreState.entities).sort((a, b) => b.score - a.score || b.uses - a.uses);
+    const activity = this.scoreState.activity;
     return {
       total: roundScore(this.scoreState.totalScore),
       entities: rows.length,
       strategy: this.scoreState.totalScore >= 100 ? "growth" : "conservative",
       top: rows.slice(0, 5),
-      low: [...rows].sort((a, b) => a.score - b.score || b.uses - a.uses).slice(0, 5)
+      low: [...rows].sort((a, b) => a.score - b.score || b.uses - a.uses).slice(0, 5),
+      activity: {
+        ...activity,
+        clickShare: activity.totalClicks ? activity.cancipClicks / activity.totalClicks : 0.6,
+        activeShare: activity.totalActiveMs ? activity.cancipActiveMs / activity.totalActiveMs : 0.6
+      }
     };
   }
 
@@ -14775,9 +14864,9 @@ export default class CancipPlugin extends Plugin {
     const low = describe(summary.low);
     if (isChineseLanguage(this.language())) {
       return [
-        `Cancip Score ${summary.total.toFixed(2)}（${summary.strategy === "growth" ? "增法" : "减法"}模式）。`,
+        `Cancip Score ${summary.total.toFixed(2)}（${summary.strategy === "growth" ? "增法" : "减法"}模式；准确度与使用占比均以 60% 为 100 分参考；Cancip 点击占比 ${(summary.activity.clickShare * 100).toFixed(1)}%，活跃时间占比 ${(summary.activity.activeShare * 100).toFixed(1)}%）。`,
         summary.strategy === "growth"
-          ? "优先复用高分能力，并可主动发现有来源、可验证的新信息/Skill/路线；不得把来历不明内容直接晋升为可信记忆。"
+          ? "优先复用高分能力，并主动发现有用的新信息/Skill/路线；来源不明但有价值的内容只能进入标明来源缺失与不确定性的待验证层，交叉验证后才能晋升为可信记忆。"
           : "优先可信、高分、已验证能力；被拒绝、过期或长期不用的信息/Skill 只生成归档或降权候选，不静默删除。",
         "实体分只用于排序和复核，不能覆盖用户明确要求；按钮隐藏、移动和持久化信息改动必须走访问模式或审核面板。",
         top ? `当前高分：${top}。` : "",
@@ -14785,14 +14874,36 @@ export default class CancipPlugin extends Plugin {
       ].filter(Boolean).join(" ");
     }
     return [
-      `Cancip Score ${summary.total.toFixed(2)} (${summary.strategy} mode).`,
+      `Cancip Score ${summary.total.toFixed(2)} (${summary.strategy} mode; 60% accuracy and 60% Cancip usage are the 100-point references; Cancip click share ${(summary.activity.clickShare * 100).toFixed(1)}%, active-time share ${(summary.activity.activeShare * 100).toFixed(1)}%).`,
       summary.strategy === "growth"
-        ? "Prefer proven high-score capabilities and proactively discover useful, attributable, verifiable information, Skills, and routes; never promote unknown material directly into trusted memory."
+        ? "Prefer proven high-score capabilities and proactively discover useful information, Skills, and routes. Useful material with an unknown source may enter an explicitly uncertain staging layer, but requires cross-verification before promotion to trusted memory."
         : "Prefer trusted, high-score, verified capabilities; create reviewable archive or down-rank candidates for rejected, stale, or unused information and Skills, never silently delete them.",
       "Entity scores rank and trigger review only; they never override explicit user intent. Button hiding/reordering and persistent knowledge changes must use access mode or Review Gate.",
       top ? `High: ${top}.` : "",
       low ? `Low: ${low}.` : ""
     ].filter(Boolean).join(" ");
+  }
+
+  scoreMaintenanceContext(): string {
+    const summary = this.scoreSummary();
+    const describe = (rows: ScoreEntityState[]) => rows
+      .filter((row) => row.uses + row.accepts + row.rejects + row.corrections > 0)
+      .slice(0, 8)
+      .map((row) => `- ${row.kind} · ${row.label || row.key}: ${row.score.toFixed(2)}; use=${row.uses}; accept=${row.accepts}; reject=${row.rejects}; correct=${row.corrections}`)
+      .join("\n");
+    return [
+      this.scorePolicyPrompt(),
+      "",
+      "## High-score reuse candidates",
+      describe(summary.top) || "- none",
+      "",
+      "## Low-score archive, down-rank, or revalidation candidates",
+      describe(summary.low) || "- none",
+      "",
+      summary.strategy === "growth"
+        ? "Growth maintenance: expand discovery, but stage unattributed information as uncertain and retain provenance instead of silently trusting it."
+        : "Conservative maintenance: prefer verified routes; archive or down-rank stale generated memory/Skills only through recoverable machine storage or Review Gate, never silently remove user-authored notes."
+    ].join("\n");
   }
 
   private applyScoreDecay(): boolean {
@@ -20453,6 +20564,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     if (!(target instanceof Element)) return;
     const element = target.closest<HTMLElement>("button,[role='button'],.clickable-icon,.menu-item");
     if (!element || element.matches(":disabled,[aria-disabled='true']")) return;
+    this.recordScoreActivityClick(element);
     const descriptor = this.describeUiButtonEditTarget(element);
     const label = sanitizePersonalizationText(
       uiElementLabel(element)
@@ -29414,6 +29526,9 @@ class CancipView extends ItemView {
       "scoreAfterSaturatedDelta": { configurable: true, value: scoreAfterSaturatedDelta },
       "calculateTotalScore": { configurable: true, value: calculateTotalScore },
       "normalizeScoreState": { configurable: true, value: normalizeScoreState },
+      "normalizeSettings": { configurable: true, value: normalizeSettings },
+      "normalizeSessionHistoryEntry": { configurable: true, value: normalizeSessionHistoryEntry },
+      "scoreRatioAroundReference": { configurable: true, value: scoreRatioAroundReference },
       "subagentElapsedMs": { configurable: true, value: subagentElapsedMs },
       "todoElapsedMs": { configurable: true, value: todoElapsedMs },
       "deterministicContextCompactionSummary": { configurable: true, value: deterministicContextCompactionSummary },
@@ -34676,7 +34791,11 @@ class CancipView extends ItemView {
     const head = card.createDiv({ cls: "obcc-subagent-card-head" });
     const identity = head.createDiv({ cls: "obcc-subagent-card-identity" });
     identity.createSpan({ cls: "obcc-subagent-role", text: entry.subagentRole || this.t("subagentDefaultRole") });
-    identity.createSpan({ cls: `obcc-subagent-status is-${status}`, text: this.sessionStatusLabel(status) });
+    identity.createSpan({
+      cls: `obcc-subagent-status is-${status}`,
+      text: this.sessionStatusLabel(status),
+      attr: { "data-subagent-status-id": entry.id }
+    });
     head.createSpan({
       cls: "obcc-subagent-timer",
       text: this.subagentElapsedText(entry),
@@ -34703,12 +34822,21 @@ class CancipView extends ItemView {
     if (entry.subagentAcceptance) meta.createDiv({ text: `${this.t("subagentAcceptance")}: ${entry.subagentAcceptance}` });
     if (entry.subagentDeadlineAt) meta.createDiv({ text: `${this.t("subagentDeadline")}: ${entry.subagentDeadlineAt}` });
     meta.createDiv({ text: `${isChineseLanguage(this.plugin.language()) ? "尝试" : "Attempt"}: ${entry.subagentAttempt ?? 1}` });
-    if (entry.subagentProgress) meta.createDiv({ text: `${this.t("subagentProgress")}: ${entry.subagentProgress}` });
+    if (entry.subagentProgress) meta.createDiv({
+      text: `${this.t("subagentProgress")}: ${entry.subagentProgress}`,
+      attr: { "data-subagent-progress-id": entry.id }
+    });
 
     const transcript = card.createEl("details", { cls: "obcc-subagent-transcript" });
     transcript.createEl("summary", { text: isChineseLanguage(this.plugin.language()) ? "原始收发" : "Raw exchange" });
     const body = transcript.createDiv({ cls: "obcc-subagent-transcript-body" });
     await this.renderSubagentRawExchange(body, entry);
+    transcript.addEventListener("toggle", () => {
+      if (!transcript.open) return;
+      const latest = this.sessionHistoryCache?.entries.find((item) => item.id === entry.id) ?? entry;
+      body.empty();
+      void this.renderSubagentRawExchange(body, latest);
+    });
   }
 
   private createSubagentCardButton(parent: HTMLElement, icon: string, title: string, action: () => void): void {
@@ -37794,6 +37922,7 @@ class CancipView extends ItemView {
     const skillSummary = this.formatSkillsList(skills.slice(0, 24));
     const autocompleteUsage = this.plugin.autocompletePreferenceAutomationSummary(days);
     const interactionFeedback = await this.buildDailyInteractionFeedbackPack(days, events);
+    const scoreMaintenance = this.plugin.scoreMaintenanceContext();
     let pluginInventory = "- unavailable";
     try {
       pluginInventory = trimContext(await this.installedPluginsSummary({ includeDisabled: false }), 1800);
@@ -37815,6 +37944,9 @@ class CancipView extends ItemView {
       "",
       "## 自动补全选择习惯",
       autocompleteUsage,
+      "",
+      "## Cancip Score maintenance policy and candidates",
+      scoreMaintenance,
       "",
       "## Supporting session lifecycle events",
       supportingEvents.length ? this.formatSessionEvents(supportingEvents, 50) : "- none",
@@ -37843,6 +37975,7 @@ class CancipView extends ItemView {
       "## Resource maintenance contract",
       "- Start with the minimum evidence needed for each decision. If insufficient, search targeted Vault notes, Skills, automations, session history, memory, plugin commands/APIs/UI, and recipes before using web or model prior knowledge.",
       "- Promote only verified success; classify failures and stop retrying the same broken route. Query, create, update, merge, downgrade, or prune stale memory, generated Skills, automations, and routes; refresh indexes after changes.",
+      "- Follow the current Cancip Score mode above: growth mode may stage useful unattributed material with explicit uncertainty; conservative mode archives/down-ranks stale generated resources through recoverable storage or Review Gate.",
       "- Execute low-risk recoverable improvements with backup/review/readback. Keep explicit confirmation for move/delete/secrets/accounts/external publication/real trading."
     ].join("\n");
   }
@@ -39477,7 +39610,11 @@ class CancipView extends ItemView {
       weight: 0.5
     });
     const entry = sessionHistoryEntryFromSnapshot(snapshot, path);
-    if (entry) await this.upsertSessionHistoryIndex(entry);
+    if (entry) {
+      await this.upsertSessionHistoryIndex(entry);
+      if (entry.parentSessionId && entry.subagentGoal) await this.returnSubagentGoalToParent(entry);
+    }
+    this.refreshPlanPanelIfOpen();
     await this.refreshOpenSessionFromDisk(sessionId, this.t("subagentFailed"));
     void this.recordSessionEvent({ kind: "session.status", sessionId, status: "failed", detail: `subagent failed: ${reason}` });
   }
@@ -39604,12 +39741,20 @@ class CancipView extends ItemView {
     }
 
     const startedIds: string[] = [];
-    for (const spec of specs) {
-      const result = await this.startSubagentCommand(spec as unknown as Record<string, unknown>);
-      const id = result.match(/\bsession-[^\s]+-sub-[a-f0-9]{8}\b/i)?.[0] ?? "";
-      if (id) startedIds.push(id);
+    try {
+      for (const spec of specs) {
+        const result = await this.startSubagentCommand(spec as unknown as Record<string, unknown>);
+        const id = result.match(/\bsession-[^\s]+-sub-[a-f0-9]{8}\b/i)?.[0] ?? "";
+        if (id) startedIds.push(id);
+      }
+      if (startedIds.length < 2) throw new Error(`parallel subagent start incomplete: ${startedIds.length}/${count}`);
+    } catch (error) {
+      if (startedIds.length) {
+        await this.stopSubagentCommand({ parentSessionId, sessionIds: startedIds });
+        await this.returnSubagentGoalsToParent(startedIds);
+      }
+      throw error;
     }
-    if (startedIds.length < 2) throw new Error(`parallel subagent start incomplete: ${startedIds.length}/${count}`);
     this.plugin.recordScoreEvent({ key: "feature:multi-agent", kind: "feature", label: this.t("settingsMultiAgent"), outcome: "use", weight: 1.5 });
     this.refreshPlanPanelIfOpen();
     const wait = args.wait !== false;
@@ -39622,6 +39767,7 @@ class CancipView extends ItemView {
       await this.stopSubagentCommand({ parentSessionId, sessionIds: stillRunning });
       const stoppedIds = new Set(startedIds);
       terminal = (await this.readSessionHistoryIndex({ force: true })).filter((entry) => stoppedIds.has(entry.id));
+      await this.returnSubagentGoalsToParent(stillRunning);
     }
     const consensusRequested = args.consensus !== false && this.plugin.settings.multiAgentCrossReview;
     const consensus = consensusRequested
@@ -39757,6 +39903,16 @@ class CancipView extends ItemView {
       snapshot.updatedAt = new Date().toISOString();
       await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
     }
+  }
+
+  private async returnSubagentGoalsToParent(sessionIds: string[]): Promise<void> {
+    if (!sessionIds.length) return;
+    const ids = new Set(sessionIds);
+    const entries = (await this.readSessionHistoryIndex({ force: true })).filter((entry) => ids.has(entry.id));
+    for (const entry of entries) {
+      if (entry.parentSessionId && entry.subagentGoal) await this.returnSubagentGoalToParent(entry);
+    }
+    this.refreshPlanPanelIfOpen();
   }
 
   private async removeSubagentLinkFromParent(parentSessionId: string, childSessionId: string): Promise<void> {
@@ -40900,7 +41056,10 @@ class CancipView extends ItemView {
     for (const [index, target] of mentionTargets.entries()) {
       const content = mentionContents[index];
       if (!content) continue;
-      if (target.kind === "skill") activeSkillPaths.add(normalizePath(target.path));
+      if (target.kind === "skill") {
+        activeSkillPaths.add(normalizePath(target.path));
+        this.plugin.recordScoreEvent({ key: `skill:${target.path}`, kind: "skill", label: target.title || target.path, outcome: "use", weight: 0.6 });
+      }
       parts.push(`## @${target.path}\n${content}`);
       searchHits.push({
         path: target.path,
@@ -40938,6 +41097,7 @@ class CancipView extends ItemView {
           const content = skillContents[index];
           if (!content) continue;
           activeSkillPaths.add(normalizePath(skill.path));
+          this.plugin.recordScoreEvent({ key: `skill:${skill.path}`, kind: "skill", label: skill.name || skill.path, outcome: "use", weight: 0.5 });
           skillBlocks.push(content);
           searchHits.push({
             path: skill.path,
@@ -41452,7 +41612,8 @@ class CancipView extends ItemView {
     }
     const source = pending.map((message) => this.contextCompactionMessageText(message)).filter(Boolean).join("\n\n");
     const previousSummary = incremental ? this.contextCompaction?.summary ?? "" : "";
-    const targetChars = Math.max(2200, Math.min(30000, settings.contextCompactionTargetTokens * 3));
+    const charsPerToken = isChineseLanguage(this.plugin.language()) ? 1.25 : 3.2;
+    const targetChars = Math.max(800, Math.min(30000, Math.floor(settings.contextCompactionTargetTokens * charsPerToken)));
     let summary = deterministicContextCompactionSummary(previousSummary, source, targetChars, this.plugin.language());
     if (settings.contextCompactionUseModel && source.trim()) {
       const profile = this.activeRequestApiProfile ?? this.plugin.activeApiProfile();
@@ -41485,6 +41646,7 @@ class CancipView extends ItemView {
         }
       }
     }
+    summary = trimContextToEstimatedTokens(summary, settings.contextCompactionTargetTokens);
     const sourceHash = contextCompactionMessagesHash(oldMessages);
     this.contextCompaction = {
       schemaVersion: 1,
@@ -42968,7 +43130,9 @@ class CancipView extends ItemView {
       .filter((skill) => !excludedPaths.has(normalizePath(skill.path)))
       .map((skill) => ({
         skill,
-        score: scoreSkillForPrompt(skill, prompt) + (preferredSkillIds.has(skill.id) ? 180 : 0)
+        score: scoreSkillForPrompt(skill, prompt)
+          + (preferredSkillIds.has(skill.id) ? 180 : 0)
+          + (this.plugin.scoreFor(`skill:${skill.path}`, "skill", skill.name).score - 100) * 0.45
       }))
       .filter((item) => item.score >= threshold)
       .sort((a, b) => b.score - a.score || b.skill.priority - a.skill.priority || a.skill.name.localeCompare(b.skill.name));
@@ -56599,6 +56763,23 @@ class CancipView extends ItemView {
       if (!entry) continue;
       timer.setText(this.subagentElapsedText(entry));
     }
+    for (const statusEl of Array.from(this.headerMenuEl.querySelectorAll<HTMLElement>("[data-subagent-status-id]"))) {
+      const entry = entries.find((item) => item.id === statusEl.dataset.subagentStatusId);
+      if (!entry) continue;
+      const status = this.displaySessionStatus(entry);
+      for (const value of ["idle", "running", "completed", "failed", "stopped"]) statusEl.removeClass(`is-${value}`);
+      statusEl.addClass(`is-${status}`);
+      statusEl.setText(this.sessionStatusLabel(status));
+      const card = statusEl.closest<HTMLElement>(".obcc-subagent-card");
+      if (card) {
+        for (const value of ["idle", "running", "completed", "failed", "stopped"]) card.removeClass(`is-${value}`);
+        card.addClass(`is-${status}`);
+      }
+    }
+    for (const progressEl of Array.from(this.headerMenuEl.querySelectorAll<HTMLElement>("[data-subagent-progress-id]"))) {
+      const entry = entries.find((item) => item.id === progressEl.dataset.subagentProgressId);
+      if (entry?.subagentProgress) progressEl.setText(`${this.t("subagentProgress")}: ${entry.subagentProgress}`);
+    }
   }
 
   private toolRunProcessExplanation(run: ToolRun, count = 1): string {
@@ -57310,6 +57491,13 @@ class CancipView extends ItemView {
     applySearchPaneState(paneState, false);
     let requestId = 0;
     let timer: number | null = null;
+    const scoredQueries = new Set<string>();
+    const recordSearchScore = (query: string, outcome: ScoreEvent["outcome"], weight: number): void => {
+      const key = query.trim().toLocaleLowerCase();
+      if (!key || (outcome === "use" && scoredQueries.has(key))) return;
+      if (outcome === "use") scoredQueries.add(key);
+      this.plugin.recordScoreEvent({ key: "feature:search", kind: "feature", label: this.t("modeSearch"), outcome, weight });
+    };
     const renderHits = (parent: HTMLElement, hits: SearchHit[]): void => {
       parent.empty();
       if (!hits.length) {
@@ -57333,6 +57521,7 @@ class CancipView extends ItemView {
         }
         copy.createDiv({ cls: "obcc-search-result-excerpt", text: trimContext(hit.excerpt, 240) });
         const open = () => {
+          recordSearchScore(input.value, "accept", 1.4);
           void this.openSearchHit(hit);
         };
         row.addEventListener("click", open);
@@ -57371,6 +57560,7 @@ class CancipView extends ItemView {
         aiSection.toggleClass("is-hidden", !fuzzy.checked);
         applySearchPaneState(paneState, false);
         if (!fuzzy.checked) {
+          recordSearchScore(query, "use", 0.5);
           status.setText(`${this.t("searchHard")} · ${this.t("hitCount", { count: exactHits.length })}`);
           return;
         }
@@ -57390,6 +57580,7 @@ class CancipView extends ItemView {
           : "";
         aiExplanation.setText([aiSearch.expansion.intent, terms].filter(Boolean).join(" · "));
         status.setText(this.t("hitCount", { count: aiHits.length + exactHits.length }));
+        recordSearchScore(query, "use", 0.7);
       } catch (error) {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const reason = error instanceof Error ? error.message : String(error);
@@ -57397,6 +57588,7 @@ class CancipView extends ItemView {
         aiExplanation.setText(reason);
         renderHits(aiResults, []);
         renderHits(hardResults, []);
+        recordSearchScore(query, "reject", 0.2);
       }
     };
     const schedule = (): void => {
@@ -58233,6 +58425,11 @@ class CancipSettingTab extends PluginSettingTab {
     scoreMeta.createDiv({ text: this.plugin.t("scoreTotal") });
     scoreMeta.createDiv({ text: summary.strategy === "growth" ? this.plugin.t("scoreStrategyGrowth") : this.plugin.t("scoreStrategyConservative") });
     scoreMeta.createDiv({ text: `${this.plugin.t("scoreFeatureCount")}: ${summary.entities}` });
+    scoreMeta.createDiv({
+      text: isChineseLanguage(this.plugin.language())
+        ? `Cancip 点击 ${(summary.activity.clickShare * 100).toFixed(1)}% · 活跃时间 ${(summary.activity.activeShare * 100).toFixed(1)}%`
+        : `Cancip clicks ${(summary.activity.clickShare * 100).toFixed(1)}% · active time ${(summary.activity.activeShare * 100).toFixed(1)}%`
+    });
     const scoreBody = score.createDiv({ cls: "obcc-settings-group-body" });
     this.addToggleSetting(scoreBody, "settingsScoreEnabled", this.plugin.settings.scoreEnabled, async (value) => {
       this.plugin.settings.scoreEnabled = value;
@@ -69457,6 +69654,7 @@ function emptyScoreState(): ScoreState {
     schemaVersion: CANCIP_SCORE_SCHEMA_VERSION,
     updatedAt: new Date().toISOString(),
     totalScore: 100,
+    activity: { totalClicks: 0, cancipClicks: 0, totalActiveMs: 0, cancipActiveMs: 0 },
     entities: {}
   };
 }
@@ -69503,10 +69701,19 @@ function normalizeScoreState(raw: unknown): ScoreState {
       updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : ""
     };
   }
+  const rawActivity = isRecord(raw.activity) ? raw.activity : {};
+  const totalClicks = Math.max(0, Number.parseInt(String(rawActivity.totalClicks ?? 0), 10) || 0);
+  const totalActiveMs = Math.max(0, Number(rawActivity.totalActiveMs) || 0);
   const state: ScoreState = {
     schemaVersion: CANCIP_SCORE_SCHEMA_VERSION,
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
     totalScore: roundScore(typeof raw.totalScore === "number" ? raw.totalScore : 100),
+    activity: {
+      totalClicks,
+      cancipClicks: Math.min(totalClicks, Math.max(0, Number.parseInt(String(rawActivity.cancipClicks ?? 0), 10) || 0)),
+      totalActiveMs,
+      cancipActiveMs: Math.min(totalActiveMs, Math.max(0, Number(rawActivity.cancipActiveMs) || 0))
+    },
     entities
   };
   return state;
@@ -69514,31 +69721,43 @@ function normalizeScoreState(raw: unknown): ScoreState {
 
 function calculateTotalScore(state: ScoreState, settings: Settings): number {
   const rows = Object.values(state.entities);
-  if (!rows.length) return 100;
+  const activity = state.activity ?? { totalClicks: 0, cancipClicks: 0, totalActiveMs: 0, cancipActiveMs: 0 };
+  if (!rows.length && !activity.totalClicks && !activity.totalActiveMs) return 100;
   const accuracyWeight = Math.max(0, settings.scoreAccuracyWeight);
   const usageWeight = Math.max(0, settings.scoreUsageWeight);
   const weightTotal = accuracyWeight + usageWeight || 100;
-  let weightedScore = 0;
-  let totalConfidence = 0;
+  const accepts = rows.reduce((total, row) => total + row.accepts, 0);
+  const rejects = rows.reduce((total, row) => total + row.rejects + row.corrections * 0.75, 0);
+  const accuracySamples = accepts + rejects;
+  const accuracyRatio = accuracySamples ? accepts / accuracySamples : 0.6;
+  const clickRatio = activity.totalClicks ? activity.cancipClicks / activity.totalClicks : null;
+  const activeRatio = activity.totalActiveMs ? activity.cancipActiveMs / activity.totalActiveMs : null;
+  const usageRatios = [clickRatio, activeRatio].filter((value): value is number => value !== null);
+  const usageRatio = usageRatios.length ? usageRatios.reduce((total, value) => total + value, 0) / usageRatios.length : 0.6;
+  const accuracyScore = scoreRatioAroundReference(accuracyRatio, 0.6);
+  const usageScore = scoreRatioAroundReference(usageRatio, 0.6);
+  const referenceScore = (accuracyScore * accuracyWeight + usageScore * usageWeight) / weightTotal;
+  let entityWeight = 0;
+  let entityTotal = 0;
   for (const row of rows) {
-    const accuracySamples = row.accepts + row.rejects + row.corrections;
-    const acceptedRatio = accuracySamples
-      ? row.accepts / Math.max(1, row.accepts + row.rejects + row.corrections * 0.75)
-      : 0.5;
-    const accuracyRaw = 200 * Math.max(0, Math.min(1, acceptedRatio));
-    const accuracyConfidence = 1 - Math.exp(-accuracySamples / 8);
-    const accuracy = 100 + (accuracyRaw - 100) * accuracyConfidence;
-    const usageSignal = row.uses + row.activeMs / 900000;
-    const usage = 100 + 100 * (1 - Math.exp(-usageSignal / 24));
-    const combined = (accuracy * accuracyWeight + usage * usageWeight) / weightTotal;
-    const eventConfidence = Math.max(0.08, 1 - Math.exp(-(accuracySamples + row.uses * 0.25 + row.activeMs / 3600000) / 10));
-    const entityScore = (combined * 0.7) + (row.score * 0.3);
-    weightedScore += entityScore * eventConfidence;
-    totalConfidence += eventConfidence;
+    const confidence = Math.max(0.1, 1 - Math.exp(-(row.uses + row.accepts + row.rejects + row.corrections + row.activeMs / 900000) / 8));
+    entityTotal += row.score * confidence;
+    entityWeight += confidence;
   }
-  const observed = totalConfidence ? weightedScore / totalConfidence : 100;
-  const globalConfidence = Math.min(1, totalConfidence / Math.max(3, rows.length * 0.75));
+
+  const entityScore = entityWeight ? entityTotal / entityWeight : 100;
+  const observed = referenceScore * 0.7 + entityScore * 0.3;
+  const evidence = accuracySamples + activity.totalClicks * 0.2 + activity.totalActiveMs / 900000 + rows.reduce((total, row) => total + row.uses * 0.1, 0);
+  const globalConfidence = Math.min(1, 1 - Math.exp(-evidence / 8));
   return roundScore(100 + (observed - 100) * globalConfidence);
+}
+
+function scoreRatioAroundReference(ratio: number, reference: number): number {
+  const value = Math.max(0, Math.min(1, ratio));
+  const pivot = Math.max(0.01, Math.min(0.99, reference));
+  return roundScore(value <= pivot
+    ? (value / pivot) * 100
+    : 100 + ((value - pivot) / (1 - pivot)) * 100);
 }
 
 function uniqueScoreEntities(rows: ScoreEntityState[]): ScoreEntityState[] {
@@ -69608,6 +69827,25 @@ function deterministicContextCompactionSummary(previousSummary: string, source: 
   return trimContext(sections.join("\n").trim(), maxChars);
 }
 
+function trimContextToEstimatedTokens(content: string, maxTokens: number): string {
+  const trimmed = content.trim();
+  const tokenLimit = Math.max(100, Math.round(maxTokens));
+  if (!trimmed || estimateTextTokens(trimmed) <= tokenLimit) return trimmed;
+  const suffix = "\n\n...[compacted]";
+  let low = 0;
+  let high = trimmed.length;
+  while (low < high) {
+    const middle = Math.ceil((low + high) / 2);
+    const candidate = `${trimmed.slice(0, middle).trimEnd()}${suffix}`;
+    if (estimateTextTokens(candidate) <= tokenLimit) low = middle;
+    else high = middle - 1;
+  }
+  const prefix = trimmed.slice(0, low).trimEnd();
+  const lineBreak = prefix.lastIndexOf("\n");
+  const cleanPrefix = lineBreak >= Math.floor(prefix.length * 0.8) ? prefix.slice(0, lineBreak).trimEnd() : prefix;
+  return `${cleanPrefix}${suffix}`;
+}
+
 function normalizeSettings(input: Partial<Settings>): Settings {
   const merged = { ...DEFAULT_SETTINGS, ...input };
   const temperature = Number(merged.temperature);
@@ -69649,6 +69887,31 @@ function normalizeSettings(input: Partial<Settings>): Settings {
   const ttsRate = Number(merged.ttsRate);
   const ttsPitch = Number(merged.ttsPitch);
   const ttsChunkChars = Number.parseInt(String(merged.ttsChunkChars), 10);
+  const normalizedContextCompactionTriggerTokens = Number.isFinite(contextCompactionTriggerTokens)
+    ? Math.max(2000, Math.min(200000, contextCompactionTriggerTokens))
+    : DEFAULT_SETTINGS.contextCompactionTriggerTokens;
+  const normalizedContextCompactionTargetTokens = Math.min(
+    normalizedContextCompactionTriggerTokens,
+    Number.isFinite(contextCompactionTargetTokens)
+      ? Math.max(1000, Math.min(100000, contextCompactionTargetTokens))
+      : DEFAULT_SETTINGS.contextCompactionTargetTokens
+  );
+  const normalizedMultiAgentMinAgents = Number.isFinite(multiAgentMinAgents)
+    ? Math.max(2, Math.min(10, multiAgentMinAgents))
+    : DEFAULT_SETTINGS.multiAgentMinAgents;
+  const normalizedMultiAgentMaxAgents = Math.max(
+    normalizedMultiAgentMinAgents,
+    Number.isFinite(multiAgentMaxAgents)
+      ? Math.max(2, Math.min(10, multiAgentMaxAgents))
+      : DEFAULT_SETTINGS.multiAgentMaxAgents
+  );
+  const normalizedMultiAgentDefaultAgents = Math.max(
+    normalizedMultiAgentMinAgents,
+    Math.min(
+      normalizedMultiAgentMaxAgents,
+      Number.isFinite(multiAgentDefaultAgents) ? multiAgentDefaultAgents : DEFAULT_SETTINGS.multiAgentDefaultAgents
+    )
+  );
   const legacyProfile = normalizeApiProfile(
     {
       id: "default",
@@ -69792,16 +70055,16 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     maxFileContextChars: Number.isFinite(maxFileContextChars) ? Math.max(500, Math.min(50000, maxFileContextChars)) : DEFAULT_SETTINGS.maxFileContextChars,
     maxFolderFileContextChars: Number.isFinite(maxFolderFileContextChars) ? Math.max(300, Math.min(20000, maxFolderFileContextChars)) : DEFAULT_SETTINGS.maxFolderFileContextChars,
     contextCompactionEnabled: typeof merged.contextCompactionEnabled === "boolean" ? merged.contextCompactionEnabled : DEFAULT_SETTINGS.contextCompactionEnabled,
-    contextCompactionTriggerTokens: Number.isFinite(contextCompactionTriggerTokens) ? Math.max(2000, Math.min(200000, contextCompactionTriggerTokens)) : DEFAULT_SETTINGS.contextCompactionTriggerTokens,
-    contextCompactionTargetTokens: Number.isFinite(contextCompactionTargetTokens) ? Math.max(1000, Math.min(100000, contextCompactionTargetTokens)) : DEFAULT_SETTINGS.contextCompactionTargetTokens,
+    contextCompactionTriggerTokens: normalizedContextCompactionTriggerTokens,
+    contextCompactionTargetTokens: normalizedContextCompactionTargetTokens,
     contextCompactionKeepRecentMessages: Number.isFinite(contextCompactionKeepRecentMessages) ? Math.max(2, Math.min(40, contextCompactionKeepRecentMessages)) : DEFAULT_SETTINGS.contextCompactionKeepRecentMessages,
     contextCompactionUseModel: typeof merged.contextCompactionUseModel === "boolean" ? merged.contextCompactionUseModel : DEFAULT_SETTINGS.contextCompactionUseModel,
     contextCompactionShowStats: typeof merged.contextCompactionShowStats === "boolean" ? merged.contextCompactionShowStats : DEFAULT_SETTINGS.contextCompactionShowStats,
     multiAgentEnabled: typeof merged.multiAgentEnabled === "boolean" ? merged.multiAgentEnabled : DEFAULT_SETTINGS.multiAgentEnabled,
     multiAgentAutoDelegate: typeof merged.multiAgentAutoDelegate === "boolean" ? merged.multiAgentAutoDelegate : DEFAULT_SETTINGS.multiAgentAutoDelegate,
-    multiAgentMinAgents: Number.isFinite(multiAgentMinAgents) ? Math.max(2, Math.min(10, multiAgentMinAgents)) : DEFAULT_SETTINGS.multiAgentMinAgents,
-    multiAgentMaxAgents: Number.isFinite(multiAgentMaxAgents) ? Math.max(2, Math.min(10, multiAgentMaxAgents)) : DEFAULT_SETTINGS.multiAgentMaxAgents,
-    multiAgentDefaultAgents: Number.isFinite(multiAgentDefaultAgents) ? Math.max(2, Math.min(10, multiAgentDefaultAgents)) : DEFAULT_SETTINGS.multiAgentDefaultAgents,
+    multiAgentMinAgents: normalizedMultiAgentMinAgents,
+    multiAgentMaxAgents: normalizedMultiAgentMaxAgents,
+    multiAgentDefaultAgents: normalizedMultiAgentDefaultAgents,
     multiAgentCrossReview: typeof merged.multiAgentCrossReview === "boolean" ? merged.multiAgentCrossReview : DEFAULT_SETTINGS.multiAgentCrossReview,
     multiAgentTimeoutMinutes: Number.isFinite(multiAgentTimeoutMinutes) ? Math.max(1, Math.min(120, multiAgentTimeoutMinutes)) : DEFAULT_SETTINGS.multiAgentTimeoutMinutes,
     scoreEnabled: typeof merged.scoreEnabled === "boolean" ? merged.scoreEnabled : DEFAULT_SETTINGS.scoreEnabled,
@@ -70634,6 +70897,12 @@ function normalizeSessionHistoryEntry(item: Record<string, unknown>): SessionHis
     subagentRole: typeof item.subagentRole === "string" ? item.subagentRole : undefined,
     subagentGoal: typeof item.subagentGoal === "string" ? item.subagentGoal : undefined,
     subagentProgress: typeof item.subagentProgress === "string" ? item.subagentProgress : undefined,
+    subagentPlanStepId: typeof item.subagentPlanStepId === "string" ? item.subagentPlanStepId : undefined,
+    subagentAcceptance: typeof item.subagentAcceptance === "string" ? item.subagentAcceptance : undefined,
+    subagentDeadlineAt: typeof item.subagentDeadlineAt === "string" ? item.subagentDeadlineAt : undefined,
+    subagentAttempt: typeof item.subagentAttempt === "number" && Number.isFinite(item.subagentAttempt) ? Math.max(1, Math.round(item.subagentAttempt)) : undefined,
+    subagentStartedAt: typeof item.subagentStartedAt === "string" ? item.subagentStartedAt : undefined,
+    subagentCompletedAt: typeof item.subagentCompletedAt === "string" ? item.subagentCompletedAt : undefined,
     eventOnly: typeof item.eventOnly === "boolean" ? item.eventOnly : false,
     path
   };
