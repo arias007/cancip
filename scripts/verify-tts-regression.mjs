@@ -88,6 +88,45 @@ const anchored = api.sliceTtsTextFromAnchorToEnd(
 assert.ok(anchored.startsWith("游标之后"), "Anchor fallback must use the viewport cursor instead of a DOM-only fragment");
 assert.ok(anchored.endsWith(endMarker), "Anchor fallback must still reach the file ending");
 
+const journalMarkdown = `## 主体开始
+![外部前言](外部前言.md)
+
+## 今日计划
+- [ ] **主体任务一**，后续内容不能漏读
+- [x] **主体任务二**，完成状态也要朗读
+
+## 交易日志
+${endMarker}`;
+const journalText = api.markdownToTtsText(journalMarkdown, Number.MAX_SAFE_INTEGER);
+assert.ok(!journalText.includes("外部前言"), "External Markdown embeds must not replace the host note body");
+assert.ok(journalText.includes("待办 主体任务一"), "Unchecked task state must align with the rendered viewport text");
+assert.ok(journalText.includes("已完成 主体任务二"), "Checked task state must align with the rendered viewport text");
+const journalAnchored = api.sliceTtsTextFromAnchorToEnd(
+  journalText,
+  "待办 主体任务一，后续内容不能漏读",
+  Number.MAX_SAFE_INTEGER,
+  0
+);
+assert.ok(journalAnchored.startsWith("待办 主体任务一"), "A rendered task anchor must resolve to the same task in the source text");
+assert.ok(journalAnchored.endsWith(endMarker), "Journal reading must continue through the real host-note ending");
+const contaminatedAnchor = api.sliceTtsTextFromAnchorToEnd(
+  journalText,
+  "外部引用中无法匹配主体的文字",
+  Number.MAX_SAFE_INTEGER,
+  journalText.length + 500
+);
+assert.ok(contaminatedAnchor.startsWith("主体开始"), "An invalid embedded cursor must fall back to the host-note start");
+assert.ok(contaminatedAnchor.endsWith(endMarker), "Embedded fallback must retain the host-note ending");
+
+const journalPlan = api.makeTtsPartPlan(journalText, "builtin-prime-tts", 96);
+const readableSequence = (value) => value.replace(/\s+/g, "").replace(/[\p{P}\p{S}]/gu, "");
+assert.equal(
+  readableSequence(journalPlan.playParts.join("")),
+  readableSequence(journalText),
+  "PrimeTTS chunking must not omit readable journal characters"
+);
+assert.ok(journalPlan.playParts.at(-1)?.includes(endMarker), "PrimeTTS journal plan must include the final marker");
+
 const english = "PrimeTTS should pronounce internationalization and characteristically complete words without awkward pauses.";
 const englishParts = api.splitPrimeTtsMicroPlayText(english, 96);
 assert.ok(englishParts[0].trim().split(/\s+/).length >= 2, "English startup audio must use a natural phrase");

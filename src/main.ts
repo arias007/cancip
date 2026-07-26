@@ -12127,8 +12127,14 @@ export default class CancipPlugin extends Plugin {
   private highlightActiveRenderedTtsPart(current: string): boolean {
     for (const container of this.ttsSourceContainers()) {
       if (this.highlightPdfTextLayerPart(container, current)) return true;
-      const roots = Array.from(container.querySelectorAll(".markdown-preview-view, .markdown-rendered, .cm-content, .pdf-viewer, .pdf-container, .pdfViewer, .textLayer, .pdf-embed"));
-      for (const root of roots) {
+      const roots = Array.from(container.querySelectorAll<HTMLElement>(".markdown-preview-view, .markdown-rendered, .cm-content, .pdf-viewer, .pdf-container, .pdfViewer, .textLayer, .pdf-embed"));
+      const visibleRoots = roots.filter((root) => {
+        if (isExternalMarkdownTtsElement(root) && !root.matches(".pdf-viewer, .pdf-container, .pdfViewer, .textLayer")) return false;
+        const rect = root.getBoundingClientRect();
+        const style = root.ownerDocument.defaultView?.getComputedStyle(root);
+        return rect.width > 0 && rect.height > 0 && style?.display !== "none" && style?.visibility !== "hidden";
+      });
+      for (const root of visibleRoots.length ? visibleRoots : roots) {
         if (!root.instanceOf(activeDocument.defaultView!.HTMLElement)) continue;
         if (this.highlightRenderedPart(root, current)) return true;
         if (this.wrapFirstTextMatch(root, current)) return true;
@@ -12949,7 +12955,7 @@ export default class CancipPlugin extends Plugin {
     const walker = doc.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
       acceptNode: (node) => {
         const parent = node.parentElement;
-        if (!parent || parent.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) return NodeFilter.FILTER_REJECT;
+        if (!parent || isExternalMarkdownTtsElement(parent) || parent.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) return NodeFilter.FILTER_REJECT;
         const text = node.textContent ?? "";
         if (text.includes(needle)) return NodeFilter.FILTER_ACCEPT;
         if (normalizedNeedle.length >= 2 && normalizeTtsHighlightText(text).includes(normalizedNeedle.slice(0, Math.min(normalizedNeedle.length, 24)))) return NodeFilter.FILTER_ACCEPT;
@@ -72067,7 +72073,8 @@ function markdownToTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): str
       .replace(/!\[[^\]]*]\([^)]+\)/g, " ")
       .replace(/\[([^\]]+)]\([^)]+\)/g, "$1")
       .replace(/\[\[([^\]|]+)(?:\|([^\]]+))?]]/g, (_full, path: string, alias: string | undefined) => alias || path)
-      .replace(/^\s*[-*+]\s+\[[ xX]]\s+/gm, "")
+      .replace(/^\s*[-*+]\s+\[([ xX])]\s+/gm, (_full, state: string) => state.toLowerCase() === "x" ? "已完成 " : "待办 ")
+      .replace(/\*\*|__|~~/g, "")
       .replace(/^[\s>*#+=[\]_|-]+/gm, "")
       .replace(/\|/g, " ")
       .replace(/[ \t]{2,}/g, " ")
@@ -72116,6 +72123,23 @@ type TtsViewportReadableItem = {
   text: string;
 };
 
+const MARKDOWN_TTS_EXTERNAL_EMBED_SELECTOR = [
+  ".markdown-embed",
+  ".internal-embed",
+  ".file-embed",
+  ".image-embed",
+  ".media-embed",
+  ".audio-embed",
+  ".video-embed",
+  ".pdf-embed",
+  ".canvas-embed",
+  "iframe"
+].join(",");
+
+function isExternalMarkdownTtsElement(element: HTMLElement): boolean {
+  return Boolean(element.closest(MARKDOWN_TTS_EXTERNAL_EMBED_SELECTOR));
+}
+
 function markdownViewportReadableItems(root: HTMLElement, viewport = ttsReadableViewport(root)): TtsViewportReadableItem[] {
   const selectors = [
     ".markdown-preview-view h1",
@@ -72162,7 +72186,10 @@ function markdownViewportReadableItems(root: HTMLElement, viewport = ttsReadable
       const text = renderedElementReadableText(element).replace(/\s+/g, " ").trim();
       return { element, rect, readable, visible, text };
     })
-    .filter((item) => item.readable && item.text && !item.element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button"))
+    .filter((item) => item.readable
+      && item.text
+      && !isExternalMarkdownTtsElement(item.element)
+      && !item.element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button"))
     .sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
   return keepTopLevelReadableItems(items);
 }
@@ -72193,8 +72220,10 @@ function extractVisibleMarkdownViewportText(root: HTMLElement, maxChars = TTS_CA
 }
 
 function innermostReadableRoots(roots: HTMLElement[]): HTMLElement[] {
-  return roots.filter((root) => {
-    for (const other of roots) {
+  const primaryRoots = roots.filter((root) => !isExternalMarkdownTtsElement(root));
+  const candidates = primaryRoots.length ? primaryRoots : roots;
+  return candidates.filter((root) => {
+    for (const other of candidates) {
       if (other === root) continue;
       if (root.contains(other)) return false;
     }
@@ -72485,7 +72514,13 @@ function closestStringIndex(haystack: string, needle: string, cursor = 0): numbe
 }
 
 function renderedElementReadableText(element: HTMLElement): string {
-  const raw = element.innerText || element.textContent || "";
+  if (isExternalMarkdownTtsElement(element)) return "";
+  let raw = element.innerText || element.textContent || "";
+  if (element.querySelector(MARKDOWN_TTS_EXTERNAL_EMBED_SELECTOR)) {
+    const hostOnly = element.cloneNode(true) as HTMLElement;
+    hostOnly.querySelectorAll(MARKDOWN_TTS_EXTERNAL_EMBED_SELECTOR).forEach((embed) => embed.remove());
+    raw = hostOnly.textContent || "";
+  }
   if (element.matches("li.task-list-item, .task-list-item")) {
     return `${isRenderedTaskChecked(element) ? "已完成" : "待办"} ${raw}`;
   }
@@ -72556,11 +72591,13 @@ function sliceTtsTextFromAnchorToEnd(fullText: string, anchorText: string, maxCh
   if (anchor.length >= 3) {
     const normalizedFull = normalizedTextWithSourceOffsets(full);
     const match = findBestNormalizedNeedleMatch(normalizedFull.text, anchor, true, Math.max(0, cursor));
-    if (match) {
+    const reliableMatchLength = Math.min(anchor.length, 16);
+    if (match && match.needle.length >= reliableMatchLength) {
       const offset = normalizedFull.offsets[match.index] ?? 0;
       return trimContext(full.slice(offset), maxChars);
     }
-    const cursorOffset = normalizedFull.offsets[Math.max(0, Math.min(normalizedFull.offsets.length - 1, cursor))] ?? 0;
+    const safeCursor = Number.isFinite(cursor) && cursor >= 0 && cursor < normalizedFull.offsets.length ? Math.floor(cursor) : 0;
+    const cursorOffset = normalizedFull.offsets[safeCursor] ?? 0;
     return trimContext(full.slice(cursorOffset), maxChars);
   }
   return trimContext(full, maxChars);
