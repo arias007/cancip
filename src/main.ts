@@ -32,6 +32,7 @@ import html2canvas from "html2canvas";
 import { strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
+import { createWorker as createTesseractWorker, OEM as TesseractOem, PSM as TesseractPsm, type Worker as TesseractWorker } from "tesseract.js";
 import { DEFAULT_SYSTEM_PROMPT, defaultSystemPromptForNavigationPath, isBundledSystemPrompt, PLUGIN_NAME, VIEW_TYPE } from "./constants";
 import supportCodeOneDataUrl from "./support/code-1.png";
 import supportCodeTwoDataUrl from "./support/code-2.png";
@@ -146,6 +147,24 @@ const PRIME_TTS_PACKAGE_DEFINITIONS = [
     notes: "Default optional local package used by Cancip today. English can usually use system/Web Speech without downloading it; Chinese uses this package when local offline speech is needed."
   }
 ] as const;
+const OCR_PACKAGES_RELATIVE = "plugins/cancip/ocr";
+const OCR_LITE_PACKAGE_FOLDER = "lite-zh-en";
+const OCR_LITE_PACKAGE_TAG = "ocr-lite-v1";
+const OCR_LITE_PACKAGE_ASSET = "cancip-ocr-lite-zh-en.zip";
+const OCR_LITE_PACKAGE_URL = `https://github.com/arias007/obsidian-cancip-ai/releases/download/${OCR_LITE_PACKAGE_TAG}/${OCR_LITE_PACKAGE_ASSET}`;
+const OCR_LITE_PACKAGE_SHA256 = "3ed7f0d7db98b4291d84c906fdc4c0fc99ef4ae6e455c746d5ab20494b6d91bf";
+const OCR_LITE_PACKAGE_VERSION = "1";
+const OCR_PACKAGE_MAX_BYTES = 30 * 1024 * 1024;
+const OCR_REQUIRED_RELATIVES = [
+  "worker.min.js",
+  "tesseract-core-lstm.wasm.js",
+  "tesseract-core-simd-lstm.wasm.js",
+  "chi_sim.traineddata.gz",
+  "eng.traineddata.gz",
+  "manifest.json"
+] as const;
+const OCR_CACHE_SCHEMA_VERSION = 2;
+const OCR_RUNTIME_IDLE_DISPOSE_MS = 30000;
 const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
 const BUILTIN_PRIME_TTS_PREFETCH_AHEAD = 5;
 const BUILTIN_PRIME_TTS_CACHE_KEEP_BEHIND = 12;
@@ -699,6 +718,18 @@ type SearchHit = {
   kind?: UniversalSearchDocumentKind;
   route?: "hard" | "soft";
   archived?: boolean;
+  relation?: AiSearchRelation;
+  reason?: string;
+};
+
+type SearchPaneState = "split" | "ai" | "hard";
+type AiSearchRelation = "direct" | "concept" | "context" | "style" | "inspiration";
+
+type AiSearchExpansion = {
+  queries: string[];
+  concepts: string[];
+  styleSignals: string[];
+  intent: string;
 };
 
 type EditorAutocompleteMemoryDocument = {
@@ -876,6 +907,35 @@ type ParsedAttachmentResult = {
   kind: string;
   text: string;
   warnings: string[];
+};
+
+type OcrLayoutBlock = {
+  text: string;
+  confidence: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  page?: number;
+};
+
+type OcrIndexEntry = {
+  schemaVersion: number;
+  engineVersion: string;
+  source: "vault" | "remote";
+  path: string;
+  sourceKey: string;
+  mtime: number;
+  size: number;
+  indexedAt: string;
+  languages: string;
+  confidence: number;
+  width: number;
+  height: number;
+  text: string;
+  description: string;
+  blocks: OcrLayoutBlock[];
+  pages?: Array<{ page: number; text: string; description: string; confidence: number }>;
 };
 
 type ComposerWorkflowHint = {
@@ -1613,6 +1673,7 @@ type UniversalSearchDocument = {
   indexedAt: string;
   textChars: number;
   bloom: string;
+  signals: string;
 };
 
 type UniversalSearchInventoryItem = Pick<UniversalSearchDocument, "path" | "title" | "kind" | "mtime" | "size">;
@@ -2371,6 +2432,15 @@ type Settings = {
   codexMemoryMaxFiles: number;
   codexMemoryMaxChars: number;
   useVaultSearchByDefault: boolean;
+  searchPaneState: SearchPaneState;
+  ocrEnabled: boolean;
+  ocrAutoIndex: boolean;
+  ocrNewFileAnalysis: boolean;
+  ocrRemoteMedia: boolean;
+  ocrLanguages: string;
+  ocrMaxFileMb: number;
+  ocrMaxPdfPages: number;
+  ocrMaxImageDimension: number;
   showAttachmentButton: boolean;
   compactHeader: boolean;
   documentWorkbenchDefaultMode: DocumentWorkbenchMode;
@@ -3239,6 +3309,15 @@ const DEFAULT_SETTINGS: Settings = {
   codexMemoryMaxFiles: 4,
   codexMemoryMaxChars: 8000,
   useVaultSearchByDefault: false,
+  searchPaneState: "split",
+  ocrEnabled: true,
+  ocrAutoIndex: true,
+  ocrNewFileAnalysis: true,
+  ocrRemoteMedia: true,
+  ocrLanguages: "chi_sim+eng",
+  ocrMaxFileMb: 10,
+  ocrMaxPdfPages: 3,
+  ocrMaxImageDimension: 1800,
   showAttachmentButton: true,
   compactHeader: true,
   documentWorkbenchDefaultMode: "preview",
@@ -3340,6 +3419,7 @@ let CANCIP_CONFIG_BACKUP_INDEX_PATH = `${CANCIP_CONFIG_BACKUP_DIR}/index.json`;
 const CANCIP_CONFIG_BACKUP_SCHEMA_VERSION = 1;
 const CANCIP_CONFIG_BACKUP_MAX_RECORDS_PER_PATH = 60;
 let CANCIP_MACHINE_INDEX_DIR = `${CANCIP_CONFIG_DIR}/index`;
+let CANCIP_OCR_INDEX_DIR = `${CANCIP_MACHINE_INDEX_DIR}/ocr`;
 let CANCIP_OUTCOME_EVIDENCE_DIR = `${CANCIP_CONFIG_DIR}/evidence`;
 const CANCIP_OUTCOME_EVIDENCE_SCHEMA_VERSION = 1;
 const CANCIP_OUTCOME_MAX_SCREENSHOT_PIXELS = 6_000_000;
@@ -3432,7 +3512,7 @@ const CANCIP_ARCHIVE_SESSION_SCAN_BATCH = 36;
 const CANCIP_ARCHIVE_SESSION_MOVE_BATCH = 12;
 let UNIVERSAL_SEARCH_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/universal-search.json`;
 let UNIVERSAL_SEARCH_INDEX_DIR = `${CANCIP_MACHINE_INDEX_DIR}/universal-search`;
-const UNIVERSAL_SEARCH_SCHEMA_VERSION = 3;
+const UNIVERSAL_SEARCH_SCHEMA_VERSION = 4;
 const UNIVERSAL_SEARCH_INDEX_KINDS: readonly UniversalSearchDocumentKind[] = ["memory", "note", "session", "file", "pdf", "image", "office", "archive", "config"];
 const UNIVERSAL_SEARCH_BLOOM_BITS = 4096;
 const UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT = 900;
@@ -3453,7 +3533,7 @@ const CANCIP_STATE_POLL_FOLDER_MAX_ROWS = 260;
 const CANCIP_STATE_POLL_MOBILE_FOLDER_MAX_ROWS = 80;
 let AUTOMATION_DIR = `${CANCIP_CONFIG_DIR}/automations`;
 let AUTOMATION_STATE_PATH = `${CANCIP_CONFIG_DIR}/automations.json`;
-const AUTOMATION_SCHEMA_VERSION = 14;
+const AUTOMATION_SCHEMA_VERSION = 15;
 const AUTOMATION_NEW_FILE_DEFAULT_DEBOUNCE_SECONDS = 45;
 const AUTOMATION_NEW_FILE_MAX_BATCH = 40;
 const VAULT_CURATION_AUTOMATION_ID = "auto-vault-curation";
@@ -3461,6 +3541,7 @@ const VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v9";
 const LEGACY_VAULT_CURATION_AUTOMATION_PROMPT_MARKER = "Vault Curation v8";
 let VAULT_CURATION_NEW_FILE_STATE_PATH = `${AUTOMATION_DIR}/vault-curation-new-files.json`;
 const VAULT_CURATION_NEW_FILE_STATE_SCHEMA_VERSION = 2;
+const VAULT_CURATION_NEW_FILE_PATTERN = "**/*.md,**/*.png,**/*.jpg,**/*.jpeg,**/*.webp,**/*.gif,**/*.bmp,**/*.svg,**/*.avif,**/*.pdf";
 const PERSONALIZED_DIARY_AUTOMATION_ID = "auto-personalized-diary-assist";
 const PERSONALIZED_DIARY_NO_UPDATE_MARKER = "CANCIP_DIARY_NO_UPDATE";
 const MEMORY_DREAM_AUTOMATION_ID = "auto-cancip-memory-dream";
@@ -3540,6 +3621,7 @@ function configureCancipStorageRoot(storageDir: string): void {
   CANCIP_CONFIG_BACKUP_DIR = `${CANCIP_CONFIG_DIR}/config-backups`;
   CANCIP_CONFIG_BACKUP_INDEX_PATH = `${CANCIP_CONFIG_BACKUP_DIR}/index.json`;
   CANCIP_MACHINE_INDEX_DIR = `${CANCIP_CONFIG_DIR}/index`;
+  CANCIP_OCR_INDEX_DIR = `${CANCIP_MACHINE_INDEX_DIR}/ocr`;
   CANCIP_OUTCOME_EVIDENCE_DIR = `${CANCIP_CONFIG_DIR}/evidence`;
   CANCIP_SKILLS_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/skills-index.json`;
   CANCIP_PLUGIN_LEARNING_INDEX_PATH = `${CANCIP_MACHINE_INDEX_DIR}/plugin-learning.json`;
@@ -4350,6 +4432,7 @@ const EN = {
   settingsGroupVersioning: "Local versioning",
   settingsGroupAutomation: "Automations",
   settingsGroupTts: "Text to speech",
+  settingsGroupOcr: "Local OCR",
   settingsGroupExport: "Export",
   settingsGroupSupport: "Payment QR codes",
   settingsGroupModelAdvanced: "Model settings",
@@ -4568,6 +4651,22 @@ const EN = {
   settingsTtsAutoReadFinalAnswerDesc: "When a session produces a new final answer, read it aloud automatically. Off by default.",
   settingsTtsHighQualityHint: "Local package route: <Obsidian config dir>/plugins/cancip/tts/<package>/. Current default download is the PrimeTTS Chinese/English package. English normally uses Web/system speech first; other languages should use system/Web/custom URL unless a compatible local package is installed.",
   settingsTtsInstallLocalPackage: "Download/install local PrimeTTS package",
+  settingsOcrEnabled: "Enable local OCR",
+  settingsOcrEnabledDesc: "Use a lazy local worker for Chinese/English text, line regions, and lightweight document/interface layout signals. The runtime is released after idle.",
+  settingsOcrAutoIndex: "Add OCR to the machine index",
+  settingsOcrAutoIndexDesc: "Cache OCR by source hash/mtime so unchanged media is not recognized repeatedly; search and Vault analysis can reuse it.",
+  settingsOcrNewFiles: "Analyze new image/PDF files",
+  settingsOcrNewFilesDesc: "New-file curation reads OCR evidence before deciding whether a file needs organization. Binary files are never rewritten.",
+  settingsOcrRemoteMedia: "OCR linked online media",
+  settingsOcrRemoteMediaDesc: "For HTTPS image/PDF links in Vault text, download a bounded copy, cache by URL, and index OCR evidence.",
+  settingsOcrLanguages: "OCR languages",
+  settingsOcrMaxFileMb: "Maximum OCR file size (MB)",
+  settingsOcrMaxPdfPages: "Maximum scanned PDF pages",
+  settingsOcrMaxImageDimension: "Maximum OCR image edge (px)",
+  settingsOcrPackage: "Lightweight OCR package",
+  settingsOcrPackageDesc: "Optional local Tesseract.js LSTM package with Chinese/English data. The download is capped below 30 MB and is not kept in memory between jobs.",
+  settingsOcrInstall: "Download/install OCR package",
+  settingsOcrRebuild: "Rebuild search index with OCR",
   ttsProbe: "Probe TTS",
   settingsShowSupportCodes: "Show payment QR codes",
   settingsSupportCodesDesc: "Displays two fixed local payment QR images from the installed plugin extras folder. They are not editable and are not sent to the model.",
@@ -5367,6 +5466,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsGroupVersioning: "本地版本",
     settingsGroupAutomation: "自动化任务",
     settingsGroupTts: "朗读 / TTS",
+    settingsGroupOcr: "本地 OCR",
     settingsGroupExport: "导出",
     settingsGroupSupport: "收款码设置",
     settingsGroupModelAdvanced: "模型设置",
@@ -5570,6 +5670,22 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     settingsTtsAutoReadFinalAnswerDesc: "有新最终回答时自动朗读；默认关闭，需要手动打开。",
     settingsTtsHighQualityHint: "本地包路线：<Obsidian 配置目录>/plugins/cancip/tts/<package>/。当前默认下载 PrimeTTS 中英文包；英语通常优先 Web/系统朗读，其它语言优先系统/Web/custom URL，除非安装了兼容本地包。",
     settingsTtsInstallLocalPackage: "下载/安装本地 PrimeTTS 包",
+    settingsOcrEnabled: "启用本地 OCR",
+    settingsOcrEnabledDesc: "按需启动本地中英文识别，提取文字、行块坐标及轻量文档/界面版面信号；空闲后释放运行时。",
+    settingsOcrAutoIndex: "OCR 写入机器索引",
+    settingsOcrAutoIndexDesc: "按来源哈希和修改时间缓存，未变化媒体不重复识别；搜索和 Vault 分析可直接复用。",
+    settingsOcrNewFiles: "分析新增图片和 PDF",
+    settingsOcrNewFilesDesc: "新文件整理先读取 OCR 证据再判断是否需要处理；不会改写二进制文件。",
+    settingsOcrRemoteMedia: "识别笔记链接的网上媒体",
+    settingsOcrRemoteMediaDesc: "对 Vault 文字中的 HTTPS 图片/PDF 链接限量下载，按 URL 缓存并加入 OCR 索引。",
+    settingsOcrLanguages: "OCR 语言",
+    settingsOcrMaxFileMb: "OCR 最大文件（MB）",
+    settingsOcrMaxPdfPages: "扫描 PDF 最大页数",
+    settingsOcrMaxImageDimension: "OCR 图片最大边长（像素）",
+    settingsOcrPackage: "轻量 OCR 包",
+    settingsOcrPackageDesc: "可选本地 Tesseract.js LSTM 中英文包；下载包强制小于 30 MB，任务结束空闲后不常驻内存。",
+    settingsOcrInstall: "下载/安装 OCR 包",
+    settingsOcrRebuild: "用 OCR 重建搜索索引",
     ttsProbe: "探测 TTS",
     settingsShowSupportCodes: "显示我的两个收款码",
     settingsSupportCodesDesc: "从插件安装目录 extras 显示固定的支付宝和币安收款码；不可编辑，也不会发给模型。",
@@ -8431,6 +8547,13 @@ export default class CancipPlugin extends Plugin {
   private builtinPrimeTtsInstallLastError = "";
   private builtinPrimeTtsRuntimeLastError = "";
   private builtinPrimeTtsWarmupSynthDone = false;
+  private ocrWorker: TesseractWorker | null = null;
+  private ocrWorkerPromise: Promise<TesseractWorker> | null = null;
+  private ocrQueue: Promise<void> = Promise.resolve();
+  private ocrRuntimeDisposeTimer: number | null = null;
+  private ocrInstallPromise: Promise<string> | null = null;
+  private ocrInstallStatus = "";
+  private ocrRuntimeStatus = "idle";
   private ttsOverlay: TtsOverlayElements | null = null;
   private ttsOverlayHideTimer: number | null = null;
   private ttsOverlayDragging = false;
@@ -8480,6 +8603,7 @@ export default class CancipPlugin extends Plugin {
   private aiVaultAdapterOriginalMethods = new Map<AiVaultAdapterMethod, AiVaultAdapterFunction>();
   private universalSearchIndexCache: UniversalSearchIndex | null = null;
   private universalSearchInventoryCache: UniversalSearchInventoryItem[] | null = null;
+  private universalSearchOcrDirtyPaths = new Set<string>();
   private documentSnapshotCache = new Map<string, DocumentSnapshot>();
   private documentWorkbenchRestorePromise: Promise<number> | null = null;
   private documentWorkbenchAutoOpenPath = "";
@@ -9984,6 +10108,7 @@ export default class CancipPlugin extends Plugin {
       if (existing
         && !protectedContent
         && !staleBinaryExtraction
+        && !this.universalSearchOcrDirtyPaths.has(normalizePath(item.path))
         && existing.kind === item.kind
         && existing.mtime === item.mtime
         && existing.size === item.size
@@ -9994,7 +10119,11 @@ export default class CancipPlugin extends Plugin {
       }
     }
     const batchLimit = Platform.isMobileApp ? UNIVERSAL_SEARCH_MOBILE_TEXT_BUILD_BATCH : UNIVERSAL_SEARCH_TEXT_BUILD_BATCH;
-    const batch = full ? pending : fairUniversalSearchBuildBatch(pending, batchLimit);
+    const dirtyPending = pending.filter((item) => this.universalSearchOcrDirtyPaths.has(normalizePath(item.path))).slice(0, batchLimit);
+    const dirtyPaths = new Set(dirtyPending.map((item) => normalizePath(item.path)));
+    const batch = full
+      ? pending
+      : [...dirtyPending, ...fairUniversalSearchBuildBatch(pending.filter((item) => !dirtyPaths.has(normalizePath(item.path))), batchLimit - dirtyPending.length)];
     const maxTextChars = Platform.isMobileApp && !full ? UNIVERSAL_SEARCH_MOBILE_MAX_TEXT_CHARS : UNIVERSAL_SEARCH_MAX_TEXT_CHARS;
     for (const [index, item] of batch.entries()) {
       if (this.universalSearchUnloaded || generation !== this.universalSearchBuildGeneration) {
@@ -10017,8 +10146,10 @@ export default class CancipPlugin extends Plugin {
         ...item,
         indexedAt: new Date().toISOString(),
         textChars: safeText.length,
-        bloom: createUniversalSearchBloom(terms)
+        bloom: createUniversalSearchBloom(terms),
+        signals: universalSearchSemanticSignals(item.path, item.title, safeText)
       });
+      this.universalSearchOcrDirtyPaths.delete(normalizePath(item.path));
       if (full || index % 3 === 2) await sleep(0);
     }
     const processedPaths = new Set(batch.map((item) => normalizePath(item.path)));
@@ -10026,7 +10157,20 @@ export default class CancipPlugin extends Plugin {
       if (processedPaths.has(normalizePath(item.path))) continue;
       const existing = previousByPath.get(normalizePath(item.path));
       if (existing && !universalSearchProtectedContentPath(item.path)) documents.push(existing);
-      else documents.push({ ...item, indexedAt: "", textChars: 0, bloom: "" });
+      else documents.push({ ...item, indexedAt: "", textChars: 0, bloom: "", signals: "" });
+    }
+    if (this.universalSearchOcrDirtyPaths.size) {
+      this.universalSearchIndexCache = null;
+      const latestOcrIndex = await this.readUniversalSearchIndex(["image", "pdf"]);
+      const latestByPath = new Map(latestOcrIndex.documents.map((document) => [normalizePath(document.path), document]));
+      for (const path of [...this.universalSearchOcrDirtyPaths]) {
+        const latest = latestByPath.get(path);
+        if (!latest?.signals) continue;
+        const position = documents.findIndex((document) => normalizePath(document.path) === path);
+        if (position >= 0) documents[position] = latest;
+        else documents.push(latest);
+        this.universalSearchOcrDirtyPaths.delete(path);
+      }
     }
     const complete = pending.length <= batch.length;
     const next: UniversalSearchIndex = {
@@ -10149,7 +10293,12 @@ export default class CancipPlugin extends Plugin {
       ].filter(Boolean).join("\n");
     }
     if (resolvedKind === "image") {
-      return await readImageSearchSidecarText(adapter, normalized, maxChars);
+      const sidecar = await readImageSearchSidecarText(adapter, normalized, maxChars);
+      const file = this.app.vault.getAbstractFileByPath(normalized);
+      const ocr = this.settings.ocrAutoIndex && file instanceof TFile
+        ? await this.readOcrForVaultFile(file).catch(() => null)
+        : null;
+      return trimContext([sidecar, ocr ? ocrEntrySearchText(ocr, maxChars) : ""].filter(Boolean).join("\n\n"), maxChars);
     }
     if (resolvedKind === "pdf" || resolvedKind === "office" || resolvedKind === "archive") {
       const file = this.app.vault.getAbstractFileByPath(normalized);
@@ -10165,12 +10314,18 @@ export default class CancipPlugin extends Plugin {
       const buffer = await adapter.readBinary(normalized);
       const webFile = new File([buffer], file.name, { type: mimeTypeForPath(normalized), lastModified: file.stat.mtime });
       const parsed = await parseBinaryAttachment(webFile, maxChars);
+      if (this.settings.ocrAutoIndex && resolvedKind === "pdf" && !looksLikeReadableExtractedText(parsed.text)) {
+        const ocr = await this.readOcrForVaultFile(file, false, 1).catch(() => null);
+        if (ocr) return ocrEntrySearchText(ocr, maxChars);
+      }
       return parsed.text;
     }
     if (!isContextTextPath(normalized)) return "";
     const raw = await adapter.read(normalized);
     if (resolvedKind === "session") return searchTextFromSessionSnapshot(raw, maxChars);
-    return searchableVaultText(normalized, raw, maxChars);
+    const text = searchableVaultText(normalized, raw, maxChars);
+    const remoteOcr = await this.remoteOcrTextForNote(raw, Math.min(8000, maxChars)).catch(() => "");
+    return trimContext([text, remoteOcr].filter(Boolean).join("\n\n"), maxChars);
   }
 
   async universalSearchIndexStatus(): Promise<{ indexed: number; total: number; complete: boolean; updatedAt: string; archived: number }> {
@@ -10502,6 +10657,8 @@ export default class CancipPlugin extends Plugin {
     this.builtinPrimeTtsRuntime = null;
     this.builtinPrimeTtsPromise = null;
     this.builtinPrimeTtsInstallPromise = null;
+    void this.disposeOcrRuntime();
+    this.ocrInstallPromise = null;
     if (this.builtinPrimeTtsWarmupTimer !== null) {
       window.clearTimeout(this.builtinPrimeTtsWarmupTimer);
       this.builtinPrimeTtsWarmupTimer = null;
@@ -11678,6 +11835,469 @@ export default class CancipPlugin extends Plugin {
     const normalizedCursor = Math.max(0, this.activeTtsHighlightBaseCursor) + displayCursor;
     const offset = normalizedSource.offsets[normalizedCursor] ?? normalizedSource.offsets[displayCursor];
     return Number.isFinite(offset) ? offset : 0;
+  }
+
+  ocrPackagesRoot(): string {
+    return `${this.obsidianConfigDir()}/${OCR_PACKAGES_RELATIVE}`;
+  }
+
+  ocrPackageBase(): string {
+    return `${this.ocrPackagesRoot()}/${OCR_LITE_PACKAGE_FOLDER}`;
+  }
+
+  async ocrPackageStatus(): Promise<string> {
+    const missing = await this.missingOcrPackageAssets();
+    if (missing.length) {
+      return isChineseLanguage(this.language())
+        ? `未安装（缺少 ${missing.length} 个文件）`
+        : `Not installed (${missing.length} files missing)`;
+    }
+    return isChineseLanguage(this.language())
+      ? `已安装 · ${OCR_LITE_PACKAGE_FOLDER} · 本地懒加载`
+      : `Installed · ${OCR_LITE_PACKAGE_FOLDER} · lazy local runtime`;
+  }
+
+  ocrRuntimeStatusSummary(): string {
+    return this.ocrRuntimeStatus;
+  }
+
+  async resetOcrRuntime(): Promise<void> {
+    await this.disposeOcrRuntime();
+  }
+
+  async installOcrPackage(showNotice = true): Promise<string> {
+    if (!(await this.missingOcrPackageAssets()).length) return await this.ocrPackageStatus();
+    if (this.ocrInstallPromise) return await this.ocrInstallPromise;
+    this.ocrInstallPromise = this.downloadAndInstallOcrPackage(showNotice);
+    try {
+      return await this.ocrInstallPromise;
+    } finally {
+      this.ocrInstallPromise = null;
+    }
+  }
+
+  private async missingOcrPackageAssets(): Promise<string[]> {
+    const adapter = this.app.vault.adapter;
+    const missing: string[] = [];
+    for (const relative of OCR_REQUIRED_RELATIVES) {
+      const path = `${this.ocrPackageBase()}/${relative}`;
+      if (!(await adapter.exists(path))) missing.push(relative);
+    }
+    return missing;
+  }
+
+  private async downloadAndInstallOcrPackage(showNotice: boolean): Promise<string> {
+    const installing = isChineseLanguage(this.language()) ? "正在下载轻量 OCR 包…" : "Downloading the lightweight OCR package...";
+    this.ocrInstallStatus = installing;
+    if (showNotice) new Notice(installing, 6000);
+    const url = this.accelerateGithubDownloadUrl(OCR_LITE_PACKAGE_URL);
+    try {
+      const response = await requestUrl({ url, method: "GET", throw: false });
+      if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}: ${trimContext(response.text ?? "", 160)}`);
+      if (response.arrayBuffer.byteLength > OCR_PACKAGE_MAX_BYTES) {
+        throw new Error(`OCR package exceeds ${formatFileSize(OCR_PACKAGE_MAX_BYTES)}`);
+      }
+      const packageHash = await sha256ArrayBuffer(response.arrayBuffer);
+      if (packageHash !== OCR_LITE_PACKAGE_SHA256) throw new Error("OCR package SHA-256 verification failed");
+      const installed = await this.installOcrZip(response.arrayBuffer);
+      const missing = await this.missingOcrPackageAssets();
+      if (missing.length) throw new Error(`package incomplete: ${missing.join(", ")}`);
+      this.ocrInstallStatus = isChineseLanguage(this.language())
+        ? `OCR 包已安装（${installed} 个文件）`
+        : `OCR package installed (${installed} files)`;
+      if (showNotice) new Notice(this.ocrInstallStatus, 7000);
+      return this.ocrInstallStatus;
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      this.ocrInstallStatus = isChineseLanguage(this.language()) ? `OCR 包安装失败：${reason}` : `OCR package install failed: ${reason}`;
+      if (showNotice) new Notice(this.ocrInstallStatus, 10000);
+      throw error;
+    }
+  }
+
+  private async installOcrZip(buffer: ArrayBuffer): Promise<number> {
+    const warnings: string[] = [];
+    const bytes = new Uint8Array(buffer);
+    const entries = readZipEntries(bytes, warnings);
+    if (!entries.length) throw new Error("downloaded OCR package is not a readable ZIP");
+    const byName = new Map<string, ZipEntry>();
+    for (const entry of entries) {
+      const relative = normalizeOcrZipEntry(entry.name);
+      if (relative) byName.set(relative, entry);
+    }
+    const extracted = new Map<string, Uint8Array>();
+    for (const relative of OCR_REQUIRED_RELATIVES) {
+      const entry = byName.get(relative);
+      if (!entry) throw new Error(`OCR package missing ${relative}`);
+      const data = await extractZipEntryBytes(entry, bytes, warnings);
+      if (!data.byteLength) throw new Error(`OCR package entry is empty: ${relative}`);
+      extracted.set(relative, data);
+    }
+    const manifestBytes = extracted.get("manifest.json");
+    const manifest = manifestBytes ? JSON.parse(new TextDecoder().decode(manifestBytes)) as unknown : null;
+    if (!isRecord(manifest) || manifest.engine !== "tesseract.js" || String(manifest.version ?? "") !== OCR_LITE_PACKAGE_VERSION) {
+      throw new Error("OCR package manifest is incompatible");
+    }
+    const adapter = this.app.vault.adapter;
+    let written = 0;
+    for (const [relative, data] of extracted) {
+      const path = `${this.ocrPackageBase()}/${relative}`;
+      await ensureParentFolder(adapter, path);
+      await adapter.writeBinary(path, uint8ArrayToArrayBuffer(data));
+      written += 1;
+    }
+    if (warnings.length) console.debug("Cancip OCR package warnings", warnings);
+    return written;
+  }
+
+  async readOcrForVaultFile(file: TFile, force = false, pdfPageLimit?: number): Promise<OcrIndexEntry | null> {
+    if (!this.settings.ocrEnabled || !isOcrSupportedPath(file.path)) return null;
+    const maxBytes = this.settings.ocrMaxFileMb * 1024 * 1024;
+    if (file.stat.size > maxBytes) return null;
+    const sourceKey = normalizePath(file.path);
+    const cached = force ? null : await this.readOcrCache("vault", sourceKey, file.stat.mtime, file.stat.size);
+    const requestedPdfPages = Math.max(1, Math.min(this.settings.ocrMaxPdfPages, pdfPageLimit ?? this.settings.ocrMaxPdfPages));
+    if (cached && (!isPdfPath(file.path) || ocrPdfCacheCoversLimit(cached, requestedPdfPages))) return cached;
+    if ((await this.missingOcrPackageAssets()).length) return null;
+    const buffer = await this.app.vault.adapter.readBinary(file.path);
+    const webFile = new File([buffer], file.name, { type: mimeTypeForPath(file.path), lastModified: file.stat.mtime });
+    const entry = isPdfPath(file.path)
+      ? await this.ocrPdfFile(webFile, "vault", sourceKey, file.stat.mtime, requestedPdfPages, cached)
+      : await this.ocrImageFile(webFile, "vault", sourceKey, file.stat.mtime);
+    await this.writeOcrCache(entry);
+    return entry;
+  }
+
+  async readOcrForRemoteUrl(url: string, pdfPageLimit?: number): Promise<OcrIndexEntry | null> {
+    if (!this.settings.ocrEnabled || !this.settings.ocrRemoteMedia || !isSafeRemoteOcrUrl(url)) return null;
+    const cached = await this.readOcrCache("remote", url, 0, -1);
+    const requestedPdfPages = Math.max(1, Math.min(this.settings.ocrMaxPdfPages, pdfPageLimit ?? this.settings.ocrMaxPdfPages));
+    if (cached && (!isPdfPath(url.replace(/[?#].*$/, "")) || ocrPdfCacheCoversLimit(cached, requestedPdfPages))) return cached;
+    if ((await this.missingOcrPackageAssets()).length) return null;
+    const response = await requestUrl({ url, method: "GET", throw: false });
+    if (response.status < 200 || response.status >= 300) return null;
+    const maxBytes = this.settings.ocrMaxFileMb * 1024 * 1024;
+    if (!response.arrayBuffer.byteLength || response.arrayBuffer.byteLength > maxBytes) return null;
+    const contentType = String(response.headers?.["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+    const pdf = contentType === "application/pdf" || /\.pdf(?:[?#]|$)/i.test(url);
+    const image = contentType.startsWith("image/") || isImagePath(url.replace(/[?#].*$/, ""));
+    if (!pdf && !image) return null;
+    const name = remoteOcrFileName(url, pdf ? "remote.pdf" : "remote.png");
+    const file = new File([response.arrayBuffer], name, { type: contentType || (pdf ? "application/pdf" : mimeTypeForPath(name)) });
+    const entry = pdf
+      ? await this.ocrPdfFile(file, "remote", url, 0, requestedPdfPages, cached)
+      : await this.ocrImageFile(file, "remote", url, 0);
+    await this.writeOcrCache(entry);
+    return entry;
+  }
+
+  async remoteOcrTextForNote(content: string, maxChars: number): Promise<string> {
+    if (!this.settings.ocrRemoteMedia || !this.settings.ocrEnabled || !this.settings.ocrAutoIndex) return "";
+    const urls = extractRemoteOcrUrls(content).slice(0, 2);
+    const chunks: string[] = [];
+    for (const url of urls) {
+      try {
+        const entry = await withTimeout(this.readOcrForRemoteUrl(url, 1), 20000, "remote OCR timed out");
+        if (entry) chunks.push(`Remote media: ${url}\n${ocrEntrySearchText(entry, Math.max(800, maxChars - chunks.join("\n").length))}`);
+      } catch {
+        // Remote OCR is optional evidence and must not block note indexing.
+      }
+      if (chunks.join("\n").length >= maxChars) break;
+    }
+    return trimContext(chunks.join("\n\n"), maxChars);
+  }
+
+  private async readOcrCache(source: "vault" | "remote", sourceKey: string, mtime: number, size: number): Promise<OcrIndexEntry | null> {
+    const path = ocrCachePath(source, sourceKey);
+    const adapter = this.app.vault.adapter;
+    try {
+      if (!(await adapter.exists(path))) return null;
+      const entry = normalizeOcrIndexEntry(JSON.parse(await adapter.read(path)) as unknown);
+      if (!entry || entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION || entry.engineVersion !== OCR_LITE_PACKAGE_VERSION || entry.sourceKey !== sourceKey) return null;
+      if (source === "vault" && (entry.mtime !== mtime || entry.size !== size)) return null;
+      return entry;
+    } catch {
+      return null;
+    }
+  }
+
+  private async writeOcrCache(entry: OcrIndexEntry): Promise<void> {
+    const path = ocrCachePath(entry.source, entry.sourceKey);
+    await ensureParentFolder(this.app.vault.adapter, path);
+    await this.app.vault.adapter.write(path, `${JSON.stringify(entry)}\n`);
+    if (entry.source === "vault" && this.settings.ocrAutoIndex) await this.refreshUniversalSearchOcrDocument(entry);
+  }
+
+  private async refreshUniversalSearchOcrDocument(entry: OcrIndexEntry): Promise<void> {
+    const path = normalizePath(entry.path || entry.sourceKey);
+    if (!path || universalSearchProtectedContentPath(path)) return;
+    const kind = universalSearchDocumentKind(path, this.settings.memoryFolder, this.obsidianConfigDir());
+    if (kind !== "image" && kind !== "pdf") return;
+    this.universalSearchOcrDirtyPaths.add(path);
+    const buildActive = Boolean(this.universalSearchBuildPromise);
+    if (buildActive) this.universalSearchBuildRequested = true;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return;
+    const shardPath = universalSearchShardPath(kind);
+    const adapter = this.app.vault.adapter;
+    let shard = emptyUniversalSearchIndex();
+    if (await adapter.exists(shardPath)) {
+      try {
+        shard = normalizeUniversalSearchIndex(JSON.parse(await adapter.read(shardPath)) as unknown);
+      } catch {
+        shard = emptyUniversalSearchIndex();
+      }
+    }
+    const safeText = redactSensitiveText(trimContext(ocrEntrySearchText(entry, UNIVERSAL_SEARCH_MAX_TEXT_CHARS), UNIVERSAL_SEARCH_MAX_TEXT_CHARS));
+    const title = reviewFileName(path);
+    const terms = universalSearchTerms(path, title, safeText).slice(0, UNIVERSAL_SEARCH_MAX_TERMS_PER_DOCUMENT);
+    const document: UniversalSearchDocument = {
+      path,
+      title,
+      kind,
+      mtime: file.stat.mtime,
+      size: file.stat.size,
+      indexedAt: new Date().toISOString(),
+      textChars: safeText.length,
+      bloom: createUniversalSearchBloom(terms),
+      signals: universalSearchSemanticSignals(path, title, safeText)
+    };
+    const documents = shard.documents.filter((item) => normalizePath(item.path) !== path);
+    documents.push(document);
+    const next: UniversalSearchIndex = {
+      ...shard,
+      schemaVersion: UNIVERSAL_SEARCH_SCHEMA_VERSION,
+      updatedAt: document.indexedAt,
+      inventoryHash: stableTextHash(documents.map((item) => `${item.path}:${item.mtime}:${item.size}:${item.indexedAt}`).join("\n")),
+      documents: documents.sort((left, right) => left.path.localeCompare(right.path)).slice(0, UNIVERSAL_SEARCH_MAX_DOCUMENTS)
+    };
+    await this.writeUniversalSearchIndexFileIfChanged(shardPath, next);
+    this.universalSearchIndexCache = null;
+    if (!buildActive) this.universalSearchOcrDirtyPaths.delete(path);
+  }
+
+  private async ocrImageFile(file: File, source: "vault" | "remote", sourceKey: string, mtime: number, rotateAuto = true): Promise<OcrIndexEntry> {
+    this.ocrRuntimeStatus = `preparing image: ${sourceKey}`;
+    const prepared = await prepareOcrImage(file, this.settings.ocrMaxImageDimension);
+    this.ocrRuntimeStatus = `recognizing image ${prepared.width}x${prepared.height}: ${sourceKey}`;
+    const recognized = await this.withOcrWorker(async (worker) => {
+      await worker.setParameters({
+        tessedit_pageseg_mode: TesseractPsm.AUTO,
+        preserve_interword_spaces: "1",
+        user_defined_dpi: "300"
+      });
+      let best = await worker.recognize(prepared.blob, { rotateAuto }, { text: true, blocks: true });
+      if (rotateAuto && shouldRetryOcrOrientation(best.data)) {
+        for (const rotateRadians of [Math.PI / 2, -Math.PI / 2, Math.PI]) {
+          const candidate = await worker.recognize(prepared.blob, { rotateRadians }, { text: true, blocks: true });
+          if (ocrRecognitionScore(candidate.data) > ocrRecognitionScore(best.data)) best = candidate;
+        }
+      }
+      return best;
+    });
+    const text = normalizeExtractedText(recognized.data.text ?? "");
+    const blocks = ocrLayoutBlocks(recognized.data.blocks, prepared.width, prepared.height);
+    return {
+      schemaVersion: OCR_CACHE_SCHEMA_VERSION,
+      engineVersion: OCR_LITE_PACKAGE_VERSION,
+      source,
+      path: source === "vault" ? sourceKey : "",
+      sourceKey,
+      mtime,
+      size: file.size,
+      indexedAt: new Date().toISOString(),
+      languages: this.settings.ocrLanguages,
+      confidence: Number.isFinite(recognized.data.confidence) ? Math.round(recognized.data.confidence * 10) / 10 : 0,
+      width: prepared.width,
+      height: prepared.height,
+      text: trimContext(text, 30000),
+      description: describeOcrLayout(prepared.width, prepared.height, blocks, text),
+      blocks
+    };
+  }
+
+  private async ocrPdfFile(file: File, source: "vault" | "remote", sourceKey: string, mtime: number, maxPages: number, previous: OcrIndexEntry | null): Promise<OcrIndexEntry> {
+    this.ocrRuntimeStatus = `loading PDF: ${sourceKey}`;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const pdfjs = await loadPdfJs();
+    const loadingTask = pdfjs.getDocument({ data: bytes, isEvalSupported: false, useSystemFonts: true });
+    const document = await loadingTask.promise as {
+      numPages: number;
+      getPage: (pageNumber: number) => Promise<{
+        getViewport: (options: { scale: number }) => { width: number; height: number };
+        render: (options: { canvasContext: CanvasRenderingContext2D; viewport: unknown; intent?: "display" | "print" }) => { promise: Promise<void>; cancel?: () => void };
+      }>;
+      cleanup?: () => Promise<void> | void;
+    };
+    const pages = (previous?.pages ?? []).slice(0, maxPages).map((page) => ({ ...page }));
+    const allBlocks: OcrLayoutBlock[] = previous ? previous.blocks.map((block) => ({ ...block })) : [];
+    let width = previous?.width ?? 0;
+    let height = previous?.height ?? 0;
+    try {
+      const pageLimit = Math.min(document.numPages || 0, maxPages);
+      for (let pageNumber = pages.length + 1; pageNumber <= pageLimit; pageNumber += 1) {
+        const sidecar = source === "vault" ? await this.ocrPdfSidecarPageFile(sourceKey, pageNumber) : null;
+        if (sidecar) {
+          this.ocrRuntimeStatus = `recognizing cached PDF page ${pageNumber}/${pageLimit}: ${sourceKey}`;
+          const pageEntry = await this.ocrImageFile(sidecar, source, `${sourceKey}#page=${pageNumber}`, mtime, false);
+          pages.push({ page: pageNumber, text: pageEntry.text, description: `${pageEntry.description}\nSource: cached PDF page image`, confidence: pageEntry.confidence });
+          allBlocks.push(...pageEntry.blocks.map((block) => ({ ...block, page: pageNumber })));
+          width = Math.max(width, pageEntry.width);
+          height += pageEntry.height;
+          await sleep(0);
+          continue;
+        }
+        this.ocrRuntimeStatus = `rendering PDF page ${pageNumber}/${pageLimit}: ${sourceKey}`;
+        const page = await document.getPage(pageNumber);
+        const base = page.getViewport({ scale: 1 });
+        const maxPageDimension = Math.min(this.settings.ocrMaxImageDimension, 1200);
+        const scale = Math.min(2, maxPageDimension / Math.max(base.width, base.height));
+        const viewport = page.getViewport({ scale: Math.max(0.2, scale) });
+        const canvas = this.app.workspace.containerEl.ownerDocument.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(viewport.width));
+        canvas.height = Math.max(1, Math.round(viewport.height));
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) continue;
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        const renderTask = page.render({ canvasContext: context, viewport, intent: "print" });
+        try {
+          await withTimeout(renderTask.promise, 8000, `PDF page ${pageNumber} render timed out`);
+        } catch (error) {
+          renderTask.cancel?.();
+          const reason = error instanceof Error ? error.message : String(error);
+          pages.push({ page: pageNumber, text: "", description: `OCR unavailable: ${reason}`, confidence: 0 });
+          this.ocrRuntimeStatus = `PDF page skipped: ${reason}`;
+          continue;
+        }
+        this.ocrRuntimeStatus = `encoding PDF page ${pageNumber}/${pageLimit}: ${sourceKey}`;
+        const blob = await canvasElementToBlob(canvas, "image/jpeg", 0.88);
+        const pageEntry = await this.ocrImageFile(new File([blob], `${file.name}-page-${pageNumber}.jpg`, { type: "image/jpeg" }), source, `${sourceKey}#page=${pageNumber}`, mtime, false);
+        pages.push({ page: pageNumber, text: pageEntry.text, description: pageEntry.description, confidence: pageEntry.confidence });
+        allBlocks.push(...pageEntry.blocks.map((block) => ({ ...block, page: pageNumber })));
+        width = Math.max(width, pageEntry.width);
+        height += pageEntry.height;
+        await sleep(0);
+      }
+    } finally {
+      await document.cleanup?.();
+      await loadingTask.destroy?.();
+    }
+    const text = pages.map((page) => `Page ${page.page}\n${page.text}`).join("\n\n");
+    const description = [
+      `PDF pages OCR-indexed: ${pages.length}/${document.numPages}`,
+      ...pages.map((page) => `Page ${page.page}: ${page.description}`)
+    ].join("\n");
+    return {
+      schemaVersion: OCR_CACHE_SCHEMA_VERSION,
+      engineVersion: OCR_LITE_PACKAGE_VERSION,
+      source,
+      path: source === "vault" ? sourceKey : "",
+      sourceKey,
+      mtime,
+      size: file.size,
+      indexedAt: new Date().toISOString(),
+      languages: this.settings.ocrLanguages,
+      confidence: pages.length ? Math.round(pages.reduce((sum, page) => sum + page.confidence, 0) / pages.length * 10) / 10 : 0,
+      width,
+      height,
+      text: trimContext(text, 30000),
+      description: trimContext(description, 5000),
+      blocks: allBlocks.slice(0, 240),
+      pages
+    };
+  }
+
+  private async ocrPdfSidecarPageFile(sourceKey: string, pageNumber: number): Promise<File | null> {
+    const base = normalizePath(sourceKey).replace(/\.pdf$/i, "");
+    const page = String(pageNumber).padStart(3, "0");
+    const candidates = [
+      `${base}-pdftion-pages/page-${page}.png`,
+      `${base}-pdftion-pages/page-${page}.jpg`,
+      `${base}-pdftion-pages/page-${page}.jpeg`,
+      `${base}-pages/page-${page}.png`,
+      `${base}-pages/page-${page}.jpg`
+    ];
+    for (const path of candidates) {
+      const file = this.app.vault.getAbstractFileByPath(path);
+      if (!(file instanceof TFile) || file.stat.size > this.settings.ocrMaxFileMb * 1024 * 1024) continue;
+      const buffer = await this.app.vault.adapter.readBinary(file.path);
+      return new File([buffer], file.name, { type: mimeTypeForPath(file.path), lastModified: file.stat.mtime });
+    }
+    return null;
+  }
+
+  private async withOcrWorker<T>(run: (worker: TesseractWorker) => Promise<T>): Promise<T> {
+    let result!: T;
+    let failure: unknown;
+    const task = this.ocrQueue.then(async () => {
+      try {
+        this.ocrRuntimeStatus = "loading local OCR runtime";
+        const worker = await this.ensureOcrWorker();
+        this.ocrRuntimeStatus = "recognizing text";
+        result = await run(worker);
+        this.ocrRuntimeStatus = "OCR result ready";
+      } catch (error) {
+        failure = error;
+        this.ocrRuntimeStatus = `OCR failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+    });
+    this.ocrQueue = task.catch(() => undefined);
+    await task;
+    this.scheduleOcrRuntimeDisposal();
+    if (failure) throw failure;
+    return result;
+  }
+
+  private async ensureOcrWorker(): Promise<TesseractWorker> {
+    if (this.ocrWorker) return this.ocrWorker;
+    if (this.ocrWorkerPromise) return await this.ocrWorkerPromise;
+    const missing = await this.missingOcrPackageAssets();
+    if (missing.length) throw new Error(`local OCR package is incomplete: ${missing.join(", ")}`);
+    const adapter = this.app.vault.adapter;
+    const base = this.ocrPackageBase();
+    const workerPath = adapter.getResourcePath(`${base}/worker.min.js`);
+    const simd = supportsWasmSimd();
+    const coreFile = simd ? "tesseract-core-simd-lstm.wasm.js" : "tesseract-core-lstm.wasm.js";
+    const corePath = adapter.getResourcePath(`${base}/${coreFile}`);
+    const langFileUrl = adapter.getResourcePath(`${base}/chi_sim.traineddata.gz`);
+    const langPath = resourceParentUrl(langFileUrl);
+    this.ocrWorkerPromise = createTesseractWorker(this.settings.ocrLanguages, TesseractOem.LSTM_ONLY, {
+      workerPath,
+      corePath,
+      langPath,
+      workerBlobURL: true,
+      cacheMethod: "none",
+      gzip: true,
+      logger: () => undefined,
+      errorHandler: (error) => console.warn("Cancip OCR worker", error)
+    });
+    try {
+      this.ocrWorker = await this.ocrWorkerPromise;
+      return this.ocrWorker;
+    } finally {
+      this.ocrWorkerPromise = null;
+    }
+  }
+
+  private scheduleOcrRuntimeDisposal(): void {
+    if (this.ocrRuntimeDisposeTimer !== null) window.clearTimeout(this.ocrRuntimeDisposeTimer);
+    this.ocrRuntimeDisposeTimer = window.setTimeout(() => {
+      this.ocrRuntimeDisposeTimer = null;
+      void this.disposeOcrRuntime();
+    }, OCR_RUNTIME_IDLE_DISPOSE_MS);
+  }
+
+  private async disposeOcrRuntime(): Promise<void> {
+    if (this.ocrRuntimeDisposeTimer !== null) {
+      window.clearTimeout(this.ocrRuntimeDisposeTimer);
+      this.ocrRuntimeDisposeTimer = null;
+    }
+    const worker = this.ocrWorker;
+    this.ocrWorker = null;
+    this.ocrWorkerPromise = null;
+    if (worker) await worker.terminate().catch(() => undefined);
+    if (!this.ocrRuntimeStatus.startsWith("OCR failed")) this.ocrRuntimeStatus = "idle";
   }
 
   private activeTtsHighlightDisplayIndex(): number {
@@ -22330,7 +22950,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
               return {
                 ...dedicated,
                 watchNewFiles: true,
-                newFilePattern: dedicated.newFilePattern || "**/*.md",
+                newFilePattern: !dedicated.newFilePattern || dedicated.newFilePattern === "**/*.md"
+                  ? VAULT_CURATION_NEW_FILE_PATTERN
+                  : dedicated.newFilePattern,
                 silent: schemaVersion < 12 ? false : dedicated.silent,
                 notifyMode: schemaVersion < 12 ? "always" : dedicated.notifyMode
               };
@@ -27927,6 +28549,7 @@ class CancipView extends ItemView {
   private searchButtonEl: HTMLButtonElement | null = null;
   private searchPopoverEl: HTMLElement | null = null;
   private searchPopoverCleanup: (() => void) | null = null;
+  private aiVaultSearchCache = new Map<string, { at: number; expansion: AiSearchExpansion; hits: SearchHit[] }>();
   private processDetailWrapState = new Map<string, boolean>();
   private processDetailScrollLeft = new Map<string, number>();
   private headerLiveStatusSignature = "";
@@ -28788,9 +29411,9 @@ class CancipView extends ItemView {
     }
   }
 
-  private async readVaultAttachmentText(file: TFile, maxChars: number): Promise<ParsedAttachmentResult> {
+  private async readVaultAttachmentText(file: TFile, maxChars: number, pdfPageLimit?: number): Promise<ParsedAttachmentResult> {
     const normalized = normalizePath(file.path);
-    const cached = this.vaultAttachmentTextCache.get(normalized);
+    const cached = pdfPageLimit === undefined ? this.vaultAttachmentTextCache.get(normalized) : undefined;
     if (cached && cached.mtime === file.stat.mtime && cached.size === file.stat.size) {
       return {
         kind: cached.kind,
@@ -28800,12 +29423,14 @@ class CancipView extends ItemView {
     }
     if (isImagePath(file.path)) {
       const sidecar = await this.readVaultImageSidecarText(file, Math.max(1200, Math.min(12000, maxChars)));
+      const ocr = await this.plugin.readOcrForVaultFile(file, false, pdfPageLimit).catch(() => null);
+      const text = trimContext([sidecar, ocr ? ocrEntrySearchText(ocr, maxChars) : ""].filter(Boolean).join("\n\n"), maxChars);
       const parsed = {
-        kind: sidecar ? "image/sidecar-text" : "image",
-        text: sidecar,
-        warnings: sidecar ? [] : ["No OCR/sidecar text found for this image. Use image input, OCR Skill, or a desktop/native OCR bridge when actual visual content is needed."]
+        kind: ocr ? "image/local-ocr" : sidecar ? "image/sidecar-text" : "image",
+        text,
+        warnings: text ? [] : ["No local OCR or sidecar text is available. Install the lightweight OCR package in Cancip settings or send the image to a vision-capable model."]
       };
-      this.vaultAttachmentTextCache.set(normalized, { ...parsed, mtime: file.stat.mtime, size: file.stat.size });
+      if (pdfPageLimit === undefined) this.vaultAttachmentTextCache.set(normalized, { ...parsed, mtime: file.stat.mtime, size: file.stat.size });
       return parsed;
     }
     const warnings: string[] = [];
@@ -28817,11 +29442,15 @@ class CancipView extends ItemView {
         lastModified: file.stat.mtime
       });
       parsed = await parseBinaryAttachment(webFile, Math.max(1200, Math.min(30000, maxChars)));
+      if (file.extension.toLowerCase() === "pdf" && !looksLikeReadableExtractedText(parsed.text)) {
+        const ocr = await this.plugin.readOcrForVaultFile(file, false, pdfPageLimit).catch(() => null);
+        if (ocr) parsed = { kind: "pdf/local-ocr", text: ocrEntrySearchText(ocr, maxChars), warnings: parsed.warnings };
+      }
     } catch (error) {
       warnings.push(error instanceof Error ? error.message : String(error));
       parsed = { kind: mimeTypeForPath(file.path), text: "", warnings };
     }
-    this.vaultAttachmentTextCache.set(normalized, { ...parsed, mtime: file.stat.mtime, size: file.stat.size });
+    if (pdfPageLimit === undefined) this.vaultAttachmentTextCache.set(normalized, { ...parsed, mtime: file.stat.mtime, size: file.stat.size });
     return {
       kind: parsed.kind,
       text: trimContext(parsed.text, maxChars),
@@ -36759,31 +37388,45 @@ class CancipView extends ItemView {
     const candidateLimit = clampInt(args.limit, 4, 1, 4);
     const configDir = this.plugin.obsidianConfigDir();
     const allMarkdownFiles = this.app.vault.getMarkdownFiles();
-    const curatableFiles = allMarkdownFiles.filter((file) => isVaultCurationContentFile(file, configDir, this.plugin.settings.memoryFolder));
-    const curatableByPath = new Map(curatableFiles.map((file) => [normalizePath(file.path), file]));
+    const relatedFiles = allMarkdownFiles.filter((file) => isVaultCurationContentFile(file, configDir, this.plugin.settings.memoryFolder));
+    const trackableFiles = this.app.vault.getFiles().filter((file) => isVaultCurationTrackableFile(file, configDir, this.plugin.settings.memoryFolder));
+    const trackableByPath = new Map(trackableFiles.map((file) => [normalizePath(file.path), file]));
     const eventPaths = Array.isArray(args.paths)
       ? uniqueStrings(args.paths.filter((path): path is string => typeof path === "string").map((path) => normalizePath(path)))
       : [];
-    const stateResult = await this.refreshVaultCurationNewFileState(curatableFiles);
+    const stateResult = await this.refreshVaultCurationNewFileState(trackableFiles);
     const eventFiles = eventPaths
-      .map((path) => curatableByPath.get(path))
+      .map((path) => trackableByPath.get(path))
       .filter((file): file is TFile => Boolean(file));
     const scannedFiles = [...eventFiles, ...stateResult.pending.filter((file) => !eventPaths.includes(normalizePath(file.path)))]
       .sort((a, b) => a.stat.ctime - b.stat.ctime || a.path.localeCompare(b.path))
       .slice(0, scanLimit);
-    const scannedCandidates = await this.vaultCurationCandidateItems(scannedFiles, "new Markdown file not handled by auto-curation yet", curatableFiles);
+    const markdownFiles = scannedFiles.filter(isMarkdownFile);
+    const mediaFiles = scannedFiles.filter((file) => !isMarkdownFile(file) && isOcrSupportedPath(file.path));
+    const scannedCandidates = await this.vaultCurationCandidateItems(markdownFiles, "new Markdown file not handled by auto-curation yet", relatedFiles);
+    const mediaEvidence: string[] = [];
+    if (this.plugin.settings.ocrNewFileAnalysis) {
+      for (const file of mediaFiles) {
+        const parsed = await this.readVaultAttachmentText(file, 5000, 1).catch(() => null);
+        mediaEvidence.push([
+          `### ${file.path}`,
+          `- type: ${file.extension || "file"}; size: ${formatFileSize(file.stat.size)}`,
+          parsed?.text ? trimContext(parsed.text, 1800) : "- OCR text unavailable; filename, type, size, and location remain indexed."
+        ].join("\n"));
+      }
+    }
     const actionableCandidates = scannedCandidates.filter((item) => item.decision.action === "curate").slice(0, candidateLimit);
     const candidatePaths = actionableCandidates.map((item) => item.path);
-    const scannedPaths = scannedCandidates
+    const scannedPaths = uniqueStrings([...scannedCandidates
       .filter((item) => item.decision.action !== "curate" || candidatePaths.includes(item.path))
-      .map((item) => item.path);
+      .map((item) => item.path), ...mediaFiles.map((file) => file.path)]);
     const protectedCount = scannedCandidates.filter((item) => item.decision.action === "protected").length;
     const skippedCount = scannedCandidates.filter((item) => item.decision.action === "skip").length;
     const lines: string[] = [
       "# Vault Curation Programmatic Scan Pack",
       "",
       `- generatedAt: ${new Date(now).toISOString()}`,
-      "- scanMode: manually-created-new-files-only; existing files, Cancip-created files, and reviewed/approved AI files do not enter this automation.",
+      "- scanMode: manually-created-new-files-only; Markdown, images, and PDFs are analyzed, while existing files, Cancip-created files, and reviewed/approved AI files do not enter this automation.",
       `- stateInitialized: ${stateResult.initialized}`,
       `- pendingNewFiles: ${stateResult.pending.length}`,
       `- scannedThisBatch: ${scannedPaths.length}`,
@@ -36797,8 +37440,12 @@ class CancipView extends ItemView {
       "## Meaningful candidates with bounded source text",
       formatVaultCurationCandidates(actionableCandidates, candidateLimit),
       "",
+      "## OCR and attachment evidence",
+      mediaEvidence.length ? mediaEvidence.join("\n\n") : "- none",
+      "",
       "## Contract",
       "- Process only candidatePathsJson. The source text is already attached; avoid a duplicate read unless it is truncated or an external relation must be verified.",
+      "- OCR and attachment evidence is read-only analysis for binary files. Never patch or rewrite a binary file; use it to understand, index, classify, or verify a relation to a Markdown note.",
       "- For each candidate, treat its full path, filename, parent folder, title, tags, headings, content, outgoing links, backlinks, and suggested relations as one evidence set. The plugin already scored relations across the Vault metadata graph; read only the strongest related-note candidates needed to verify meaning.",
       "- For each candidate, execute only its allowedActions. A formatting defect does not authorize tags, links, summaries, or renaming.",
       "- Use composition/linkRelations only for concise property enrichment: summary, link_count, link_relations, related_candidates. Do not create visible body sections for these facts.",
@@ -41405,6 +42052,10 @@ class CancipView extends ItemView {
       commandTarget("command:cancip.tts.seek", "cancip.tts.seek", ["tts", "speech", "seek", "part", "progress", "朗读", "跳转", "进度"], 78),
       commandTarget("command:cancip.tts.stop", "cancip.tts.stop", ["tts", "speech", "stop", "cancel", "朗读", "停止", "取消"], 78),
       commandTarget("command:cancip.tts.voices", "cancip.tts.voices", ["tts", "speech", "voices", "voice", "朗读", "声音", "语音", "音色"], 78),
+      commandTarget("command:cancip.ocr.status", "cancip.ocr.status", ["ocr", "scan", "recognize", "status", "文字识别", "扫描", "识别", "状态"], 84),
+      commandTarget("command:cancip.ocr.installLocal", "cancip.ocr.installLocal", ["ocr", "install", "download", "local", "文字识别", "安装", "下载", "本地包"], 86),
+      commandTarget("command:cancip.ocr.read", "cancip.ocr.read", ["ocr", "scan", "image", "pdf", "url", "文字识别", "扫描", "图片", "链接"], 90),
+      commandTarget("command:cancip.ocr.rebuildIndex", "cancip.ocr.rebuildIndex", ["ocr", "index", "rebuild", "search", "文字识别", "索引", "重建", "搜索"], 84),
       commandTarget("command:cancip.externalFiles.help", "cancip.externalFiles.help", ["external", "outside", "filesystem", "bridge", "库外", "外部文件", "跳出库", "文件系统", "桥接"], 80),
         commandTarget("command:cancip.findTarget", "cancip.findTarget", ["find", "target", "weak search", "fuzzy", "command", "file", "folder", "attachment", "目标", "弱搜索", "模糊", "找目标", "找文件", "找命令", "附件"], 88),
         commandTarget("command:cancip.searchAll", "cancip.searchAll", ["search", "universal", "all", "hard", "soft", "semantic", "archive", "搜索", "全局搜索", "万物搜索", "硬搜索", "软搜索", "归档"], 90),
@@ -41698,6 +42349,10 @@ class CancipView extends ItemView {
       "cancip.tts.resume": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.resume\"}]}",
       "cancip.tts.seek": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.seek\",\"args\":{\"part\":1}}]}",
       "cancip.tts.stop": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.tts.stop\"}]}",
+      "cancip.ocr.status": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.ocr.status\"}]}",
+      "cancip.ocr.installLocal": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.ocr.installLocal\"}]}",
+      "cancip.ocr.read": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.ocr.read\",\"args\":{\"path\":\"附件/扫描件.png\"}}]}",
+      "cancip.ocr.rebuildIndex": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.ocr.rebuildIndex\"}]}",
       "cancip.externalFiles.help": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.externalFiles.help\"}]}",
       "cancip.findTarget": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.findTarget\",\"args\":{\"query\":\"target or command name\",\"limit\":10}}]}",
       "cancip.searchAll": "{\"actions\":[{\"type\":\"command\",\"command\":\"cancip.searchAll\",\"args\":{\"query\":\"原始关键词\",\"softQueries\":[\"同义表达\",\"旧称\"],\"includeArchived\":true,\"includeConfigs\":true,\"limit\":8}}]}",
@@ -41897,7 +42552,25 @@ class CancipView extends ItemView {
       .slice(0, Math.max(1, limit));
   }
 
-  private async expandAiVaultSearch(query: string, hardHits: SearchHit[]): Promise<{ queries: string[]; intent: string }> {
+  private async searchAiVault(query: string, hardHits: SearchHit[], includeConfigs: boolean): Promise<{ expansion: AiSearchExpansion; hits: SearchHit[] }> {
+    const index = await this.plugin.readUniversalSearchIndex();
+    const cacheKey = stableCacheKey({ query: query.normalize("NFKC").toLowerCase(), includeConfigs, updatedAt: index.updatedAt });
+    const cached = this.aiVaultSearchCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 10 * 60 * 1000) {
+      return { expansion: cached.expansion, hits: cached.hits.map((hit) => ({ ...hit })) };
+    }
+    const expansion = await this.expandAiVaultSearch(query, hardHits, index);
+    const candidates = this.aiVaultSearchCandidates(query, expansion, index, hardHits, [], includeConfigs);
+    const hits = await this.rankAiVaultSearchCandidates(query, expansion, candidates);
+    this.aiVaultSearchCache.set(cacheKey, { at: Date.now(), expansion, hits: hits.map((hit) => ({ ...hit })) });
+    if (this.aiVaultSearchCache.size > 12) {
+      const oldest = [...this.aiVaultSearchCache.entries()].sort((left, right) => left[1].at - right[1].at)[0]?.[0];
+      if (oldest) this.aiVaultSearchCache.delete(oldest);
+    }
+    return { expansion, hits };
+  }
+
+  private async expandAiVaultSearch(query: string, hardHits: SearchHit[], index?: UniversalSearchIndex): Promise<AiSearchExpansion> {
     const fallbackQueries = uniqueStrings(
       universalSearchQueryTerms(query)
         .filter((term) => term.normalize("NFKC").toLowerCase() !== query.normalize("NFKC").toLowerCase())
@@ -41916,24 +42589,29 @@ class CancipView extends ItemView {
     }
     let vaultEvidence = "";
     try {
-      const index = await this.plugin.readUniversalSearchIndex();
+      const sourceIndex = index ?? await this.plugin.readUniversalSearchIndex();
       const terms = universalSearchQueryTerms(query);
-      vaultEvidence = index.documents
-        .filter((document) => {
-          const text = `${document.title} ${document.path}`.toLocaleLowerCase();
-          return !terms.length || terms.some((term) => text.includes(term.toLocaleLowerCase()));
-        })
-        .slice(0, 12)
-        .map((document) => `${document.title} · ${document.path}`)
+      const scored = sourceIndex.documents.map((document) => ({
+        document,
+        score: scoreSearchText(document.path, document.title, document.signals, terms)
+      }));
+      const related = scored.filter((item) => item.score > 0).sort((left, right) => right.score - left.score).slice(0, 18);
+      const sampled = diversifiedUniversalSearchDocuments(
+        scored.filter((item) => item.document.signals && item.document.kind !== "session").map((item) => item.document),
+        18
+      );
+      vaultEvidence = uniqueStrings([...related.map((item) => item.document), ...sampled]
+        .map((document) => `${document.title} · ${document.path} · ${trimContext(document.signals, 150)}`))
+        .slice(0, 30)
         .join("\n");
     } catch {
       vaultEvidence = "";
     }
     const system = [
-      "Expand one Vault search query semantically.",
-      "Return one strict JSON object only: {\"queries\":[\"...\"],\"intent\":\"...\"}.",
-      "Use at most four concise Chinese or user-language synonym, related-concept, entity, and descriptive queries.",
-      "Keep the user's meaning; do not add unrelated topics. The intent is one short explanation of what is being sought."
+      "Interpret one personal Vault search as semantic and inspiration retrieval.",
+      "Return one strict JSON object only: {\"queries\":[\"...\"],\"concepts\":[\"...\"],\"styleSignals\":[\"...\"],\"intent\":\"...\"}.",
+      "Use at most four synonym/entity queries, four underlying concepts, and four mood/style/voice signals in the user's language.",
+      "Use memory and the bounded Vault catalog only as retrieval clues. Preserve intent, support indirect or hard-to-name associations, and do not invent file paths."
     ].join(" ");
     try {
       const raw = await withTimeout(
@@ -41950,21 +42628,104 @@ class CancipView extends ItemView {
             .filter((item) => item.normalize("NFKC").toLowerCase() !== query.normalize("NFKC").toLowerCase()))
             .slice(0, 4)
         : [];
+      const concepts = isRecord(parsed) && Array.isArray(parsed.concepts)
+        ? normalizeAiSearchSignalList(parsed.concepts, query)
+        : [];
+      const styleSignals = isRecord(parsed) && Array.isArray(parsed.styleSignals)
+        ? normalizeAiSearchSignalList(parsed.styleSignals, query)
+        : [];
       const intent = isRecord(parsed) && typeof parsed.intent === "string"
         ? sanitizePersonalizationText(parsed.intent, 120, true)
         : "";
       return {
         queries: queries.length ? queries : fallbackQueries,
+        concepts,
+        styleSignals,
         intent: intent || (isChineseLanguage(this.plugin.language()) ? `围绕“${trimContext(query, 36)}”查找语义相关内容` : `Semantic matches for "${trimContext(query, 36)}"`)
       };
     } catch {
       return {
         queries: fallbackQueries,
+        concepts: [],
+        styleSignals: [],
         intent: isChineseLanguage(this.plugin.language())
           ? `模型扩词不可用，按“${trimContext(query, 36)}”的词形与内容匹配`
           : `Model expansion unavailable; using text variants for "${trimContext(query, 36)}"`
       };
     }
+  }
+
+  private aiVaultSearchCandidates(
+    query: string,
+    expansion: AiSearchExpansion,
+    index: UniversalSearchIndex,
+    hardHits: SearchHit[],
+    expandedHits: SearchHit[],
+    includeConfigs: boolean
+  ): SearchHit[] {
+    const allSignals = uniqueStrings([query, ...expansion.queries, ...expansion.concepts, ...expansion.styleSignals]);
+    const tokens = uniqueStrings(allSignals.flatMap((value) => [...tokenize(value), ...universalSearchQueryTerms(value)]));
+    const byPath = new Map<string, SearchHit>();
+    const add = (hit: SearchHit): void => {
+      const path = normalizePath(hit.path);
+      const previous = byPath.get(path);
+      if (!previous || hit.score > previous.score) byPath.set(path, { ...hit, route: "soft" });
+    };
+    for (const hit of hardHits.slice(0, 10)) add({ ...hit, score: hit.score + 120, relation: "direct", reason: isChineseLanguage(this.plugin.language()) ? "原查询有直接证据" : "Direct evidence for the original query" });
+    for (const hit of expandedHits.filter((item) => item.route === "soft").slice(0, 30)) add(hit);
+    const rankedDocuments = index.documents
+      .filter((document) => includeConfigs || (document.kind !== "config" && document.kind !== "memory" && document.kind !== "session"))
+      .filter((document) => document.signals || document.title || document.path)
+      .map((document) => {
+        const semanticScore = scoreSearchText(document.path, document.title, document.signals, tokens);
+        return {
+          document,
+          semanticScore,
+          score: semanticScore + Math.min(18, Math.max(0, Math.round((document.mtime - (Date.now() - 30 * 86400000)) / 86400000)))
+        };
+      })
+      .filter((item) => item.semanticScore > 0)
+      .sort((left, right) => right.score - left.score || right.document.mtime - left.document.mtime)
+      .slice(0, 36);
+    for (const item of rankedDocuments) {
+      add({
+        path: item.document.path,
+        title: item.document.title,
+        excerpt: trimContext(item.document.signals || `${item.document.title}\n${item.document.path}`, 420),
+        score: item.score,
+        kind: item.document.kind,
+        route: "soft",
+        archived: isPathInVaultFolder(item.document.path, CANCIP_ARCHIVE_DIR)
+      });
+    }
+    return [...byPath.values()].sort((left, right) => right.score - left.score).slice(0, 24);
+  }
+
+  private async rankAiVaultSearchCandidates(query: string, expansion: AiSearchExpansion, candidates: SearchHit[]): Promise<SearchHit[]> {
+    if (!candidates.length) return [];
+    const language = this.plugin.language();
+    const matchingSignals = (hit: SearchHit, values: string[]): string[] => values.filter((value) => {
+      const terms = uniqueStrings([...tokenize(value), ...universalSearchQueryTerms(value)]);
+      return terms.length > 0 && scoreSearchText(hit.path, hit.title, hit.excerpt, terms) > 0;
+    }).slice(0, 3);
+    return candidates.slice(0, 12).map((hit) => {
+      if (hit.relation === "direct" && hit.reason) return hit;
+      const styles = matchingSignals(hit, expansion.styleSignals);
+      const concepts = matchingSignals(hit, expansion.concepts);
+      const contexts = matchingSignals(hit, expansion.queries);
+      const relation: AiSearchRelation = styles.length
+        ? "style"
+        : concepts.length
+          ? "concept"
+          : contexts.length
+            ? "context"
+            : "inspiration";
+      const matched = styles.length ? styles : concepts.length ? concepts : contexts;
+      const reason = matched.length
+        ? (isChineseLanguage(language) ? `索引内容关联：${matched.join("、")}` : `Indexed content relates through: ${matched.join(", ")}`)
+        : (isChineseLanguage(language) ? `与“${trimContext(query, 32)}”共享内容线索` : `Shares indexed signals with "${trimContext(query, 32)}"`);
+      return { ...hit, relation, reason };
+    });
   }
 
   private async onDemandVaultSearchHits(query: string, limit: number, startedAt: number, options: Required<Pick<UniversalSearchOptions, "includeArchived" | "includeConfigs" | "includeAttachments">>): Promise<SearchHit[]> {
@@ -44831,6 +45592,7 @@ class CancipView extends ItemView {
       "cancip.documents.help",
       "cancip.tts.status",
       "cancip.tts.help",
+      "cancip.ocr.status",
       "cancip.archive.status",
       "cancip.search.status",
       "obsidian.currentView",
@@ -46464,6 +47226,8 @@ class CancipView extends ItemView {
       || command === "cancip.documents.convert"
       || command === "cancip.documents.editText"
       || command === "cancip.tts.installLocal"
+      || command === "cancip.ocr.installLocal"
+      || command === "cancip.ocr.rebuildIndex"
       || command === "cancip.automation.add"
       || command === "cancip.automation.update"
       || command === "cancip.automation.addTemplate"
@@ -49085,6 +49849,71 @@ class CancipView extends ItemView {
       if (provider) this.plugin.speakTextWithProvider(text, provider, label || `command ${provider}`);
       else this.plugin.speakText(text, label || "command");
       return this.t("commandExecuted", { command: normalized, result: this.t("ttsStarted") });
+    }
+
+    if (normalized === "cancip.ocr.status") {
+      const settings = this.plugin.settings;
+      const packageStatus = await this.plugin.ocrPackageStatus();
+      const result = isChineseLanguage(this.plugin.language())
+        ? [
+            `本地 OCR：${settings.ocrEnabled ? "开启" : "关闭"}`,
+            `自动索引：${settings.ocrAutoIndex ? "开启" : "关闭"}`,
+            `新文件分析：${settings.ocrNewFileAnalysis ? "开启" : "关闭"}`,
+            `在线媒体：${settings.ocrRemoteMedia ? "开启" : "关闭"}`,
+            `语言：${settings.ocrLanguages}`,
+            `运行状态：${this.plugin.ocrRuntimeStatusSummary()}`,
+            `本地包：${packageStatus}`
+          ].join("\n")
+        : [
+            `Local OCR: ${settings.ocrEnabled ? "on" : "off"}`,
+            `Automatic indexing: ${settings.ocrAutoIndex ? "on" : "off"}`,
+            `New-file analysis: ${settings.ocrNewFileAnalysis ? "on" : "off"}`,
+            `Remote media: ${settings.ocrRemoteMedia ? "on" : "off"}`,
+            `Languages: ${settings.ocrLanguages}`,
+            `Runtime: ${this.plugin.ocrRuntimeStatusSummary()}`,
+            `Package: ${packageStatus}`
+          ].join("\n");
+      return this.t("commandExecuted", { command: normalized, result });
+    }
+
+    if (normalized === "cancip.ocr.installLocal") {
+      return this.t("commandExecuted", { command: normalized, result: await this.plugin.installOcrPackage(true) });
+    }
+
+    if (normalized === "cancip.ocr.read") {
+      if (!this.plugin.settings.ocrEnabled) throw new Error("Local OCR is disabled in Cancip settings");
+      const url = typeof args.url === "string" ? args.url.trim() : "";
+      let entry: OcrIndexEntry | null = null;
+      let source = url;
+      if (url) {
+        if (!isSafeRemoteOcrUrl(url)) throw new Error("cancip.ocr.read only accepts HTTPS image or PDF URLs");
+        entry = await this.plugin.readOcrForRemoteUrl(url);
+      } else {
+        const activePath = this.app.workspace.getActiveFile()?.path ?? "";
+        const path = normalizePath(typeof args.path === "string" ? args.path : activePath);
+        if (!path) throw new Error("cancip.ocr.read requires args.path, args.url, or an active file");
+        const file = this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) throw new Error(`OCR source not found: ${path}`);
+        if (!isOcrSupportedPath(path)) throw new Error(`Unsupported OCR source: ${path}`);
+        source = path;
+        entry = await this.plugin.readOcrForVaultFile(file, args.force === true);
+      }
+      if (!entry) {
+        const packageStatus = await this.plugin.ocrPackageStatus();
+        throw new Error(`No OCR result for ${source}. Package: ${packageStatus}`);
+      }
+      return this.t("commandExecuted", {
+        command: normalized,
+        result: `source=${entry.sourceKey}\nconfidence=${entry.confidence.toFixed(1)}\n${ocrEntrySearchText(entry, clampInt(args.maxChars, 12000, 500, 30000))}`
+      });
+    }
+
+    if (normalized === "cancip.ocr.rebuildIndex") {
+      const rebuilt = await this.plugin.rebuildUniversalSearchIndex(true);
+      return this.t("commandExecuted", {
+        command: normalized,
+        result: `indexed=${rebuilt.indexed}\ntotal=${rebuilt.total}\ncomplete=${rebuilt.complete}`
+      });
     }
 
     if (normalized === "cancip.externalFiles.help") {
@@ -54891,21 +55720,46 @@ class CancipView extends ItemView {
     aiSection.open = true;
     const aiSummary = aiSection.createEl("summary", { cls: "obcc-search-section-summary" });
     const aiSummaryLabel = aiSummary.createSpan({ text: this.t("searchFuzzy") });
-    const aiExplanation = aiSection.createDiv({ cls: "obcc-search-section-explanation" });
-    const aiResults = aiSection.createDiv({ cls: "obcc-search-section-results" });
+    const aiBody = aiSection.createDiv({ cls: "obcc-search-section-body" });
+    const aiExplanation = aiBody.createDiv({ cls: "obcc-search-section-explanation" });
+    const aiResults = aiBody.createDiv({ cls: "obcc-search-section-results" });
     const hardSection = results.createEl("details", { cls: "obcc-search-section is-hard" });
     hardSection.open = true;
     const hardSummary = hardSection.createEl("summary", { cls: "obcc-search-section-summary" });
     const hardSummaryLabel = hardSummary.createSpan({ text: this.t("searchHard") });
-    const hardResults = hardSection.createDiv({ cls: "obcc-search-section-results" });
-    const syncSearchSectionLayout = (): void => {
-      results.toggleClass("is-ai-collapsed", !aiSection.open);
-      results.toggleClass("is-hard-collapsed", !hardSection.open);
+    const hardBody = hardSection.createDiv({ cls: "obcc-search-section-body" });
+    const hardResults = hardBody.createDiv({ cls: "obcc-search-section-results" });
+    let paneState: SearchPaneState = this.plugin.settings.searchPaneState;
+    const applySearchPaneState = (next: SearchPaneState, persist: boolean): void => {
+      paneState = next;
+      aiSection.open = next !== "hard";
+      hardSection.open = next !== "ai";
+      aiSummary.setAttr("aria-expanded", aiSection.open ? "true" : "false");
+      hardSummary.setAttr("aria-expanded", hardSection.open ? "true" : "false");
+      results.toggleClass("is-layout-split", next === "split");
+      results.toggleClass("is-layout-ai", next === "ai");
+      results.toggleClass("is-layout-hard", next === "hard");
+      results.toggleClass("is-ai-collapsed", next === "hard");
+      results.toggleClass("is-hard-collapsed", next === "ai");
       results.toggleClass("is-ai-hidden", aiSection.hasClass("is-hidden"));
+      if (persist && this.plugin.settings.searchPaneState !== next) {
+        this.plugin.settings.searchPaneState = next;
+        void this.plugin.saveSettings();
+      }
     };
-    aiSection.addEventListener("toggle", syncSearchSectionLayout);
-    hardSection.addEventListener("toggle", syncSearchSectionLayout);
-    syncSearchSectionLayout();
+    aiSummary.addEventListener("click", (event) => {
+      event.preventDefault();
+      applySearchPaneState(paneState === "split" || paneState === "ai" ? "hard" : "split", true);
+    });
+    hardSummary.addEventListener("click", (event) => {
+      event.preventDefault();
+      applySearchPaneState(paneState === "split" || paneState === "hard" ? "ai" : "split", true);
+    });
+    for (const scrollPane of [aiResults, hardResults]) {
+      scrollPane.addEventListener("wheel", (event) => event.stopPropagation(), { passive: true });
+      scrollPane.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
+    }
+    applySearchPaneState(paneState, false);
     let requestId = 0;
     let timer: number | null = null;
     const renderHits = (parent: HTMLElement, hits: SearchHit[]): void => {
@@ -54923,6 +55777,12 @@ class CancipView extends ItemView {
         const copy = row.createDiv({ cls: "obcc-search-result-copy" });
         copy.createDiv({ cls: "obcc-search-result-title", text: hit.title || reviewFileName(hit.path) });
         copy.createDiv({ cls: "obcc-search-result-path", text: hit.path });
+        if (hit.reason) {
+          copy.createDiv({
+            cls: "obcc-search-result-reason",
+            text: `${aiSearchRelationLabel(hit.relation, this.plugin.language())} · ${hit.reason}`
+          });
+        }
         copy.createDiv({ cls: "obcc-search-result-excerpt", text: trimContext(hit.excerpt, 240) });
         const open = () => {
           void this.openSearchHit(hit);
@@ -54961,46 +55821,26 @@ class CancipView extends ItemView {
         renderHits(hardResults, exactHits);
         hardSummaryLabel.setText(`${this.t("searchHard")} · ${exactHits.length}`);
         aiSection.toggleClass("is-hidden", !fuzzy.checked);
-        syncSearchSectionLayout();
+        applySearchPaneState(paneState, false);
         if (!fuzzy.checked) {
           status.setText(`${this.t("searchHard")} · ${this.t("hitCount", { count: exactHits.length })}`);
           return;
         }
         aiExplanation.setText(isChineseLanguage(this.plugin.language()) ? "正在理解查询含义…" : "Interpreting query...");
-        const expansion = await this.expandAiVaultSearch(query, exactHits);
+        const aiSearch = await this.searchAiVault(query, exactHits, configs.checked);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
-        const expandedHits = expansion.queries.length
-          ? await this.searchVault(query, 24, {
-              // AI search may use memory/index/config as semantic evidence;
-              // the hard-search checkbox still controls whether those sources
-              // appear in the direct results.
-              includeArchived: true,
-              includeConfigs: true,
-              includeAttachments: true,
-              softQueries: expansion.queries,
-              alwaysRunSoft: true,
-              preserveRouteDuplicates: true
-            })
-          : [];
-        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
-        let aiHits = expandedHits.filter((hit) => hit.route === "soft").slice(0, 12);
-        const reusedHardEvidence = !aiHits.length && exactHits.length > 0;
-        if (reusedHardEvidence) {
-          aiHits = exactHits.slice(0, 6).map((hit) => ({
-            ...hit,
-            route: "soft" as const,
-            excerpt: `${isChineseLanguage(this.plugin.language()) ? "AI 相关性回退" : "AI relevance fallback"}\n${hit.excerpt}`
-          }));
-        }
+        const aiHits = aiSearch.hits;
         renderHits(aiResults, aiHits);
         aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${aiHits.length}`);
-        const terms = expansion.queries.length
-          ? (isChineseLanguage(this.plugin.language()) ? `扩展：${expansion.queries.join("、")}` : `Expanded: ${expansion.queries.join(", ")}`)
+        const semanticSignals = uniqueStrings([
+          ...aiSearch.expansion.queries,
+          ...aiSearch.expansion.concepts,
+          ...aiSearch.expansion.styleSignals
+        ]).slice(0, 8);
+        const terms = semanticSignals.length
+          ? (isChineseLanguage(this.plugin.language()) ? `线索：${semanticSignals.join("、")}` : `Signals: ${semanticSignals.join(", ")}`)
           : "";
-        const fallbackNote = reusedHardEvidence
-          ? (isChineseLanguage(this.plugin.language()) ? "未找到额外语义命中，显示与查询最相关的可追溯原始证据" : "No extra semantic hit; showing the most relevant traceable source evidence")
-          : "";
-        aiExplanation.setText([expansion.intent, terms, fallbackNote].filter(Boolean).join(" · "));
+        aiExplanation.setText([aiSearch.expansion.intent, terms].filter(Boolean).join(" · "));
         status.setText(this.t("hitCount", { count: aiHits.length + exactHits.length }));
       } catch (error) {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
@@ -55054,9 +55894,15 @@ class CancipView extends ItemView {
     if (!popover || !anchor) return;
     const rect = anchor.getBoundingClientRect();
     const viewWindow = this.containerEl.ownerDocument.defaultView ?? window;
+    const viewport = viewWindow.visualViewport;
+    const viewportTop = viewport?.offsetTop ?? 0;
+    const viewportHeight = viewport?.height ?? viewWindow.innerHeight;
+    const top = Math.max(viewportTop + 8, Math.ceil(rect.bottom + 8));
+    const availableHeight = Math.max(220, Math.floor(viewportTop + viewportHeight - top - 8));
     popover.setCssProps({
-      "--obcc-search-top": `${Math.max(8, Math.ceil(rect.bottom + 8))}px`,
-      "--obcc-search-right": `${Math.max(8, Math.ceil(viewWindow.innerWidth - rect.right))}px`
+      "--obcc-search-top": `${top}px`,
+      "--obcc-search-right": `${Math.max(8, Math.ceil(viewWindow.innerWidth - rect.right))}px`,
+      "--obcc-search-height": `${Math.min(680, availableHeight)}px`
     });
   }
 
@@ -55360,6 +56206,7 @@ class CancipSettingTab extends PluginSettingTab {
         { id: "automation", label: this.plugin.t("settingsGroupAutomation"), render: (parent) => this.displayAutomationSettings(parent) },
         { id: "notifications", label: this.plugin.t("settingsGroupNotifications"), render: (parent) => this.displayNotificationSettings(parent) },
         { id: "tts", label: this.plugin.t("settingsGroupTts"), render: (parent) => this.displayTtsSettings(parent) },
+        { id: "ocr", label: this.plugin.t("settingsGroupOcr"), render: (parent) => this.displayOcrSettings(parent) },
         { id: "export", label: this.plugin.t("settingsGroupExport"), render: (parent) => this.displayExportSettings(parent) }
       ];
       if (!pages.some((page) => page.id === this.activeSettingsPage)) this.activeSettingsPage = "common";
@@ -56792,6 +57639,78 @@ class CancipSettingTab extends PluginSettingTab {
     });
   }
 
+  private displayOcrSettings(parent: HTMLElement): void {
+    this.addToggleSetting(parent, "settingsOcrEnabled", this.plugin.settings.ocrEnabled, async (value) => {
+      this.plugin.settings.ocrEnabled = value;
+      await this.plugin.saveSettings();
+      if (!value) await this.plugin.resetOcrRuntime();
+    }, "settingsOcrEnabledDesc");
+    this.addToggleSetting(parent, "settingsOcrAutoIndex", this.plugin.settings.ocrAutoIndex, async (value) => {
+      this.plugin.settings.ocrAutoIndex = value;
+      await this.plugin.saveSettings();
+    }, "settingsOcrAutoIndexDesc");
+    this.addToggleSetting(parent, "settingsOcrNewFiles", this.plugin.settings.ocrNewFileAnalysis, async (value) => {
+      this.plugin.settings.ocrNewFileAnalysis = value;
+      await this.plugin.saveSettings();
+    }, "settingsOcrNewFilesDesc");
+    this.addToggleSetting(parent, "settingsOcrRemoteMedia", this.plugin.settings.ocrRemoteMedia, async (value) => {
+      this.plugin.settings.ocrRemoteMedia = value;
+      await this.plugin.saveSettings();
+    }, "settingsOcrRemoteMediaDesc");
+    new Setting(parent)
+      .setName(this.plugin.t("settingsOcrLanguages"))
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOptions({ "chi_sim+eng": "简体中文 + English", chi_sim: "简体中文", eng: "English" })
+          .setValue(this.plugin.settings.ocrLanguages)
+          .onChange(async (value) => {
+            this.plugin.settings.ocrLanguages = value;
+            await this.plugin.saveSettings();
+            await this.plugin.resetOcrRuntime();
+          });
+      });
+    this.addNumberSetting(parent, "settingsOcrMaxFileMb", this.plugin.settings.ocrMaxFileMb, "10", 1, 24, async (value) => {
+      this.plugin.settings.ocrMaxFileMb = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(parent, "settingsOcrMaxPdfPages", this.plugin.settings.ocrMaxPdfPages, "6", 1, 20, async (value) => {
+      this.plugin.settings.ocrMaxPdfPages = value;
+      await this.plugin.saveSettings();
+    });
+    this.addNumberSetting(parent, "settingsOcrMaxImageDimension", this.plugin.settings.ocrMaxImageDimension, "2200", 960, 4096, async (value) => {
+      this.plugin.settings.ocrMaxImageDimension = value;
+      await this.plugin.saveSettings();
+    });
+    const packageSetting = new Setting(parent)
+      .setName(this.plugin.t("settingsOcrPackage"))
+      .setDesc(`${this.plugin.t("settingsOcrPackageDesc")}\n${this.plugin.ocrPackageBase()} · ${OCR_LITE_PACKAGE_ASSET}`)
+      .addButton((button) => {
+        button
+          .setButtonText(this.plugin.t("settingsOcrInstall"))
+          .onClick(async () => {
+            try {
+              new Notice(await this.plugin.installOcrPackage(true), 10000);
+              this.renderSettings();
+            } catch {
+              // Installer already reports the concrete failure.
+            }
+          });
+      });
+    void this.plugin.ocrPackageStatus().then((value) => {
+      if (packageSetting.settingEl.isConnected) {
+        packageSetting.setDesc(`${this.plugin.t("settingsOcrPackageDesc")}\n${value}\n${this.plugin.ocrPackageBase()} · ${OCR_LITE_PACKAGE_ASSET}`);
+      }
+    });
+    new Setting(parent)
+      .setName(this.plugin.t("settingsOcrRebuild"))
+      .addButton((button) => {
+        button.setButtonText(this.plugin.t("settingsOcrRebuild")).onClick(async () => {
+          const result = await this.plugin.rebuildUniversalSearchIndex(true);
+          new Notice(this.plugin.t("searchIndexStatus", { indexed: result.indexed, total: result.total }), 8000);
+        });
+      });
+  }
+
   private displayTtsSettings(parent: HTMLElement): void {
     const providerValue: TtsProvider = "builtin-prime-tts";
     const qualityValue = isTtsQualityMode(this.plugin.settings.ttsQualityMode) ? this.plugin.settings.ttsQualityMode : DEFAULT_SETTINGS.ttsQualityMode;
@@ -57909,7 +58828,7 @@ function cancipAutomationTemplates(language: Language = "en"): AutomationTemplat
       intervalMinutes: 120,
       watchNewFiles: true,
       ignoreMachineFiles: true,
-      newFilePattern: "**/*.md",
+      newFilePattern: VAULT_CURATION_NEW_FILE_PATTERN,
       newFileDebounceSeconds: 60,
       notifyMode: "always",
       silent: false
@@ -59149,7 +60068,8 @@ function universalSearchIndexWriteKey(index: UniversalSearchIndex): string {
       size: document.size,
       indexedAt: document.indexedAt,
       textChars: document.textChars,
-      bloom: document.bloom
+      bloom: document.bloom,
+      signals: document.signals
     }))
   });
 }
@@ -59204,7 +60124,8 @@ function normalizeUniversalSearchIndex(raw: unknown): UniversalSearchIndex {
       size: typeof item.size === "number" && Number.isFinite(item.size) ? Math.max(0, item.size) : 0,
       indexedAt: typeof item.indexedAt === "string" ? item.indexedAt : "",
       textChars: typeof item.textChars === "number" && Number.isFinite(item.textChars) ? Math.max(0, item.textChars) : 0,
-      bloom: typeof item.bloom === "string" ? item.bloom : ""
+      bloom: typeof item.bloom === "string" ? item.bloom : "",
+      signals: typeof item.signals === "string" ? trimContext(redactSensitiveText(item.signals), 1200) : ""
     };
     const previous = byPath.get(path);
     if (!previous || document.indexedAt.localeCompare(previous.indexedAt) >= 0) byPath.set(path, document);
@@ -59229,6 +60150,16 @@ function shouldIndexUniversalSearchPath(path: string, obsidianConfigDir: string)
   if (/(^|\/)(?:\.git|node_modules|\.trash|\.recycle|\.cancip-trash)(\/|$)/i.test(lower)) return false;
   const configRoot = normalizePath(obsidianConfigDir).replace(/\/+$/, "").toLowerCase();
   if (configRoot && lower.startsWith(`${configRoot}/cache/`)) return false;
+  return true;
+}
+
+function isVaultCurationTrackableFile(file: TFile, obsidianConfigDir: string, memoryFolder = DEFAULT_MEMORY_FOLDER): boolean {
+  if (isMarkdownFile(file)) return isVaultCurationContentFile(file, obsidianConfigDir, memoryFolder);
+  if (!isOcrSupportedPath(file.path)) return false;
+  const path = normalizePath(file.path.replace(/\\/g, "/"));
+  if (!path || isPathInFolder(path, obsidianConfigDir) || isCancipStoragePath(path) || path.startsWith(".trash/")) return false;
+  if (path.startsWith("AI/Cancip/Exports/") || isPathInVaultFolder(path, memoryFolder || DEFAULT_MEMORY_FOLDER)) return false;
+  if (isAcceptanceUserReportPath(path) || isSensitiveLocalVersionPath(path)) return false;
   return true;
 }
 
@@ -59410,6 +60341,64 @@ function universalSearchTerms(path: string, title: string, text: string): string
     }
   }
   return [...terms];
+}
+
+function aiSearchRelationLabel(relation: AiSearchRelation | undefined, language: Language): string {
+  const key = relation ?? "concept";
+  if (!isChineseLanguage(language)) {
+    return ({ direct: "Direct", concept: "Concept", context: "Context", style: "Style", inspiration: "Inspiration" } as const)[key];
+  }
+  return ({ direct: "直接相关", concept: "概念相关", context: "上下文关联", style: "风格相近", inspiration: "灵感关联" } as const)[key];
+}
+
+function universalSearchSemanticSignals(path: string, title: string, text: string): string {
+  const normalized = redactSensitiveText(text.replace(/\r\n?/g, "\n")).trim();
+  const lines = normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+  const structural = lines.filter((line) => (
+    /^#{1,4}\s+/.test(line)
+    || /^(?:title|aliases|tags|type|status|summary|description|project|主题|标签|状态|摘要|说明)\s*[:：]/i.test(line)
+    || /\[\[[^\]]+\]\]/.test(line)
+  )).slice(0, 18);
+  const body = lines.filter((line) => !/^---$/.test(line) && !structural.includes(line));
+  const samples: string[] = [];
+  if (body.length) {
+    const positions = uniqueStrings(["0", String(Math.floor(body.length / 3)), String(Math.floor(body.length * 2 / 3)), String(body.length - 1)]);
+    for (const position of positions) {
+      const index = Number(position);
+      if (Number.isFinite(index) && body[index]) samples.push(body[index]);
+    }
+  }
+  return trimContext(uniqueStrings([
+    `Title: ${title || reviewFileName(path)}`,
+    `Path: ${path}`,
+    ...structural,
+    ...body.slice(0, 8),
+    ...samples
+  ]).join("\n"), 1200);
+}
+
+function normalizeAiSearchSignalList(value: unknown[], originalQuery: string): string[] {
+  const normalizedQuery = originalQuery.normalize("NFKC").toLowerCase();
+  return uniqueStrings(value
+    .filter((item): item is string => typeof item === "string")
+    .map((item) => sanitizePersonalizationText(item, 64, true))
+    .filter((item) => item.length >= 2 && item.normalize("NFKC").toLowerCase() !== normalizedQuery))
+    .slice(0, 4);
+}
+
+function diversifiedUniversalSearchDocuments(documents: UniversalSearchDocument[], limit: number): UniversalSearchDocument[] {
+  const sorted = [...documents].sort((left, right) => right.mtime - left.mtime || left.path.localeCompare(right.path));
+  const selected: UniversalSearchDocument[] = [];
+  const perFolder = new Map<string, number>();
+  for (const document of sorted) {
+    const folder = normalizePath(document.path).split("/").slice(0, -1).join("/") || "/";
+    const used = perFolder.get(folder) ?? 0;
+    if (used >= 2 && sorted.length > limit) continue;
+    selected.push(document);
+    perFolder.set(folder, used + 1);
+    if (selected.length >= Math.max(0, limit)) break;
+  }
+  return selected;
 }
 
 function universalSearchHash(term: string, seed: number): number {
@@ -62442,6 +63431,10 @@ const CANONICAL_COMMAND_BUS_NAMES = new Map([
   "cancip.tts.stop",
   "cancip.tts.readActive",
   "cancip.tts.speak",
+  "cancip.ocr.status",
+  "cancip.ocr.installLocal",
+  "cancip.ocr.read",
+  "cancip.ocr.rebuildIndex",
   "cancip.externalFiles.help",
   "cancip.searchVault",
   "cancip.searchAll",
@@ -64407,6 +65400,8 @@ function isLowCommitmentAction(action: CancipAction): boolean {
     "cancip.tts.probe",
     "cancip.tts.voices",
     "cancip.tts.status",
+    "cancip.ocr.status",
+    "cancip.ocr.read",
     "cancip.externalFiles.help",
     "cancip.findTarget",
     "cancip.searchAll",
@@ -65337,6 +66332,8 @@ function isReadOnlyAction(action: CancipAction): boolean {
     "cancip.tts.pause",
     "cancip.tts.resume",
     "cancip.tts.seek",
+    "cancip.ocr.status",
+    "cancip.ocr.read",
     "cancip.externalFiles.help",
     "cancip.findTarget",
     "cancip.searchAll",
@@ -66774,6 +67771,9 @@ function normalizeSettings(input: Partial<Settings>): Settings {
   const maxToolIterations = Number.parseInt(String(merged.maxToolIterations), 10);
   const codexMemoryMaxFiles = Number.parseInt(String(merged.codexMemoryMaxFiles), 10);
   const codexMemoryMaxChars = Number.parseInt(String(merged.codexMemoryMaxChars), 10);
+  const ocrMaxFileMb = Number.parseInt(String(merged.ocrMaxFileMb), 10);
+  const ocrMaxPdfPages = Number.parseInt(String(merged.ocrMaxPdfPages), 10);
+  const ocrMaxImageDimension = Number.parseInt(String(merged.ocrMaxImageDimension), 10);
   const localVersionHour = Number.parseInt(String(merged.localVersionHour), 10);
   const localVersionMaxFileBytes = Number.parseInt(String(merged.localVersionMaxFileBytes), 10);
   const automationCheckMinutes = Number.parseInt(String(merged.automationCheckMinutes), 10);
@@ -66857,6 +67857,15 @@ function normalizeSettings(input: Partial<Settings>): Settings {
     codexMemoryMaxFiles: Number.isFinite(codexMemoryMaxFiles) ? Math.max(1, Math.min(12, codexMemoryMaxFiles)) : DEFAULT_SETTINGS.codexMemoryMaxFiles,
     codexMemoryMaxChars: Number.isFinite(codexMemoryMaxChars) ? Math.max(1000, Math.min(60000, codexMemoryMaxChars)) : DEFAULT_SETTINGS.codexMemoryMaxChars,
     useVaultSearchByDefault: Boolean(merged.useVaultSearchByDefault),
+    searchPaneState: merged.searchPaneState === "ai" || merged.searchPaneState === "hard" ? merged.searchPaneState : "split",
+    ocrEnabled: typeof merged.ocrEnabled === "boolean" ? merged.ocrEnabled : DEFAULT_SETTINGS.ocrEnabled,
+    ocrAutoIndex: typeof merged.ocrAutoIndex === "boolean" ? merged.ocrAutoIndex : DEFAULT_SETTINGS.ocrAutoIndex,
+    ocrNewFileAnalysis: typeof merged.ocrNewFileAnalysis === "boolean" ? merged.ocrNewFileAnalysis : DEFAULT_SETTINGS.ocrNewFileAnalysis,
+    ocrRemoteMedia: typeof merged.ocrRemoteMedia === "boolean" ? merged.ocrRemoteMedia : DEFAULT_SETTINGS.ocrRemoteMedia,
+    ocrLanguages: typeof merged.ocrLanguages === "string" && /^(?:chi_sim|eng)(?:\+(?:chi_sim|eng))*$/.test(merged.ocrLanguages) ? merged.ocrLanguages : DEFAULT_SETTINGS.ocrLanguages,
+    ocrMaxFileMb: Number.isFinite(ocrMaxFileMb) ? Math.max(1, Math.min(24, ocrMaxFileMb)) : DEFAULT_SETTINGS.ocrMaxFileMb,
+    ocrMaxPdfPages: Number.isFinite(ocrMaxPdfPages) ? Math.max(1, Math.min(20, ocrMaxPdfPages)) : DEFAULT_SETTINGS.ocrMaxPdfPages,
+    ocrMaxImageDimension: Number.isFinite(ocrMaxImageDimension) ? Math.max(960, Math.min(4096, ocrMaxImageDimension)) : DEFAULT_SETTINGS.ocrMaxImageDimension,
     showAttachmentButton: typeof merged.showAttachmentButton === "boolean" ? merged.showAttachmentButton : DEFAULT_SETTINGS.showAttachmentButton,
     compactHeader: typeof merged.compactHeader === "boolean" ? merged.compactHeader : DEFAULT_SETTINGS.compactHeader,
     documentWorkbenchDefaultMode: isDocumentWorkbenchMode(merged.documentWorkbenchDefaultMode) ? merged.documentWorkbenchDefaultMode : DEFAULT_SETTINGS.documentWorkbenchDefaultMode,
@@ -66982,6 +67991,15 @@ function settingsToCancipConfig(settings: Settings): Record<string, unknown> {
     codexMemoryMaxFiles: settings.codexMemoryMaxFiles,
     codexMemoryMaxChars: settings.codexMemoryMaxChars,
     useVaultSearchByDefault: settings.useVaultSearchByDefault,
+    searchPaneState: settings.searchPaneState,
+    ocrEnabled: settings.ocrEnabled,
+    ocrAutoIndex: settings.ocrAutoIndex,
+    ocrNewFileAnalysis: settings.ocrNewFileAnalysis,
+    ocrRemoteMedia: settings.ocrRemoteMedia,
+    ocrLanguages: settings.ocrLanguages,
+    ocrMaxFileMb: settings.ocrMaxFileMb,
+    ocrMaxPdfPages: settings.ocrMaxPdfPages,
+    ocrMaxImageDimension: settings.ocrMaxImageDimension,
     showAttachmentButton: settings.showAttachmentButton,
     compactHeader: settings.compactHeader,
     documentWorkbenchDefaultMode: settings.documentWorkbenchDefaultMode,
@@ -67108,6 +68126,15 @@ function parseCancipConfig(raw: unknown): Partial<Settings> {
   if (typeof raw.codexMemoryMaxFiles === "number" || typeof raw.codexMemoryMaxFiles === "string") config.codexMemoryMaxFiles = Number.parseInt(String(raw.codexMemoryMaxFiles), 10);
   if (typeof raw.codexMemoryMaxChars === "number" || typeof raw.codexMemoryMaxChars === "string") config.codexMemoryMaxChars = Number.parseInt(String(raw.codexMemoryMaxChars), 10);
   if (typeof raw.useVaultSearchByDefault === "boolean") config.useVaultSearchByDefault = raw.useVaultSearchByDefault;
+  if (raw.searchPaneState === "split" || raw.searchPaneState === "ai" || raw.searchPaneState === "hard") config.searchPaneState = raw.searchPaneState;
+  if (typeof raw.ocrEnabled === "boolean") config.ocrEnabled = raw.ocrEnabled;
+  if (typeof raw.ocrAutoIndex === "boolean") config.ocrAutoIndex = raw.ocrAutoIndex;
+  if (typeof raw.ocrNewFileAnalysis === "boolean") config.ocrNewFileAnalysis = raw.ocrNewFileAnalysis;
+  if (typeof raw.ocrRemoteMedia === "boolean") config.ocrRemoteMedia = raw.ocrRemoteMedia;
+  if (typeof raw.ocrLanguages === "string") config.ocrLanguages = raw.ocrLanguages;
+  if (typeof raw.ocrMaxFileMb === "number" || typeof raw.ocrMaxFileMb === "string") config.ocrMaxFileMb = Number.parseInt(String(raw.ocrMaxFileMb), 10);
+  if (typeof raw.ocrMaxPdfPages === "number" || typeof raw.ocrMaxPdfPages === "string") config.ocrMaxPdfPages = Number.parseInt(String(raw.ocrMaxPdfPages), 10);
+  if (typeof raw.ocrMaxImageDimension === "number" || typeof raw.ocrMaxImageDimension === "string") config.ocrMaxImageDimension = Number.parseInt(String(raw.ocrMaxImageDimension), 10);
   if (typeof raw.showAttachmentButton === "boolean") config.showAttachmentButton = raw.showAttachmentButton;
   if (typeof raw.compactHeader === "boolean") config.compactHeader = raw.compactHeader;
   if (isDocumentWorkbenchMode(raw.documentWorkbenchDefaultMode)) config.documentWorkbenchDefaultMode = raw.documentWorkbenchDefaultMode;
@@ -73421,6 +74448,228 @@ async function parseBinaryAttachment(file: File, maxChars: number): Promise<Pars
     warnings.push(error instanceof Error ? error.message : String(error));
   }
   return { kind: type || "binary", text: "", warnings };
+}
+
+function normalizeOcrZipEntry(name: string): string {
+  const normalized = name.replace(/\\/g, "/").replace(/^\/+/, "");
+  const basename = normalized.split("/").pop() ?? "";
+  return OCR_REQUIRED_RELATIVES.includes(basename as typeof OCR_REQUIRED_RELATIVES[number]) ? basename : "";
+}
+
+function ocrCachePath(source: "vault" | "remote", sourceKey: string): string {
+  return `${CANCIP_OCR_INDEX_DIR}/${source}/${stableTextHash(sourceKey)}.json`;
+}
+
+function ocrPdfCacheCoversLimit(entry: OcrIndexEntry, requestedPages: number): boolean {
+  const indexedPages = entry.pages?.length ?? 0;
+  if (indexedPages >= requestedPages) return true;
+  const totals = entry.description.match(/PDF pages OCR-indexed:\s*(\d+)\s*\/\s*(\d+)/i);
+  const totalPages = totals ? Number.parseInt(totals[2], 10) : Number.NaN;
+  return Number.isFinite(totalPages) && indexedPages >= totalPages;
+}
+
+function normalizeOcrIndexEntry(raw: unknown): OcrIndexEntry | null {
+  if (!isRecord(raw) || (raw.source !== "vault" && raw.source !== "remote") || typeof raw.sourceKey !== "string") return null;
+  const blocks: OcrLayoutBlock[] = Array.isArray(raw.blocks) ? raw.blocks.filter(isRecord).map((block) => {
+    const page = Math.floor(finiteNumber(block.page));
+    return {
+      text: typeof block.text === "string" ? trimContext(block.text, 300) : "",
+      confidence: finiteNumber(block.confidence),
+      x: clampUnit(finiteNumber(block.x)),
+      y: clampUnit(finiteNumber(block.y)),
+      width: clampUnit(finiteNumber(block.width)),
+      height: clampUnit(finiteNumber(block.height)),
+      ...(page > 0 ? { page } : {})
+    };
+  }).filter((block) => block.text).slice(0, 240) : [];
+  const pages = Array.isArray(raw.pages) ? raw.pages.filter(isRecord).map((page) => ({
+    page: Math.max(1, Math.floor(finiteNumber(page.page, 1))),
+    text: typeof page.text === "string" ? trimContext(page.text, 30000) : "",
+    description: typeof page.description === "string" ? trimContext(page.description, 1200) : "",
+    confidence: finiteNumber(page.confidence)
+  })).slice(0, 20) : undefined;
+  return {
+    schemaVersion: finiteNumber(raw.schemaVersion) === OCR_CACHE_SCHEMA_VERSION ? OCR_CACHE_SCHEMA_VERSION : 0,
+    engineVersion: typeof raw.engineVersion === "string" ? raw.engineVersion : "",
+    source: raw.source,
+    path: typeof raw.path === "string" ? raw.path : "",
+    sourceKey: raw.sourceKey,
+    mtime: finiteNumber(raw.mtime),
+    size: finiteNumber(raw.size),
+    indexedAt: typeof raw.indexedAt === "string" ? raw.indexedAt : "",
+    languages: typeof raw.languages === "string" ? raw.languages : "",
+    confidence: finiteNumber(raw.confidence),
+    width: finiteNumber(raw.width),
+    height: finiteNumber(raw.height),
+    text: typeof raw.text === "string" ? trimContext(raw.text, 30000) : "",
+    description: typeof raw.description === "string" ? trimContext(raw.description, 5000) : "",
+    blocks,
+    ...(pages?.length ? { pages } : {})
+  };
+}
+
+function finiteNumber(value: unknown, fallback = 0): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function clampUnit(value: number): number {
+  return Math.min(1, Math.max(0, value));
+}
+
+function isOcrSupportedPath(path: string): boolean {
+  return isPdfPath(path) || /\.(?:png|jpe?g|webp|gif|bmp|svg|avif)$/i.test(path.replace(/[?#].*$/, ""));
+}
+
+function isSafeRemoteOcrUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "https:" && isPublicRemoteOcrHostname(parsed.hostname) && isOcrSupportedPath(parsed.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function isPublicRemoteOcrHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+  if (host === "::" || host === "::1" || /^f[cd][0-9a-f:]*$/i.test(host) || /^fe[89ab][0-9a-f:]*$/i.test(host)) return false;
+  const octets = host.split(".").map((part) => Number(part));
+  if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return true;
+  const [a, b] = octets;
+  return !(a === 0
+    || a === 10
+    || a === 127
+    || (a === 100 && b >= 64 && b <= 127)
+    || (a === 169 && b === 254)
+    || (a === 172 && b >= 16 && b <= 31)
+    || (a === 192 && b === 168)
+    || a >= 224);
+}
+
+function extractRemoteOcrUrls(content: string): string[] {
+  const matches = content.match(/https:\/\/[^\s<>"')\]]+?(?:\.pdf|\.png|\.jpe?g|\.webp|\.gif|\.bmp|\.svg|\.avif)(?:\?[^\s<>"')\]]*)?/gi) ?? [];
+  return uniqueStrings(matches.map((url) => url.replace(/[.,;，。；]+$/, "")).filter(isSafeRemoteOcrUrl)).slice(0, 8);
+}
+
+function remoteOcrFileName(url: string, fallback: string): string {
+  try {
+    return decodeURIComponent(new URL(url).pathname.split("/").pop() || fallback).slice(-120) || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function resourceParentUrl(url: string): string {
+  const clean = url.replace(/[?#].*$/, "");
+  return clean.slice(0, Math.max(0, clean.lastIndexOf("/")));
+}
+
+function supportsWasmSimd(): boolean {
+  try {
+    return WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
+  } catch {
+    return false;
+  }
+}
+
+async function prepareOcrImage(blob: Blob, maxDimension: number): Promise<{ blob: Blob; width: number; height: number }> {
+  let bitmap: ImageBitmap | null = null;
+  try {
+    bitmap = await createImageBitmap(blob);
+    const largest = Math.max(bitmap.width, bitmap.height);
+    if (!largest) return { blob, width: 0, height: 0 };
+    const scale = Math.min(1, maxDimension / largest);
+    const width = Math.max(1, Math.round(bitmap.width * scale));
+    const height = Math.max(1, Math.round(bitmap.height * scale));
+    if (scale >= 0.999) return { blob, width, height };
+    const canvas = activeDocument.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return { blob, width: bitmap.width, height: bitmap.height };
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(bitmap, 0, 0, width, height);
+    return { blob: await canvasElementToBlob(canvas, "image/jpeg", 0.9), width, height };
+  } catch {
+    return { blob, width: 0, height: 0 };
+  } finally {
+    bitmap?.close();
+  }
+}
+
+async function canvasElementToBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promise<Blob> {
+  return await new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error("OCR canvas encoding returned empty data")), type, quality);
+  });
+}
+
+function ocrLayoutBlocks(raw: unknown, imageWidth: number, imageHeight: number): OcrLayoutBlock[] {
+  const blocks: OcrLayoutBlock[] = [];
+  for (const block of Array.isArray(raw) ? raw : []) {
+    if (!isRecord(block)) continue;
+    const paragraphs = Array.isArray(block.paragraphs) ? block.paragraphs : [];
+    for (const paragraph of paragraphs) {
+      if (!isRecord(paragraph)) continue;
+      for (const line of Array.isArray(paragraph.lines) ? paragraph.lines : []) {
+        if (!isRecord(line) || typeof line.text !== "string" || !line.text.trim()) continue;
+        const bbox = isRecord(line.bbox) ? line.bbox : {};
+        const x0 = finiteNumber(bbox.x0);
+        const y0 = finiteNumber(bbox.y0);
+        const x1 = finiteNumber(bbox.x1, x0);
+        const y1 = finiteNumber(bbox.y1, y0);
+        blocks.push({
+          text: trimContext(line.text.replace(/\s+/g, " ").trim(), 300),
+          confidence: finiteNumber(line.confidence),
+          x: imageWidth ? x0 / imageWidth : x0,
+          y: imageHeight ? y0 / imageHeight : y0,
+          width: imageWidth ? Math.max(0, x1 - x0) / imageWidth : Math.max(0, x1 - x0),
+          height: imageHeight ? Math.max(0, y1 - y0) / imageHeight : Math.max(0, y1 - y0)
+        });
+      }
+    }
+  }
+  return blocks.slice(0, 240);
+}
+
+function shouldRetryOcrOrientation(data: { text?: string | null; confidence?: number | null }): boolean {
+  const text = normalizeExtractedText(data.text ?? "");
+  return text.length >= 3 && finiteNumber(data.confidence) < 72;
+}
+
+function ocrRecognitionScore(data: { text?: string | null; confidence?: number | null }): number {
+  const text = normalizeExtractedText(data.text ?? "");
+  const readable = (text.match(/[\p{L}\p{N}]/gu) ?? []).length;
+  return finiteNumber(data.confidence) + Math.min(8, readable / 6);
+}
+
+function describeOcrLayout(width: number, height: number, blocks: OcrLayoutBlock[], text: string): string {
+  const orientation = width && height ? (width > height * 1.15 ? "landscape" : height > width * 1.15 ? "portrait" : "square") : "unknown";
+  const shortBlocks = blocks.filter((block) => block.text.length <= 24).length;
+  const numericBlocks = blocks.filter((block) => /\d/.test(block.text)).length;
+  const urlCount = (text.match(/https?:\/\/|www\./gi) ?? []).length;
+  const alignedColumns = new Set(blocks.map((block) => Math.round(block.x * 10))).size;
+  const likelyTable = blocks.length >= 6 && numericBlocks >= 3 && alignedColumns >= 3;
+  const likelyInterface = blocks.length >= 8 && shortBlocks / Math.max(1, blocks.length) >= 0.65;
+  const kind = likelyTable ? "table/form-like layout" : likelyInterface ? "screenshot/interface-like layout" : blocks.length >= 8 ? "multi-block document" : blocks.length ? "simple text image" : "image without confident text regions";
+  return [
+    `Visual layout: ${orientation} ${width || "?"}x${height || "?"}`,
+    `Detected structure: ${kind}; text regions=${blocks.length}; short labels=${shortBlocks}; numeric regions=${numericBlocks}`,
+    urlCount ? `Detected URL-like text: ${urlCount}` : ""
+  ].filter(Boolean).join("\n");
+}
+
+function ocrEntrySearchText(entry: OcrIndexEntry, maxChars: number): string {
+  const blocks = entry.blocks.slice(0, 40).map((block, index) => (
+    `Region ${index + 1}${block.page ? ` page=${block.page}` : ""} [x=${block.x.toFixed(3)}, y=${block.y.toFixed(3)}, w=${block.width.toFixed(3)}, h=${block.height.toFixed(3)}, confidence=${block.confidence.toFixed(1)}]: ${block.text}`
+  ));
+  return trimContext([
+    `OCR source: ${entry.sourceKey}`,
+    `OCR engine: local tesseract.js lite ${entry.engineVersion}; languages=${entry.languages}; confidence=${entry.confidence}`,
+    entry.description,
+    entry.text,
+    blocks.length ? `Layout regions:\n${blocks.join("\n")}` : ""
+  ].filter(Boolean).join("\n\n"), maxChars);
 }
 
 const DOCUMENT_PARSE_MAX_BYTES = 48 * 1024 * 1024;

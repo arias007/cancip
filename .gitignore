@@ -4,6 +4,7 @@ work/
 outputs/*.zip
 outputs/build/
 outputs/cancip/*.zip
+outputs/ocr-package/*.zip
 releases/*.zip
 reports/
 outputs/plugin-backups/
