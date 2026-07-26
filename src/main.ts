@@ -163,6 +163,29 @@ const OCR_REQUIRED_RELATIVES = [
   "eng.traineddata.gz",
   "manifest.json"
 ] as const;
+const OCR_LITE_PACKAGE_MANIFEST = {
+  id: "cancip-ocr-lite-zh-en",
+  name: "Cancip lightweight Chinese/English OCR",
+  engine: "tesseract.js",
+  version: "1",
+  languages: ["chi_sim", "eng"],
+  runtime: "lazy-worker",
+  idleDisposeSeconds: 30,
+  source: "Tesseract.js 6.0.1 / tesseract.js-core 6.1.2 / tessdata best_int",
+  license: "Apache-2.0"
+} as const;
+const OCR_COMPONENT_SOURCES: ReadonlyArray<{
+  relative: typeof OCR_REQUIRED_RELATIVES[number];
+  url: string;
+  sha256: string;
+}> = [
+  { relative: "worker.min.js", url: "https://cdn.jsdelivr.net/npm/tesseract.js@6.0.1/dist/worker.min.js", sha256: "38645599043239c0eb6db08a6504a92dcdc292200535f3e9339cd77c4443b842" },
+  { relative: "tesseract-core-lstm.wasm.js", url: "https://cdn.jsdelivr.net/npm/tesseract.js-core@6.1.2/tesseract-core-lstm.wasm.js", sha256: "775a35df6f2ae100e02609443e6bd5cafcd07983dd6175454ca4a432a7730687" },
+  { relative: "tesseract-core-simd-lstm.wasm.js", url: "https://cdn.jsdelivr.net/npm/tesseract.js-core@6.1.2/tesseract-core-simd-lstm.wasm.js", sha256: "9d7c43fb206dc9f48475228b46bf35f888fa9e6259da2e67d5a75c77049f2dc7" },
+  { relative: "chi_sim.traineddata.gz", url: "https://cdn.jsdelivr.net/npm/@tesseract.js-data/chi_sim@1.0.0/4.0.0_best_int/chi_sim.traineddata.gz", sha256: "b8a23f10c7de500891eb458a8adc9cc58ab7f242f08b7d149f5e9aea4ad5db7c" },
+  { relative: "eng.traineddata.gz", url: "https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng@1.0.0/4.0.0_best_int/eng.traineddata.gz", sha256: "45b4cb346724ac1774f1c36f42f182b887bcdb28ebe63e6fff90ac41f3fcff91" },
+  { relative: "manifest.json", url: "", sha256: "cb1363d83065ed9029178d1ee987f80e8849ad5d2908fa81add8d7038a3fb65e" }
+];
 const OCR_CACHE_SCHEMA_VERSION = 2;
 const OCR_RUNTIME_IDLE_DISPOSE_MS = 30000;
 const BUILTIN_PRIME_TTS_INSTALL_STALE_MS = 120000;
@@ -11846,6 +11869,7 @@ export default class CancipPlugin extends Plugin {
   }
 
   async ocrPackageStatus(): Promise<string> {
+    if (this.ocrInstallPromise && this.ocrInstallStatus) return this.ocrInstallStatus;
     const missing = await this.missingOcrPackageAssets();
     if (missing.length) {
       return isChineseLanguage(this.language())
@@ -11866,7 +11890,6 @@ export default class CancipPlugin extends Plugin {
   }
 
   async installOcrPackage(showNotice = true): Promise<string> {
-    if (!(await this.missingOcrPackageAssets()).length) return await this.ocrPackageStatus();
     if (this.ocrInstallPromise) return await this.ocrInstallPromise;
     this.ocrInstallPromise = this.downloadAndInstallOcrPackage(showNotice);
     try {
@@ -11879,32 +11902,52 @@ export default class CancipPlugin extends Plugin {
   private async missingOcrPackageAssets(): Promise<string[]> {
     const adapter = this.app.vault.adapter;
     const missing: string[] = [];
-    for (const relative of OCR_REQUIRED_RELATIVES) {
+    for (const relative of this.ocrRuntimeRequiredRelatives()) {
       const path = `${this.ocrPackageBase()}/${relative}`;
       if (!(await adapter.exists(path))) missing.push(relative);
     }
     return missing;
   }
 
+  private ocrRuntimeRequiredRelatives(): ReadonlyArray<typeof OCR_REQUIRED_RELATIVES[number]> {
+    const unusedCore = supportsWasmSimd() ? "tesseract-core-lstm.wasm.js" : "tesseract-core-simd-lstm.wasm.js";
+    return OCR_REQUIRED_RELATIVES.filter((relative) => relative !== unusedCore);
+  }
+
   private async downloadAndInstallOcrPackage(showNotice: boolean): Promise<string> {
     const installing = isChineseLanguage(this.language()) ? "正在下载轻量 OCR 包…" : "Downloading the lightweight OCR package...";
     this.ocrInstallStatus = installing;
     if (showNotice) new Notice(installing, 6000);
-    const url = this.accelerateGithubDownloadUrl(OCR_LITE_PACKAGE_URL);
     try {
-      const response = await requestUrl({ url, method: "GET", throw: false });
-      if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}: ${trimContext(response.text ?? "", 160)}`);
-      if (response.arrayBuffer.byteLength > OCR_PACKAGE_MAX_BYTES) {
-        throw new Error(`OCR package exceeds ${formatFileSize(OCR_PACKAGE_MAX_BYTES)}`);
+      let installed = 0;
+      let componentFailure = "";
+      try {
+        installed = await this.downloadAndInstallOcrComponents();
+      } catch (error) {
+        componentFailure = error instanceof Error ? error.message : String(error);
       }
-      const packageHash = await sha256ArrayBuffer(response.arrayBuffer);
-      if (packageHash !== OCR_LITE_PACKAGE_SHA256) throw new Error("OCR package SHA-256 verification failed");
-      const installed = await this.installOcrZip(response.arrayBuffer);
+      const missingAfterComponents = await this.missingOcrPackageAssets();
+      if (componentFailure || missingAfterComponents.length) {
+        const url = this.accelerateGithubDownloadUrl(OCR_LITE_PACKAGE_URL);
+        try {
+          const response = await withTimeout(requestUrl({ url, method: "GET", throw: false }), 90000, "OCR ZIP download timed out");
+          if (response.status < 200 || response.status >= 300) throw new Error(`HTTP ${response.status}: ${trimContext(response.text ?? "", 160)}`);
+          if (response.arrayBuffer.byteLength > OCR_PACKAGE_MAX_BYTES) {
+            throw new Error(`OCR package exceeds ${formatFileSize(OCR_PACKAGE_MAX_BYTES)}`);
+          }
+          const packageHash = await sha256ArrayBuffer(response.arrayBuffer);
+          if (packageHash !== OCR_LITE_PACKAGE_SHA256) throw new Error("OCR package SHA-256 verification failed");
+          installed += await this.installOcrZip(response.arrayBuffer);
+        } catch (error) {
+          const zipFailure = error instanceof Error ? error.message : String(error);
+          throw new Error(`component download failed: ${componentFailure || "unknown"}; ZIP fallback failed: ${zipFailure}`);
+        }
+      }
       const missing = await this.missingOcrPackageAssets();
       if (missing.length) throw new Error(`package incomplete: ${missing.join(", ")}`);
-      this.ocrInstallStatus = isChineseLanguage(this.language())
-        ? `OCR 包已安装（${installed} 个文件）`
-        : `OCR package installed (${installed} files)`;
+      this.ocrInstallStatus = installed
+        ? (isChineseLanguage(this.language()) ? `OCR 包已安装（补齐 ${installed} 个文件）` : `OCR package installed (${installed} files added)`)
+        : (isChineseLanguage(this.language()) ? "OCR 包完整（无需下载）" : "OCR package verified (no download needed)");
       if (showNotice) new Notice(this.ocrInstallStatus, 7000);
       return this.ocrInstallStatus;
     } catch (error) {
@@ -11913,6 +11956,73 @@ export default class CancipPlugin extends Plugin {
       if (showNotice) new Notice(this.ocrInstallStatus, 10000);
       throw error;
     }
+  }
+
+  private async downloadAndInstallOcrComponents(): Promise<number> {
+    const required = new Set(this.ocrRuntimeRequiredRelatives());
+    const sources = OCR_COMPONENT_SOURCES.filter((source) => required.has(source.relative));
+    const adapter = this.app.vault.adapter;
+    const active = new Set<string>();
+    let completed = 0;
+    let installed = 0;
+    let totalBytes = 0;
+    const updateStatus = (): void => {
+      const current = [...active].join(", ");
+      const idle = completed === sources.length
+        ? (isChineseLanguage(this.language()) ? " · 校验完成" : " · verified")
+        : (isChineseLanguage(this.language()) ? " · 等待重试" : " · waiting to retry");
+      this.ocrInstallStatus = isChineseLanguage(this.language())
+        ? `OCR 安装 ${completed}/${sources.length}${current ? ` · 正在下载 ${current}` : idle}`
+        : `OCR install ${completed}/${sources.length}${current ? ` · downloading ${current}` : idle}`;
+    };
+    const results = await Promise.allSettled(sources.map(async (source) => {
+      const path = `${this.ocrPackageBase()}/${source.relative}`;
+      if (await adapter.exists(path)) {
+        const existing = await adapter.readBinary(path);
+        if (await sha256ArrayBuffer(existing) === source.sha256) {
+          completed += 1;
+          updateStatus();
+          return;
+        }
+      }
+      active.add(source.relative);
+      updateStatus();
+      let data: Uint8Array;
+      try {
+        if (source.relative === "manifest.json") {
+          data = new TextEncoder().encode(`${JSON.stringify(OCR_LITE_PACKAGE_MANIFEST, null, 2)}\n`);
+        } else {
+          const response = await withTimeout(
+            requestUrl({ url: source.url, method: "GET", throw: false }),
+            90000,
+            `${source.relative} download timed out`
+          );
+          if (response.status < 200 || response.status >= 300) throw new Error(`${source.relative}: HTTP ${response.status}`);
+          if (!response.arrayBuffer.byteLength || response.arrayBuffer.byteLength > 8 * 1024 * 1024) {
+            throw new Error(`${source.relative}: invalid download size`);
+          }
+          data = new Uint8Array(response.arrayBuffer);
+        }
+        const hash = await sha256ArrayBuffer(uint8ArrayToArrayBuffer(data));
+        if (hash !== source.sha256) throw new Error(`${source.relative}: SHA-256 verification failed`);
+        totalBytes += data.byteLength;
+        if (totalBytes > OCR_PACKAGE_MAX_BYTES) throw new Error(`OCR components exceed ${formatFileSize(OCR_PACKAGE_MAX_BYTES)}`);
+        await ensureParentFolder(adapter, path);
+        await adapter.writeBinary(path, uint8ArrayToArrayBuffer(data));
+        installed += 1;
+        completed += 1;
+      } finally {
+        active.delete(source.relative);
+        updateStatus();
+      }
+    }));
+    const failures = results.flatMap((result) => result.status === "rejected"
+      ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+      : []);
+    if (failures.length) {
+      throw new Error(failures.join("; "));
+    }
+    return installed;
   }
 
   private async installOcrZip(buffer: ArrayBuffer): Promise<number> {
@@ -57688,11 +57798,22 @@ class CancipSettingTab extends PluginSettingTab {
         button
           .setButtonText(this.plugin.t("settingsOcrInstall"))
           .onClick(async () => {
+            button.setDisabled(true);
+            const refreshStatus = (): void => {
+              void this.plugin.ocrPackageStatus().then((value) => {
+                if (packageSetting.settingEl.isConnected) {
+                  packageSetting.setDesc(`${this.plugin.t("settingsOcrPackageDesc")}\n${value}\n${this.plugin.ocrPackageBase()} · ${OCR_LITE_PACKAGE_ASSET}`);
+                }
+              });
+            };
+            const refreshTimer = window.setInterval(refreshStatus, 500);
             try {
-              new Notice(await this.plugin.installOcrPackage(true), 10000);
-              this.renderSettings();
+              await this.plugin.installOcrPackage(true);
             } catch {
               // Installer already reports the concrete failure.
+            } finally {
+              window.clearInterval(refreshTimer);
+              this.renderSettings();
             }
           });
       });
