@@ -162,6 +162,8 @@ const PRIME_TTS_MICRO_MAX_CHARS = 48;
 const PRIME_TTS_DISPLAY_TARGET_CHARS = 28;
 const PRIME_TTS_DISPLAY_MAX_CHARS = 48;
 const PRIME_TTS_LATIN_WORD_MAX_CHARS = 18;
+const PRIME_TTS_STARTUP_WORD_UNITS = 2;
+const PRIME_TTS_STARTUP_PHRASE_TARGET_CHARS = 12;
 const PRIME_TTS_PLAYBACK_DRAIN_MS = 0;
 const PRIME_TTS_WEB_AUDIO_FALLBACK_GRACE_MS = 650;
 const AUTOMATION_STATE_CACHE_TTL_MS = 5000;
@@ -3749,7 +3751,7 @@ const EN = {
   searchIndexStatus: "Index {indexed}/{total}",
   searchLoadedSession: "Session loaded",
   finalConclusionFallback: "{summary}",
-  finalAnswerFormatPrompt: "For implementation/change/tool tasks, do not write a \"Final answer\" heading and do not write elapsed time, token counts, character counts, or a changed-files section; Cancip appends those programmatically. Before closing, silently compare the original user request with actual actions, changed targets, tool readback, and any visible Plan todos; do not show this checklist. If a model-created Plan exists, keep its exact order and answer with matching numbered items, one concrete result, verification, or exact blocker per item. Do not mark complete while a Plan item is still unresolved. If no Plan exists, lead with the concrete result; use natural short sentences for one or two facts and a compact numbered list for three or more. If the user supplied a required answer template or the current context clearly contains one, use that template and keep only filled useful fields. Include only facts that exist: completed actions, actual verification, a concrete blocker, or a newly stored rule. Omit empty, none, not-applicable, unchanged, unread, hypothetical, and generic completion statements; do not list read or changed files in the prose. Do not explain hidden reasoning or process. If more tool work is possible, continue with one cancip-action instead of closing. Every terminal final reply must include one to three short, concrete model-written choices in the same hidden cancip-choices comment, normally three. Each choice must name an object, file, feature, panel, model, or action from the request or result. Keep tool details folded; never expose raw action JSON.",
+  finalAnswerFormatPrompt: "For implementation/change/tool tasks, do not write a \"Final answer\" heading and do not write elapsed time, token counts, character counts, or a changed-files section; Cancip appends those programmatically. Before closing, silently compare the original user request with actual actions, changed targets, tool readback, and any visible Plan todos; do not show this checklist. If a model-created Plan exists, keep its exact order and answer with matching numbered items, one concrete result, verification, or exact blocker per item. Do not mark complete while a Plan item is still unresolved. If no Plan exists, lead with the concrete result; use natural short sentences for one or two facts and a compact numbered list for three or more. If the user supplied a required answer template or the current context clearly contains one, use that template and keep only filled useful fields. Include only facts that exist: completed actions, actual verification, a concrete blocker, or a newly stored rule. Omit empty, none, not-applicable, unchanged, unread, hypothetical, and generic completion statements; do not list read or changed files in the prose. Compress wording without losing facts: state each fact once, remove filler, pleasantries, and hedging, but preserve exact technical terms, commands, code, and errors; use full grammar for safety warnings and ordered irreversible steps. Do not explain hidden reasoning or process. If more tool work is possible, continue with one cancip-action instead of closing. Every terminal final reply must include one to three short, concrete model-written choices in the same hidden cancip-choices comment, normally three. Each choice must name an object, file, feature, panel, model, or action from the request or result. Keep tool details folded; never expose raw action JSON.",
   emptyApiReply: "The API returned an empty response.",
   emptyApiReplyWithSuppressedTools: "The API returned tool/action instructions but no visible assistant reply. For simple chat, Cancip does not execute hidden actions.",
   modelContinuationFailed: "Model follow-up failed: {reason}",
@@ -4751,7 +4753,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     searchIndexStatus: "索引 {indexed}/{total}",
     searchLoadedSession: "已加载会话",
     finalConclusionFallback: "{summary}",
-    finalAnswerFormatPrompt: "实现、改动、工具类最终回答不要写“最终结论”标题，也不要写耗时、token 数、字数或改动文件模块；这些由 Cancip 程序化追加。收尾前在内部把用户原要求、实际动作、改动目标、工具读回结果和计划面板待办逐项核对一致，但不要把核对清单写进正文。模型已经建立计划时，最终回答必须保持计划原顺序，用对应序号逐项写清具体结果、验证或精确阻塞；仍有可推进的未完成项时不得标记完成。没有计划时，开头直接给具体结果：如果用户给了必用模板，或当前上下文明确有模板，就按模板填写且只保留有用字段；否则一两项有效信息用自然短句，三项以上用精简编号。只写真实存在的干货：已完成动作、实际验证、具体阻塞或新增规则。空项、无、未涉及、未改动、仅读取、假设和“已完成你的请求”之类套话全部省略；正文不要列读取或改动文件，不展示隐藏思维链。如果还能继续用工具推进，就继续输出一个 cancip-action，不要提前收尾。每条终态最终回复必须在同一回复的隐藏 cancip-choices 注释中生成一到三个具体推荐，通常三个；每项必须带上原问题或最终结果里的具体对象、文件、功能、面板、模型或动作，正文不显示推荐列表。工具细节留在折叠过程，不暴露原始 action JSON。",
+    finalAnswerFormatPrompt: "实现、改动、工具类最终回答不要写“最终结论”标题，也不要写耗时、token 数、字数或改动文件模块；这些由 Cancip 程序化追加。收尾前在内部把用户原要求、实际动作、改动目标、工具读回结果和计划面板待办逐项核对一致，但不要把核对清单写进正文。模型已经建立计划时，最终回答必须保持计划原顺序，用对应序号逐项写清具体结果、验证或精确阻塞；仍有可推进的未完成项时不得标记完成。没有计划时，开头直接给具体结果：如果用户给了必用模板，或当前上下文明确有模板，就按模板填写且只保留有用字段；否则一两项有效信息用自然短句，三项以上用精简编号。只写真实存在的干货：已完成动作、实际验证、具体阻塞或新增规则。空项、无、未涉及、未改动、仅读取、假设和“已完成你的请求”之类套话全部省略；正文不要列读取或改动文件。压缩表达但不能丢事实：每个事实只说一次，删除客套、填充词和犹豫措辞，保留准确术语、命令、代码和原始错误；安全警告及顺序敏感的不可逆步骤使用完整语法。不要展示隐藏思维链。如果还能继续用工具推进，就继续输出一个 cancip-action，不要提前收尾。每条终态最终回复必须在同一回复的隐藏 cancip-choices 注释中生成一到三个具体推荐，通常三个；每项必须带上原问题或最终结果里的具体对象、文件、功能、面板、模型或动作，正文不显示推荐列表。工具细节留在折叠过程，不暴露原始 action JSON。",
     emptyApiReply: "API 返回了空回复。",
     emptyApiReplyWithSuppressedTools: "API 只返回了工具/动作指令，没有给普通可见回复。简单聊天不会执行隐藏动作。",
     modelContinuationFailed: "模型续答失败：{reason}",
@@ -38811,8 +38813,20 @@ class CancipView extends ItemView {
         CONTEXT_STEP_TIMEOUT_MS
       );
       if (autoSkills.length) {
+        const sharedSkillBudget = Math.min(this.plugin.settings.maxAutoSkillContextChars, 1800);
+        const skillBlockHeadingBudget = 48;
+        const skillSeparatorBudget = Math.max(0, autoSkills.length - 1) * 2;
+        const perSkillBudget = Math.max(
+          120,
+          Math.floor((sharedSkillBudget - skillBlockHeadingBudget - skillSeparatorBudget) / autoSkills.length)
+        );
         const skillContents = await Promise.all(autoSkills.map((skill) =>
-          this.safeContextStep(`skill:${skill.id}`, () => this.readSkillContext(skill, this.plugin.settings.maxAutoSkillContextChars), "", CONTEXT_STEP_TIMEOUT_MS)
+          this.safeContextStep(
+            `skill:${skill.id}`,
+            async () => trimPromptPayload(await this.readSkillContext(skill, perSkillBudget), perSkillBudget),
+            "",
+            CONTEXT_STEP_TIMEOUT_MS
+          )
         ));
         const skillBlocks: string[] = [];
         for (const [index, skill] of autoSkills.entries()) {
@@ -40742,15 +40756,23 @@ class CancipView extends ItemView {
         : capabilityPromptMentionsLocalSurface(prompt)
           ? 24
           : 34;
+    const preferredSkillIds = new Set(preferredBuiltinSkillIdsForPrompt(prompt));
     const scored = skills
       .filter((skill) => !excludedPaths.has(normalizePath(skill.path)))
-      .map((skill) => ({ skill, score: scoreSkillForPrompt(skill, prompt) }))
+      .map((skill) => ({
+        skill,
+        score: scoreSkillForPrompt(skill, prompt) + (preferredSkillIds.has(skill.id) ? 180 : 0)
+      }))
       .filter((item) => item.score >= threshold)
       .sort((a, b) => b.score - a.score || b.skill.priority - a.skill.priority || a.skill.name.localeCompare(b.skill.name));
     const topScore = scored[0]?.score ?? 0;
-    const effectiveLimit = Math.min(this.plugin.settings.maxAutoSkills, promptNeedsSkillExperienceRoute(prompt) ? 2 : 1);
+    const preferredMatchCount = scored.filter((item) => preferredSkillIds.has(item.skill.id)).length;
+    const effectiveLimit = Math.min(
+      this.plugin.settings.maxAutoSkills,
+      Math.max(preferredMatchCount, promptNeedsSkillExperienceRoute(prompt) ? 2 : 1)
+    );
     return scored
-      .filter((item) => item.score >= Math.max(threshold, topScore - 24))
+      .filter((item) => preferredSkillIds.has(item.skill.id) || item.score >= Math.max(threshold, topScore - 24))
       .slice(0, effectiveLimit)
       .map((item) => item.skill);
   }
@@ -61584,6 +61606,44 @@ function builtinCancipSkills(): BuiltinCancipSkill[] {
 
   return [
     make(
+      "adhd",
+      "对高价值开放问题做隔离并行发散、陷阱筛除和收敛；普通问题不触发。",
+      ["ADHD", "adhd mode", "brainstorm", "ideate", "diverge", "architecture", "fuzzy debugging", "头脑风暴", "发散", "创意", "多方案", "架构", "根因不明"],
+      79,
+      `
+# ADHD
+
+来源：https://github.com/UditAkhourii/adhd/tree/main/skills/adhd（MIT）。这是适配 Cancip 的低 Token 路线，不运行外部 CLI。
+
+用于高价值、开放式、存在多个合理方向的问题。语法、查值、根因已知的 Bug、用户要求“快速/标准/一句话”时直接回答，不启用。
+
+1. 明确说“ADHD/发散模式”时直接启用；自动触发时先确认问题同时具备开放性和错误选择代价。
+2. 发散与批评分开。默认用 3 个隔离的 cancip.subagents.start 并行分支，每支采用不同视角，只产出 3-4 个短方案，不互看结果。只有用户明确要求完整 ADHD 才扩到 5 个分支。
+3. 视角按任务选：约束/性能、审计/失败模式、零预算/最快路线、反向思考、用户体验；至少一个非常规视角。
+4. 汇总后按可行性、契合度、非显然性评分；聚类去重，标出隐藏成本和伪省事方案。
+5. 只深化最优 1-2 项：工作方式、关键风险、第一步和可验证标准。最终必须给明确推荐，不把一堆方案丢给用户。
+6. 子会话不可用或成本不值得时，退化为单轮 3 视角短发散并立即收敛，不伪称已并行。
+`
+    ),
+    make(
+      "caveman",
+      "在保持技术准确性的前提下压缩回复，删除套话、重复、客套和无价值解释。",
+      ["caveman", "caveman mode", "原始人", "low token", "less tokens", "brief", "concise", "低token", "省token", "少token", "精简", "简洁", "少废话", "高信息密度"],
+      78,
+      `
+# Caveman
+
+来源：https://github.com/JuliusBrussee/caveman/tree/main/skills/caveman（MIT）。采用其“保留技术事实、删除语言浪费”原则，不安装 hooks、脚本或 MCP。
+
+- 默认使用 lite：删除客套、填充词、重复结论、无意义提醒和假设性段落；一个事实只说一次。
+- 先给结果，再给必要证据或下一步。1-2 个事实用短句，3 项以上用紧凑序号。
+- 保留准确术语、文件名、命令、API、代码和原始错误；不创造难懂缩写，不为了少字牺牲可读性。
+- 工具过程、长 JSON、日志和代码保持折叠；只摘最短决定性证据。
+- 安全警告、不可逆操作确认和顺序敏感步骤恢复完整语法，避免压缩造成歧义。
+- 用户要求详细解释时增加必要细节，但仍删除套话；用户说“原始人/ultra”才进一步压缩。
+`
+    ),
+    make(
       "memory-system",
       "把用户偏好、项目事实、工具经验和短期状态写入正确记忆层，并按需读取。",
       ["memory", "remember", "preference", "WAL", "记忆", "记住", "偏好", "规则", "上下文"],
@@ -61974,6 +62034,26 @@ function shouldAutoSelectSkills(prompt: string): boolean {
   if (extractMentionTokens(prompt).some((token) => token.toLowerCase().includes("skill") || /技能|能力/.test(token))) return true;
   if (promptNeedsSkillExperienceRoute(prompt) || capabilityPromptMentionsSkillOrExperienceSurface(prompt)) return true;
   return classifyPromptIntent(prompt) !== "trivial";
+}
+
+function promptNeedsAdhdSkillRoute(prompt: string): boolean {
+  if (/(?:^|\s)\/adhd\b|adhd\s*(?:mode|模式)|使用\s*adhd|用\s*adhd|发散模式/i.test(prompt)) return true;
+  if (/(?:\bquick\b|\bstandard\b|\bcanonical\b|\btextbook\b|\bone[- ]?line\b|快速|直接回答|只要一个|一句话|标准答案|教科书答案)/i.test(prompt)) return false;
+  const openEnded = /(brainstorm|ideat(?:e|ion)|divergent|alternatives?|multiple approaches|architecture|public api|schema design|naming|fuzzy debug|unknown root cause|头脑风暴|发散|创意|多个方案|多种方案|不同方案|架构|接口设计|命名|根因不明|模糊问题|多角度)/i.test(prompt);
+  const consequential = /(architecture|public api|schema|product|system design|strategy|workflow|high[- ]?stakes|unknown root cause|架构|公共接口|数据模型|产品|系统设计|策略|工作流|长期|关键决策|高风险|根因不明)/i.test(prompt);
+  return openEnded && consequential;
+}
+
+function promptNeedsCavemanSkillRoute(prompt: string): boolean {
+  return /(caveman|原始人|低\s*token|省\s*token|少\s*token|token\s*(?:少|低|压缩)|less\s+tokens?|token\s+efficien|be\s+brief|concise|精简|简洁|简短|少废话|高信息密度|压缩回复|回复短一点)/i.test(prompt);
+}
+
+function preferredBuiltinSkillIdsForPrompt(prompt: string): string[] {
+  const ids: string[] = [];
+  if (promptNeedsMemorySkillRoute(prompt)) ids.push("memory-system");
+  if (promptNeedsAdhdSkillRoute(prompt)) ids.push("adhd");
+  if (promptNeedsCavemanSkillRoute(prompt)) ids.push("caveman");
+  return ids;
 }
 
 function scoreSkillForPrompt(skill: CancipSkill, prompt: string): number {
@@ -68794,12 +68874,17 @@ function makeTtsPartPlan(input: string, provider: TtsProvider | undefined, targe
   const displayParts: string[] = [];
   const playParts: string[] = [];
   const displayIndexByPlayIndex: number[] = [];
-  const makePlayChunks = (text: string) => usePrimeFastPlan
-    ? splitPrimeTtsMicroPlayText(text, playTarget)
-    : splitTtsText(text, targetLength, true);
+  let primeTtsStage: PrimeTtsAdaptiveStage = 0;
   for (const display of sourceDisplayParts) {
     const spokenDisplay = spokenTransform ? spokenTransform(display) : display;
-    const spokenChunks = makePlayChunks(spokenDisplay).filter(Boolean);
+    let spokenChunks: string[];
+    if (usePrimeFastPlan) {
+      const split = splitPrimeTtsMicroPlayTextWithStage(spokenDisplay, playTarget, primeTtsStage);
+      spokenChunks = split.parts.filter(Boolean);
+      primeTtsStage = split.nextStage;
+    } else {
+      spokenChunks = splitTtsText(spokenDisplay, targetLength, true).filter(Boolean);
+    }
     const chunks = spokenChunks.length ? spokenChunks : [spokenDisplay || display];
     const displayIndex = displayParts.length;
     displayParts.push(display);
@@ -68931,12 +69016,164 @@ function adjustPrimeTtsDisplayBoundary(text: string, candidate: number, min: num
 }
 
 function splitPrimeTtsMicroPlayText(input: string, targetLength = PRIME_TTS_FAST_DEFAULT_CHARS): string[] {
+  return splitPrimeTtsMicroPlayTextWithStage(input, targetLength, 0).parts;
+}
+
+type PrimeTtsAdaptiveStage = 0 | 1 | 2 | 3;
+
+interface PrimeTtsSentenceFragment {
+  text: string;
+  endsSentence: boolean;
+}
+
+interface PrimeTtsAdaptiveSplit {
+  parts: string[];
+  nextStage: PrimeTtsAdaptiveStage;
+}
+
+function splitPrimeTtsMicroPlayTextWithStage(
+  input: string,
+  targetLength = PRIME_TTS_FAST_DEFAULT_CHARS,
+  initialStage: PrimeTtsAdaptiveStage = 0
+): PrimeTtsAdaptiveSplit {
   const text = normalizePrimeTtsMicroText(input);
   const configuredTarget = Number(targetLength);
   const target = Number.isFinite(configuredTarget) && configuredTarget < 64
     ? Math.max(16, Math.min(PRIME_TTS_MICRO_TARGET_CHARS, Math.floor(configuredTarget)))
     : PRIME_TTS_MICRO_TARGET_CHARS;
-  return splitPrimeTtsPhraseText(text, target, PRIME_TTS_MICRO_MAX_CHARS);
+  const parts: string[] = [];
+  let stage = initialStage;
+  for (const fragment of splitPrimeTtsSentenceFragments(text)) {
+    const split = splitPrimeTtsAdaptiveFragment(fragment.text, target, stage);
+    parts.push(...split.parts);
+    stage = fragment.endsSentence ? 0 : split.nextStage;
+    if (parts.length >= TTS_MAX_PARTS) break;
+  }
+  return { parts: parts.slice(0, TTS_MAX_PARTS), nextStage: stage };
+}
+
+function splitPrimeTtsSentenceFragments(input: string): PrimeTtsSentenceFragment[] {
+  const fragments: PrimeTtsSentenceFragment[] = [];
+  let buffer = "";
+  let pendingLatinStop = false;
+  const push = (endsSentence: boolean) => {
+    const value = buffer.trim();
+    if (value && hasPrimeTtsReadableToken(value)) fragments.push({ text: value, endsSentence });
+    buffer = "";
+    pendingLatinStop = false;
+  };
+  for (let index = 0; index < input.length; index += 1) {
+    const char = input[index] ?? "";
+    buffer += char;
+    if (char === "\n") {
+      push(true);
+      continue;
+    }
+    if ("。！？；!?;".includes(char)) {
+      while (/[”’\"'）)\]】》」』]/.test(input[index + 1] ?? "")) {
+        index += 1;
+        buffer += input[index] ?? "";
+      }
+      push(true);
+      continue;
+    }
+    if (char === ".") {
+      const before = input[index - 1] ?? "";
+      const after = input[index + 1] ?? "";
+      if (!(/\d/.test(before) && /\d/.test(after))) pendingLatinStop = true;
+      continue;
+    }
+    if (pendingLatinStop && /\s/.test(char)) {
+      push(true);
+      while (/\s/.test(input[index + 1] ?? "") && input[index + 1] !== "\n") index += 1;
+    } else if (pendingLatinStop && /[”’\"'）)\]】》」』]/.test(char)) {
+      continue;
+    } else if (!/\s/.test(char)) {
+      pendingLatinStop = false;
+    }
+  }
+  push(pendingLatinStop);
+  return fragments;
+}
+
+function splitPrimeTtsAdaptiveFragment(
+  input: string,
+  steadyTarget: number,
+  initialStage: PrimeTtsAdaptiveStage
+): PrimeTtsAdaptiveSplit {
+  let rest = input.trim();
+  if (!rest) return { parts: [], nextStage: initialStage };
+  const parts: string[] = [];
+  let stage = initialStage;
+  if (stage === 0) {
+    const first = takePrimeTtsStartupChunk(rest, 1);
+    if (first) {
+      parts.push(first.text);
+      rest = rest.slice(first.length).trimStart();
+      stage = 1;
+    }
+  }
+  if (rest && stage === 1) {
+    const second = takePrimeTtsStartupChunk(rest, PRIME_TTS_STARTUP_WORD_UNITS);
+    if (second) {
+      parts.push(second.text);
+      rest = rest.slice(second.length).trimStart();
+      stage = 2;
+    }
+  }
+  if (rest && stage === 2) {
+    const ramp = takePrimeTtsRampChunk(rest, PRIME_TTS_STARTUP_PHRASE_TARGET_CHARS);
+    if (ramp) {
+      parts.push(ramp.text);
+      rest = rest.slice(ramp.length).trimStart();
+      stage = 3;
+    }
+  }
+  if (rest) {
+    parts.push(...splitPrimeTtsPhraseText(rest, steadyTarget, PRIME_TTS_MICRO_MAX_CHARS));
+    stage = 3;
+  }
+  return { parts: parts.filter(Boolean), nextStage: stage };
+}
+
+function takePrimeTtsStartupChunk(input: string, readableUnits: number): { text: string; length: number } | null {
+  const start = input.search(/\S/);
+  if (start < 0) return null;
+  let cursor = start;
+  while (/[“‘\"'（(【\[「『《<]/.test(input[cursor] ?? "")) cursor += 1;
+  const prefixEnd = cursor;
+  const first = Array.from(input.slice(cursor))[0];
+  if (!first) return null;
+  if (/[A-Za-z]/.test(first)) {
+    while (cursor < input.length && /[A-Za-z0-9'_-]/.test(input[cursor] ?? "")) cursor += 1;
+  } else if (/\d/.test(first)) {
+    while (cursor < input.length && /[\d./:%％]/.test(input[cursor] ?? "")) cursor += 1;
+  } else {
+    const units = Math.max(1, readableUnits);
+    for (let count = 0; count < units && cursor < input.length; count += 1) {
+      const codePoint = Array.from(input.slice(cursor))[0];
+      if (!codePoint || isPrimeTtsMicroPunctuation(codePoint)) break;
+      cursor += codePoint.length;
+    }
+  }
+  if (cursor <= prefixEnd) cursor = Math.min(input.length, prefixEnd + 1);
+  while (cursor < input.length && isPrimeTtsMicroPunctuation(input[cursor] ?? "")) cursor += 1;
+  return { text: input.slice(start, cursor).trim(), length: cursor };
+}
+
+function takePrimeTtsRampChunk(input: string, targetLength: number): { text: string; length: number } | null {
+  const start = input.search(/\S/);
+  if (start < 0) return null;
+  const hard = Math.min(input.length, Math.max(4, targetLength + 6));
+  const min = Math.min(hard, Math.max(4, Math.floor(targetLength * 0.55)));
+  for (let index = hard - 1; index >= min; index -= 1) {
+    const char = input[index] ?? "";
+    if (("，,、：:".includes(char) || /\s/.test(char)) && isPrimeTtsSoftBreak(input, index)) {
+      return { text: input.slice(start, index + 1).trim(), length: index + 1 };
+    }
+  }
+  const take = adjustPrimeTtsTakeBoundary(input, Math.min(input.length, targetLength), min, hard);
+  return { text: input.slice(start, take).trim(), length: take };
 }
 
 function splitPrimeTtsCjkRunTokens(run: string): string[] {
@@ -72852,7 +73089,7 @@ function promptContextSectionPriority(section: string, prompt = ""): number {
   const heading = section.split(/\r?\n/, 1)[0]?.toLowerCase() ?? "";
   let priority = 65;
   if (/^##\s+@/.test(heading)) priority = 110;
-  else if (/active skills?|激活.*skill|当前.*skill|经验.*skill/.test(heading)) priority = 105;
+  else if (/active skills?|已启用\s*skill|启用.*skill|激活.*skill|当前.*skill|经验.*skill/.test(heading)) priority = 105;
   else if (/current file|当前文件|光标|选择内容|selection|cursor/.test(heading)) priority = 100;
   else if (/task experience|任务经验|执行经验|经验/.test(heading)) priority = 90;
   else if (/plugin|obsidian command|插件|命令|detailed.*rules|详细.*规则/.test(heading)) priority = 80;
