@@ -11588,29 +11588,37 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
 .obcc-search-results.is-layout-split,
 .obcc-search-results.is-layout-ai,
 .obcc-search-results.is-layout-hard {
-  display: flex;
+  display: grid !important;
   flex: 1 1 auto;
+  grid-template-rows: minmax(0, 1fr) !important;
+  height: 100% !important;
   min-height: 0;
   grid-template-columns: none;
 }
 
 .obcc-search-section.is-ai {
-  display: flex;
+  display: grid !important;
   flex: 1 1 auto;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  height: 100% !important;
   min-height: 0;
   width: 100%;
 }
 
 .obcc-search-section.is-ai[open] {
-  flex-direction: column;
+  grid-template-rows: auto minmax(0, 1fr) !important;
 }
 
 .obcc-search-section.is-ai .obcc-search-section-body {
+  display: grid !important;
   flex: 1 1 auto;
+  grid-template-rows: auto minmax(0, 1fr) !important;
+  height: 100% !important;
   min-height: 0;
 }
 
 .obcc-search-section.is-ai .obcc-search-section-results {
+  flex: 1 1 auto;
   min-height: 0;
   max-height: none;
   overflow-y: auto;
@@ -11620,9 +11628,20 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
 
 .obcc-process-step-timer {
   flex: 0 0 auto;
-  margin-inline-start: auto;
+  justify-self: end;
+  margin-inline-start: 0;
+  min-width: 46px;
+  padding: 1px 5px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  text-align: center;
   white-space: nowrap;
+}
+
+.obcc-process-step-head {
+  grid-template-columns: 14px 20px minmax(0, 1fr) max-content;
 }

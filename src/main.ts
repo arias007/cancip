@@ -4086,6 +4086,7 @@ const EN = {
   searchPlaceholder: "Search notes, files, sessions, memory...",
   searchHard: "Hard",
   searchFuzzy: "AI search",
+  searchUseAi: "AI search",
   searchIncludeArchived: "Include archive",
   searchIncludeConfigs: "Include config",
   searchClose: "Close search",
@@ -5148,6 +5149,7 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     searchPlaceholder: "搜索笔记、文件、会话、记忆……",
     searchHard: "硬搜索",
     searchFuzzy: "AI 搜索",
+    searchUseAi: "AI 搜索",
     searchIncludeArchived: "包含归档",
     searchIncludeConfigs: "包含配置",
     searchClose: "关闭搜索",
@@ -18621,6 +18623,9 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const seenLabels = uniqueStrings(elements.map((el) => uiElementLabel(el)).filter(Boolean)).slice(0, 5);
     const connectedTarget = Boolean(descriptor.target?.isConnected);
     const exactTargetCount = connectedTarget && elements.includes(descriptor.target!) ? 1 : 0;
+    const stableSelectorId = descriptor.selector.match(/^\[data-cancip-button-id="([^"]+)"\]$/)?.[1] ?? "";
+    const stableTargetId = descriptor.targetKey?.startsWith("v3|") ? descriptor.targetKey.split("|")[2] ?? "" : "";
+    const stableDescriptor = Boolean(stableSelectorId && stableTargetId === stableSelectorId);
     const requiresLabel = uiButtonSelectorRequiresLabelGuard(descriptor.selector) && !descriptor.targetKey?.startsWith("v3|");
     const labelCount = exactTargetCount
       || (!requiresLabel || !wanted || wanted === normalizeUiButtonLabel(descriptor.selector)
@@ -18631,10 +18636,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       : 0;
     return {
       expectedLabel,
-      selectorCount: Math.max(elements.length, connectedTarget ? 1 : 0),
-      labelCount: labelCount || snapshotLabelCount || (connectedTarget ? 1 : 0),
-      seenLabels: seenLabels.length ? seenLabels : snapshotLabelCount ? [expectedLabel] : [],
-      verified: connectedTarget || (elements.length > 0 && labelCount > 0) || snapshotLabelCount > 0
+      selectorCount: Math.max(elements.length, connectedTarget || stableDescriptor ? 1 : 0),
+      labelCount: labelCount || snapshotLabelCount || (connectedTarget || stableDescriptor ? 1 : 0),
+      seenLabels: seenLabels.length ? seenLabels : snapshotLabelCount || stableDescriptor ? [expectedLabel] : [],
+      verified: connectedTarget || stableDescriptor || (elements.length > 0 && labelCount > 0) || snapshotLabelCount > 0
     };
   }
 
@@ -40016,11 +40021,19 @@ class CancipView extends ItemView {
 
   private async parallelSubagentsCommand(args: Record<string, unknown>): Promise<string> {
     if (!this.plugin.settings.multiAgentEnabled) throw new Error(this.t("settingsMultiAgentDisabled"));
-    const goal = stringArg(args.goal) || stringArg(args.prompt) || stringArg(args.task);
+    const requestedRows = Array.isArray(args.agents) ? args.agents.filter(isRecord) : [];
+    const inferredAgentGoal = uniqueStrings(requestedRows
+      .map((row) => stringArg(row.task) || stringArg(row.goal))
+      .filter(Boolean))
+      .join("；");
+    const goal = stringArg(args.goal)
+      || stringArg(args.prompt)
+      || stringArg(args.task)
+      || this.resolveTaskGoal("").trim()
+      || trimContext(inferredAgentGoal, 480);
     if (!goal) throw new Error("cancip.subagents.parallel requires args.goal");
     const configuredMin = clampInt(this.plugin.settings.multiAgentMinAgents, 2, 2, 10);
     const configuredMax = clampInt(this.plugin.settings.multiAgentMaxAgents, 10, configuredMin, 10);
-    const requestedRows = Array.isArray(args.agents) ? args.agents.filter(isRecord) : [];
     const requestedCount = clampInt(args.count, this.plugin.settings.multiAgentDefaultAgents, configuredMin, configuredMax);
     const count = Math.max(configuredMin, Math.min(configuredMax, requestedRows.length || requestedCount));
     const parentSessionId = stringArg(args.parentSessionId) || this.sessionId;
@@ -40115,6 +40128,12 @@ class CancipView extends ItemView {
       terminal = (await this.readSessionHistoryIndex({ force: true })).filter((entry) => stoppedIds.has(entry.id));
       await this.returnSubagentGoalsToParent(stillRunning);
     }
+    await this.completeSuccessfulSubagentPlanStep(
+      parentSessionId,
+      planStepId,
+      terminal,
+      startedIds.length === count && failures.length === 0
+    );
     const consensusRequested = args.consensus !== false && this.plugin.settings.multiAgentCrossReview;
     const consensus = consensusRequested
       ? await this.consensusSubagentsCommand({ parentSessionId, sessionIds: startedIds, goal, planStepId })
@@ -40127,6 +40146,40 @@ class CancipView extends ItemView {
       consensus ? "" : "",
       consensus ? `${this.t("subagentConsensus")}:\n${consensus}` : ""
     ].filter(Boolean).join("\n");
+  }
+
+  private async completeSuccessfulSubagentPlanStep(
+    parentSessionId: string,
+    planStepId: string,
+    terminal: SessionHistoryEntry[],
+    allAgentsStarted: boolean
+  ): Promise<void> {
+    if (!allAgentsStarted || !terminal.length || terminal.some((entry) => entry.status !== "completed")) return;
+    const completedAt = new Date().toISOString();
+    const complete = (todos: ManualTodo[]): boolean => {
+      const todo = todos.find((item) => item.id === planStepId);
+      if (!todo || todo.done) return false;
+      todo.done = true;
+      todo.startedAt ||= todo.createdAt || completedAt;
+      todo.completedAt = completedAt;
+      return true;
+    };
+    if (parentSessionId === this.sessionId) {
+      if (!complete(this.manualTodos)) return;
+      await this.saveCurrentSession();
+      this.refreshPlanPanelIfOpen();
+      return;
+    }
+    const parent = (await this.readSessionHistoryIndex()).find((entry) => entry.id === parentSessionId);
+    const path = parent?.path || `${SESSION_HISTORY_DIR}/${parentSessionId}.json`;
+    const adapter = this.app.vault.adapter;
+    if (!(await adapter.exists(path))) return;
+    const snapshot = JSON.parse(await adapter.read(path)) as Record<string, unknown>;
+    const todos = normalizeManualTodos(snapshot.manualTodos);
+    if (!complete(todos)) return;
+    snapshot.manualTodos = todos;
+    snapshot.updatedAt = completedAt;
+    await adapter.write(path, `${JSON.stringify(snapshot, null, 2)}\n`);
   }
 
   private parallelSubagentStartSummary(ids: string[], planStepId: string): string {
@@ -40312,14 +40365,34 @@ class CancipView extends ItemView {
     if (!profile.apiUrl || !profile.apiKey || !profile.model) return reports.join("\n\n");
     const saved = { audit: this.lastModelCallAudit, stats: this.activeModelCharStats, usage: this.turnModelUsage };
     try {
-      const answer = await this.callModelWithRetries(
-        prompt,
-        { system: "Synthesize independent subagent evidence into a falsifiable consensus.", contextText: "", images: [] },
-        prompt,
-        "subagent consensus timed out",
-        this.modelCallTimeoutForPrompt(goal)
-      );
-      return visibleAssistantAnswer(answer, false) || trimContext(answer, 6000);
+      const failures: string[] = [];
+      for (const candidateProfile of [profile, ...this.subagentFallbackProfiles(profile)]) {
+        try {
+          const answer = await this.callModelWithRetries(
+            prompt,
+            { system: "Synthesize independent subagent evidence into a falsifiable consensus.", contextText: "", images: [] },
+            prompt,
+            "subagent consensus timed out",
+            this.modelCallTimeoutForPrompt(goal),
+            undefined,
+            candidateProfile
+          );
+          const visible = visibleAssistantAnswer(answer, false) || trimContext(answer, 6000);
+          if (visible.trim()) return visible;
+          failures.push(`${candidateProfile.name}/${candidateProfile.model}: ${this.t("emptyApiReply")}`);
+        } catch (error) {
+          failures.push(`${candidateProfile.name}/${candidateProfile.model}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+      void this.recordSessionEvent({
+        kind: "prompt.recoverable_error",
+        status: "subagent-consensus-model-unavailable",
+        detail: trimContext(failures.join(" | "), 1000)
+      });
+      const heading = isChineseLanguage(this.plugin.language())
+        ? `共识模型暂不可用；${reports.length} 个子 Agent 的真实终态结果已保留，主 Agent 继续核对。`
+        : `The consensus model is temporarily unavailable; ${reports.length} terminal child results are preserved for the main agent.`;
+      return [heading, ...reports].join("\n\n");
     } finally {
       this.lastModelCallAudit = saved.audit;
       this.activeModelCharStats = saved.stats;
@@ -44533,7 +44606,7 @@ class CancipView extends ItemView {
       ...expansion.concepts,
       ...expansion.styleSignals
     ]).slice(0, 8);
-    const expandedHits = await this.searchVault(query, 32, {
+    const expandedHits = await this.searchVault(query, 48, {
       includeArchived,
       includeConfigs,
       includeAttachments: true,
@@ -44654,8 +44727,8 @@ class CancipView extends ItemView {
       const previous = byPath.get(path);
       if (!previous || hit.score > previous.score) byPath.set(path, { ...hit, route: "soft" });
     };
-    for (const hit of hardHits.slice(0, 10)) add({ ...hit, score: hit.score + 120, relation: "direct", reason: isChineseLanguage(this.plugin.language()) ? "原查询有直接证据" : "Direct evidence for the original query" });
-    for (const hit of expandedHits.filter((item) => item.route === "soft").slice(0, 30)) add(hit);
+    for (const hit of hardHits.slice(0, 18)) add({ ...hit, score: hit.score + 120, relation: "direct", reason: isChineseLanguage(this.plugin.language()) ? "原查询有直接证据" : "Direct evidence for the original query" });
+    for (const hit of expandedHits.filter((item) => item.route === "soft").slice(0, 48)) add(hit);
     const rankedDocuments = index.documents
       .filter((document) => includeConfigs || (document.kind !== "config" && document.kind !== "memory" && document.kind !== "session"))
       .filter((document) => document.signals || document.title || document.path)
@@ -44669,7 +44742,7 @@ class CancipView extends ItemView {
       })
       .filter((item) => item.semanticScore > 0)
       .sort((left, right) => right.score - left.score || right.document.mtime - left.document.mtime)
-      .slice(0, 36);
+      .slice(0, 48);
     for (const item of rankedDocuments) {
       add({
         path: item.document.path,
@@ -44681,7 +44754,7 @@ class CancipView extends ItemView {
         archived: isPathInVaultFolder(item.document.path, CANCIP_ARCHIVE_DIR)
       });
     }
-    return [...byPath.values()].sort((left, right) => right.score - left.score).slice(0, 24);
+    return [...byPath.values()].sort((left, right) => right.score - left.score).slice(0, 36);
   }
 
   private async rankAiVaultSearchCandidates(query: string, expansion: AiSearchExpansion, candidates: SearchHit[]): Promise<SearchHit[]> {
@@ -44691,7 +44764,7 @@ class CancipView extends ItemView {
       const terms = uniqueStrings([...tokenize(value), ...universalSearchQueryTerms(value)]);
       return terms.length > 0 && scoreSearchText(hit.path, hit.title, hit.excerpt, terms) > 0;
     }).slice(0, 3);
-    return candidates.slice(0, 24).map((hit) => {
+    return candidates.slice(0, 36).map((hit) => {
       if (hit.relation === "direct" && hit.reason) return hit;
       const styles = matchingSignals(hit, expansion.styleSignals);
       const concepts = matchingSignals(hit, expansion.concepts);
@@ -44720,8 +44793,9 @@ class CancipView extends ItemView {
   ): Promise<SearchHit[]> {
     const tokens = uniqueStrings([...tokenize(query), ...universalSearchQueryTerms(query)]);
     if (!tokens.length) return [];
-    const maxCandidates = Platform.isMobileApp ? Math.max(18, limit * 2) : Math.max(36, limit * 4);
-    const files = this.app.vault.getFiles()
+    const normalizedQuery = query.normalize("NFKC").toLowerCase().trim();
+    const maxAttachmentCandidates = Platform.isMobileApp ? Math.max(12, limit) : Math.max(24, limit * 2);
+    const ranked = this.app.vault.getFiles()
       .filter((file) => {
         const path = normalizePath(file.path);
         if (!shouldIndexUniversalSearchPath(path, this.plugin.obsidianConfigDir())) return false;
@@ -44740,45 +44814,66 @@ class CancipView extends ItemView {
         return { file, kind, pathScore, preferred, rank: (preferred ? 5000 : 0) + pathScore * 10 + recency + textCandidateBoost };
       })
       .filter((item) => item.pathScore > 0 || isContextTextFile(item.file) || (options.includeAttachments && isVaultParseableAttachmentPath(item.file.path)))
-      .sort((a, b) => b.rank - a.rank || b.file.stat.mtime - a.file.stat.mtime || a.file.path.localeCompare(b.file.path))
-      .slice(0, maxCandidates);
+      .sort((a, b) => {
+        if (a.preferred !== b.preferred) return a.preferred ? -1 : 1;
+        if (a.pathScore !== b.pathScore) return b.pathScore - a.pathScore;
+        const aText = isContextTextFile(a.file);
+        const bText = isContextTextFile(b.file);
+        if (aText !== bText) return aText ? -1 : 1;
+        if (aText && bText && a.file.stat.size !== b.file.stat.size) return a.file.stat.size - b.file.stat.size;
+        return b.rank - a.rank || b.file.stat.mtime - a.file.stat.mtime || a.file.path.localeCompare(b.file.path);
+      });
+    // Text reads are cheap through Obsidian's cache. Scan every eligible text
+    // file within the bounded query budget so old Markdown body matches are not
+    // excluded merely because newer files filled a small candidate slice.
+    const files = [
+      ...ranked.filter((item) => isContextTextFile(item.file)),
+      ...ranked
+        .filter((item) => !isContextTextFile(item.file) && (item.pathScore > 0 || item.preferred))
+        .slice(0, maxAttachmentCandidates)
+    ];
     const hits: SearchHit[] = [];
-    for (const item of files) {
+    const batchSize = Platform.isMobileApp ? 8 : 16;
+    for (let offset = 0; offset < files.length; offset += batchSize) {
       if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
-      const file = item.file;
-      let content = "";
-      if (isContextTextFile(file)) {
-        try {
-          content = await this.app.vault.cachedRead(file);
-        } catch {
-          content = "";
-        }
-      } else if (options.includeAttachments && (item.pathScore > 0 || item.preferred)) {
+      const batch = files.slice(offset, offset + batchSize);
+      const contents = await Promise.all(batch.map(async (item) => {
+        const file = item.file;
+        if (isContextTextFile(file)) return await this.app.vault.cachedRead(file).catch(() => "");
+        if (!options.includeAttachments || (item.pathScore <= 0 && !item.preferred)) return "";
         try {
           const parsed = await withTimeout(
             this.readVaultAttachmentText(file, Platform.isMobileApp ? 6000 : 12000),
             VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
             "attachment search read timed out"
           );
-          content = parsed.text;
+          return parsed.text;
         } catch {
-          content = "";
+          return "";
         }
+      }));
+      for (let index = 0; index < batch.length; index += 1) {
+        const item = batch[index];
+        const file = item.file;
+        const content = contents[index] ?? "";
+        const exactContent = Boolean(normalizedQuery) && content.normalize("NFKC").toLowerCase().includes(normalizedQuery);
+        const contentScore = content ? scoreSearchText(file.path, file.basename, content, tokens) : 0;
+        if (item.pathScore <= 0 && contentScore <= 0 && !exactContent) continue;
+        hits.push({
+          path: file.path,
+          title: file.basename,
+          excerpt: `${universalSearchRouteLabel("hard", this.plugin.language())} · ${universalSearchKindLabel(item.kind, this.plugin.language())} · on-demand\n${content ? makeExcerpt(content, tokens) : file.path}`,
+          score: item.pathScore + contentScore + (exactContent ? 120 : 0) + 6,
+          kind: item.kind,
+          route: "hard",
+          archived: isPathInVaultFolder(file.path, CANCIP_ARCHIVE_DIR)
+        });
       }
-      const contentScore = content ? scoreSearchText(file.path, file.basename, trimContext(content, Platform.isMobileApp ? 12000 : 30000), tokens) : 0;
-      if (item.pathScore <= 0 && contentScore <= 0) continue;
-      hits.push({
-        path: file.path,
-        title: file.basename,
-        excerpt: `${universalSearchRouteLabel("hard", this.plugin.language())} · ${universalSearchKindLabel(item.kind, this.plugin.language())} · on-demand\n${content ? makeExcerpt(content, tokens) : file.path}`,
-        score: item.pathScore + contentScore + 6,
-        kind: item.kind,
-        route: "hard",
-        archived: isPathInVaultFolder(file.path, CANCIP_ARCHIVE_DIR)
-      });
-      if (hits.length >= limit) break;
+      if (Platform.isMobileApp) await sleep(0);
     }
-    return hits;
+    return hits
+      .sort((a, b) => b.score - a.score || a.path.length - b.path.length || a.path.localeCompare(b.path))
+      .slice(0, Math.max(1, limit));
   }
 
   private findTargetQueryFromArgs(args: Record<string, unknown>): string {
@@ -47849,7 +47944,18 @@ class CancipView extends ItemView {
         const hasActions = extractCancipActions(actionableAnswer).length > 0;
         const rawVisibleAnswer = hasActions || repairedProtocolIssue ? "" : visibleAssistantAnswer(actionableAnswer, false);
         const visibleAnswer = hasActions ? "" : rawVisibleAnswer;
-        const assistantMessage = visibleAnswer ? this.addMessage("assistant", visibleAnswer) : undefined;
+        const terminalStatus = finalReviewStatusFromAnswer(actionableAnswer);
+        const terminalFailure = terminalStatus
+          ? this.finalReviewStatusRequirementFailure(terminalStatus, this.currentTaskToolRuns())
+            || this.finalChoiceRequirementFailure(actionableAnswer, originalPrompt)
+          : "";
+        const terminalAnswer = visibleAnswer && terminalStatus && !terminalFailure
+          ? `${visibleAnswer}\n\n<!-- cancip-final ${JSON.stringify({ status: terminalStatus })} -->`
+          : "";
+        // A continuation reply without a terminal marker is only a candidate
+        // for final review. Do not flash it as a first final answer and then
+        // replace it with a second message.
+        const assistantMessage = terminalAnswer ? this.addMessage("assistant", terminalAnswer) : undefined;
         if (assistantMessage) this.attachChoiceSource(assistantMessage, actionableAnswer);
         if (assistantMessage) this.renderMessages();
         current = await this.handleActionBlocks(actionableAnswer, assistantMessage);
@@ -48103,7 +48209,8 @@ class CancipView extends ItemView {
         const combined = this.mergeActionHandlingResults(result, followup);
         return await this.answerInformationTaskFromToolRuns(context, combined, request, originalPrompt, depth + 1);
       }
-      this.addMessage("assistant", `最终复核未形成可用结论：${protocolIssue || reviewFailure || "模型没有给出可用的最终答案"}。未将本次问题标记为完成。`);
+      const fallback = this.informationalFallbackFromToolRuns(result.runs, originalPrompt, protocolIssue || reviewFailure);
+      this.addMessage("assistant", `${fallback || this.humanFinalConclusion(result.runs, true, originalPrompt) || this.silentTurnFinalConclusion(originalPrompt)}\n\n<!-- cancip-final {"status":"failed"} -->`);
       this.renderMessages();
       return false;
     } catch (error) {
@@ -48536,7 +48643,8 @@ class CancipView extends ItemView {
     };
     try {
       const finalDecisionStatus = this.finalDecisionStatusFromRuns(decisionRuns, originalPrompt);
-      for (let attempt = 0; attempt < 2; attempt += 1) {
+      let choiceRepairCandidate: { visible: string; status: FinalReviewStatus } | null = null;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
         const prompt = correction
           ? `${basePrompt}\n\nCorrection from previous attempt: ${correction}`
           : basePrompt;
@@ -48577,11 +48685,20 @@ class CancipView extends ItemView {
                     ? "final answer claims a restore that has no post-reset evidence"
                 : "")
           : "";
-        const requirementFailure = protocolIssue || reviewFailure || terminalButtonAnswerFailure || (visibleAnswer
+        const choiceFailure = reviewStatus ? this.finalChoiceRequirementFailure(answer, originalPrompt) : "";
+        const answerFailure = visibleAnswer
           ? this.finalAnswerRequirementFailure(visibleAnswer, originalPrompt, decisionRuns)
-          : "missing visible final answer");
+          : "missing visible final answer";
+        const nonChoiceFailure = protocolIssue || reviewFailure || terminalButtonAnswerFailure || answerFailure;
+        if (choiceFailure && !nonChoiceFailure && reviewStatus) {
+          choiceRepairCandidate = { visible: visibleAnswer, status: reviewStatus };
+        }
+        const requirementFailure = nonChoiceFailure || choiceFailure;
         const acceptedVisibleAnswer = requirementFailure ? "" : visibleAnswer;
-        const assistantMessage = acceptedVisibleAnswer ? this.addMessage("assistant", acceptedVisibleAnswer) : undefined;
+        const finalAnswerContent = acceptedVisibleAnswer && reviewStatus
+          ? `${acceptedVisibleAnswer}\n\n<!-- cancip-final ${JSON.stringify({ status: reviewStatus })} -->`
+          : acceptedVisibleAnswer;
+        const assistantMessage = finalAnswerContent ? this.addMessage("assistant", finalAnswerContent) : undefined;
         if (assistantMessage) this.attachChoiceSource(assistantMessage, answer);
         if (assistantMessage) this.renderMessages();
         const next = terminalButtonWorkflow && hasActions ? null : await this.handleActionBlocks(answer, assistantMessage);
@@ -48597,11 +48714,27 @@ class CancipView extends ItemView {
           detail: protocolIssue || (hasActions ? "response had actions but no executable action was parsed" : requirementFailure),
           status: "retry"
         });
+        const correctionChoiceCount = requestedFinalChoiceCount(originalPrompt) || 3;
         correction = terminalButtonWorkflow
           ? "The button workflow is already verified complete. Do not output any action or tool call. Output exactly one complete cancip-final marker and a concise final answer from the supplied before/hidden/restored evidence."
+          : choiceFailure
+            ? `Rewrite the same final answer now without any tool call. Keep the concrete result, append exactly one valid cancip-final marker, and append exactly ${correctionChoiceCount} distinct concrete choices in one hidden cancip-choices JSON array. Count the array items before returning.`
           : protocolIssue
           ? `${trimContext(protocolIssue, 220)}. Preserve the intended next step and return one corrected executable cancip-action. The next tool result will be returned for another decision; do not use unresolved then placeholders.`
           : `${trimContext(requirementFailure, 220)}. Next output must be one executable cancip-action, or a concrete final answer with exactly one valid hidden cancip-final status marker that matches verified results.`;
+      }
+      if (choiceRepairCandidate) {
+        const required = requestedFinalChoiceCount(originalPrompt) || 3;
+        const choices = await this.repairFinalChoicesForCandidate(choiceRepairCandidate.visible, originalPrompt, required);
+        if (choices.length === required) {
+          const content = `${choiceRepairCandidate.visible}\n\n<!-- cancip-final ${JSON.stringify({ status: choiceRepairCandidate.status })} -->`;
+          const assistantMessage = this.addMessage("assistant", content);
+          const choiceSource = `<!-- cancip-choices ${JSON.stringify({ choices })} -->`;
+          this.attachChoiceSource(assistantMessage, choiceSource);
+          this.renderMessages();
+          void this.recordSessionEvent({ kind: "prompt.protocol_retry", detail: `repaired terminal recommendations: ${required}`, status: "completed" });
+          return "answered";
+        }
       }
       if (terminalButtonWorkflow) {
         const fallback = this.verifiedUiButtonWorkflowFinalAnswer(decisionRuns, originalPrompt);
@@ -48699,7 +48832,7 @@ class CancipView extends ItemView {
       return "missing a concrete user-visible result";
     }
     const planTodos = this.modelPlanTodos().filter((todo) => todo.planOnly !== true);
-    if (planTodos.length) {
+    if (planTodos.length > 1) {
       for (let index = 0; index < planTodos.length; index += 1) {
         const marker = new RegExp(`(?:^|\\n)\\s*(?:\\*\\*)?${index + 1}[.、)）．]\\s*`, "m");
         if (!marker.test(visible)) return `final answer is missing numbered result ${index + 1} for the active Plan`;
@@ -48759,6 +48892,36 @@ class CancipView extends ItemView {
     if (status === "complete" && terminalFailure) return "final review marked complete despite failed or blocked work";
     if (status === "awaiting-approval" && !pending) return "final review marked awaiting approval without pending work";
     return "";
+  }
+
+  private finalChoiceRequirementFailure(content: string, originalPrompt: string, stored: ChoiceOption[] = []): string {
+    const choices = this.mergeChoiceOptions([...stored, ...finalChoiceOptions(content)]);
+    const requested = requestedFinalChoiceCount(originalPrompt);
+    const minimum = requested || 1;
+    return choices.length >= minimum
+      ? ""
+      : `final answer requires ${minimum} concrete recommendation choice${minimum === 1 ? "" : "s"}, but received ${choices.length}`;
+  }
+
+  private async repairFinalChoicesForCandidate(visible: string, originalPrompt: string, count: number): Promise<string[]> {
+    const system = [
+      "Return one strict JSON object only with this schema: {\"choices\":[\"...\"]}.",
+      `The choices array must contain exactly ${count} distinct short concrete next actions.`,
+      "Each item must name a specific object, feature, file, panel, value, or action from the original request or verified result.",
+      "Do not repeat the final answer, explain, use Markdown, or output a tool call."
+    ].join(" ");
+    try {
+      const raw = await withTimeout(
+        this.callLightweightModel(JSON.stringify({ originalPrompt, verifiedFinalAnswer: visible }), system, 220),
+        30000,
+        "final recommendation repair timed out"
+      );
+      const parsed = parseFirstJsonObject(raw);
+      const choices = choiceOptionsFromTexts(choiceTextsFromParsedJson(parsed)).map((choice) => choice.text);
+      return choices.length >= count ? choices.slice(0, count) : [];
+    } catch {
+      return [];
+    }
   }
 
   private ensureFinalAnswerAuditSections(content: string, runs: ToolRun[], originalPrompt = "", visibleText = ""): string {
@@ -48955,6 +49118,15 @@ class CancipView extends ItemView {
     originalPrompt: string
   ): Promise<{ status: "answered" | "pending" | "failed"; handling: ActionHandlingResult }> {
     let handling = result;
+    const existingBoundary = this.latestProcessOrToolMessageIndex();
+    const existingFinal = this.latestVisibleAssistantAfter(existingBoundary);
+    if (existingFinal && hasFinalConclusion(existingFinal.content)) {
+      const visible = prepareMessageDisplay(redactSensitiveText(existingFinal.content)).visibleContent.trim();
+      if (!this.finalAnswerRequirementFailure(visible, originalPrompt, handling.runs)
+        && !this.finalChoiceRequirementFailure(existingFinal.content, originalPrompt, existingFinal.choiceOptions)) {
+        return { status: "answered", handling };
+      }
+    }
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const decision = await this.requestModelFinalAfterToolRuns(context, handling, request, originalPrompt);
       if (decision === "answered") return { status: "answered", handling };
@@ -48970,10 +49142,14 @@ class CancipView extends ItemView {
     }
     if (!request.signal.aborted
       && this.isCurrentRequest(request)
+      && requestedFinalChoiceCount(originalPrompt) === 0
       && this.canProgrammaticallyConcludeToolRuns(handling.runs, originalPrompt)) {
       const summary = this.humanFinalConclusion(handling.runs, false, originalPrompt).trim();
       if (summary) {
-        this.addMessage("assistant", `${summary}\n\n<!-- cancip-final {"status":"complete"} -->`);
+        const content = `${summary}\n\n<!-- cancip-final {"status":"complete"} -->`;
+        const existing = this.latestVisibleAssistantAfter(this.latestUserMessageIndex());
+        const message = existing ?? this.addMessage("assistant", content);
+        message.content = content;
         void this.recordSessionEvent({
           kind: "prompt.final_programmatic_convergence",
           detail: "All verified tool runs were terminal; final-review retries did not produce a terminal marker.",
@@ -48984,9 +49160,13 @@ class CancipView extends ItemView {
       }
     }
     if (!request.signal.aborted && this.isCurrentRequest(request)) {
-      const completed = handling.runs.filter((run) => run.status === "executed").length;
-      const failed = handling.runs.filter((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected").length;
-      this.addMessage("assistant", `最终复核未形成可用结论：模型在 ${completed || failed ? "已有工具结果后" : "当前上下文中"} 连续返回了非终态内容，未将任务标记为完成。已执行 ${completed} 项、失败或阻塞 ${failed} 项；需要继续模型复核后再结束此请求。`);
+      const status: FinalReviewStatus = handling.runs.some((run) => run.status === "blocked") ? "blocked" : "failed";
+      const fallback = this.humanFinalConclusion(handling.runs, true, originalPrompt).trim()
+        || this.silentTurnFinalConclusion(originalPrompt);
+      const content = `${fallback}\n\n<!-- cancip-final ${JSON.stringify({ status })} -->`;
+      const existing = this.latestVisibleAssistantAfter(this.latestUserMessageIndex());
+      const message = existing ?? this.addMessage("assistant", content);
+      message.content = content;
       this.renderMessages();
     }
     return { status: "failed", handling };
@@ -57872,6 +58052,10 @@ class CancipView extends ItemView {
       attr: { type: "search", placeholder: this.t("searchPlaceholder"), autocomplete: "off", spellcheck: "false" }
     });
     const options = popover.createDiv({ cls: "obcc-search-options" });
+    const aiLabel = options.createEl("label", { cls: "obcc-search-option" });
+    const aiEnabled = aiLabel.createEl("input", { attr: { type: "checkbox" } });
+    aiEnabled.checked = true;
+    aiLabel.createSpan({ text: this.t("searchUseAi") });
     const archivedLabel = options.createEl("label", { cls: "obcc-search-option" });
     const archived = archivedLabel.createEl("input", { attr: { type: "checkbox" } });
     archived.checked = false;
@@ -57942,7 +58126,7 @@ class CancipView extends ItemView {
       if (!query) {
         status.setText("");
         aiExplanation.setText("");
-        aiSummaryLabel.setText(this.t("searchFuzzy"));
+        aiSummaryLabel.setText(aiEnabled.checked ? this.t("searchFuzzy") : this.t("searchOpen"));
         renderHits(aiResults, []);
         return;
       }
@@ -57951,11 +58135,27 @@ class CancipView extends ItemView {
         const hardOptions = {
           includeArchived: archived.checked,
           includeConfigs: configs.checked,
-          includeAttachments: true
+          // AI mode renders Vault text matches first, then merges attachment/OCR
+          // evidence during semantic expansion. This keeps old Markdown body
+          // matches visible without waiting for PDF or Office extraction.
+          includeAttachments: !aiEnabled.checked
         };
-        const hardHits = await this.searchVault(query, 12, hardOptions);
+        const hardHits = await this.searchVault(query, aiEnabled.checked ? 36 : 48, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!aiEnabled.checked) {
+          renderHits(aiResults, hardHits);
+          aiSummaryLabel.setText(`${this.t("searchOpen")} · ${hardHits.length}`);
+          aiExplanation.setText("");
+          status.setText(this.t("hitCount", { count: hardHits.length }));
+          recordSearchScore(query, "use", 0.5);
+          return;
+        }
         const exactHits = hardHits.filter((hit) => hit.route !== "soft");
+        // Show verified Vault matches immediately. Semantic expansion can then
+        // refine the same pane without leaving it blank while a model times out.
+        renderHits(aiResults, exactHits);
+        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${exactHits.length}`);
+        status.setText(this.t("hitCount", { count: exactHits.length }));
         aiExplanation.setText(isChineseLanguage(this.plugin.language()) ? "正在理解查询含义…" : "Interpreting query...");
         const aiSearch = await this.searchAiVault(query, exactHits, configs.checked, archived.checked);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
@@ -57996,6 +58196,7 @@ class CancipView extends ItemView {
         this.closeSearchPopover();
       }
     });
+    aiEnabled.addEventListener("change", () => void run());
     archived.addEventListener("change", () => void run());
     configs.addEventListener("change", () => void run());
     const viewWindow = this.containerEl.ownerDocument.defaultView ?? window;
@@ -70057,11 +70258,10 @@ function formatElapsedSeconds(ms: number): string {
 }
 
 function formatStepElapsed(ms: number): string {
-  const safe = Math.max(0, Math.round(ms));
-  if (safe < 1000) return `${safe}ms`;
-  if (safe < 60000) return `${(safe / 1000).toFixed(3)}s`;
+  const safe = Math.max(0, ms);
+  if (safe < 60000) return `${(safe / 1000).toFixed(1)}s`;
   const minutes = Math.floor(safe / 60000);
-  return `${minutes}m${((safe % 60000) / 1000).toFixed(3).padStart(6, "0")}s`;
+  return `${minutes}m${((safe % 60000) / 1000).toFixed(1).padStart(4, "0")}s`;
 }
 
 function progressElapsedMsFromContent(content: string): number | null {
@@ -73508,6 +73708,20 @@ function isReasoningTailMetaLine(trimmed: string): boolean {
 function finalChoiceOptions(content: string): ChoiceOption[] {
   const withoutStats = stripProgrammaticRunStats(content).content;
   return choiceOptionsFromTexts(extractStructuredChoiceTexts(withoutStats)).concat(extractChoiceOptions(withoutStats));
+}
+
+function requestedFinalChoiceCount(prompt: string): number {
+  const digit = (value: string): number => ({ "一": 1, "二": 2, "三": 3 }[value] ?? Number(value));
+  const matches = [
+    prompt.match(/(?:给出|生成|提供|附上|带上|显示|出现)\s*(?:约\s*)?([123一二三])\s*个[^。！？\n]{0,28}(?:推荐|选项|按钮|下一步)/i),
+    prompt.match(/(?:推荐|选项|按钮|下一步)[^。！？\n]{0,20}(?:给出|生成|提供|附上|带上|显示|出现)?\s*([123一二三])\s*个/i),
+    prompt.match(/(?:give|provide|include|show)\s+(?:about\s+)?([123])\s+(?:concrete\s+)?(?:recommendations?|choices?|buttons?|next steps?)/i)
+  ];
+  for (const match of matches) {
+    const count = match?.[1] ? digit(match[1]) : 0;
+    if (count >= 1 && count <= 3) return count;
+  }
+  return 0;
 }
 
 function stripTailChoiceSection(content: string): string {
