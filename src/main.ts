@@ -884,6 +884,14 @@ type SearchHit = {
   reason?: string;
 };
 
+type SearchQueryKindConstraint = "image" | "pdf" | "note" | "office" | "archive" | "audio" | "video";
+
+type SearchQueryIntent = {
+  requestedKinds: SearchQueryKindConstraint[];
+  subjectQuery: string;
+  subjectTerms: string[];
+};
+
 type SearchPaneState = "split" | "ai" | "hard";
 type AiSearchRelation = "direct" | "concept" | "context" | "style" | "inspiration";
 
@@ -45031,6 +45039,7 @@ class CancipView extends ItemView {
     const kinds = universalSearchKindsForQuery(query, { includeArchived, includeConfigs, includeAttachments });
     const index = await this.plugin.readUniversalSearchIndex(kinds);
     const terms = searchHighlightTerms(query);
+    const intent = parseSearchQueryIntent(query);
     return index.documents
       .filter((document) => includeArchived || !isPathInVaultFolder(document.path, CANCIP_ARCHIVE_DIR))
       .filter((document) => includeConfigs || (document.kind !== "config" && document.kind !== "memory"))
@@ -45041,10 +45050,13 @@ class CancipView extends ItemView {
         const pathScore = scoreSearchText(document.path, document.title, "", terms);
         const signalScore = scoreSearchText("", "", document.signals, terms);
         const bloomMatches = universalSearchBloomMatchCount(document.bloom, terms);
+        const kindBoost = intent.requestedKinds.length
+          ? (searchHitMatchesRequestedKind({ path: document.path, title: document.title, excerpt: document.signals, score: 0, kind: document.kind }, intent) ? 5000 : 0)
+          : 0;
         return {
           document,
           exact,
-          score: (exact ? 6000 : 0) + pathScore * 40 + signalScore * 8 + bloomMatches * 18
+          score: kindBoost + (exact ? 6000 : 0) + pathScore * 40 + signalScore * 8 + bloomMatches * 18
         };
       })
       .filter((item) => item.score > 0)
@@ -45089,6 +45101,7 @@ class CancipView extends ItemView {
     const unindexedPaths = new Set(
       documents.filter((document) => !document.bloom).map((document) => normalizePath(document.path))
     );
+    const queryIntent = parseSearchQueryIntent(normalizedQuery);
     const runQuery = async (routeQuery: string, route: "hard" | "soft"): Promise<SearchHit[]> => {
       const routeStartedAt = Date.now();
       const terms = universalSearchQueryTerms(routeQuery);
@@ -45101,7 +45114,10 @@ class CancipView extends ItemView {
           const pathScore = scoreSearchText(document.path, document.title, "", scoreTokens);
           const bloomMatches = universalSearchBloomMatchCount(document.bloom, terms);
           const allBloomTerms = terms.length > 0 && universalSearchBloomMayContain(document.bloom, terms);
-          const rank = (exactPath ? 6000 : 0) + pathScore * 40 + bloomMatches * 18 + (allBloomTerms ? 220 : 0) - universalSearchKindPriority(document.kind);
+          const kindBoost = queryIntent.requestedKinds.length
+            ? (searchHitMatchesRequestedKind({ path: document.path, title: document.title, excerpt: document.signals, score: 0, kind: document.kind }, queryIntent) ? 1800 : 0)
+            : 0;
+          const rank = kindBoost + (exactPath ? 6000 : 0) + pathScore * 40 + bloomMatches * 18 + (allBloomTerms ? 220 : 0) - universalSearchKindPriority(document.kind);
           return { document, exactPath, pathScore, bloomMatches, rank };
         })
         .filter((candidate) => candidate.exactPath || candidate.pathScore > 0 || candidate.bloomMatches > 0)
@@ -45302,6 +45318,7 @@ class CancipView extends ItemView {
       "Interpret one personal Vault search as semantic and inspiration retrieval.",
       "Return one strict JSON object only: {\"queries\":[\"...\"],\"concepts\":[\"...\"],\"styleSignals\":[\"...\"],\"intent\":\"...\"}.",
       "Use at most four synonym/entity queries, four underlying concepts, and four mood/style/voice signals in the user's language.",
+      "Preserve an explicitly requested file type as a hard primary-result constraint; related content in other file types is secondary only.",
       "Use memory and the bounded Vault catalog only as retrieval clues. Preserve intent, support indirect or hard-to-name associations, and do not invent file paths."
     ].join(" ");
     try {
@@ -58803,6 +58820,8 @@ class CancipView extends ItemView {
     let activeHighlightSignals: string[] = [];
     let keywordHits: SearchHit[] = [];
     let semanticHits: SearchHit[] = [];
+    let moreResultsOpen = false;
+    let moreResultsQuery = "";
     const hitKey = (hit: SearchHit): string => `${hit.kind}:${normalizePath(hit.path)}`;
     const appendUniqueHits = (target: SearchHit[], incoming: SearchHit[], hiddenKeys: Set<string> = new Set()): number => {
       const known = new Set([...hiddenKeys, ...target.map(hitKey)]);
@@ -58821,10 +58840,10 @@ class CancipView extends ItemView {
         keywordHits = [];
         semanticHits = [];
       }
-      appendUniqueHits(keywordHits, hits.map((hit) => ({ ...hit, reason: "", relation: undefined })));
+      appendUniqueHits(keywordHits, rankSearchHitsForIntent(input.value, hits.map((hit) => ({ ...hit, reason: "", relation: undefined }))));
     };
     const rememberSemanticHits = (hits: SearchHit[]): number => (
-      appendUniqueHits(semanticHits, hits, new Set(keywordHits.map(hitKey)))
+      appendUniqueHits(semanticHits, rankSearchHitsForIntent(input.value, hits), new Set(keywordHits.map(hitKey)))
     );
     const visibleSearchHits = (): SearchHit[] => [...keywordHits, ...semanticHits];
     const renderHits = (parent: HTMLElement, hits: SearchHit[]): void => {
@@ -58835,33 +58854,57 @@ class CancipView extends ItemView {
         parent.createDiv({ cls: "obcc-search-empty", text: input.value.trim() ? this.t("searchNoResults") : "" });
         return;
       }
-      for (const hit of hits) {
-        const row = parent.createDiv({
+      const groups = partitionSearchHitsForIntent(input.value, hits);
+      const renderRows = (rowParent: HTMLElement, rows: SearchHit[], secondary = false): void => {
+        for (const hit of rows) {
+          const row = rowParent.createDiv({
           cls: "obcc-search-result",
           attr: { role: "button", tabindex: "0", title: this.t("searchOpenResult") }
-        });
-        setIcon(row.createSpan({ cls: "obcc-search-result-icon" }), searchResultIcon(hit.kind));
-        const copy = row.createDiv({ cls: "obcc-search-result-copy" });
-        appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-title" }), hit.title || reviewFileName(hit.path), highlightTerms);
-        appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-path" }), hit.path, highlightTerms);
-        if (hit.reason) {
-          appendHighlightedSearchText(
-            copy.createDiv({ cls: "obcc-search-result-reason" }),
-            `${aiSearchRelationLabel(hit.relation, this.plugin.language())} · ${hit.reason}`,
-            highlightTerms
-          );
-        }
-        appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-excerpt" }), trimContext(hit.excerpt, 240), highlightTerms);
-        const open = () => {
-          recordSearchScore(input.value, "accept", 1.4);
-          void this.openSearchHit(hit);
-        };
-        row.addEventListener("click", open);
-        row.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            open();
+          });
+          row.classList.toggle("is-secondary", secondary);
+          setIcon(row.createSpan({ cls: "obcc-search-result-icon" }), searchResultIcon(hit.kind));
+          const copy = row.createDiv({ cls: "obcc-search-result-copy" });
+          appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-title" }), hit.title || reviewFileName(hit.path), highlightTerms);
+          appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-path" }), hit.path, highlightTerms);
+          if (hit.reason) {
+            appendHighlightedSearchText(
+              copy.createDiv({ cls: "obcc-search-result-reason" }),
+              `${aiSearchRelationLabel(hit.relation, this.plugin.language())} · ${hit.reason}`,
+              highlightTerms
+            );
           }
+          appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-excerpt" }), trimContext(hit.excerpt, 240), highlightTerms);
+          const open = () => {
+            recordSearchScore(input.value, "accept", 1.4);
+            void this.openSearchHit(hit);
+          };
+          row.addEventListener("click", open);
+          row.addEventListener("keydown", (event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              open();
+            }
+          });
+        }
+      };
+      renderRows(parent, groups.precise);
+      if (!groups.precise.length && groups.more.length) {
+        parent.createDiv({
+          cls: "obcc-search-empty is-precise-empty",
+          text: isChineseLanguage(this.plugin.language()) ? "没有严格匹配，其他相关结果已收起" : "No strict matches; other related results are folded"
+        });
+      }
+      if (groups.more.length) {
+        const more = parent.createEl("details", { cls: "obcc-search-more" });
+        more.open = moreResultsOpen;
+        const summary = more.createEl("summary", { cls: "obcc-search-more-summary" });
+        summary.createSpan({
+          text: `${isChineseLanguage(this.plugin.language()) ? "更多相关结果" : "More related results"} · ${groups.more.length}`
+        });
+        const moreRows = more.createDiv({ cls: "obcc-search-more-results" });
+        renderRows(moreRows, groups.more, true);
+        more.addEventListener("toggle", () => {
+          moreResultsOpen = more.open;
         });
       }
       parent.scrollTop = Math.min(previousScrollTop, Math.max(0, parent.scrollHeight - parent.clientHeight));
@@ -58869,6 +58912,10 @@ class CancipView extends ItemView {
     const run = async (): Promise<void> => {
       const query = input.value.trim();
       const currentRequestId = ++requestId;
+      if (query !== moreResultsQuery) {
+        moreResultsQuery = query;
+        moreResultsOpen = false;
+      }
       if (!query) {
         status.setText("");
         aiExplanation.setText("");
@@ -58887,7 +58934,7 @@ class CancipView extends ItemView {
           // AI mode renders Vault text matches first, then merges attachment/OCR
           // evidence during semantic expansion. This keeps old Markdown body
           // matches visible without waiting for PDF or Office extraction.
-          includeAttachments: !aiEnabled.checked,
+          includeAttachments: !aiEnabled.checked || shouldSearchAttachmentsForQuery(query),
           includeRag: false
         };
         const fastHits = await this.fastIndexedVaultSearchHits(query, aiEnabled.checked ? 36 : 48, hardOptions);
@@ -63479,6 +63526,108 @@ function shouldSearchConfigsForQuery(query: string): boolean {
 
 function shouldSearchAttachmentsForQuery(query: string): boolean {
   return /(?:pdf|docx|xlsx|pptx|office|image|images?|picture|photo|attachment|file|文件|附件|图片|照片|表格|文档|幻灯片|课件|扫描|预览|转换|导出|搜索全文)/i.test(query);
+}
+
+function parseSearchQueryIntent(query: string): SearchQueryIntent {
+  const definitions: Array<{ kind: SearchQueryKindConstraint; test: RegExp; strip: RegExp }> = [
+    { kind: "image", test: /(?:图片|图像|照片|相片|截图|images?|pictures?|photos?|\.?(?:png|jpe?g|webp|gif|bmp|svg|avif)\b)/i, strip: /(?:图片|图像|照片|相片|截图|images?|pictures?|photos?|\.?(?:png|jpe?g|webp|gif|bmp|svg|avif)\b)/gi },
+    { kind: "pdf", test: /(?:PDF|便携式文档)/i, strip: /(?:PDF|便携式文档)/gi },
+    { kind: "note", test: /(?:笔记|Markdown|\.md\b)/i, strip: /(?:笔记|Markdown|\.md\b)/gi },
+    { kind: "office", test: /(?:Office|Word|Excel|PowerPoint|DOCX?|XLSX?|PPTX?|表格文件|幻灯片|课件)/i, strip: /(?:Office|Word|Excel|PowerPoint|DOCX?|XLSX?|PPTX?|表格文件|幻灯片|课件)/gi },
+    { kind: "archive", test: /(?:压缩包|归档包|ZIP|RAR|7Z|TAR)/i, strip: /(?:压缩包|归档包|ZIP|RAR|7Z|TAR)/gi },
+    { kind: "audio", test: /(?:音频|录音|语音|音乐|audio|recording|\.?(?:mp3|wav|m4a|flac|ogg)\b)/i, strip: /(?:音频|录音|语音|音乐|audio|recording|\.?(?:mp3|wav|m4a|flac|ogg)\b)/gi },
+    { kind: "video", test: /(?:视频|录像|影片|video|movie|\.?(?:mp4|mov|mkv|webm|avi)\b)/i, strip: /(?:视频|录像|影片|video|movie|\.?(?:mp4|mov|mkv|webm|avi)\b)/gi }
+  ];
+  const normalized = query.normalize("NFKC").trim();
+  const requestedKinds: SearchQueryKindConstraint[] = [];
+  let subject = normalized;
+  for (const definition of definitions) {
+    if (!definition.test.test(normalized)) continue;
+    requestedKinds.push(definition.kind);
+    subject = subject.replace(definition.strip, " ");
+  }
+  subject = subject
+    .replace(/\b(?:find|search|show|list|locate|related|relevant|about|vault|file|files)\b/gi, " ")
+    .replace(/(?:请|帮我|给我|查找|查询|搜索|搜一下|找出|找到|找一下|显示|列出|打开|库内|仓库内|相关的?|有关的?|文件|内容)/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const genericTerms = new Set(["相关", "有关", "内容", "文件", "搜索", "查询", "查找", "find", "search", "file", "files", "related"]);
+  const subjectTerms = uniqueStrings([
+    subject,
+    ...tokenize(subject),
+    ...universalSearchQueryTerms(subject)
+  ]).filter((term) => Array.from(term).length >= 2 && !genericTerms.has(term.toLowerCase())).slice(0, 24);
+  return {
+    requestedKinds: [...new Set(requestedKinds)],
+    subjectQuery: subject,
+    subjectTerms
+  };
+}
+
+function searchHitMatchesRequestedKind(hit: SearchHit, intent: SearchQueryIntent): boolean {
+  if (!intent.requestedKinds.length) return true;
+  const path = hit.path.normalize("NFKC").toLowerCase().replace(/[?#].*$/, "");
+  return intent.requestedKinds.some((kind) => {
+    if (kind === "image") return hit.kind === "image" || /\.(?:png|jpe?g|webp|gif|bmp|svg|avif)$/.test(path);
+    if (kind === "pdf") return hit.kind === "pdf" || /\.pdf$/.test(path);
+    if (kind === "note") return hit.kind === "note" || /\.(?:md|markdown)$/.test(path);
+    if (kind === "office") return hit.kind === "office" || /\.(?:docx?|xlsx?|pptx?)$/.test(path);
+    if (kind === "archive") return hit.kind === "archive" || /\.(?:zip|rar|7z|tar|gz|tgz)$/.test(path);
+    if (kind === "audio") return /\.(?:mp3|wav|m4a|flac|ogg|aac|opus)$/.test(path);
+    return /\.(?:mp4|mov|mkv|webm|avi|m4v)$/.test(path);
+  });
+}
+
+function searchIntentTextTier(intent: SearchQueryIntent, hit: SearchHit): number {
+  if (!intent.subjectTerms.length) return 0;
+  const titlePath = `${hit.title}\n${hit.path}`.normalize("NFKC").toLowerCase();
+  const excerpt = hit.excerpt.normalize("NFKC").toLowerCase();
+  const phrase = intent.subjectQuery.normalize("NFKC").toLowerCase().replace(/\s+/g, "");
+  const compactTitlePath = titlePath.replace(/\s+/g, "");
+  const compactExcerpt = excerpt.replace(/\s+/g, "");
+  if (phrase && compactTitlePath.includes(phrase)) return 0;
+  const terms = intent.subjectTerms.map((term) => term.normalize("NFKC").toLowerCase());
+  const threshold = Math.max(1, Math.ceil(terms.length * 0.6));
+  if (terms.filter((term) => titlePath.includes(term)).length >= threshold) return 1;
+  if (phrase && compactExcerpt.includes(phrase)) return 2;
+  if (terms.filter((term) => excerpt.includes(term)).length >= threshold) return 3;
+  return 6;
+}
+
+function searchHitIntentRank(query: string, hit: SearchHit): number {
+  const intent = parseSearchQueryIntent(query);
+  if (!searchHitMatchesRequestedKind(hit, intent)) return 100;
+  const textTier = searchIntentTextTier(intent, hit);
+  if (textTier <= 3) return textTier * 10;
+  if (hit.relation === "direct") return 40;
+  if (hit.relation === "concept") return 50;
+  if (hit.relation === "context") return 70;
+  if (hit.relation === "style") return 80;
+  if (hit.relation === "inspiration") return 90;
+  return hit.route === "hard" ? 60 : 90;
+}
+
+function rankSearchHitsForIntent(query: string, hits: SearchHit[]): SearchHit[] {
+  return hits.map((hit, index) => ({ hit, index, rank: searchHitIntentRank(query, hit) }))
+    .sort((left, right) => left.rank - right.rank
+      || (left.hit.route === "hard" ? 0 : 1) - (right.hit.route === "hard" ? 0 : 1)
+      || right.hit.score - left.hit.score
+      || left.index - right.index)
+    .map((item) => item.hit);
+}
+
+function partitionSearchHitsForIntent(query: string, hits: SearchHit[]): { precise: SearchHit[]; more: SearchHit[] } {
+  const intent = parseSearchQueryIntent(query);
+  const precise: SearchHit[] = [];
+  const more: SearchHit[] = [];
+  for (const hit of hits) {
+    const rank = searchHitIntentRank(query, hit);
+    const weak = (intent.requestedKinds.length > 0 && !searchHitMatchesRequestedKind(hit, intent))
+      || (intent.subjectTerms.length > 0 && rank >= 60)
+      || (hit.route === "soft" && rank >= 70);
+    (weak ? more : precise).push(hit);
+  }
+  return { precise, more };
 }
 
 function universalSearchKindsForQuery(

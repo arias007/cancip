@@ -2835,6 +2835,35 @@ details.obcc-process-step {
   white-space: pre-line;
 }
 
+.obcc-search-more {
+  margin-top: 5px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.obcc-search-more-summary {
+  min-height: 30px;
+  padding: 6px 8px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+}
+
+.obcc-search-more-results {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding-bottom: 4px;
+}
+
+.obcc-search-result.is-secondary {
+  opacity: 0.82;
+}
+
+.obcc-search-empty.is-precise-empty {
+  padding-block: 9px;
+}
+
 .obcc-search-empty {
   padding: 14px 6px;
   color: var(--text-muted);

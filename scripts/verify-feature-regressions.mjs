@@ -59,6 +59,29 @@ const migratedIdentityCache = ocrSemanticApi.migrateOcrIndexEntry({
   blocks: [],
   pages: []
 });
+const searchIntentModule = ts.transpileModule([
+  functionSource("uniqueStrings"),
+  functionSource("tokenize"),
+  functionSource("searchWordRootVariants"),
+  functionSource("universalSearchQueryTerms"),
+  functionSource("parseSearchQueryIntent"),
+  functionSource("searchHitMatchesRequestedKind"),
+  functionSource("searchIntentTextTier"),
+  functionSource("searchHitIntentRank"),
+  functionSource("rankSearchHitsForIntent"),
+  functionSource("partitionSearchHitsForIntent"),
+  "export { parseSearchQueryIntent, rankSearchHitsForIntent, partitionSearchHitsForIntent };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const searchIntentApi = await import(`data:text/javascript;base64,${Buffer.from(searchIntentModule).toString("base64")}`);
+const imageIntent = searchIntentApi.parseSearchQueryIntent("身份证图片");
+const imageSearchHits = [
+  { path: "附件/身份证-正面.jpg", title: "身份证-正面", excerpt: "OCR semantic tags: 身份证, 证件", score: 10, kind: "image", route: "hard" },
+  { path: "笔记/图片整理.md", title: "图片整理", excerpt: "身份证图片归档说明", score: 100, kind: "note", route: "hard" },
+  { path: "附件/风景.jpg", title: "风景", excerpt: "海边照片", score: 80, kind: "image", route: "hard" }
+];
+const imageSearchGroups = searchIntentApi.partitionSearchHitsForIntent("身份证图片", imageSearchHits);
 
 const checks = [
   ["OCR command", source.includes('id: "recognize-active-file-ocr"')],
@@ -70,6 +93,8 @@ const checks = [
   ["OCR semantic index recognizes identity cards and optional local faces", identityCardTags.includes("身份证") && identityCardTags.includes("ID card") && identityCardTags.includes("证件") && source.includes("detectBrowserVisualSemanticTags") && source.includes('tags.push("人物", "人脸", "肖像"') && source.includes("entry.semanticTags.join")],
   ["PDF OCR preserves page visual semantics in its searchable index", source.includes("semanticTags: pageEntry.semanticTags") && source.includes("pages.flatMap((page) => page.semanticTags)") && source.includes("allBlocks, pageSemanticTags")],
   ["legacy OCR caches gain semantic tags without repeating recognition", migratedIdentityCache.schemaVersion === 3 && migratedIdentityCache.semanticTags.includes("身份证") && source.includes("entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION - 1") && source.includes("await adapter.write(path")],
+  ["described image queries rank exact image matches and fold weak text matches", imageIntent.requestedKinds.includes("image") && imageIntent.subjectQuery === "身份证" && imageSearchGroups.precise.length === 1 && imageSearchGroups.precise[0].path.endsWith("身份证-正面.jpg") && imageSearchGroups.more.some((hit) => hit.kind === "note") && source.includes("parseSearchQueryIntent") && source.includes("partitionSearchHitsForIntent") && source.includes("obcc-search-more")],
+  ["explicit attachment types receive an early index ranking boost", source.includes("const kindBoost = intent.requestedKinds.length") && source.includes("const queryIntent = parseSearchQueryIntent(normalizedQuery)") && source.includes("? 1800 : 0")],
   ["background index shares automation startup grace and only fills missing image OCR", source.includes("Math.max(delayMs, UNIVERSAL_SEARCH_MOBILE_BACKGROUND_DELAY_MS, startupDelay)") && source.includes("missingImageOcr") && source.includes("ocrIndexed: true") && source.includes("rescheduleUniversalSearchBuildForStartupGrace")],
   ["search UI has no hard-result pane", !source.includes('const hardSection = results.createEl("details"') && !source.includes("renderHits(hardResults")],
   ["AI search checkbox is visible and enabled by default", source.includes('const aiEnabled = aiLabel.createEl("input"') && source.includes("aiEnabled.checked = true") && source.includes('aiEnabled.addEventListener("change"')],
