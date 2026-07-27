@@ -4901,7 +4901,7 @@ details.obcc-process-step {
 }
 
 .obcc-search-result-reason {
-  color: var(--text-muted);
+  color: var(--color-blue, #2563eb);
   font-size: var(--font-ui-smaller);
   line-height: 1.3;
 }
@@ -5184,10 +5184,10 @@ details.obcc-process-step {
   min-width: 0;
   margin: 0 4px 3px;
   padding: 0;
-  border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, var(--background-modifier-border));
+  border: 1px solid color-mix(in srgb, var(--color-blue, #2563eb) 28%, var(--background-modifier-border));
   border-radius: 4px;
-  color: var(--text-muted);
-  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
+  color: var(--color-blue, #2563eb);
+  background: color-mix(in srgb, var(--color-blue, #2563eb) 5%, var(--background-primary));
   font-size: var(--font-ui-smaller);
   line-height: 1.35;
   overflow-wrap: anywhere;
@@ -5203,7 +5203,7 @@ details.obcc-process-step {
   gap: 5px;
   min-height: 28px;
   padding: 4px 7px;
-  color: var(--text-muted);
+  color: var(--color-blue, #2563eb);
   cursor: pointer;
   list-style: none;
   user-select: none;
@@ -5216,7 +5216,7 @@ details.obcc-process-step {
 .obcc-search-explanation-summary::after {
   content: "›";
   margin-inline-start: auto;
-  color: var(--text-faint);
+  color: var(--color-blue, #2563eb);
   transform: rotate(90deg);
   transition: transform 120ms ease;
 }
@@ -5229,7 +5229,7 @@ details.obcc-process-step {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--interactive-accent);
+  color: var(--color-blue, #2563eb);
 }
 
 .obcc-search-explanation-icon svg {
@@ -5239,7 +5239,7 @@ details.obcc-process-step {
 
 .obcc-search-explanation-text {
   padding: 0 8px 7px 26px;
-  color: var(--text-muted);
+  color: var(--color-blue, #2563eb);
 }
 
 .obcc-search-section-results {
