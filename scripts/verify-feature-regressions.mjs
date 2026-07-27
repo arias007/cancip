@@ -78,16 +78,18 @@ const searchIntentModule = ts.transpileModule([
   functionSource("searchHitStrictKey"),
   functionSource("partitionSearchHitsByOriginalQuery"),
   functionSource("searchHitExplanationSignals"),
+  functionSource("compactSearchExplanationText"),
   functionSource("searchHitEvidenceSnippet"),
   functionSource("searchHitEvidenceQuality"),
   functionSource("mergeSearchHitEvidence"),
+  functionSource("searchDocumentSpecificEvidence"),
   functionSource("reviewFileName"),
   functionSource("isChineseLanguage"),
   functionSource("aiSearchRelationLabel"),
   functionSource("nonStrictSearchHitExplanation"),
   functionSource("searchResultCategoryForHit"),
   functionSource("searchHitsForCategory"),
-  "export { parseSearchQueryIntent, rankSearchHitsForIntent, searchHitStrictKey, partitionSearchHitsByOriginalQuery, mergeSearchHitEvidence, nonStrictSearchHitExplanation, searchResultCategoryForHit, searchHitsForCategory };"
+  "export { parseSearchQueryIntent, rankSearchHitsForIntent, searchHitStrictKey, partitionSearchHitsByOriginalQuery, mergeSearchHitEvidence, searchDocumentSpecificEvidence, nonStrictSearchHitExplanation, searchResultCategoryForHit, searchHitsForCategory };"
 ].join("\n\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
 }).outputText;
@@ -127,6 +129,16 @@ const specificSemanticExplanation = searchIntentApi.nonStrictSearchHitExplanatio
   relation: "context",
   reason: "记录了需要持续关心的家庭健康情况"
 }, "zh");
+const genericSemanticExplanation = searchIntentApi.nonStrictSearchHitExplanation("日记 健康", {
+  path: "生活/身体/身体概览.md",
+  title: "身体概览",
+  excerpt: "身体概览：身高体重、饮食、眼睛保健和核心体质训练记录。",
+  score: 28,
+  kind: "note",
+  route: "soft",
+  relation: "concept",
+  reason: "索引内容关联：身体状态追踪、运动与眼睛保健、饮食及体重管理"
+}, "zh");
 const upgradedSearchEvidence = searchIntentApi.mergeSearchHitEvidence({
   path: "生活/身体/健康.md",
   title: "健康.md",
@@ -142,6 +154,16 @@ const upgradedSearchEvidence = searchIntentApi.mergeSearchHitEvidence({
   kind: "note",
   route: "hard"
 });
+const diarySpecificEvidence = searchIntentApi.searchDocumentSpecificEvidence([
+  "---",
+  "tags:",
+  "- 日记",
+  "cancip_diary_update: \"今天调试了朗读按钮并理清规则优先级。\"",
+  "---",
+  "## 今日计划",
+  "- [ ] 晚间22，周5 #日记 运动、口语",
+  "- [ ] 日记待办"
+].join("\n"), ["日记"], "常用/日记/2026-07-24.md");
 const categorizedSearchHits = [
   ...imageSearchHits,
   { path: "媒体/访谈.mp4", title: "访谈", excerpt: "视频", score: 8, kind: "file", route: "hard" },
@@ -176,9 +198,9 @@ const checks = [
   ["completed AI explanation is independently collapsible", source.includes('createEl("details", { cls: "obcc-search-section-explanation is-empty"') && source.includes('cls: "obcc-search-explanation-summary"') && source.includes("const setAiExplanation") && styles.includes(".obcc-search-section-explanation[open]")],
   ["related search results stay expanded with a plain divider", source.includes('const more = parent.createDiv({ cls: "obcc-search-more" })') && source.includes('cls: "obcc-search-more-divider"') && !source.includes('const more = parent.createEl("details", { cls: "obcc-search-more"') && !source.includes("obcc-search-more-divider-icon") && !styles.includes(".obcc-search-more-divider::after") && !styles.includes(".obcc-search-more-divider-icon")],
   ["every non-strict result receives a relationship explanation", source.includes("const explanation = secondary") && source.includes("nonStrictSearchHitExplanation(input.value, hit, this.plugin.language())") && source.includes("renderRows(moreRows, groups.more, true)") && source.includes("searchHitEvidenceSnippet")],
-  ["each non-strict explanation names the file and quotes concrete evidence", specificHardExplanation.includes("《爸爸》") && specificHardExplanation.includes("文件名") && specificHardExplanation.includes("今天和爸爸吃饭") && specificSemanticExplanation.includes("《父亲》") && specificSemanticExplanation.includes("记录了需要持续关心的家庭健康情况") && specificSemanticExplanation.includes("睡眠和血压变化")],
+  ["non-strict explanations share one short shell with file-specific evidence", specificHardExplanation.startsWith("匹配：正文“爸爸”｜依据：") && specificHardExplanation.includes("今天和爸爸吃饭") && !specificHardExplanation.includes("《爸爸》") && !specificHardExplanation.includes("未完整匹配") && specificSemanticExplanation.startsWith("匹配：记录了需要持续关心的家庭健康情况｜依据：") && specificSemanticExplanation.includes("睡眠和血压变化") && !specificSemanticExplanation.includes("《父亲》") && genericSemanticExplanation.startsWith("匹配：概念相关｜依据：身体概览") && !genericSemanticExplanation.includes("索引内容关联") && specificHardExplanation.length < 90 && specificSemanticExplanation.length < 100 && genericSemanticExplanation.length < 90],
   ["later full-text hits upgrade path-only evidence for the same file", upgradedSearchEvidence.excerpt.includes("身体保暖、饮食") && upgradedSearchEvidence.score === 386 && source.includes("mergeSearchHitEvidence(existing, hit)")],
-  ["path-only keyword hits hydrate concrete document evidence in bounded batches", source.includes("const hydrateKeywordHitEvidence = async") && source.includes("keywordHits.filter((hit) => !searchHitEvidenceSnippet(hit))") && source.includes("candidates.slice(offset, offset + 6)") && source.includes("this.plugin.universalSearchDocumentText(hit.path, hit.kind, 12000)") && source.includes("appendUniqueHits(keywordHits, enriched)") && source.includes("await evidenceUpgradePromise")],
+  ["keyword hits hydrate file-specific evidence in bounded batches", diarySpecificEvidence === "今天调试了朗读按钮并理清规则优先级。" && source.includes("const hydrateKeywordHitEvidence = async") && source.includes("const candidates = [...keywordHits]") && source.includes("candidates.slice(offset, offset + 6)") && source.includes("this.plugin.universalSearchDocumentText(hit.path, hit.kind, 12000)") && source.includes("searchDocumentSpecificEvidence(content, terms, hit.path)") && source.includes("replacement ? { ...hit, excerpt: replacement.excerpt } : hit") && source.includes("await evidenceUpgradePromise")],
   ["all search explanations use the theme blue color", /\.obcc-search-result-reason\s*\{[^}]*color:\s*var\(--color-blue/s.test(styles) && /\.obcc-search-explanation-summary\s*\{[^}]*color:\s*var\(--color-blue/s.test(styles) && /\.obcc-search-explanation-text\s*\{[^}]*color:\s*var\(--color-blue/s.test(styles)],
   ["search renders fast local hits then incremental AI/RAG phases", source.includes("private async fastIndexedVaultSearchHits") && source.includes('phase: "expansion"') && source.includes('phase: "retrieval"') && source.includes("onProgress?.({ phase: \"ranked\"") && source.includes("expansion.styleSignals.slice(0, 2)") && source.includes("Math.ceil(resultLimit / 2)")],
   ["search highlights multi-character and word-root matches", source.includes("function searchHighlightTerms") && source.includes("function searchWordRootVariants") && source.includes("appendHighlightedSearchText") && styles.includes(".obcc-search-match")],

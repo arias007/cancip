@@ -59336,7 +59336,7 @@ class CancipView extends ItemView {
       setActiveSearchCategory(activeSearchCategory, true, false);
     };
     const hydrateKeywordHitEvidence = async (expectedRequestId: number): Promise<void> => {
-      const candidates = keywordHits.filter((hit) => !searchHitEvidenceSnippet(hit));
+      const candidates = [...keywordHits];
       if (!candidates.length) return;
       const terms = searchHighlightTerms(input.value, activeHighlightSignals);
       for (let offset = 0; offset < candidates.length; offset += 6) {
@@ -59349,7 +59349,7 @@ class CancipView extends ItemView {
               VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
               "search evidence read timed out"
             ));
-            const excerpt = trimContext(makeExcerpt(content, terms), 420);
+            const excerpt = searchDocumentSpecificEvidence(content, terms, hit.path);
             return excerpt ? { ...hit, excerpt } : null;
           } catch {
             return null;
@@ -59357,7 +59357,11 @@ class CancipView extends ItemView {
         }))).filter((hit): hit is SearchHit => Boolean(hit));
         if (expectedRequestId !== requestId || !this.searchPopoverEl) return;
         if (enriched.length) {
-          appendUniqueHits(keywordHits, enriched);
+          const byKey = new Map(enriched.map((hit) => [hitKey(hit), hit]));
+          keywordHits = keywordHits.map((hit) => {
+            const replacement = byKey.get(hitKey(hit));
+            return replacement ? { ...hit, excerpt: replacement.excerpt } : hit;
+          });
           renderSearchPages(visibleSearchHits());
         }
         if (Platform.isMobileApp) await sleep(0);
@@ -64179,7 +64183,21 @@ function searchHitExplanationSignals(query: string, hit: SearchHit): { terms: st
     }
     if (matched) terms.push(candidate.trim());
   }
-  return { terms: uniqueStrings(terms).slice(0, 4), locations: [...locations] };
+  return { terms: uniqueStrings(terms).slice(0, 2), locations: [...locations] };
+}
+
+function compactSearchExplanationText(value: string, maxLength: number): string {
+  const cleaned = value
+    .replace(/```[\w-]*/g, " ")
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/[#*_`]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const characters = Array.from(cleaned);
+  if (characters.length <= maxLength) return cleaned;
+  return `${characters.slice(0, Math.max(1, maxLength - 1)).join("").trimEnd()}…`;
 }
 
 function searchHitEvidenceSnippet(hit: SearchHit): string {
@@ -64192,20 +64210,18 @@ function searchHitEvidenceSnippet(hit: SearchHit): string {
   const path = normalizePath(hit.path).normalize("NFKC").toLowerCase();
   const title = hit.title.normalize("NFKC").toLowerCase();
   if (!normalized || normalized === path || normalized === title || normalized === reviewFileName(path)) return "";
-  return trimContext(excerpt, 120);
+  return compactSearchExplanationText(excerpt, 52);
 }
 
 function searchHitEvidenceQuality(hit: SearchHit): number {
   const snippet = searchHitEvidenceSnippet(hit);
   const reason = hit.reason?.trim() ?? "";
   return Math.min(180, Array.from(snippet).length)
-    + (hit.excerpt.includes("\n") ? 80 : 0)
-    + (/^(?:硬搜索|hard search)\s*·/iu.test(hit.excerpt) ? 80 : 0)
     + Math.min(180, Array.from(reason).length * 2);
 }
 
 function mergeSearchHitEvidence(existing: SearchHit, incoming: SearchHit): SearchHit {
-  const incomingHasBetterEvidence = searchHitEvidenceQuality(incoming) > searchHitEvidenceQuality(existing);
+  const incomingHasBetterEvidence = searchHitEvidenceQuality(incoming) >= searchHitEvidenceQuality(existing);
   const evidenceSource = incomingHasBetterEvidence ? incoming : existing;
   const incomingReason = incoming.reason?.trim() ?? "";
   const existingReason = existing.reason?.trim() ?? "";
@@ -64224,37 +64240,68 @@ function mergeSearchHitEvidence(existing: SearchHit, incoming: SearchHit): Searc
   };
 }
 
+function searchDocumentSpecificEvidence(content: string, terms: string[], path: string): string {
+  const diaryUpdate = content.match(/(?:^|\n)cancip_diary_update:\s*(?:"([^"]+)"|'([^']+)'|([^\n]+))/iu);
+  const diarySummary = diaryUpdate?.[1] ?? diaryUpdate?.[2] ?? diaryUpdate?.[3] ?? "";
+  if (diarySummary.trim()) return compactSearchExplanationText(diarySummary, 52);
+  const lines = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const meaningful = lines.filter((line) => {
+    if (/^---$|^#{1,6}\s+/u.test(line)) return false;
+    if (/^(?:tags?|aliases|cancip[_ -]?diary|cancip[_ -]?diary[_ -]updated)\s*:/iu.test(line)) return false;
+    if (/^[-*]\s*["']?(?:日记|cancip)["']?$/iu.test(line)) return false;
+    if (/^!\[|^\[\[.*(?:任务管理|日记前言).*\]\]$/u.test(line)) return false;
+    if (/晚间22|\*{0,2}(?:日记待办|医务科工作|写交易日志)\*{0,2}/u.test(line)) return false;
+    return compactSearchExplanationText(line, 72).length >= 4;
+  });
+  const normalizedTerms = terms.map((term) => term.normalize("NFKC").toLowerCase()).filter(Boolean);
+  const preferred = meaningful.filter((line) => {
+    const normalized = line.normalize("NFKC").toLowerCase();
+    return normalizedTerms.some((term) => normalized.includes(term));
+  });
+  const selected = uniqueStrings([...preferred, ...meaningful]).slice(0, 3);
+  if (selected.length) return compactSearchExplanationText(selected.join("；"), 72);
+  const date = normalizePath(path).match(/\b(20\d{2}-\d{2}-\d{2})\b/u)?.[1] ?? "";
+  const taskLabels = uniqueStrings(lines.flatMap((line) => (
+    [...line.matchAll(/\*{0,2}(晚间22|日记待办|医务科工作|写交易日志)\*{0,2}/gu)].map((match) => match[1] ?? "")
+  ))).filter(Boolean);
+  if (taskLabels.length) {
+    return compactSearchExplanationText(`仅模板待办：${taskLabels.join("、")}${date ? `（${date}）` : ""}`, 52);
+  }
+  return compactSearchExplanationText(makeExcerpt(content, terms), 52);
+}
+
 function nonStrictSearchHitExplanation(query: string, hit: SearchHit, language: Language): string {
   const chinese = isChineseLanguage(language);
-  const title = trimContext(hit.title.trim() || reviewFileName(hit.path), 48);
-  const subject = trimContext(parseSearchQueryIntent(query).subjectQuery || query.trim(), 48);
-  const reason = trimContext(hit.reason?.replace(/\s+/g, " ").trim() ?? "", 140);
+  const reason = compactSearchExplanationText(hit.reason ?? "", 28);
+  const generatedReason = /^(?:索引内容关联\s*[:：]|与[“"].+[”"]共享内容线索|indexed content relates through\s*:|shares indexed signals with\s*[“"])/iu.test(reason);
+  const specificReason = generatedReason ? "" : reason;
   const snippet = searchHitEvidenceSnippet(hit);
   const signals = searchHitExplanationSignals(query, hit);
-  const locations = signals.locations.map((location) => {
-    if (!chinese) return ({ title: "file name", path: "path", content: "content/OCR/index" } as const)[location];
-    return ({ title: "文件名", path: "路径", content: "正文/OCR/索引内容" } as const)[location];
-  });
-  const fileLabel = chinese ? `《${title}》` : `“${title}”`;
-  const evidence = snippet
-    ? (chinese ? `；内容证据：“${snippet}”` : `; content evidence: “${snippet}”`)
-    : (chinese ? `；路径证据：“${trimContext(hit.path, 96)}”` : `; path evidence: “${trimContext(hit.path, 96)}”`);
-  if (reason) {
+  const location = signals.locations.includes("content")
+    ? (chinese ? "正文" : "content")
+    : signals.locations.includes("title")
+      ? (chinese ? "文件名" : "file name")
+      : (chinese ? "路径" : "path");
+  const evidence = snippet || compactSearchExplanationText(hit.path, 52);
+  if (specificReason) {
     return chinese
-      ? `${fileLabel}：${aiSearchRelationLabel(hit.relation, language)}；${reason}${evidence}`
-      : `${fileLabel}: ${aiSearchRelationLabel(hit.relation, language)}; ${reason}${evidence}`;
+      ? `匹配：${specificReason}｜依据：${evidence}`
+      : `Match: ${specificReason} | Evidence: ${evidence}`;
   }
   if (hit.route === "hard") {
     const matched = signals.terms.length
-      ? (chinese ? `${locations.join("、") || "当前索引"}命中“${signals.terms.join("、")}”` : `${locations.join(", ") || "the current index"} matched “${signals.terms.join(", ")}”`)
-      : (chinese ? "本地搜索返回该文件" : "Local search returned this file");
+      ? `${location}“${signals.terms.join(chinese ? "、" : ", ")}”`
+      : (chinese ? "本地内容关联" : "local content relation");
     return chinese
-      ? `${fileLabel}：${matched}，但未完整匹配“${subject}”${evidence}`
-      : `${fileLabel}: ${matched}, but did not fully match “${subject}”${evidence}`;
+      ? `匹配：${matched}｜依据：${evidence}`
+      : `Match: ${matched} | Evidence: ${evidence}`;
   }
   return chinese
-    ? `${fileLabel}：${aiSearchRelationLabel(hit.relation, language)}；相关内容与“${subject}”相近${evidence}`
-    : `${fileLabel}: ${aiSearchRelationLabel(hit.relation, language)}; its content is related to “${subject}”${evidence}`;
+    ? `匹配：${aiSearchRelationLabel(hit.relation, language)}｜依据：${evidence}`
+    : `Match: ${aiSearchRelationLabel(hit.relation, language)} | Evidence: ${evidence}`;
 }
 
 function universalSearchKindsForQuery(
