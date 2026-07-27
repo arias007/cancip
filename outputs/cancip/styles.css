@@ -11865,8 +11865,12 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   grid-template-rows: auto minmax(0, 1fr) !important;
 }
 
-.obcc-search-section.is-ai.is-titleless,
-.obcc-search-section.is-ai.is-titleless[open] {
+.obcc-search-section.is-ai.is-titleless {
+  display: grid !important;
+  height: 100% !important;
+  min-height: 0 !important;
+  max-height: 100% !important;
+  overflow: hidden !important;
   grid-template-rows: minmax(0, 1fr) !important;
 }
 

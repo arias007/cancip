@@ -59098,8 +59098,10 @@ class CancipView extends ItemView {
       typeof count === "number" ? `${label} · ${this.t("hitCount", { count })}` : label
     );
     const results = popover.createDiv({ cls: "obcc-search-results" });
-    const aiSection = results.createEl("details", { cls: "obcc-search-section is-ai is-titleless" });
-    aiSection.open = true;
+    const aiSection = results.createDiv({
+      cls: "obcc-search-section is-ai is-titleless",
+      attr: { role: "region" }
+    });
     const aiBody = aiSection.createDiv({ cls: "obcc-search-section-body" });
     const aiExplanation = aiBody.createEl("details", { cls: "obcc-search-section-explanation is-empty" });
     const aiExplanationSummary = aiExplanation.createEl("summary", {
