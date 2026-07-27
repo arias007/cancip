@@ -59098,10 +59098,8 @@ class CancipView extends ItemView {
       typeof count === "number" ? `${label} · ${this.t("hitCount", { count })}` : label
     );
     const results = popover.createDiv({ cls: "obcc-search-results" });
-    const aiSection = results.createEl("details", { cls: "obcc-search-section is-ai" });
+    const aiSection = results.createEl("details", { cls: "obcc-search-section is-ai is-titleless" });
     aiSection.open = true;
-    const aiSummary = aiSection.createEl("summary", { cls: "obcc-search-section-summary" });
-    const aiSummaryLabel = aiSummary.createSpan({ text: this.t("searchFuzzy") });
     const aiBody = aiSection.createDiv({ cls: "obcc-search-section-body" });
     const aiExplanation = aiBody.createEl("details", { cls: "obcc-search-section-explanation is-empty" });
     const aiExplanationSummary = aiExplanation.createEl("summary", {
@@ -59214,7 +59212,7 @@ class CancipView extends ItemView {
     let activeHighlightSignals: string[] = [];
     let keywordHits: SearchHit[] = [];
     let semanticHits: SearchHit[] = [];
-    const hitKey = (hit: SearchHit): string => `${hit.kind}:${normalizePath(hit.path)}`;
+    const hitKey = (hit: SearchHit): string => searchHitStrictKey(hit);
     const appendUniqueHits = (target: SearchHit[], incoming: SearchHit[], hiddenKeys: Set<string> = new Set()): number => {
       const known = new Set([...hiddenKeys, ...target.map(hitKey)]);
       let added = 0;
@@ -59246,7 +59244,8 @@ class CancipView extends ItemView {
         parent.createDiv({ cls: "obcc-search-empty", text: input.value.trim() ? this.t("searchNoResults") : "" });
         return;
       }
-      const groups = partitionSearchHitsForIntent(input.value, hits);
+      const strictHitKeys = new Set(keywordHits.map(searchHitStrictKey));
+      const groups = partitionSearchHitsByOriginalQuery(input.value, hits, strictHitKeys);
       const renderRows = (rowParent: HTMLElement, rows: SearchHit[], secondary = false): void => {
         for (const hit of rows) {
           const row = rowParent.createDiv({
@@ -59258,10 +59257,15 @@ class CancipView extends ItemView {
           const copy = row.createDiv({ cls: "obcc-search-result-copy" });
           appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-title" }), hit.title || reviewFileName(hit.path), highlightTerms);
           appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-path" }), hit.path, highlightTerms);
-          if (hit.reason) {
+          const explanation = secondary
+            ? nonStrictSearchHitExplanation(input.value, hit, this.plugin.language())
+            : hit.reason?.trim()
+              ? `${aiSearchRelationLabel(hit.relation, this.plugin.language())} · ${hit.reason.trim()}`
+              : "";
+          if (explanation) {
             appendHighlightedSearchText(
               copy.createDiv({ cls: "obcc-search-result-reason" }),
-              `${aiSearchRelationLabel(hit.relation, this.plugin.language())} · ${hit.reason}`,
+              explanation,
               highlightTerms
             );
           }
@@ -59289,7 +59293,6 @@ class CancipView extends ItemView {
       if (groups.more.length) {
         const more = parent.createDiv({ cls: "obcc-search-more" });
         const divider = more.createDiv({ cls: "obcc-search-more-divider", attr: { role: "separator" } });
-        setIcon(divider.createSpan({ cls: "obcc-search-more-divider-icon" }), "sparkles");
         divider.createSpan({
           text: `${isChineseLanguage(this.plugin.language()) ? "更多相关结果" : "More related results"} · ${groups.more.length}`
         });
@@ -59330,7 +59333,6 @@ class CancipView extends ItemView {
       if (!query) {
         setSearchStatus("idle");
         setAiExplanation("");
-        aiSummaryLabel.setText(aiEnabled.checked ? this.t("searchFuzzy") : this.t("searchOpen"));
         keywordHits = [];
         semanticHits = [];
         renderSearchPages([]);
@@ -59353,7 +59355,6 @@ class CancipView extends ItemView {
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         rememberKeywordHits(fastHits, true);
         renderSearchPages(visibleSearchHits());
-        aiSummaryLabel.setText(`${this.t("searchOpen")} · ${keywordHits.length}`);
         setSearchStatus("searching", searchStatusWithCount(this.t("searchSearching"), keywordHits.length));
         const hardHits = await this.searchVault(query, aiEnabled.checked ? 36 : 48, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
@@ -59361,7 +59362,6 @@ class CancipView extends ItemView {
         if (!aiEnabled.checked) {
           rememberKeywordHits(hardHits);
           renderSearchPages(visibleSearchHits());
-          aiSummaryLabel.setText(`${this.t("searchOpen")} · ${keywordHits.length}`);
           setAiExplanation("");
           setSearchStatus("complete", searchStatusWithCount(this.t("searchCompleted"), keywordHits.length));
           recordSearchScore(query, "use", 0.5);
@@ -59372,7 +59372,6 @@ class CancipView extends ItemView {
         // refine the same pane without leaving it blank while a model times out.
         rememberKeywordHits(exactHits);
         renderSearchPages(visibleSearchHits());
-        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${keywordHits.length}`);
         setSearchStatus("searching", searchStatusWithCount(this.t("searchSearching"), keywordHits.length));
         const aiSearch = await this.searchAiVault(query, exactHits, configs.checked, archived.checked, (progress) => {
           if (currentRequestId !== requestId || !this.searchPopoverEl) return;
@@ -59384,7 +59383,6 @@ class CancipView extends ItemView {
           rememberSemanticHits(progress.hits);
           const visibleHits = visibleSearchHits();
           renderSearchPages(visibleHits);
-          aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${visibleHits.length}`);
           const phase = progress.phase === "expansion"
             ? (isChineseLanguage(this.plugin.language()) ? "正在分析语义" : "Analyzing semantics")
             : progress.phase === "retrieval"
@@ -59397,7 +59395,6 @@ class CancipView extends ItemView {
         rememberSemanticHits(aiHits);
         const visibleHits = visibleSearchHits();
         renderSearchPages(visibleHits);
-        aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${visibleHits.length}`);
         const semanticSignals = uniqueStrings([
           ...aiSearch.expansion.queries,
           ...aiSearch.expansion.concepts,
@@ -64034,18 +64031,93 @@ function rankSearchHitsForIntent(query: string, hits: SearchHit[]): SearchHit[] 
     .map((item) => item.hit);
 }
 
-function partitionSearchHitsForIntent(query: string, hits: SearchHit[]): { precise: SearchHit[]; more: SearchHit[] } {
-  const intent = parseSearchQueryIntent(query);
+function originalSearchQueryGroups(query: string): Array<Array<{ field: string; value: string; excluded: boolean }>> {
+  return query.normalize("NFKC")
+    .split(/\s+(?:OR|或)\s+/i)
+    .map((group) => (group.match(/-?(?:[a-z]+:)?(?:"[^"]+"|'[^']+'|[^\s]+)/gi) ?? [])
+      .map((raw) => {
+        const excluded = raw.startsWith("-");
+        const source = excluded ? raw.slice(1) : raw;
+        const fieldMatch = source.match(/^(path|file|tag|content|line|section|block):/i);
+        const field = fieldMatch?.[1]?.toLowerCase() ?? "all";
+        const value = source.slice(fieldMatch?.[0]?.length ?? 0)
+          .replace(/^(?:"|')|(?:"|')$/g, "")
+          .normalize("NFKC")
+          .toLowerCase()
+          .trim();
+        return { field, value, excluded };
+      })
+      .filter((clause) => clause.value && clause.value !== "and"));
+}
+
+function searchHitOriginalContent(hit: SearchHit): string {
+  return hit.excerpt
+    .replace(/^\[[^\]\n]+\]\s*/u, "")
+    .replace(/^(?:硬搜索|hard search)\s*·[^\n]*\n?/iu, "")
+    .normalize("NFKC")
+    .toLowerCase();
+}
+
+function searchHitMatchesOriginalQuery(query: string, hit: SearchHit): boolean {
+  const groups = originalSearchQueryGroups(query);
+  if (!groups.length) return false;
+  const path = normalizePath(hit.path).normalize("NFKC").toLowerCase();
+  const title = hit.title.normalize("NFKC").toLowerCase();
+  const content = searchHitOriginalContent(hit);
+  const all = `${title}\n${path}\n${content}`;
+  return groups.some((group) => {
+    if (!group.length) return false;
+    let positiveCount = 0;
+    for (const clause of group) {
+      const haystack = clause.field === "path"
+        ? path
+        : clause.field === "file"
+          ? title
+          : ["content", "line", "section", "block"].includes(clause.field)
+            ? content
+            : all;
+      const needle = clause.field === "tag" ? clause.value.replace(/^#/, "") : clause.value;
+      const matched = clause.field === "tag"
+        ? haystack.includes(`#${needle}`) || haystack.includes(needle)
+        : haystack.includes(needle);
+      if (clause.excluded && matched) return false;
+      if (!clause.excluded) {
+        positiveCount += 1;
+        if (!matched) return false;
+      }
+    }
+    return positiveCount > 0;
+  });
+}
+
+function searchHitStrictKey(hit: SearchHit): string {
+  return `${hit.kind}:${normalizePath(hit.path)}`;
+}
+
+function partitionSearchHitsByOriginalQuery(
+  query: string,
+  hits: SearchHit[],
+  keywordHitKeys?: ReadonlySet<string>
+): { precise: SearchHit[]; more: SearchHit[] } {
   const precise: SearchHit[] = [];
   const more: SearchHit[] = [];
   for (const hit of hits) {
-    const rank = searchHitIntentRank(query, hit);
-    const weak = (intent.requestedKinds.length > 0 && !searchHitMatchesRequestedKind(hit, intent))
-      || (intent.subjectTerms.length > 0 && rank >= 60)
-      || (hit.route === "soft" && rank >= 70);
-    (weak ? more : precise).push(hit);
+    const isKeywordHit = keywordHitKeys ? keywordHitKeys.has(searchHitStrictKey(hit)) : hit.route === "hard";
+    (isKeywordHit && searchHitMatchesOriginalQuery(query, hit) ? precise : more).push(hit);
   }
   return { precise, more };
+}
+
+function nonStrictSearchHitExplanation(query: string, hit: SearchHit, language: Language): string {
+  if (hit.reason?.trim()) return `${aiSearchRelationLabel(hit.relation, language)} · ${hit.reason.trim()}`;
+  if (hit.route === "hard") {
+    return isChineseLanguage(language)
+      ? `仅匹配到“${trimContext(query.trim(), 36)}”的部分词或词根，未满足严格原词匹配`
+      : `Matched only part or a word root of “${trimContext(query.trim(), 36)}”; not a strict original-term match`;
+  }
+  return isChineseLanguage(language)
+    ? `${aiSearchRelationLabel(hit.relation, language)} · 由语义扩展、RAG 或相近主题关联`
+    : `${aiSearchRelationLabel(hit.relation, language)} · Related through semantic expansion, RAG, or a similar topic`;
 }
 
 function universalSearchKindsForQuery(

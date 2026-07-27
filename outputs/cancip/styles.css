@@ -2933,49 +2933,20 @@ details.obcc-process-step {
 
 .obcc-search-more {
   margin-top: 8px;
-  padding-top: 2px;
-  border-top: 0;
+  padding-top: 4px;
+  border-top: 1px solid var(--background-modifier-border);
 }
 
 .obcc-search-more-divider {
-  position: relative;
   display: flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  margin: 2px 5px 5px;
-  padding: 5px 9px;
-  overflow: hidden;
-  border-block: 1px solid color-mix(in srgb, var(--interactive-accent) 46%, var(--background-modifier-border));
-  color: color-mix(in srgb, var(--interactive-accent) 72%, var(--text-normal));
-  background: color-mix(in srgb, var(--interactive-accent) 7%, var(--background-primary));
+  min-height: 28px;
+  padding: 4px 7px;
+  color: var(--text-muted);
+  background: transparent;
   font-size: var(--font-ui-small);
   font-weight: 600;
   letter-spacing: 0;
-}
-
-.obcc-search-more-divider::after {
-  content: "";
-  position: absolute;
-  right: 8px;
-  bottom: 4px;
-  left: 8px;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--interactive-accent), var(--color-cyan, var(--interactive-accent)), transparent);
-  opacity: 0.68;
-}
-
-.obcc-search-more-divider-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--interactive-accent) 70%, transparent));
-}
-
-.obcc-search-more-divider-icon svg {
-  width: 15px;
-  height: 15px;
 }
 
 .obcc-search-more-results {
@@ -4930,7 +4901,7 @@ details.obcc-process-step {
 }
 
 .obcc-search-result-reason {
-  color: var(--interactive-accent);
+  color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   line-height: 1.3;
 }
@@ -11892,6 +11863,11 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
 
 .obcc-search-section.is-ai[open] {
   grid-template-rows: auto minmax(0, 1fr) !important;
+}
+
+.obcc-search-section.is-ai.is-titleless,
+.obcc-search-section.is-ai.is-titleless[open] {
+  grid-template-rows: minmax(0, 1fr) !important;
 }
 
 .obcc-search-section.is-ai .obcc-search-section-body {

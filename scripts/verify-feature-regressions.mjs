@@ -70,10 +70,14 @@ const searchIntentModule = ts.transpileModule([
   functionSource("searchIntentTextTier"),
   functionSource("searchHitIntentRank"),
   functionSource("rankSearchHitsForIntent"),
-  functionSource("partitionSearchHitsForIntent"),
+  functionSource("originalSearchQueryGroups"),
+  functionSource("searchHitOriginalContent"),
+  functionSource("searchHitMatchesOriginalQuery"),
+  functionSource("searchHitStrictKey"),
+  functionSource("partitionSearchHitsByOriginalQuery"),
   functionSource("searchResultCategoryForHit"),
   functionSource("searchHitsForCategory"),
-  "export { parseSearchQueryIntent, rankSearchHitsForIntent, partitionSearchHitsForIntent, searchResultCategoryForHit, searchHitsForCategory };"
+  "export { parseSearchQueryIntent, rankSearchHitsForIntent, searchHitStrictKey, partitionSearchHitsByOriginalQuery, searchResultCategoryForHit, searchHitsForCategory };"
 ].join("\n\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
 }).outputText;
@@ -84,7 +88,17 @@ const imageSearchHits = [
   { path: "笔记/图片整理.md", title: "图片整理", excerpt: "身份证图片归档说明", score: 100, kind: "note", route: "hard" },
   { path: "附件/风景.jpg", title: "风景", excerpt: "海边照片", score: 80, kind: "image", route: "hard" }
 ];
-const imageSearchGroups = searchIntentApi.partitionSearchHitsForIntent("身份证图片", imageSearchHits);
+const strictSearchHits = [
+  { path: "日记/爸爸.md", title: "爸爸", excerpt: "今天和爸爸吃饭", score: 10, kind: "note", route: "hard" },
+  { path: "日记/爸妈.md", title: "爸妈", excerpt: "家庭记录", score: 9, kind: "note", route: "hard" },
+  { path: "人物/父亲.md", title: "父亲", excerpt: "语义相近", score: 30, kind: "note", route: "soft" }
+];
+const strictSearchKeys = new Set(
+  strictSearchHits
+    .filter((hit) => hit.route === "hard")
+    .map(searchIntentApi.searchHitStrictKey)
+);
+const strictSearchGroups = searchIntentApi.partitionSearchHitsByOriginalQuery("爸爸", strictSearchHits, strictSearchKeys);
 const categorizedSearchHits = [
   ...imageSearchHits,
   { path: "媒体/访谈.mp4", title: "访谈", excerpt: "视频", score: 8, kind: "file", route: "hard" },
@@ -103,7 +117,8 @@ const checks = [
   ["OCR semantic index recognizes identity cards and optional local faces", identityCardTags.includes("身份证") && identityCardTags.includes("ID card") && identityCardTags.includes("证件") && source.includes("detectBrowserVisualSemanticTags") && source.includes('tags.push("人物", "人脸", "肖像"') && source.includes("entry.semanticTags.join")],
   ["PDF OCR preserves page visual semantics in its searchable index", source.includes("semanticTags: pageEntry.semanticTags") && source.includes("pages.flatMap((page) => page.semanticTags)") && source.includes("allBlocks, pageSemanticTags")],
   ["legacy OCR caches gain semantic tags without repeating recognition", migratedIdentityCache.schemaVersion === 3 && migratedIdentityCache.semanticTags.includes("身份证") && source.includes("entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION - 1") && source.includes("await adapter.write(path")],
-  ["described image queries rank exact image matches and separate weak text matches", imageIntent.requestedKinds.includes("image") && imageIntent.subjectQuery === "身份证" && imageSearchGroups.precise.length === 1 && imageSearchGroups.precise[0].path.endsWith("身份证-正面.jpg") && imageSearchGroups.more.some((hit) => hit.kind === "note") && source.includes("parseSearchQueryIntent") && source.includes("partitionSearchHitsForIntent") && source.includes('cls: "obcc-search-more-divider"')],
+  ["described image queries preserve explicit image intent", imageIntent.requestedKinds.includes("image") && imageIntent.subjectQuery === "身份证" && source.includes("parseSearchQueryIntent")],
+  ["strict search contains only actual original-keyword matches", strictSearchGroups.precise.length === 1 && strictSearchGroups.precise[0].path === "日记/爸爸.md" && strictSearchGroups.more.some((hit) => hit.path === "日记/爸妈.md") && strictSearchGroups.more.some((hit) => hit.path === "人物/父亲.md") && source.includes("partitionSearchHitsByOriginalQuery(input.value, hits, strictHitKeys)")],
   ["search categories preserve all-results first and classify media by extension", source.includes('{ id: "all", icon: "library-big" }') && source.indexOf('{ id: "image", icon: "image" }') < source.indexOf('{ id: "video", icon: "video" }') && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "all").length === categorizedSearchHits.length && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "image").length === 2 && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "video")[0]?.path.endsWith(".mp4") && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "audio")[0]?.path.endsWith(".flac")],
   ["search categories sort by live result count while all-results stays first", source.includes('orderedSearchCategories = [') && source.includes('"all",') && source.includes('(hitCounts.get(right) ?? 0) - (hitCounts.get(left) ?? 0)') && source.includes('view.button.style.order = String(order)') && source.includes('view.page.style.order = String(order)')],
   ["search category pages support tabs, swipe snapping, and independent vertical scrolling", source.includes('cls: "obcc-search-category-tabs"') && source.includes('cls: "obcc-search-page-viewport"') && source.includes("const categoryTrack = categoryViewport") && source.includes('categoryViewport.addEventListener("scroll"') && source.includes("setActiveSearchCategory(definition.id, true, true)") && source.includes('event.key === "ArrowRight"') && styles.includes("scroll-snap-type: x mandatory") && styles.includes("scroll-snap-align: start") && styles.includes(".obcc-search-page") && styles.includes("overflow-y: auto")],
@@ -112,11 +127,12 @@ const checks = [
   ["search UI has no hard-result pane", !source.includes('const hardSection = results.createEl("details"') && !source.includes("renderHits(hardResults")],
   ["AI search checkbox is visible and enabled by default", source.includes('const aiEnabled = aiLabel.createEl("input"') && source.includes("aiEnabled.checked = true") && source.includes('aiEnabled.addEventListener("change"')],
   ["one search pane also renders base results when AI is off", source.includes("if (!aiEnabled.checked)") && source.includes("rememberKeywordHits(hardHits)") && source.includes("renderSearchPages(visibleSearchHits())")],
-  ["single search pane overrides the legacy split grid and scrolls", styles.includes("grid-template-rows: minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-body") && styles.includes("grid-template-rows: auto auto minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-results") && styles.includes("overflow-y: auto")],
+  ["single titleless search pane fills the result area and scrolls", source.includes('cls: "obcc-search-section is-ai is-titleless"') && !source.includes("const aiSummary =") && !source.includes("aiSummaryLabel") && styles.includes(".obcc-search-section.is-ai.is-titleless") && styles.includes("grid-template-rows: minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-results") && styles.includes("overflow-y: auto")],
   ["AI search keeps keyword results first and only appends semantic/RAG hits", source.includes("includeAttachments: !aiEnabled.checked") && source.includes("rememberKeywordHits(exactHits)") && source.includes("rememberSemanticHits(progress.hits)") && source.includes("visibleSearchHits") && source.includes('setAiExplanation([aiSearch.expansion.intent, terms]')],
   ["AI search shows loading and completion states with a spinner", source.includes('setIcon(statusIcon, state === "searching" ? "loader-circle"') && source.includes('setSearchStatus("searching", this.t("searchSearching"))') && source.includes('setSearchStatus("complete", searchStatusWithCount(this.t("searchCompleted")') && styles.includes("obcc-search-status-spin")],
   ["completed AI explanation is independently collapsible", source.includes('createEl("details", { cls: "obcc-search-section-explanation is-empty"') && source.includes('cls: "obcc-search-explanation-summary"') && source.includes("const setAiExplanation") && styles.includes(".obcc-search-section-explanation[open]")],
-  ["related search results stay expanded behind an AI divider", source.includes('const more = parent.createDiv({ cls: "obcc-search-more" })') && source.includes('cls: "obcc-search-more-divider"') && !source.includes('const more = parent.createEl("details", { cls: "obcc-search-more"') && styles.includes(".obcc-search-more-divider::after")],
+  ["related search results stay expanded with a plain divider", source.includes('const more = parent.createDiv({ cls: "obcc-search-more" })') && source.includes('cls: "obcc-search-more-divider"') && !source.includes('const more = parent.createEl("details", { cls: "obcc-search-more"') && !source.includes("obcc-search-more-divider-icon") && !styles.includes(".obcc-search-more-divider::after") && !styles.includes(".obcc-search-more-divider-icon")],
+  ["every non-strict result receives a relationship explanation", source.includes("const explanation = secondary") && source.includes("nonStrictSearchHitExplanation(input.value, hit, this.plugin.language())") && source.includes("renderRows(moreRows, groups.more, true)") && source.includes("由语义扩展、RAG 或相近主题关联")],
   ["search renders fast local hits then incremental AI/RAG phases", source.includes("private async fastIndexedVaultSearchHits") && source.includes('phase: "expansion"') && source.includes('phase: "retrieval"') && source.includes("onProgress?.({ phase: \"ranked\"") && source.includes("expansion.styleSignals.slice(0, 2)") && source.includes("Math.ceil(resultLimit / 2)")],
   ["search highlights multi-character and word-root matches", source.includes("function searchHighlightTerms") && source.includes("function searchWordRootVariants") && source.includes("appendHighlightedSearchText") && styles.includes(".obcc-search-match")],
   ["AI expansion re-enters Vault content search", source.includes("softQueries: expandedSignals") && source.includes("alwaysRunOnDemand: true") && source.includes("alwaysRunAttachments: true")],
