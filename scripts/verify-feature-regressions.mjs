@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 import ts from "typescript";
+import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
 const source = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
 const styles = await readFile(new URL("../outputs/cancip/styles.css", import.meta.url), "utf8");
@@ -94,6 +95,91 @@ const searchIntentModule = ts.transpileModule([
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
 }).outputText;
 const searchIntentApi = await import(`data:text/javascript;base64,${Buffer.from(searchIntentModule).toString("base64")}`);
+globalThis.__cancipArchiveTestFflate = { gunzipSync, gzipSync, unzipSync, zipSync };
+const archiveModule = ts.transpileModule([
+  "const { gunzipSync, gzipSync, unzipSync, zipSync } = globalThis.__cancipArchiveTestFflate;",
+  "const DOCUMENT_ARCHIVE_EDIT_MAX_BYTES = 64 * 1024 * 1024;",
+  "const DOCUMENT_ARCHIVE_EDIT_MAX_EXPANDED_BYTES = 192 * 1024 * 1024;",
+  "const DOCUMENT_ARCHIVE_EDIT_MAX_ENTRIES = 4000;",
+  "const normalizePath = (value: string) => value.replace(/\\\\/g, '/');",
+  "const decodeDocumentText = (bytes: Uint8Array) => ({ text: new TextDecoder().decode(bytes) });",
+  functionSource("utf8Decode"),
+  functionSource("readUint16"),
+  functionSource("readUint32"),
+  functionSource("normalizeDocumentArchiveEntryPath"),
+  functionSource("documentArchiveFormat"),
+  functionSource("documentArchiveCanRebuild"),
+  functionSource("readZipEntries"),
+  functionSource("tarHeaderText"),
+  functionSource("tarHeaderNumber"),
+  functionSource("tarPaxPath"),
+  functionSource("readTarEntries"),
+  functionSource("writeTarOctal"),
+  functionSource("concatenateDocumentBytes"),
+  functionSource("replaceTarEntryBytes"),
+  functionSource("documentArchiveSingleGzipEntryPath"),
+  functionSource("replaceDocumentArchiveEntryBytes"),
+  "export { readTarEntries, replaceDocumentArchiveEntryBytes };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const archiveApi = await import(`data:text/javascript;base64,${Buffer.from(archiveModule).toString("base64")}`);
+const zipFixture = zipSync({ "docs/note.md": strToU8("before"), "image.bin": new Uint8Array([1, 2, 3]) });
+const updatedZip = archiveApi.replaceDocumentArchiveEntryBytes(
+  { name: "fixture.zip", extension: "zip", basename: "fixture" },
+  zipFixture,
+  "docs/note.md",
+  strToU8("after")
+);
+const zipFixturePassed = strFromU8(unzipSync(updatedZip)["docs/note.md"]) === "after"
+  && [...unzipSync(updatedZip)["image.bin"]].join(",") === "1,2,3";
+const tarHeader = new Uint8Array(512);
+tarHeader.set(strToU8("docs/note.md"), 0);
+tarHeader.set(strToU8("00000000000\0"), 100);
+tarHeader.set(strToU8("00000000000\0"), 112);
+tarHeader.set(strToU8("00000000000\0"), 124);
+tarHeader.set(strToU8("00000000000\0"), 136);
+tarHeader.fill(0x20, 148, 156);
+tarHeader[156] = "0".charCodeAt(0);
+const tarBefore = strToU8("before");
+tarHeader.set(strToU8(tarBefore.length.toString(8).padStart(11, "0") + "\0"), 124);
+const tarChecksum = tarHeader.reduce((sum, value) => sum + value, 0).toString(8).padStart(6, "0");
+tarHeader.set(strToU8(tarChecksum + "\0 "), 148);
+const tarFixture = new Uint8Array(512 + 512 + 1024);
+tarFixture.set(tarHeader, 0);
+tarFixture.set(tarBefore, 512);
+const updatedTar = archiveApi.replaceDocumentArchiveEntryBytes(
+  { name: "fixture.tar", extension: "tar", basename: "fixture" },
+  tarFixture,
+  "docs/note.md",
+  strToU8("tar after")
+);
+const tarEntry = archiveApi.readTarEntries(updatedTar, [])[0];
+const tarFixturePassed = tarEntry?.size === 9
+  && strFromU8(updatedTar.slice(tarEntry.dataOffset, tarEntry.dataOffset + tarEntry.size)) === "tar after";
+const gzipFixture = gzipSync(strToU8("before"));
+const updatedGzip = archiveApi.replaceDocumentArchiveEntryBytes(
+  { name: "note.md.gz", extension: "gz", basename: "note.md" },
+  gzipFixture,
+  "note.md",
+  strToU8("gzip after")
+);
+const gzipFixturePassed = strFromU8(gunzipSync(updatedGzip)) === "gzip after";
+const searchHistoryModule = ts.transpileModule([
+  "const VAULT_SEARCH_HISTORY_LIMIT = 40;",
+  "const trimContext = (value: string, maxLength: number) => value.length <= maxLength ? value : value.slice(0, maxLength);",
+  "const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value && typeof value === 'object' && !Array.isArray(value));",
+  functionSource("normalizeVaultSearchHistory"),
+  "export { normalizeVaultSearchHistory };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const searchHistoryApi = await import(`data:text/javascript;base64,${Buffer.from(searchHistoryModule).toString("base64")}`);
+const normalizedSearchHistory = searchHistoryApi.normalizeVaultSearchHistory({ entries: [
+  { query: "  爸爸  笔记 ", searchedAt: "2026-07-27T12:00:00.000Z", ai: true },
+  { query: "爸爸 笔记", searchedAt: "2026-07-26T12:00:00.000Z", ai: false },
+  { query: "PDF 健康", searchedAt: "2026-07-27T13:00:00.000Z", includeArchived: true }
+] });
 const imageIntent = searchIntentApi.parseSearchQueryIntent("身份证图片");
 const imageSearchHits = [
   { path: "附件/身份证-正面.jpg", title: "身份证-正面", excerpt: "OCR semantic tags: 身份证, 证件", score: 10, kind: "image", route: "hard" },
@@ -190,6 +276,8 @@ const checks = [
   ["explicit attachment types receive an early index ranking boost", source.includes("const kindBoost = intent.requestedKinds.length") && source.includes("const queryIntent = parseSearchQueryIntent(normalizedQuery)") && source.includes("? 1800 : 0")],
   ["background index shares automation startup grace and only fills missing image OCR", source.includes("Math.max(delayMs, UNIVERSAL_SEARCH_MOBILE_BACKGROUND_DELAY_MS, startupDelay)") && source.includes("missingImageOcr") && source.includes("ocrIndexed: true") && source.includes("rescheduleUniversalSearchBuildForStartupGrace")],
   ["search UI has no hard-result pane", !source.includes('const hardSection = results.createEl("details"') && !source.includes("renderHits(hardResults")],
+  ["AI search history persists deduplicated queries and restores search options", normalizedSearchHistory.length === 2 && normalizedSearchHistory[0].query === "PDF 健康" && normalizedSearchHistory[1].query === "爸爸 笔记" && source.includes("VAULT_SEARCH_HISTORY_PATH") && source.includes("rememberVaultSearch") && source.includes("removeVaultSearchHistory") && source.includes("clearVaultSearchHistory") && source.includes('cls: "obcc-search-history"') && source.includes("aiEnabled.checked = entry.ai") && styles.includes(".obcc-search-history-list") && styles.includes("overflow-y: auto")],
+  ["search history switches between five closed rows and six non-overlapping open rows", source.includes('popover.toggleClass("has-search-history", open)') && /\.obcc-search-popover\s*\{[^}]*grid-template-rows:\s*auto auto auto auto minmax\(0, 1fr\) !important/s.test(styles) && /\.obcc-search-popover\.has-search-history\s*\{[^}]*grid-template-rows:\s*auto auto auto auto auto minmax\(0, 1fr\) !important/s.test(styles) && styles.includes(".obcc-search-history.is-open") && styles.includes("grid-template-rows: auto minmax(0, 1fr)") && /\.obcc-search-history-row\s*\{[^}]*min-height:\s*50px/s.test(styles) && /\.obcc-search-history-apply\s*\{[^}]*height:\s*auto !important;[^}]*min-height:\s*50px/s.test(styles) && styles.includes("grid-template-rows: auto auto;")],
   ["AI search checkbox is visible and enabled by default", source.includes('const aiEnabled = aiLabel.createEl("input"') && source.includes("aiEnabled.checked = true") && source.includes('aiEnabled.addEventListener("change"')],
   ["one search pane also renders base results when AI is off", source.includes("if (!aiEnabled.checked)") && source.includes("rememberKeywordHits(hardHits)") && source.includes("renderSearchPages(visibleSearchHits())")],
   ["single titleless search pane fills the result area and scrolls", source.includes("const aiSection = results.createDiv") && source.includes('cls: "obcc-search-section is-ai is-titleless"') && !source.includes("const aiSummary =") && !source.includes("aiSummaryLabel") && !source.includes('results.createEl("details", { cls: "obcc-search-section is-ai is-titleless"') && styles.includes(".obcc-search-section.is-ai.is-titleless") && styles.includes("max-height: 100% !important") && styles.includes("overflow: hidden !important") && styles.includes("grid-template-rows: minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-results") && styles.includes("overflow-y: auto")],
@@ -208,6 +296,13 @@ const checks = [
   ["lightweight local RAG ranks bounded cached chunks", source.includes("private async lightweightRagHits") && source.includes("lightweightRagTextChunks") && source.includes("rankLightweightRagChunks") && source.includes("lightweightRagDocumentCache") && source.includes("includeRag: true")],
   ["unindexed documents receive on-demand priority", source.includes("const unindexedPaths = new Set(") && source.includes("preferredPaths.has(normalizePath(file.path))")],
   ["on-demand search scans every eligible text file and full content", source.includes("Scan every eligible text") && source.includes("const contents = await Promise.all(batch.map") && source.includes("scoreSearchText(file.path, file.basename, content, tokens)")],
+  ["search requests stay bound to the popover instance that created them", source.includes("const isRequestActive = (expectedRequestId: number)") && source.includes("this.searchPopoverEl === popover") && source.includes("if (!isRequestActive(currentRequestId)) return")],
+  ["closing search invalidates in-flight local and AI work", source.includes("closed = true;") && source.includes("requestId += 1;") && source.includes("cancelled: () => !isRequestActive(currentRequestId)") && source.includes("}, () => !isRequestActive(currentRequestId));")],
+  ["cancelled on-demand batches stop before and after asynchronous reads", /private async onDemandVaultSearchHits[\s\S]*?cancelled: \(\) => boolean = \(\) => false[\s\S]*?for \(let offset[\s\S]*?if \(cancelled\(\)\) return \[\];[\s\S]*?Promise\.all[\s\S]*?if \(cancelled\(\)\) return \[\];/.test(source)],
+  ["archive workbench browses folders and opens entries in the same workbench", source.includes("private renderArchiveDirectory") && source.includes("private renderArchiveBreadcrumbs") && source.includes("private async openArchiveEntry") && source.includes("await this.renderArchiveWorkbench(parent, snapshot)") && source.includes('setIcon(root, "archive")') && styles.includes(".obcc-archive-list") && styles.includes(".obcc-archive-breadcrumbs")],
+  ["ZIP TAR and GZIP text entries rebuild safely without losing sibling ZIP files", zipFixturePassed && tarFixturePassed && gzipFixturePassed && source.includes("DOCUMENT_ARCHIVE_EDIT_MAX_EXPANDED_BYTES") && source.includes("Encrypted ZIP archives cannot be safely rebuilt") && source.includes("Archive entry save verification failed") && source.includes("await this.app.vault.modifyBinary(file, rollback)")],
+  ["archive entries preview text Markdown HTML images PDF audio and video", source.includes('type DocumentArchiveEntryPreviewKind = "markdown" | "html" | "text" | "pdf" | "image" | "audio" | "video" | "binary"') && source.includes('content.previewKind === "markdown"') && source.includes('content.previewKind === "html"') && source.includes('["image", "pdf", "audio", "video"].includes(content.previewKind)') && source.includes("URL.createObjectURL") && styles.includes(".obcc-archive-entry-surface")],
+  ["special ZIP containers plus RAR and 7Z stay explicit read-only formats", source.includes('if (format === "zip") return file.extension.toLowerCase() === "zip"') && source.includes('if (extension === "rar") return "rar"') && source.includes('if (extension === "7z") return "7z"') && source.includes("content preview requires a compatible decompressor") && source.includes("containers are preview-only to preserve their package structure") && source.includes("archives are read-only in this runtime")],
   ["total timer starts synchronously and cannot trail a running step", source.includes("this.ensureCurrentSessionTimelineStatus(status, now)") && source.indexOf("this.ensureCurrentSessionTimelineStatus(status, now)") < source.indexOf("const index = await this.readSessionHistoryIndex({ mergeFiles: false })") && source.includes("private headerSessionTimerStartMs")],
   ["timers use milliseconds below one second, tenths below one minute, and whole seconds after one minute", source.includes('if (safe < 1000) return `${safe}ms`') && source.includes("(safe / 1000).toFixed(1)") && source.includes('String(Math.floor((safe % 60000) / 1000)).padStart(2, "0")')],
   ["numbered process steps have right-aligned bordered timers", source.includes('cls: "obcc-process-step-timer"') && styles.includes(".obcc-process-step-timer") && styles.includes("min-width: 46px") && styles.includes("justify-self: end") && styles.includes("grid-template-columns: 14px 20px minmax(0, 1fr) max-content max-content")],

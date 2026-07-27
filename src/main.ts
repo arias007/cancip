@@ -29,7 +29,7 @@ import {
   WorkspaceLeaf
 } from "obsidian";
 import html2canvas from "html2canvas";
-import { gunzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
+import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 import { StateEffect, StateField, type Extension } from "@codemirror/state";
 import { Decoration, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
 import { createWorker as createTesseractWorker, OEM as TesseractOem, PSM as TesseractPsm, type Worker as TesseractWorker } from "tesseract.js";
@@ -1140,6 +1140,31 @@ type AutocompleteDraft = {
 
 type DocumentWorkbenchMode = "preview" | "reading" | "markdown" | "edit";
 type DocumentPreviewKind = "markdown" | "html" | "pdf" | "image" | "audio" | "video";
+type DocumentArchiveFormat = "zip" | "tar" | "tar-gzip" | "gzip" | "rar" | "7z" | "unsupported";
+type DocumentArchiveEntryPreviewKind = "markdown" | "html" | "text" | "pdf" | "image" | "audio" | "video" | "binary";
+type DocumentArchiveEntry = {
+  path: string;
+  size: number;
+  compressedSize: number;
+  previewKind: DocumentArchiveEntryPreviewKind;
+  editable: boolean;
+  encrypted?: boolean;
+  compression?: number;
+};
+type DocumentArchiveSnapshot = {
+  format: DocumentArchiveFormat;
+  entries: DocumentArchiveEntry[];
+  editable: boolean;
+  warning?: string;
+};
+type DocumentArchiveEntryContent = DocumentArchiveEntry & {
+  bytes: Uint8Array;
+  mimeType: string;
+  text: string;
+  textAvailable: boolean;
+  encoding: DocumentTextEncoding;
+  hasBom: boolean;
+};
 type DocumentFormatKind =
   | "markdown"
   | "text"
@@ -1181,6 +1206,7 @@ type DocumentSnapshot = {
   previewHtml: string;
   editableSource: boolean;
   warnings: string[];
+  archive?: DocumentArchiveSnapshot;
 };
 
 type DocumentPersistentTextEdit = {
@@ -1255,10 +1281,28 @@ type VaultAttachmentParseCacheEntry = ParsedAttachmentResult & {
 
 type ZipEntry = {
   name: string;
+  flags: number;
   compression: number;
   compressedSize: number;
   uncompressedSize: number;
   dataOffset: number;
+};
+
+type TarEntry = {
+  name: string;
+  size: number;
+  type: string;
+  headerOffset: number;
+  dataOffset: number;
+  spanEnd: number;
+};
+
+type VaultSearchHistoryEntry = {
+  query: string;
+  searchedAt: string;
+  ai: boolean;
+  includeArchived: boolean;
+  includeConfigs: boolean;
 };
 
 type NativeTtsBridge = {
@@ -1921,6 +1965,7 @@ type UniversalSearchOptions = {
   alwaysRunAttachments?: boolean;
   preserveRouteDuplicates?: boolean;
   includeRag?: boolean;
+  cancelled?: () => boolean;
 };
 
 type LightweightRagChunk = {
@@ -3554,7 +3599,7 @@ const MODEL_PRESETS = [
 
 const DEFAULT_DOCUMENT_WORKBENCH_EXTENSIONS = [
   "docx", "xlsx", "pptx", "pdf", "html", "htm", "hltm", "mhtml", "mht", "mhtl",
-  "odt", "ods", "odp", "epub", "zip", "txt", "*"
+  "odt", "ods", "odp", "epub", "zip", "tar", "gz", "tgz", "rar", "7z", "bz2", "xz", "txt", "*"
 ] as const;
 
 const DEFAULT_SETTINGS: Settings = {
@@ -3889,6 +3934,7 @@ let REVIEW_GATE_HIDDEN_DIR = `${CANCIP_CONFIG_DIR}/review-gates`;
 let REVIEW_GATE_PACKAGE_INDEX_PATH = `${CANCIP_CONFIG_DIR}/review-index.json`;
 let REVIEW_GATE_CANONICAL_STATE_PATH = `${CANCIP_CONFIG_DIR}/review-state.json`;
 let REVIEW_FEEDBACK_LOG_PATH = `${CANCIP_CONFIG_DIR}/feedback/review-decisions.jsonl`;
+let VAULT_SEARCH_HISTORY_PATH = `${CANCIP_CONFIG_DIR}/search-history.json`;
 const REVIEW_FEEDBACK_LOG_MAX_BYTES = 256 * 1024;
 let CANCIP_STORAGE_MIGRATION_MARKER_PATH = `${CANCIP_CONFIG_DIR}/migration-from-dot-cancip-v1.json`;
 const CANCIP_STORAGE_MIGRATION_CRITICAL_PATHS = [
@@ -3951,10 +3997,53 @@ function configureCancipStorageRoot(storageDir: string): void {
   REVIEW_GATE_PACKAGE_INDEX_PATH = `${CANCIP_CONFIG_DIR}/review-index.json`;
   REVIEW_GATE_CANONICAL_STATE_PATH = `${CANCIP_CONFIG_DIR}/review-state.json`;
   REVIEW_FEEDBACK_LOG_PATH = `${CANCIP_CONFIG_DIR}/feedback/review-decisions.jsonl`;
+  VAULT_SEARCH_HISTORY_PATH = `${CANCIP_CONFIG_DIR}/search-history.json`;
   CANCIP_STORAGE_MIGRATION_MARKER_PATH = `${CANCIP_CONFIG_DIR}/migration-from-dot-cancip-v1.json`;
   DEFAULT_HIDDEN_MEMORY_FOLDER = `${CANCIP_CONFIG_DIR}/memory`;
   DEFAULT_SKILL_ROOTS = [`${CANCIP_CONFIG_DIR}/skills`, "AI/Cancip/Skills", "SkillOB", "skills", "技能", "能力"];
   DEFAULT_SETTINGS.skillRoots = [...DEFAULT_SKILL_ROOTS];
+}
+
+function normalizeVaultSearchHistory(raw: unknown): VaultSearchHistoryEntry[] {
+  const values = Array.isArray(raw) ? raw : isRecord(raw) && Array.isArray(raw.entries) ? raw.entries : [];
+  const byQuery = new Map<string, VaultSearchHistoryEntry>();
+  for (const value of values) {
+    if (!isRecord(value) || typeof value.query !== "string") continue;
+    const query = value.query.replace(/\s+/g, " ").trim();
+    if (!query) continue;
+    const key = query.toLocaleLowerCase();
+    if (byQuery.has(key)) continue;
+    const searchedAt = typeof value.searchedAt === "string" && Number.isFinite(Date.parse(value.searchedAt))
+      ? new Date(value.searchedAt).toISOString()
+      : new Date(0).toISOString();
+    byQuery.set(key, {
+      query: trimContext(query, 240),
+      searchedAt,
+      ai: value.ai !== false,
+      includeArchived: value.includeArchived === true,
+      includeConfigs: value.includeConfigs === true
+    });
+  }
+  return [...byQuery.values()]
+    .sort((left, right) => Date.parse(right.searchedAt) - Date.parse(left.searchedAt))
+    .slice(0, VAULT_SEARCH_HISTORY_LIMIT);
+}
+
+function formatSearchHistoryTime(value: string, language: Language): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return "";
+  const elapsed = Math.max(0, Date.now() - timestamp);
+  const chinese = isChineseLanguage(language);
+  if (elapsed < 60_000) return chinese ? "刚刚" : "just now";
+  if (elapsed < 60 * 60_000) {
+    const minutes = Math.max(1, Math.floor(elapsed / 60_000));
+    return chinese ? `${minutes} 分钟前` : `${minutes}m ago`;
+  }
+  if (elapsed < 24 * 60 * 60_000) {
+    const hours = Math.max(1, Math.floor(elapsed / (60 * 60_000)));
+    return chinese ? `${hours} 小时前` : `${hours}h ago`;
+  }
+  return new Date(timestamp).toLocaleDateString(defaultLocaleForLanguage(language), { month: "short", day: "numeric" });
 }
 
 const REVIEW_GATE_MAX_FILES = 80;
@@ -4141,6 +4230,10 @@ const EN = {
   searchOpenResult: "Open result",
   searchIndexStatus: "Index {indexed}/{total}",
   searchLoadedSession: "Session loaded",
+  searchHistory: "Recent searches",
+  searchHistoryEmpty: "No search history yet",
+  searchHistoryClear: "Clear search history",
+  searchHistoryRemove: "Remove from search history",
   finalConclusionFallback: "{summary}",
   finalAnswerFormatPrompt: "For implementation/change/tool tasks, do not write a \"Final answer\" heading and do not write elapsed time, token counts, character counts, or a changed-files section; Cancip appends those programmatically. Before closing, silently compare the original user request with actual actions, changed targets, tool readback, and any visible Plan todos; do not show this checklist. If a model-created Plan exists, keep its exact order and answer with matching numbered items, one concrete result, verification, or exact blocker per item. Do not mark complete while a Plan item is still unresolved. If no Plan exists, lead with the concrete result; use natural short sentences for one or two facts and a compact numbered list for three or more. If the user supplied a required answer template or the current context clearly contains one, use that template and keep only filled useful fields. Include only facts that exist: completed actions, actual verification, a concrete blocker, or a newly stored rule. Omit empty, none, not-applicable, unchanged, unread, hypothetical, and generic completion statements; do not list read or changed files in the prose. Compress wording without losing facts: state each fact once, remove filler, pleasantries, and hedging, but preserve exact technical terms, commands, code, and errors; use full grammar for safety warnings and ordered irreversible steps. Do not explain hidden reasoning or process. If more tool work is possible, continue with one cancip-action instead of closing. Every terminal final reply must include one to three short, concrete model-written choices in the same hidden cancip-choices comment, normally three. Each choice must name an object, file, feature, panel, model, or action from the request or result. Keep tool details folded; never expose raw action JSON.",
   emptyApiReply: "The API returned an empty response.",
@@ -4212,6 +4305,18 @@ const EN = {
   documentPreview: "Preview",
   documentReading: "Reading",
   documentMarkdown: "Markdown",
+  documentArchiveRoot: "Archive",
+  documentArchiveFilter: "Filter files in this archive",
+  documentArchiveFileCount: "{count} files",
+  documentArchiveEmpty: "No files in this folder",
+  documentArchiveBack: "Back to archive folder",
+  documentArchiveOpen: "Open inside workbench",
+  documentArchiveEdit: "Edit archive entry",
+  documentArchiveSave: "Save into archive",
+  documentArchiveDiscard: "Discard entry changes",
+  documentArchiveDirty: "Save or discard the current archive entry changes first.",
+  documentArchiveReadOnly: "This entry is read-only in the current archive format.",
+  documentArchiveSaved: "Saved {path} inside the archive",
   documentNoteDrawText: "NoteDraw text",
   documentEdit: "Edit",
   documentReload: "Reload source",
@@ -5205,6 +5310,10 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     searchOpenResult: "打开结果",
     searchIndexStatus: "索引 {indexed}/{total}",
     searchLoadedSession: "已加载会话",
+    searchHistory: "最近搜索",
+    searchHistoryEmpty: "还没有搜索历史",
+    searchHistoryClear: "清空搜索历史",
+    searchHistoryRemove: "从搜索历史移除",
     finalConclusionFallback: "{summary}",
     finalAnswerFormatPrompt: "实现、改动、工具类最终回答不要写“最终结论”标题，也不要写耗时、token 数、字数或改动文件模块；这些由 Cancip 程序化追加。收尾前在内部把用户原要求、实际动作、改动目标、工具读回结果和计划面板待办逐项核对一致，但不要把核对清单写进正文。模型已经建立计划时，最终回答必须保持计划原顺序，用对应序号逐项写清具体结果、验证或精确阻塞；仍有可推进的未完成项时不得标记完成。没有计划时，开头直接给具体结果：如果用户给了必用模板，或当前上下文明确有模板，就按模板填写且只保留有用字段；否则一两项有效信息用自然短句，三项以上用精简编号。只写真实存在的干货：已完成动作、实际验证、具体阻塞或新增规则。空项、无、未涉及、未改动、仅读取、假设和“已完成你的请求”之类套话全部省略；正文不要列读取或改动文件。压缩表达但不能丢事实：每个事实只说一次，删除客套、填充词和犹豫措辞，保留准确术语、命令、代码和原始错误；安全警告及顺序敏感的不可逆步骤使用完整语法。不要展示隐藏思维链。如果还能继续用工具推进，就继续输出一个 cancip-action，不要提前收尾。每条终态最终回复必须在同一回复的隐藏 cancip-choices 注释中生成一到三个具体推荐，通常三个；每项必须带上原问题或最终结果里的具体对象、文件、功能、面板、模型或动作，正文不显示推荐列表。工具细节留在折叠过程，不暴露原始 action JSON。",
     emptyApiReply: "API 返回了空回复。",
@@ -5273,6 +5382,18 @@ const I18N: Record<Language, Partial<Record<I18nKey, string>>> = {
     documentPreview: "预览",
     documentReading: "阅读",
     documentMarkdown: "Markdown",
+    documentArchiveRoot: "压缩包",
+    documentArchiveFilter: "筛选压缩包内文件",
+    documentArchiveFileCount: "{count} 个文件",
+    documentArchiveEmpty: "当前文件夹没有文件",
+    documentArchiveBack: "返回压缩包文件夹",
+    documentArchiveOpen: "在当前工作台打开",
+    documentArchiveEdit: "编辑压缩包内文件",
+    documentArchiveSave: "保存回压缩包",
+    documentArchiveDiscard: "放弃内部文件改动",
+    documentArchiveDirty: "请先保存或放弃当前压缩包内部文件的改动。",
+    documentArchiveReadOnly: "当前压缩格式下此文件为只读。",
+    documentArchiveSaved: "已保存压缩包内文件：{path}",
     documentNoteDrawText: "NoteDraw文字",
     documentEdit: "编辑",
     documentReload: "重新读取原文件",
@@ -8844,6 +8965,8 @@ export default class CancipPlugin extends Plugin {
   private automationRunnerLeaf: WorkspaceLeaf | null = null;
   private lastContentWorkspaceLeaf: WorkspaceLeaf | null = null;
   private automationRunnerCleanupTimer: number | null = null;
+  private vaultSearchHistoryCache: VaultSearchHistoryEntry[] | null = null;
+  private vaultSearchHistoryWriteQueue: Promise<void> = Promise.resolve();
   private personalizationCache: PersonalizationCache | null = null;
   private personalizationUsage: PersonalizationUsageLedger = emptyPersonalizationUsageLedger();
   private personalizationUsageLoaded = false;
@@ -15104,6 +15227,78 @@ export default class CancipPlugin extends Plugin {
     } catch (error) {
       console.warn("Cancip score state load failed", error);
       this.scoreState = emptyScoreState();
+    }
+  }
+
+  async vaultSearchHistory(): Promise<VaultSearchHistoryEntry[]> {
+    await this.vaultSearchHistoryWriteQueue;
+    if (this.vaultSearchHistoryCache) return this.vaultSearchHistoryCache.map((entry) => ({ ...entry }));
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!(await adapter.exists(VAULT_SEARCH_HISTORY_PATH))) {
+        this.vaultSearchHistoryCache = [];
+        return [];
+      }
+      const parsed = normalizeVaultSearchHistory(JSON.parse(await adapter.read(VAULT_SEARCH_HISTORY_PATH)) as unknown);
+      this.vaultSearchHistoryCache = parsed;
+      return parsed.map((entry) => ({ ...entry }));
+    } catch (error) {
+      console.warn("Cancip search history read failed", error);
+      this.vaultSearchHistoryCache = [];
+      return [];
+    }
+  }
+
+  async rememberVaultSearch(entry: Omit<VaultSearchHistoryEntry, "searchedAt">): Promise<VaultSearchHistoryEntry[]> {
+    const query = entry.query.replace(/\s+/g, " ").trim();
+    if (!query) return await this.vaultSearchHistory();
+    return await this.mutateVaultSearchHistory((current) => [
+      {
+        ...entry,
+        query: trimContext(query, 240),
+        searchedAt: new Date().toISOString()
+      },
+      ...current.filter((candidate) => candidate.query.toLocaleLowerCase() !== query.toLocaleLowerCase())
+    ].slice(0, VAULT_SEARCH_HISTORY_LIMIT));
+  }
+
+  async removeVaultSearchHistory(query: string): Promise<VaultSearchHistoryEntry[]> {
+    const key = query.trim().toLocaleLowerCase();
+    return await this.mutateVaultSearchHistory((current) => current.filter((entry) => entry.query.toLocaleLowerCase() !== key));
+  }
+
+  async clearVaultSearchHistory(): Promise<VaultSearchHistoryEntry[]> {
+    return await this.mutateVaultSearchHistory(() => []);
+  }
+
+  private async mutateVaultSearchHistory(
+    mutate: (current: VaultSearchHistoryEntry[]) => VaultSearchHistoryEntry[]
+  ): Promise<VaultSearchHistoryEntry[]> {
+    let result: VaultSearchHistoryEntry[] = [];
+    const operation = this.vaultSearchHistoryWriteQueue.then(async () => {
+      const current = this.vaultSearchHistoryCache ?? await this.readVaultSearchHistoryUnqueued();
+      result = normalizeVaultSearchHistory({ entries: mutate(current) });
+      const adapter = this.app.vault.adapter;
+      await ensureFolder(adapter, CANCIP_CONFIG_DIR);
+      const payload = `${JSON.stringify({ schemaVersion: 1, updatedAt: new Date().toISOString(), entries: result }, null, 2)}\n`;
+      await adapter.write(VAULT_SEARCH_HISTORY_PATH, payload);
+      const verified = normalizeVaultSearchHistory(JSON.parse(await adapter.read(VAULT_SEARCH_HISTORY_PATH)) as unknown);
+      if (JSON.stringify(verified) !== JSON.stringify(result)) throw new Error("Search history readback mismatch");
+      this.vaultSearchHistoryCache = verified;
+      result = verified;
+    });
+    this.vaultSearchHistoryWriteQueue = operation.catch(() => undefined);
+    await operation;
+    return result.map((entry) => ({ ...entry }));
+  }
+
+  private async readVaultSearchHistoryUnqueued(): Promise<VaultSearchHistoryEntry[]> {
+    try {
+      const adapter = this.app.vault.adapter;
+      if (!(await adapter.exists(VAULT_SEARCH_HISTORY_PATH))) return [];
+      return normalizeVaultSearchHistory(JSON.parse(await adapter.read(VAULT_SEARCH_HISTORY_PATH)) as unknown);
+    } catch {
+      return [];
     }
   }
 
@@ -26706,6 +26901,54 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     this.invalidateDocumentSnapshot(file.path);
   }
 
+  async loadDocumentArchiveEntry(file: TFile, path: string): Promise<DocumentArchiveEntryContent> {
+    if (documentFormatKind(file) !== "archive") throw new Error("The active file is not an archive");
+    const source = new Uint8Array(await this.app.vault.readBinary(file));
+    const warnings: string[] = [];
+    const archive = documentArchiveSnapshot(file, source, warnings);
+    const normalized = normalizeDocumentArchiveEntryPath(path);
+    const entry = archive.entries.find((candidate) => candidate.path === normalized);
+    if (!entry) throw new Error("Archive entry was not found");
+    const bytes = await extractDocumentArchiveEntryBytes(file, source, normalized, warnings);
+    const declaredText = documentArchiveEntryDeclaredText(normalized);
+    const decoded = decodeDocumentText(bytes, declaredText);
+    const previewKind = entry.previewKind === "binary" && decoded.textual ? "text" : entry.previewKind;
+    const textAvailable = decoded.available && decoded.textual;
+    return {
+      ...entry,
+      previewKind,
+      editable: archive.editable && textAvailable,
+      bytes,
+      mimeType: mimeTypeForPath(normalized),
+      text: textAvailable ? decoded.text : "",
+      textAvailable,
+      encoding: decoded.encoding,
+      hasBom: decoded.hasBom
+    };
+  }
+
+  async saveDocumentArchiveEntry(file: TFile, entry: DocumentArchiveEntryContent, text: string): Promise<void> {
+    if (!entry.editable || !entry.textAvailable) throw new Error("This archive entry is read-only");
+    const original = new Uint8Array(await this.app.vault.readBinary(file));
+    const encoded = encodeDocumentText(text, entry.encoding, entry.hasBom).bytes;
+    const output = replaceDocumentArchiveEntryBytes(file, original, entry.path, encoded);
+    const outputPayload = output.buffer.slice(output.byteOffset, output.byteOffset + output.byteLength) as ArrayBuffer;
+    try {
+      await this.app.vault.modifyBinary(file, outputPayload);
+      this.invalidateDocumentSnapshot(file.path);
+      const verified = await this.loadDocumentArchiveEntry(file, entry.path);
+      if (verified.bytes.byteLength !== encoded.byteLength
+        || verified.bytes.some((value, index) => value !== encoded[index])) {
+        throw new Error("Archive entry save verification failed");
+      }
+    } catch (error) {
+      const rollback = original.buffer.slice(original.byteOffset, original.byteOffset + original.byteLength) as ArrayBuffer;
+      await this.app.vault.modifyBinary(file, rollback).catch(() => undefined);
+      this.invalidateDocumentSnapshot(file.path);
+      throw error;
+    }
+  }
+
   private async documentPersistentEditPath(sourcePath: string): Promise<string> {
     const digest = await sha256Text(normalizePath(sourcePath));
     return `${DOCUMENT_PERSISTENT_EDITS_DIR}/${digest}.json`;
@@ -27045,6 +27288,15 @@ class CancipDocumentWorkbenchView extends FileView {
   private nativeNoteDrawController: NoteDrawWorkbenchController | null = null;
   private rawSourceAutosaveTimer: number | null = null;
   private rawSourceSaveQueue: Promise<void> = Promise.resolve();
+  private archiveFolderPath = "";
+  private archiveFilter = "";
+  private archiveEntryPath = "";
+  private archiveEntryContent: DocumentArchiveEntryContent | null = null;
+  private archiveEntryLoading = false;
+  private archiveEntryEditMode = false;
+  private archiveEntryBuffer = "";
+  private archiveEntryDirty = false;
+  private archiveEntryObjectUrl = "";
 
   constructor(
     leaf: WorkspaceLeaf,
@@ -27099,6 +27351,7 @@ class CancipDocumentWorkbenchView extends FileView {
   }
 
   async onLoadFile(file: TFile): Promise<void> {
+    if (this.filePath !== file.path) this.clearArchiveWorkbenchState();
     this.filePath = file.path;
     await this.loadAndRender();
   }
@@ -27116,6 +27369,7 @@ class CancipDocumentWorkbenchView extends FileView {
     this.documentSearchOpen = false;
     this.documentSearchQuery = "";
     this.documentSearchIndex = 0;
+    this.clearArchiveWorkbenchState();
   }
 
   async onClose(): Promise<void> {
@@ -27126,6 +27380,7 @@ class CancipDocumentWorkbenchView extends FileView {
     }
     this.loadGeneration += 1;
     this.clearNoteDrawOverlay();
+    this.clearArchiveWorkbenchState();
     this.noteDrawMarkdownEditMode = false;
     delete this.contentEl.dataset.url;
     delete this.contentEl.dataset.noteDrawSourcePath;
@@ -27143,7 +27398,10 @@ class CancipDocumentWorkbenchView extends FileView {
 
   async openFile(file: TFile, mode: DocumentWorkbenchMode = this.plugin.settings.documentWorkbenchDefaultMode): Promise<void> {
     const changed = this.filePath !== file.path;
-    if (changed) this.noteDrawMarkdownEditMode = false;
+    if (changed) {
+      this.noteDrawMarkdownEditMode = false;
+      this.clearArchiveWorkbenchState();
+    }
     if (this.file?.path !== file.path) {
       const viewState = this.leaf.getViewState();
       await this.leaf.setViewState({
@@ -27658,6 +27916,24 @@ class CancipDocumentWorkbenchView extends FileView {
     this.noteDrawTextStrokes = [];
   }
 
+  private clearArchiveEntryObjectUrl(): void {
+    if (!this.archiveEntryObjectUrl) return;
+    URL.revokeObjectURL(this.archiveEntryObjectUrl);
+    this.archiveEntryObjectUrl = "";
+  }
+
+  private clearArchiveWorkbenchState(): void {
+    this.clearArchiveEntryObjectUrl();
+    this.archiveFolderPath = "";
+    this.archiveFilter = "";
+    this.archiveEntryPath = "";
+    this.archiveEntryContent = null;
+    this.archiveEntryLoading = false;
+    this.archiveEntryEditMode = false;
+    this.archiveEntryBuffer = "";
+    this.archiveEntryDirty = false;
+  }
+
   private clearNoteDrawMarkdownEditBridge(): void {
     this.noteDrawMarkdownEditCleanup?.();
     this.noteDrawMarkdownEditCleanup = null;
@@ -27763,9 +28039,343 @@ class CancipDocumentWorkbenchView extends FileView {
     });
   }
 
+  private archiveEntryIcon(kind: DocumentArchiveEntryPreviewKind): string {
+    return ({
+      markdown: "file-text",
+      html: "file-code-2",
+      text: "file-code",
+      pdf: "file-text",
+      image: "image",
+      audio: "audio-lines",
+      video: "video",
+      binary: "file"
+    } as const)[kind];
+  }
+
+  private archiveNavigationAllowed(): boolean {
+    if (!this.archiveEntryDirty) return true;
+    new Notice(this.plugin.t("documentArchiveDirty"));
+    return false;
+  }
+
+  private async renderArchiveWorkbench(parent: HTMLElement, snapshot: DocumentSnapshot): Promise<void> {
+    const archive = snapshot.archive;
+    parent.addClass("is-archive-browser");
+    if (!archive) {
+      const stage = this.createDocumentWorkbenchStage(parent, snapshot);
+      await MarkdownRenderer.render(this.app, this.currentMarkdown(), stage, snapshot.file.path, this);
+      return;
+    }
+    if (this.archiveEntryLoading) {
+      parent.createDiv({ cls: "obcc-document-loading", text: `${this.plugin.t("documentWorkbench")}...` });
+      return;
+    }
+    if (this.archiveEntryContent && this.archiveEntryPath) {
+      await this.renderArchiveEntry(parent, snapshot, this.archiveEntryContent);
+      return;
+    }
+    this.renderArchiveDirectory(parent, snapshot, archive);
+  }
+
+  private renderArchiveBreadcrumbs(parent: HTMLElement, archivePath = ""): void {
+    const breadcrumbs = parent.createDiv({ cls: "obcc-archive-breadcrumbs", attr: { "aria-label": this.plugin.t("documentArchiveRoot") } });
+    const root = breadcrumbs.createEl("button", {
+      cls: "obcc-archive-crumb",
+      attr: { type: "button", title: this.plugin.t("documentArchiveRoot") }
+    });
+    setIcon(root, "archive");
+    root.createSpan({ text: this.plugin.t("documentArchiveRoot") });
+    root.addEventListener("click", () => {
+      if (!this.archiveNavigationAllowed()) return;
+      this.archiveFolderPath = "";
+      this.archiveEntryPath = "";
+      this.archiveEntryContent = null;
+      void this.render();
+    });
+    let current = "";
+    for (const part of normalizeDocumentArchiveEntryPath(archivePath).split("/").filter(Boolean)) {
+      breadcrumbs.createSpan({ cls: "obcc-archive-crumb-separator", text: "/" });
+      current = current ? `${current}/${part}` : part;
+      const target = current;
+      const button = breadcrumbs.createEl("button", {
+        cls: "obcc-archive-crumb",
+        text: part,
+        attr: { type: "button", title: target }
+      });
+      button.addEventListener("click", () => {
+        if (!this.archiveNavigationAllowed()) return;
+        const entry = this.snapshot?.archive?.entries.find((candidate) => candidate.path === target);
+        if (entry) {
+          void this.openArchiveEntry(target);
+          return;
+        }
+        this.archiveFolderPath = target;
+        this.archiveEntryPath = "";
+        this.archiveEntryContent = null;
+        void this.render();
+      });
+    }
+  }
+
+  private renderArchiveDirectory(parent: HTMLElement, snapshot: DocumentSnapshot, archive: DocumentArchiveSnapshot): void {
+    const browser = parent.createDiv({ cls: "obcc-archive-browser" });
+    const navigation = browser.createDiv({ cls: "obcc-archive-navigation" });
+    this.renderArchiveBreadcrumbs(navigation, this.archiveFolderPath);
+    const tools = navigation.createDiv({ cls: "obcc-archive-tools" });
+    const filter = tools.createEl("input", {
+      cls: "obcc-archive-filter",
+      attr: {
+        type: "search",
+        placeholder: this.plugin.t("documentArchiveFilter"),
+        "aria-label": this.plugin.t("documentArchiveFilter"),
+        spellcheck: "false"
+      }
+    });
+    filter.value = this.archiveFilter;
+    filter.addEventListener("input", () => {
+      this.archiveFilter = filter.value;
+      this.renderArchiveDirectoryRows(browser, snapshot, archive);
+    });
+    tools.createSpan({ cls: "obcc-archive-count", text: this.plugin.t("documentArchiveFileCount", { count: archive.entries.length }) });
+    if (archive.warning) browser.createDiv({ cls: "obcc-archive-warning", text: archive.warning });
+    this.renderArchiveDirectoryRows(browser, snapshot, archive);
+  }
+
+  private renderArchiveDirectoryRows(parent: HTMLElement, snapshot: DocumentSnapshot, archive: DocumentArchiveSnapshot): void {
+    parent.querySelector(".obcc-archive-list")?.remove();
+    const list = parent.createDiv({ cls: "obcc-archive-list", attr: { role: "list" } });
+    const folder = normalizeDocumentArchiveEntryPath(this.archiveFolderPath);
+    const prefix = folder ? `${folder}/` : "";
+    const filter = this.archiveFilter.trim().toLocaleLowerCase();
+    const rows: Array<{ path: string; name: string; directory: boolean; entry?: DocumentArchiveEntry }> = [];
+    if (filter) {
+      for (const entry of archive.entries) {
+        if (!entry.path.toLocaleLowerCase().includes(filter)) continue;
+        rows.push({ path: entry.path, name: entry.path, directory: false, entry });
+      }
+    } else {
+      const folders = new Set<string>();
+      for (const entry of archive.entries) {
+        if (!entry.path.startsWith(prefix)) continue;
+        const relative = entry.path.slice(prefix.length);
+        if (!relative) continue;
+        const slash = relative.indexOf("/");
+        if (slash >= 0) {
+          const childName = relative.slice(0, slash);
+          const childPath = prefix ? `${folder}/${childName}` : childName;
+          if (!folders.has(childPath)) {
+            folders.add(childPath);
+            rows.push({ path: childPath, name: childName, directory: true });
+          }
+        } else {
+          rows.push({ path: entry.path, name: relative, directory: false, entry });
+        }
+      }
+    }
+    rows.sort((left, right) => Number(right.directory) - Number(left.directory) || left.name.localeCompare(right.name, undefined, { numeric: true }));
+    if (!rows.length) {
+      list.createDiv({ cls: "obcc-archive-empty", text: this.plugin.t("documentArchiveEmpty") });
+      return;
+    }
+    for (const row of rows) {
+      const button = list.createEl("button", {
+        cls: `obcc-archive-row${row.directory ? " is-folder" : ""}`,
+        attr: { type: "button", role: "listitem", title: row.path }
+      });
+      setIcon(button.createSpan({ cls: "obcc-archive-row-icon" }), row.directory ? "folder" : this.archiveEntryIcon(row.entry?.previewKind ?? "binary"));
+      const copy = button.createSpan({ cls: "obcc-archive-row-copy" });
+      copy.createSpan({ cls: "obcc-archive-row-name", text: row.name });
+      if (filter && row.path !== row.name) copy.createSpan({ cls: "obcc-archive-row-path", text: row.path });
+      if (row.entry) {
+        const meta = button.createSpan({ cls: "obcc-archive-row-meta" });
+        meta.createSpan({ text: formatFileSize(row.entry.size) });
+        if (row.entry.encrypted) setIcon(meta.createSpan({ attr: { title: this.plugin.t("documentArchiveReadOnly") } }), "lock-keyhole");
+        else if (row.entry.editable) setIcon(meta.createSpan({ attr: { title: this.plugin.t("documentArchiveEdit") } }), "pencil");
+      } else {
+        setIcon(button.createSpan({ cls: "obcc-archive-row-chevron" }), "chevron-right");
+      }
+      button.addEventListener("click", () => {
+        if (!this.archiveNavigationAllowed()) return;
+        if (row.directory) {
+          this.archiveFolderPath = row.path;
+          this.archiveFilter = "";
+          void this.render();
+        } else {
+          void this.openArchiveEntry(row.path);
+        }
+      });
+    }
+    void snapshot;
+  }
+
+  private async openArchiveEntry(path: string): Promise<void> {
+    const snapshot = this.snapshot;
+    if (!snapshot || !this.archiveNavigationAllowed()) return;
+    this.clearArchiveEntryObjectUrl();
+    this.archiveEntryLoading = true;
+    this.archiveEntryPath = path;
+    this.archiveEntryContent = null;
+    await this.render();
+    try {
+      const content = await this.plugin.loadDocumentArchiveEntry(snapshot.file, path);
+      if (this.archiveEntryPath !== path) return;
+      this.archiveEntryContent = content;
+      this.archiveEntryBuffer = content.text;
+      this.archiveEntryDirty = false;
+      this.archiveEntryEditMode = false;
+      this.archiveFolderPath = vaultPathParent(path);
+    } catch (error) {
+      this.archiveEntryPath = "";
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.plugin.t("documentLoadFailed", { reason }));
+    } finally {
+      this.archiveEntryLoading = false;
+      await this.render();
+    }
+  }
+
+  private archiveEntryBack(): void {
+    if (!this.archiveNavigationAllowed()) return;
+    this.clearArchiveEntryObjectUrl();
+    this.archiveEntryPath = "";
+    this.archiveEntryContent = null;
+    this.archiveEntryEditMode = false;
+    this.archiveEntryBuffer = "";
+    this.archiveEntryDirty = false;
+    void this.render();
+  }
+
+  private async renderArchiveEntry(parent: HTMLElement, snapshot: DocumentSnapshot, content: DocumentArchiveEntryContent): Promise<void> {
+    const entry = parent.createDiv({ cls: "obcc-archive-entry" });
+    const navigation = entry.createDiv({ cls: "obcc-archive-entry-navigation" });
+    const back = navigation.createEl("button", {
+      cls: "clickable-icon obcc-archive-back",
+      attr: { type: "button", title: this.plugin.t("documentArchiveBack"), "aria-label": this.plugin.t("documentArchiveBack") }
+    });
+    setIcon(back, "arrow-left");
+    back.addEventListener("click", () => this.archiveEntryBack());
+    this.renderArchiveBreadcrumbs(navigation, content.path);
+    const actions = navigation.createDiv({ cls: "obcc-archive-entry-actions" });
+    if (content.editable) {
+      const edit = actions.createEl("button", {
+        cls: `clickable-icon${this.archiveEntryEditMode ? " is-active" : ""}`,
+        attr: { type: "button", title: this.plugin.t("documentArchiveEdit"), "aria-label": this.plugin.t("documentArchiveEdit") }
+      });
+      setIcon(edit, "pencil");
+      edit.addEventListener("click", () => {
+        this.archiveEntryEditMode = !this.archiveEntryEditMode;
+        void this.render();
+      });
+      if (this.archiveEntryDirty) {
+        const discard = actions.createEl("button", {
+          cls: "clickable-icon",
+          attr: { type: "button", title: this.plugin.t("documentArchiveDiscard"), "aria-label": this.plugin.t("documentArchiveDiscard") }
+        });
+        setIcon(discard, "undo-2");
+        discard.addEventListener("click", () => {
+          this.archiveEntryBuffer = content.text;
+          this.archiveEntryDirty = false;
+          this.archiveEntryEditMode = false;
+          void this.render();
+        });
+      }
+      const save = actions.createEl("button", {
+        cls: "clickable-icon",
+        attr: { type: "button", title: this.plugin.t("documentArchiveSave"), "aria-label": this.plugin.t("documentArchiveSave") }
+      });
+      setIcon(save, "save");
+      save.disabled = !this.archiveEntryDirty;
+      save.addEventListener("click", () => void this.saveArchiveEntry());
+    } else {
+      const readonly = actions.createSpan({ cls: "obcc-archive-readonly", attr: { title: this.plugin.t("documentArchiveReadOnly") } });
+      setIcon(readonly, "lock-keyhole");
+    }
+    const meta = entry.createDiv({ cls: "obcc-archive-entry-meta" });
+    meta.createSpan({ text: formatFileSize(content.size) });
+    meta.createSpan({ text: content.previewKind.toUpperCase() });
+    const surface = entry.createDiv({ cls: `obcc-archive-entry-surface is-${content.previewKind}` });
+    if (this.archiveEntryEditMode && content.editable) {
+      const textarea = surface.createEl("textarea", {
+        cls: "obcc-archive-entry-editor",
+        attr: { spellcheck: "false", "aria-label": this.plugin.t("documentArchiveEdit") }
+      });
+      textarea.value = this.archiveEntryBuffer;
+      textarea.addEventListener("input", () => {
+        this.archiveEntryBuffer = textarea.value;
+        this.archiveEntryDirty = textarea.value !== content.text;
+        const save = this.contentEl.querySelector<HTMLButtonElement>('.obcc-archive-entry-actions button[aria-label="' + this.plugin.t("documentArchiveSave") + '"]');
+        if (save) save.disabled = !this.archiveEntryDirty;
+      });
+      textarea.addEventListener("keydown", (event) => {
+        if (event.key.toLowerCase() !== "s" || (!event.ctrlKey && !event.metaKey)) return;
+        event.preventDefault();
+        if (this.archiveEntryDirty) void this.saveArchiveEntry();
+      });
+      return;
+    }
+    if (content.previewKind === "markdown") {
+      const stage = surface.createDiv({ cls: "obcc-archive-markdown markdown-preview-view" });
+      await MarkdownRenderer.render(this.app, content.text, stage, snapshot.file.path, this);
+      return;
+    }
+    if (content.previewKind === "html" && content.textAvailable) {
+      const iframe = surface.createEl("iframe", {
+        cls: "obcc-archive-frame",
+        attr: { title: content.path, sandbox: "allow-scripts allow-forms allow-pointer-lock allow-modals" }
+      });
+      iframe.srcdoc = isolatedHtmlPreview(this.app, snapshot.file, content.text);
+      return;
+    }
+    if (content.previewKind === "text" && content.textAvailable) {
+      const pre = surface.createEl("pre", { cls: "obcc-archive-text-preview" });
+      pre.createEl("code", { text: content.text });
+      return;
+    }
+    if (["image", "pdf", "audio", "video"].includes(content.previewKind)) {
+      this.clearArchiveEntryObjectUrl();
+      const payload = content.bytes.buffer.slice(content.bytes.byteOffset, content.bytes.byteOffset + content.bytes.byteLength) as ArrayBuffer;
+      this.archiveEntryObjectUrl = URL.createObjectURL(new Blob([payload], { type: content.mimeType || "application/octet-stream" }));
+      if (content.previewKind === "image") {
+        surface.createEl("img", { cls: "obcc-archive-media", attr: { src: this.archiveEntryObjectUrl, alt: content.path } });
+      } else if (content.previewKind === "pdf") {
+        surface.createEl("iframe", { cls: "obcc-archive-frame", attr: { src: this.archiveEntryObjectUrl, title: content.path } });
+      } else if (content.previewKind === "audio") {
+        surface.createEl("audio", { cls: "obcc-archive-media", attr: { src: this.archiveEntryObjectUrl, controls: "true", preload: "metadata" } });
+      } else {
+        surface.createEl("video", { cls: "obcc-archive-media", attr: { src: this.archiveEntryObjectUrl, controls: "true", preload: "metadata" } });
+      }
+      return;
+    }
+    surface.createDiv({ cls: "obcc-archive-binary", text: this.plugin.t("documentArchiveReadOnly") });
+  }
+
+  private async saveArchiveEntry(): Promise<void> {
+    const snapshot = this.snapshot;
+    const content = this.archiveEntryContent;
+    if (!snapshot || !content || !this.archiveEntryDirty) return;
+    try {
+      await this.plugin.saveDocumentArchiveEntry(snapshot.file, content, this.archiveEntryBuffer);
+      const reloaded = await this.plugin.loadDocumentArchiveEntry(snapshot.file, content.path);
+      this.snapshot = await this.plugin.loadDocumentSnapshot(snapshot.file);
+      this.archiveEntryContent = reloaded;
+      this.archiveEntryBuffer = reloaded.text;
+      this.archiveEntryDirty = false;
+      this.archiveEntryEditMode = false;
+      new Notice(this.plugin.t("documentArchiveSaved", { path: content.path }));
+      await this.render();
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      new Notice(this.plugin.t("documentLoadFailed", { reason }));
+    }
+  }
+
   private async renderPreview(parent: HTMLElement): Promise<void> {
     const snapshot = this.snapshot;
     if (!snapshot) return;
+    if (snapshot.kind === "archive") {
+      await this.renderArchiveWorkbench(parent, snapshot);
+      return;
+    }
     delete this.contentEl.dataset.url;
     this.contentEl.dataset.noteDrawSourcePath = snapshot.file.path;
     const stage = this.createDocumentWorkbenchStage(parent, snapshot);
@@ -45252,15 +45862,21 @@ class CancipView extends ItemView {
   private async searchVault(query: string, limit: number, options: UniversalSearchOptions = {}): Promise<SearchHit[]> {
     const normalizedQuery = query.trim();
     if (!normalizedQuery) return [];
+    const cancelled = options.cancelled ?? (() => false);
+    if (cancelled()) return [];
     const includeArchived = options.includeArchived === true;
     const includeConfigs = options.includeConfigs === true;
     const includeAttachments = options.includeAttachments !== false;
     const searchKinds = universalSearchKindsForQuery(normalizedQuery, { includeArchived, includeConfigs, includeAttachments });
     let index = await this.plugin.readUniversalSearchIndex(searchKinds);
+    if (cancelled()) return [];
     const hasUsableIndex = index.documents.some((document) => Boolean(document.bloom));
     if (!hasUsableIndex) {
+      if (cancelled()) return [];
       await this.plugin.rebuildUniversalSearchIndex(false);
+      if (cancelled()) return [];
       index = await this.plugin.readUniversalSearchIndex(searchKinds);
+      if (cancelled()) return [];
     } else if (!index.complete || index.documents.some((document) => !document.bloom)) {
       void this.plugin.rebuildUniversalSearchIndex(false).catch((error) => {
         console.warn("Cancip universal search background continuation failed", error);
@@ -45277,6 +45893,7 @@ class CancipView extends ItemView {
     );
     const queryIntent = parseSearchQueryIntent(normalizedQuery);
     const runQuery = async (routeQuery: string, route: "hard" | "soft"): Promise<SearchHit[]> => {
+      if (cancelled()) return [];
       const routeStartedAt = Date.now();
       const terms = universalSearchQueryTerms(routeQuery);
       const scoreTokens = uniqueStrings([...tokenize(routeQuery), ...terms]);
@@ -45299,6 +45916,7 @@ class CancipView extends ItemView {
         .slice(0, UNIVERSAL_SEARCH_MAX_QUERY_CANDIDATES);
       const hits: SearchHit[] = [];
       for (const candidate of candidates) {
+        if (cancelled()) return [];
         if (Date.now() - routeStartedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
         const document = candidate.document;
         let content = "";
@@ -45309,6 +45927,7 @@ class CancipView extends ItemView {
               VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
               "search document read timed out"
             ));
+            if (cancelled()) return [];
           } catch {
             content = "";
           }
@@ -45338,6 +45957,7 @@ class CancipView extends ItemView {
       return hits;
     };
     const hardHits = await runQuery(normalizedQuery, "hard");
+    if (cancelled()) return [];
     const neededHardHits = Math.min(Math.max(1, limit), 4);
     const softQueries = uniqueStrings(
       (options.softQueries ?? [])
@@ -45349,27 +45969,36 @@ class CancipView extends ItemView {
     if (options.alwaysRunSoft || hardHits.length < neededHardHits) {
       const softStartedAt = Date.now();
       for (const softQuery of softQueries) {
+        if (cancelled()) return [];
         if (Date.now() - softStartedAt > VAULT_SEARCH_TIME_BUDGET_MS * 2) break;
         softHits.push(...await runQuery(softQuery, "soft"));
       }
     }
+    if (cancelled()) return [];
     const fallbackQuery = uniqueStrings([normalizedQuery, ...softQueries]).join(" ");
     const onDemandStartedAt = Date.now();
-    const onDemandHits = options.alwaysRunOnDemand || !index.complete || unindexedPaths.size > 0 || hardHits.length + softHits.length < neededHardHits
-      ? await this.onDemandVaultSearchHits(
+    let onDemandHits: SearchHit[] = [];
+    if (options.alwaysRunOnDemand || !index.complete || unindexedPaths.size > 0 || hardHits.length + softHits.length < neededHardHits) {
+      onDemandHits = await this.onDemandVaultSearchHits(
           fallbackQuery,
           Math.max(limit, 8),
           onDemandStartedAt,
           { includeArchived, includeConfigs, includeAttachments },
-          unindexedPaths
-        )
-      : [];
-    const attachmentHits = includeAttachments && (options.alwaysRunAttachments || hardHits.length + softHits.length + onDemandHits.length < neededHardHits)
-      ? await this.attachmentContentSearchHits(fallbackQuery, Math.max(limit, 8), Date.now())
-      : [];
-    const ragHits = options.includeRag !== false && (softQueries.length > 0 || hardHits.length + softHits.length + onDemandHits.length < neededHardHits)
-      ? await this.lightweightRagHits(normalizedQuery, documents, softQueries, Math.max(limit, 8))
-      : [];
+          unindexedPaths,
+          cancelled
+        );
+    }
+    if (cancelled()) return [];
+    let attachmentHits: SearchHit[] = [];
+    if (includeAttachments && (options.alwaysRunAttachments || hardHits.length + softHits.length + onDemandHits.length < neededHardHits)) {
+      attachmentHits = await this.attachmentContentSearchHits(fallbackQuery, Math.max(limit, 8), Date.now());
+    }
+    if (cancelled()) return [];
+    let ragHits: SearchHit[] = [];
+    if (options.includeRag !== false && (softQueries.length > 0 || hardHits.length + softHits.length + onDemandHits.length < neededHardHits)) {
+      ragHits = await this.lightweightRagHits(normalizedQuery, documents, softQueries, Math.max(limit, 8));
+    }
+    if (cancelled()) return [];
     if (options.preserveRouteDuplicates) {
       const hardByPath = new Map<string, SearchHit>();
       const softByPath = new Map<string, SearchHit>();
@@ -45411,17 +46040,24 @@ class CancipView extends ItemView {
     hardHits: SearchHit[],
     includeConfigs: boolean,
     includeArchived: boolean,
-    onProgress?: (progress: AiSearchProgress) => void
+    onProgress?: (progress: AiSearchProgress) => void,
+    cancelled: () => boolean = () => false
   ): Promise<{ expansion: AiSearchExpansion; hits: SearchHit[] }> {
+    const emptyExpansion: AiSearchExpansion = { queries: [], concepts: [], styleSignals: [], intent: "" };
+    const cancelledResult = (expansion: AiSearchExpansion = emptyExpansion) => ({ expansion, hits: [] as SearchHit[] });
+    if (cancelled()) return cancelledResult();
     const index = await this.plugin.readUniversalSearchIndex();
+    if (cancelled()) return cancelledResult();
     const cacheKey = stableCacheKey({ query: query.normalize("NFKC").toLowerCase(), includeConfigs, includeArchived, updatedAt: index.updatedAt });
     const cached = this.aiVaultSearchCache.get(cacheKey);
     if (cached && Date.now() - cached.at < 10 * 60 * 1000) {
+      if (cancelled()) return cancelledResult(cached.expansion);
       const hits = cached.hits.map((hit) => ({ ...hit }));
       onProgress?.({ phase: "ranked", expansion: cached.expansion, hits });
       return { expansion: cached.expansion, hits };
     }
     const expansion = await this.expandAiVaultSearch(query, hardHits, index);
+    if (cancelled()) return cancelledResult(expansion);
     onProgress?.({ phase: "expansion", expansion, hits: hardHits });
     const expandedSignals = uniqueStrings([
       ...expansion.queries.slice(0, 4),
@@ -45437,11 +46073,14 @@ class CancipView extends ItemView {
       alwaysRunOnDemand: true,
       alwaysRunAttachments: true,
       includeRag: true,
-      preserveRouteDuplicates: true
+      preserveRouteDuplicates: true,
+      cancelled
     });
+    if (cancelled()) return cancelledResult(expansion);
     const candidates = this.aiVaultSearchCandidates(query, expansion, index, hardHits, expandedHits, includeConfigs);
     onProgress?.({ phase: "retrieval", expansion, hits: candidates });
     const hits = await this.rankAiVaultSearchCandidates(query, expansion, candidates);
+    if (cancelled()) return cancelledResult(expansion);
     onProgress?.({ phase: "ranked", expansion, hits });
     this.aiVaultSearchCache.set(cacheKey, { at: Date.now(), expansion, hits: hits.map((hit) => ({ ...hit })) });
     if (this.aiVaultSearchCache.size > 12) {
@@ -45621,8 +46260,10 @@ class CancipView extends ItemView {
     limit: number,
     startedAt: number,
     options: Required<Pick<UniversalSearchOptions, "includeArchived" | "includeConfigs" | "includeAttachments">>,
-    preferredPaths: ReadonlySet<string> = new Set<string>()
+    preferredPaths: ReadonlySet<string> = new Set<string>(),
+    cancelled: () => boolean = () => false
   ): Promise<SearchHit[]> {
+    if (cancelled()) return [];
     const tokens = uniqueStrings([...tokenize(query), ...universalSearchQueryTerms(query)]);
     if (!tokens.length) return [];
     const normalizedQuery = query.normalize("NFKC").toLowerCase().trim();
@@ -45667,9 +46308,11 @@ class CancipView extends ItemView {
     const hits: SearchHit[] = [];
     const batchSize = Platform.isMobileApp ? 8 : 16;
     for (let offset = 0; offset < files.length; offset += batchSize) {
+      if (cancelled()) return [];
       if (Date.now() - startedAt > VAULT_SEARCH_TIME_BUDGET_MS) break;
       const batch = files.slice(offset, offset + batchSize);
       const contents = await Promise.all(batch.map(async (item) => {
+        if (cancelled()) return "";
         const file = item.file;
         if (isContextTextFile(file)) return await this.app.vault.cachedRead(file).catch(() => "");
         if (!options.includeAttachments || (item.pathScore <= 0 && !item.preferred)) return "";
@@ -45684,7 +46327,9 @@ class CancipView extends ItemView {
           return "";
         }
       }));
+      if (cancelled()) return [];
       for (let index = 0; index < batch.length; index += 1) {
+        if (cancelled()) return [];
         const item = batch[index];
         const file = item.file;
         const content = contents[index] ?? "";
@@ -59056,6 +59701,7 @@ class CancipView extends ItemView {
       cls: "obcc-search-popover",
       attr: { role: "dialog", "aria-label": this.t("searchOpen") }
     });
+    let closed = false;
     this.searchPopoverEl = popover;
     const head = popover.createDiv({ cls: "obcc-search-head" });
     head.createEl("strong", { text: this.t("searchOpen") });
@@ -59066,9 +59712,76 @@ class CancipView extends ItemView {
     setIcon(close, "x");
     close.addEventListener("click", () => this.closeSearchPopover());
 
-    const input = popover.createEl("input", {
+    const inputRow = popover.createDiv({ cls: "obcc-search-input-row" });
+    const input = inputRow.createEl("input", {
       cls: "obcc-search-input",
       attr: { type: "search", placeholder: this.t("searchPlaceholder"), autocomplete: "off", spellcheck: "false" }
+    });
+    const historyToggle = inputRow.createEl("button", {
+      cls: "clickable-icon obcc-search-history-toggle",
+      attr: { type: "button", title: this.t("searchHistory"), "aria-label": this.t("searchHistory"), "aria-expanded": "false" }
+    });
+    setIcon(historyToggle, "history");
+    const historyPanel = popover.createDiv({ cls: "obcc-search-history" });
+    const historyHead = historyPanel.createDiv({ cls: "obcc-search-history-head" });
+    historyHead.createSpan({ text: this.t("searchHistory") });
+    const historyClear = historyHead.createEl("button", {
+      cls: "clickable-icon",
+      attr: { type: "button", title: this.t("searchHistoryClear"), "aria-label": this.t("searchHistoryClear") }
+    });
+    setIcon(historyClear, "trash-2");
+    const historyList = historyPanel.createDiv({ cls: "obcc-search-history-list" });
+    let historyOpen = false;
+    let searchHistory: VaultSearchHistoryEntry[] = [];
+    const setHistoryOpen = (open: boolean): void => {
+      historyOpen = open;
+      popover.toggleClass("has-search-history", open);
+      historyPanel.toggleClass("is-open", open);
+      historyToggle.setAttr("aria-expanded", String(open));
+    };
+    const renderSearchHistory = (entries: VaultSearchHistoryEntry[]): void => {
+      searchHistory = entries;
+      historyList.empty();
+      historyToggle.toggleClass("has-history", entries.length > 0);
+      if (!entries.length) {
+        historyList.createDiv({ cls: "obcc-search-history-empty", text: this.t("searchHistoryEmpty") });
+        return;
+      }
+      for (const entry of entries) {
+        const row = historyList.createDiv({ cls: "obcc-search-history-row" });
+        const apply = row.createEl("button", {
+          cls: "obcc-search-history-apply",
+          attr: { type: "button", title: entry.query }
+        });
+        setIcon(apply.createSpan({ cls: "obcc-search-history-icon" }), entry.ai ? "sparkles" : "search");
+        const copy = apply.createSpan({ cls: "obcc-search-history-copy" });
+        copy.createSpan({ cls: "obcc-search-history-query", text: entry.query });
+        copy.createSpan({ cls: "obcc-search-history-time", text: formatSearchHistoryTime(entry.searchedAt, this.plugin.language()) });
+        apply.addEventListener("click", () => {
+          input.value = entry.query;
+          aiEnabled.checked = entry.ai;
+          archived.checked = entry.includeArchived;
+          configs.checked = entry.includeConfigs;
+          setHistoryOpen(false);
+          void run();
+        });
+        const remove = row.createEl("button", {
+          cls: "clickable-icon obcc-search-history-remove",
+          attr: { type: "button", title: this.t("searchHistoryRemove"), "aria-label": this.t("searchHistoryRemove") }
+        });
+        setIcon(remove, "x");
+        remove.addEventListener("click", () => {
+          void this.plugin.removeVaultSearchHistory(entry.query).then((next) => {
+            if (this.searchPopoverEl === popover) renderSearchHistory(next);
+          });
+        });
+      }
+    };
+    historyToggle.addEventListener("click", () => setHistoryOpen(!historyOpen));
+    historyClear.addEventListener("click", () => {
+      void this.plugin.clearVaultSearchHistory().then((next) => {
+        if (this.searchPopoverEl === popover) renderSearchHistory(next);
+      });
     });
     const options = popover.createDiv({ cls: "obcc-search-options" });
     const aiLabel = options.createEl("label", { cls: "obcc-search-option" });
@@ -59203,6 +59916,9 @@ class CancipView extends ItemView {
     }, { passive: true });
     setActiveSearchCategory("all", false, false);
     let requestId = 0;
+    const isRequestActive = (expectedRequestId: number): boolean => (
+      !closed && expectedRequestId === requestId && this.searchPopoverEl === popover
+    );
     let timer: number | null = null;
     const scoredQueries = new Set<string>();
     const recordSearchScore = (query: string, outcome: ScoreEvent["outcome"], weight: number): void => {
@@ -59340,9 +60056,10 @@ class CancipView extends ItemView {
       if (!candidates.length) return;
       const terms = searchHighlightTerms(input.value, activeHighlightSignals);
       for (let offset = 0; offset < candidates.length; offset += 6) {
-        if (expectedRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!isRequestActive(expectedRequestId)) return;
         const batch = candidates.slice(offset, offset + 6);
         const enriched = (await Promise.all(batch.map(async (hit): Promise<SearchHit | null> => {
+          if (!isRequestActive(expectedRequestId)) return null;
           try {
             const content = redactSensitiveText(await withTimeout(
               this.plugin.universalSearchDocumentText(hit.path, hit.kind, 12000),
@@ -59355,7 +60072,7 @@ class CancipView extends ItemView {
             return null;
           }
         }))).filter((hit): hit is SearchHit => Boolean(hit));
-        if (expectedRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!isRequestActive(expectedRequestId)) return;
         if (enriched.length) {
           const byKey = new Map(enriched.map((hit) => [hitKey(hit), hit]));
           keywordHits = keywordHits.map((hit) => {
@@ -59378,6 +60095,15 @@ class CancipView extends ItemView {
         renderSearchPages([]);
         return;
       }
+      setHistoryOpen(false);
+      void this.plugin.rememberVaultSearch({
+        query,
+        ai: aiEnabled.checked,
+        includeArchived: archived.checked,
+        includeConfigs: configs.checked
+      }).then((next) => {
+        if (this.searchPopoverEl === popover) renderSearchHistory(next);
+      });
       setSearchStatus("searching", this.t("searchSearching"));
       setAiExplanation("");
       activeHighlightSignals = [];
@@ -59389,15 +60115,16 @@ class CancipView extends ItemView {
           // evidence during semantic expansion. This keeps old Markdown body
           // matches visible without waiting for PDF or Office extraction.
           includeAttachments: !aiEnabled.checked || shouldSearchAttachmentsForQuery(query),
-          includeRag: false
+          includeRag: false,
+          cancelled: () => !isRequestActive(currentRequestId)
         };
         const fastHits = await this.fastIndexedVaultSearchHits(query, aiEnabled.checked ? 36 : 48, hardOptions);
-        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!isRequestActive(currentRequestId)) return;
         rememberKeywordHits(fastHits, true);
         renderSearchPages(visibleSearchHits());
         setSearchStatus("searching", searchStatusWithCount(this.t("searchSearching"), keywordHits.length));
         const hardHits = await this.searchVault(query, aiEnabled.checked ? 36 : 48, hardOptions);
-        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!isRequestActive(currentRequestId)) return;
         rememberKeywordHits(hardHits.filter((hit) => hit.route !== "soft"));
         const evidenceUpgradePromise = hydrateKeywordHitEvidence(currentRequestId);
         if (!aiEnabled.checked) {
@@ -59416,7 +60143,7 @@ class CancipView extends ItemView {
         renderSearchPages(visibleSearchHits());
         setSearchStatus("searching", searchStatusWithCount(this.t("searchSearching"), keywordHits.length));
         const aiSearch = await this.searchAiVault(query, exactHits, configs.checked, archived.checked, (progress) => {
-          if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+          if (!isRequestActive(currentRequestId)) return;
           activeHighlightSignals = uniqueStrings([
             ...progress.expansion.queries,
             ...progress.expansion.concepts,
@@ -59431,10 +60158,10 @@ class CancipView extends ItemView {
               ? (isChineseLanguage(this.plugin.language()) ? "正在检索 RAG 与相近主题" : "Retrieving RAG and related topics")
               : (isChineseLanguage(this.plugin.language()) ? "正在整理结果" : "Ranking results");
           setSearchStatus("searching", [this.t("searchSearching"), phase, this.t("hitCount", { count: visibleHits.length })].join(" · "));
-        });
-        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        }, () => !isRequestActive(currentRequestId));
+        if (!isRequestActive(currentRequestId)) return;
         await evidenceUpgradePromise;
-        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!isRequestActive(currentRequestId)) return;
         const aiHits = aiSearch.hits;
         rememberSemanticHits(aiHits);
         const visibleHits = visibleSearchHits();
@@ -59451,7 +60178,7 @@ class CancipView extends ItemView {
         setSearchStatus("complete", searchStatusWithCount(this.t("searchCompleted"), visibleHits.length));
         recordSearchScore(query, "use", 0.7);
       } catch (error) {
-        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        if (!isRequestActive(currentRequestId)) return;
         const reason = error instanceof Error ? error.message : String(error);
         setSearchStatus("error", reason);
         setAiExplanation(semanticHits.length ? reason : "");
@@ -59462,6 +60189,7 @@ class CancipView extends ItemView {
     const schedule = (): void => {
       if (timer !== null) window.clearTimeout(timer);
       if (input.value.trim()) {
+        setHistoryOpen(false);
         setSearchStatus("searching", this.t("searchSearching"));
         setAiExplanation("");
       } else {
@@ -59473,6 +60201,9 @@ class CancipView extends ItemView {
       }, 160);
     };
     input.addEventListener("input", schedule);
+    input.addEventListener("focus", () => {
+      if (!input.value.trim() && searchHistory.length) setHistoryOpen(true);
+    });
     input.addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -59490,11 +60221,18 @@ class CancipView extends ItemView {
     viewWindow.addEventListener("resize", reposition);
     viewWindow.visualViewport?.addEventListener("resize", reposition);
     this.searchPopoverCleanup = () => {
+      closed = true;
+      requestId += 1;
       if (timer !== null) viewWindow.clearTimeout(timer);
       viewWindow.removeEventListener("resize", reposition);
       viewWindow.visualViewport?.removeEventListener("resize", reposition);
     };
     this.positionSearchPopover();
+    void this.plugin.vaultSearchHistory().then((entries) => {
+      if (this.searchPopoverEl !== popover) return;
+      renderSearchHistory(entries);
+      if (!input.value.trim() && entries.length) setHistoryOpen(true);
+    });
     void this.plugin.universalSearchIndexStatus().then((index) => {
       if (this.searchPopoverEl === popover && !input.value.trim()) {
         setSearchStatus("idle", this.t("searchIndexStatus", { indexed: index.indexed, total: index.total }));
@@ -79871,6 +80609,11 @@ function suggestOcrFileBaseName(entry: OcrIndexEntry, fallback: string): string 
 const DOCUMENT_PARSE_MAX_BYTES = 48 * 1024 * 1024;
 const DOCUMENT_MARKDOWN_MAX_CHARS = 900000;
 const DOCUMENT_RAW_SOURCE_MAX_BYTES = 16 * 1024 * 1024;
+const DOCUMENT_ARCHIVE_ENTRY_PREVIEW_MAX_BYTES = 24 * 1024 * 1024;
+const DOCUMENT_ARCHIVE_EDIT_MAX_BYTES = 64 * 1024 * 1024;
+const DOCUMENT_ARCHIVE_EDIT_MAX_EXPANDED_BYTES = 192 * 1024 * 1024;
+const DOCUMENT_ARCHIVE_EDIT_MAX_ENTRIES = 4000;
+const VAULT_SEARCH_HISTORY_LIMIT = 40;
 const DOCUMENT_HTML_PREVIEW_CHANNEL = "cancip-html-preview-v1";
 const DOCUMENT_TEXT_EXTENSIONS = new Set([
   "md", "markdown", "txt", "log", "json", "jsonl", "ndjson", "csv", "tsv", "yaml", "yml", "toml", "xml",
@@ -80075,8 +80818,57 @@ function documentFormatKind(file: TFile): DocumentFormatKind {
   if (DOCUMENT_AUDIO_EXTENSIONS.has(extension)) return "audio";
   if (DOCUMENT_VIDEO_EXTENSIONS.has(extension)) return "video";
   if (DOCUMENT_TEXT_EXTENSIONS.has(extension) || DOCUMENT_TEXT_EXTENSIONS.has(file.name.toLowerCase())) return "text";
-  if (["zip", "epub", "odt", "ods", "odp"].includes(extension)) return "archive";
+  if (["zip", "epub", "odt", "ods", "odp", "tar", "gz", "tgz", "rar", "7z", "bz2", "xz"].includes(extension)) return "archive";
   return "binary";
+}
+
+function documentArchiveFormat(file: TFile): DocumentArchiveFormat {
+  const name = file.name.toLowerCase();
+  const extension = file.extension.toLowerCase();
+  if (["zip", "epub", "odt", "ods", "odp"].includes(extension)) return "zip";
+  if (extension === "tar") return "tar";
+  if (extension === "tgz" || name.endsWith(".tar.gz")) return "tar-gzip";
+  if (extension === "gz") return "gzip";
+  if (extension === "rar") return "rar";
+  if (extension === "7z") return "7z";
+  return "unsupported";
+}
+
+function documentArchiveCanRebuild(file: TFile): boolean {
+  const format = documentArchiveFormat(file);
+  if (format === "zip") return file.extension.toLowerCase() === "zip";
+  return format === "tar" || format === "tar-gzip" || format === "gzip";
+}
+
+function documentArchiveEntryPreviewKind(path: string): DocumentArchiveEntryPreviewKind {
+  const normalized = normalizePath(path).toLowerCase();
+  const extension = normalized.split("/").pop()?.split(".").pop() ?? "";
+  if (extension === "md" || extension === "markdown") return "markdown";
+  if (["html", "htm", "xhtml", "svg"].includes(extension)) return "html";
+  if (extension === "pdf") return "pdf";
+  if (DOCUMENT_IMAGE_EXTENSIONS.has(extension)) return "image";
+  if (DOCUMENT_AUDIO_EXTENSIONS.has(extension)) return "audio";
+  if (DOCUMENT_VIDEO_EXTENSIONS.has(extension)) return "video";
+  if (DOCUMENT_TEXT_EXTENSIONS.has(extension)
+    || ["json", "jsonl", "ndjson", "csv", "tsv", "xml", "yaml", "yml", "toml", "ini", "conf", "log"].includes(extension)) return "text";
+  return "binary";
+}
+
+function documentArchiveEntryDeclaredText(path: string): boolean {
+  const kind = documentArchiveEntryPreviewKind(path);
+  return kind === "markdown" || kind === "html" || kind === "text";
+}
+
+function normalizeDocumentArchiveEntryPath(path: string): string {
+  const normalized = normalizePath(path.replace(/\\/g, "/")).replace(/^\/+/, "");
+  if (!normalized || /^[a-zA-Z]:/.test(normalized)) return "";
+  const parts: string[] = [];
+  for (const part of normalized.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") return "";
+    parts.push(part);
+  }
+  return parts.join("/");
 }
 
 function replaceUniqueDocumentTextValue(source: string, originalText: string, editedText: string, htmlEntities = false): string | null {
@@ -80289,11 +81081,12 @@ async function buildDocumentSnapshot(app: App, file: TFile): Promise<DocumentSna
   const buffer = await app.vault.readBinary(file);
   const bytes = new Uint8Array(buffer);
   let markdown = "";
+  let archive: DocumentArchiveSnapshot | undefined;
   if (kind === "pdf") {
     const slice = bytes.subarray(0, Math.min(bytes.byteLength, 8 * 1024 * 1024));
     const extracted = extractPdfTextFromBytes(slice, file.name, DOCUMENT_MARKDOWN_MAX_CHARS - 1000, warnings);
     markdown = `${documentEmbedMarkdown(file, kind, mimeType)}${extracted ? `\n\n## 提取文字\n\n${extracted}` : ""}`;
-  } else if (kind === "docx" || kind === "xlsx" || kind === "pptx" || kind === "archive") {
+  } else if (kind === "docx" || kind === "xlsx" || kind === "pptx") {
     const entries = readZipEntries(bytes, warnings);
     if (!entries.length) {
       warnings.push("ZIP central directory was not found.");
@@ -80304,10 +81097,10 @@ async function buildDocumentSnapshot(app: App, file: TFile): Promise<DocumentSna
       markdown = await extractXlsxMarkdown(entries, bytes, file, warnings);
     } else if (kind === "pptx") {
       markdown = await extractPptxMarkdown(entries, bytes, file, warnings);
-    } else {
-      const text = await extractZipText(entries, bytes, DOCUMENT_MARKDOWN_MAX_CHARS - 1000, warnings);
-      markdown = `${documentMetadataMarkdown(file, kind, mimeType)}${text ? `\n\n${text}` : "\n\n![[" + file.path + "]]"}`;
     }
+  } else if (kind === "archive") {
+    archive = documentArchiveSnapshot(file, bytes, warnings);
+    markdown = documentArchiveDirectoryMarkdown(file, archive, mimeType);
   } else {
     warnings.push(I18N.zh?.documentUnsupportedBinary || EN.documentUnsupportedBinary);
     markdown = documentEmbedMarkdown(file, kind, mimeType);
@@ -80333,7 +81126,8 @@ async function buildDocumentSnapshot(app: App, file: TFile): Promise<DocumentSna
     markdown: normalizedMarkdown,
     previewHtml: officePreview,
     editableSource: false,
-    warnings: uniqueStrings(warnings)
+    warnings: uniqueStrings(warnings),
+    archive
   };
 }
 
@@ -81281,6 +82075,7 @@ function readZipEntries(bytes: Uint8Array, warnings: string[]): ZipEntry[] {
   let cursor = directoryOffset;
   for (let index = 0; index < totalEntries && cursor + 46 <= bytes.length; index += 1) {
     if (readUint32(view, cursor) !== 0x02014b50) break;
+    const flags = readUint16(view, cursor + 8);
     const compression = readUint16(view, cursor + 10);
     const compressedSize = readUint32(view, cursor + 20);
     const uncompressedSize = readUint32(view, cursor + 24);
@@ -81288,15 +82083,23 @@ function readZipEntries(bytes: Uint8Array, warnings: string[]): ZipEntry[] {
     const extraLength = readUint16(view, cursor + 30);
     const commentLength = readUint16(view, cursor + 32);
     const localOffset = readUint32(view, cursor + 42);
-    const name = utf8Decode(bytes.subarray(cursor + 46, cursor + 46 + nameLength));
+    if (cursor + 46 + nameLength + extraLength + commentLength > bytes.length || localOffset + 30 > bytes.length) break;
+    const nameBytes = bytes.subarray(cursor + 46, cursor + 46 + nameLength);
+    const utf8Name = utf8Decode(nameBytes);
+    const fallbackName = decodeDocumentText(nameBytes, true).text;
+    const name = (flags & 0x0800) !== 0 || !utf8Name.includes("\ufffd") ? utf8Name : fallbackName || utf8Name;
     const localNameLength = readUint16(view, localOffset + 26);
     const localExtraLength = readUint16(view, localOffset + 28);
     const dataOffset = localOffset + 30 + localNameLength + localExtraLength;
-    if (name && !name.endsWith("/")) entries.push({ name, compression, compressedSize, uncompressedSize, dataOffset });
+    if (name && !name.endsWith("/") && dataOffset + compressedSize <= bytes.length) {
+      entries.push({ name, flags, compression, compressedSize, uncompressedSize, dataOffset });
+    }
     cursor += 46 + nameLength + extraLength + commentLength;
   }
   const unsupported = entries.filter((entry) => entry.compression !== 0 && entry.compression !== 8).length;
   if (unsupported) warnings.push(`${unsupported} ZIP entries use unsupported compression methods.`);
+  const encrypted = entries.filter((entry) => (entry.flags & 1) !== 0).length;
+  if (encrypted) warnings.push(`${encrypted} ZIP entries are encrypted and cannot be previewed.`);
   return entries;
 }
 
@@ -81305,6 +82108,10 @@ async function extractZipEntryText(entry: ZipEntry, bytes: Uint8Array, warnings:
 }
 
 async function extractZipEntryBytes(entry: ZipEntry, bytes: Uint8Array, warnings: string[]): Promise<Uint8Array> {
+  if ((entry.flags & 1) !== 0) {
+    warnings.push(`${entry.name}: encrypted ZIP entries are not supported`);
+    return new Uint8Array();
+  }
   const compressed = bytes.subarray(entry.dataOffset, entry.dataOffset + entry.compressedSize);
   if (entry.compression === 0) return compressed;
   if (entry.compression === 8) {
@@ -81317,6 +82124,244 @@ async function extractZipEntryBytes(entry: ZipEntry, bytes: Uint8Array, warnings
   }
   warnings.push(`${entry.name}: unsupported ZIP compression method ${entry.compression}`);
   return new Uint8Array();
+}
+
+function tarHeaderText(bytes: Uint8Array, offset: number, length: number): string {
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes.subarray(offset, offset + length)).replace(/\0.*$/s, "").trim();
+}
+
+function tarHeaderNumber(bytes: Uint8Array, offset: number, length: number): number {
+  const value = tarHeaderText(bytes, offset, length).replace(/[^0-7]/g, "");
+  return value ? Number.parseInt(value, 8) : 0;
+}
+
+function tarPaxPath(bytes: Uint8Array): string {
+  const text = utf8Decode(bytes);
+  for (const line of text.split("\n")) {
+    const value = line.replace(/^\d+\s+/, "");
+    if (value.startsWith("path=")) return value.slice(5).trim();
+  }
+  return "";
+}
+
+function readTarEntries(bytes: Uint8Array, warnings: string[]): TarEntry[] {
+  const entries: TarEntry[] = [];
+  let cursor = 0;
+  let pendingLongName = "";
+  let pendingPaxPath = "";
+  while (cursor + 512 <= bytes.byteLength) {
+    const header = bytes.subarray(cursor, cursor + 512);
+    if (header.every((value) => value === 0)) break;
+    const size = tarHeaderNumber(bytes, cursor + 124, 12);
+    const type = String.fromCharCode(bytes[cursor + 156] || 0);
+    const dataOffset = cursor + 512;
+    const spanEnd = dataOffset + Math.ceil(size / 512) * 512;
+    if (!Number.isFinite(size) || size < 0 || spanEnd > bytes.byteLength) {
+      warnings.push("TAR entry exceeds the archive boundary.");
+      break;
+    }
+    const rawName = tarHeaderText(bytes, cursor, 100);
+    const prefix = tarHeaderText(bytes, cursor + 345, 155);
+    const headerName = normalizeDocumentArchiveEntryPath(prefix ? `${prefix}/${rawName}` : rawName);
+    if (type === "L") {
+      pendingLongName = normalizeDocumentArchiveEntryPath(utf8Decode(bytes.subarray(dataOffset, dataOffset + size)).replace(/\0+$/, ""));
+    } else if (type === "x") {
+      pendingPaxPath = normalizeDocumentArchiveEntryPath(tarPaxPath(bytes.subarray(dataOffset, dataOffset + size)));
+    } else {
+      const name = pendingPaxPath || pendingLongName || headerName;
+      if (name && (type === "" || type === "\0" || type === "0" || type === "7")) {
+        entries.push({ name, size, type, headerOffset: cursor, dataOffset, spanEnd });
+      }
+      pendingLongName = "";
+      pendingPaxPath = "";
+    }
+    cursor = spanEnd;
+  }
+  return entries;
+}
+
+function writeTarOctal(header: Uint8Array, offset: number, length: number, value: number): void {
+  const digits = Math.max(0, Math.floor(value)).toString(8);
+  if (digits.length > length - 1) throw new Error("TAR entry is too large to encode safely");
+  header.fill(0, offset, offset + length);
+  const padded = digits.padStart(length - 1, "0");
+  for (let index = 0; index < padded.length; index += 1) header[offset + index] = padded.charCodeAt(index);
+}
+
+function concatenateDocumentBytes(parts: Uint8Array[]): Uint8Array {
+  const length = parts.reduce((sum, part) => sum + part.byteLength, 0);
+  const output = new Uint8Array(length);
+  let offset = 0;
+  for (const part of parts) {
+    output.set(part, offset);
+    offset += part.byteLength;
+  }
+  return output;
+}
+
+function replaceTarEntryBytes(bytes: Uint8Array, path: string, replacement: Uint8Array): Uint8Array {
+  const warnings: string[] = [];
+  const normalized = normalizeDocumentArchiveEntryPath(path);
+  const matches = readTarEntries(bytes, warnings).filter((entry) => normalizeDocumentArchiveEntryPath(entry.name) === normalized);
+  if (matches.length !== 1) throw new Error(matches.length ? "Archive entry path is ambiguous" : "Archive entry was not found");
+  const entry = matches[0];
+  const header = bytes.slice(entry.headerOffset, entry.dataOffset);
+  writeTarOctal(header, 124, 12, replacement.byteLength);
+  header.fill(0x20, 148, 156);
+  const checksum = header.reduce((sum, value) => sum + value, 0);
+  const checksumText = checksum.toString(8).padStart(6, "0");
+  for (let index = 0; index < 6; index += 1) header[148 + index] = checksumText.charCodeAt(index);
+  header[154] = 0;
+  header[155] = 0x20;
+  const padding = new Uint8Array((512 - replacement.byteLength % 512) % 512);
+  return concatenateDocumentBytes([
+    bytes.subarray(0, entry.headerOffset),
+    header,
+    replacement,
+    padding,
+    bytes.subarray(entry.spanEnd)
+  ]);
+}
+
+function documentArchiveSingleGzipEntryPath(file: TFile): string {
+  const name = file.name.replace(/\.gz$/i, "");
+  return normalizeDocumentArchiveEntryPath(name || file.basename || "content");
+}
+
+function documentArchiveSnapshot(file: TFile, bytes: Uint8Array, warnings: string[]): DocumentArchiveSnapshot {
+  const format = documentArchiveFormat(file);
+  const canRebuild = documentArchiveCanRebuild(file);
+  let entries: DocumentArchiveEntry[] = [];
+  if (format === "zip") {
+    entries = readZipEntries(bytes, warnings).flatMap((entry): DocumentArchiveEntry[] => {
+      const path = normalizeDocumentArchiveEntryPath(entry.name);
+      if (!path) return [];
+      const previewKind = documentArchiveEntryPreviewKind(path);
+      const encrypted = (entry.flags & 1) !== 0;
+      return [{
+        path,
+        size: entry.uncompressedSize,
+        compressedSize: entry.compressedSize,
+        previewKind,
+        editable: canRebuild && !encrypted && (entry.compression === 0 || entry.compression === 8) && documentArchiveEntryDeclaredText(path),
+        encrypted,
+        compression: entry.compression
+      }];
+    });
+  } else if (format === "tar" || format === "tar-gzip") {
+    try {
+      const tarBytes = format === "tar-gzip" ? gunzipSync(bytes) : bytes;
+      entries = readTarEntries(tarBytes, warnings).map((entry) => ({
+        path: entry.name,
+        size: entry.size,
+        compressedSize: entry.size,
+        previewKind: documentArchiveEntryPreviewKind(entry.name),
+        editable: canRebuild && documentArchiveEntryDeclaredText(entry.name)
+      }));
+    } catch (error) {
+      warnings.push(`Archive decompression failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } else if (format === "gzip") {
+    try {
+      const content = gunzipSync(bytes);
+      const path = documentArchiveSingleGzipEntryPath(file);
+      entries = [{
+        path,
+        size: content.byteLength,
+        compressedSize: bytes.byteLength,
+        previewKind: documentArchiveEntryPreviewKind(path),
+        editable: canRebuild && documentArchiveEntryDeclaredText(path)
+      }];
+    } catch (error) {
+      warnings.push(`GZIP decompression failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const editable = canRebuild;
+  const warning = format === "rar" || format === "7z"
+    ? `${format.toUpperCase()} content preview requires a compatible decompressor; the original archive remains untouched.`
+    : format === "unsupported"
+      ? "This archive format is read-only in the current runtime."
+      : undefined;
+  if (warning) warnings.push(warning);
+  return {
+    format,
+    entries: entries.sort((left, right) => left.path.localeCompare(right.path, undefined, { numeric: true })),
+    editable,
+    warning
+  };
+}
+
+async function extractDocumentArchiveEntryBytes(file: TFile, bytes: Uint8Array, path: string, warnings: string[]): Promise<Uint8Array> {
+  const format = documentArchiveFormat(file);
+  const normalized = normalizeDocumentArchiveEntryPath(path);
+  if (!normalized) throw new Error("Archive entry path is invalid");
+  if (format === "zip") {
+    const matches = readZipEntries(bytes, warnings).filter((entry) => normalizeDocumentArchiveEntryPath(entry.name) === normalized);
+    if (matches.length !== 1) throw new Error(matches.length ? "Archive entry path is ambiguous" : "Archive entry was not found");
+    if (matches[0].uncompressedSize > DOCUMENT_ARCHIVE_ENTRY_PREVIEW_MAX_BYTES) throw new Error("Archive entry is too large to preview safely");
+    return await extractZipEntryBytes(matches[0], bytes, warnings);
+  }
+  if (format === "tar" || format === "tar-gzip") {
+    const tarBytes = format === "tar-gzip" ? gunzipSync(bytes) : bytes;
+    const matches = readTarEntries(tarBytes, warnings).filter((entry) => normalizeDocumentArchiveEntryPath(entry.name) === normalized);
+    if (matches.length !== 1) throw new Error(matches.length ? "Archive entry path is ambiguous" : "Archive entry was not found");
+    if (matches[0].size > DOCUMENT_ARCHIVE_ENTRY_PREVIEW_MAX_BYTES) throw new Error("Archive entry is too large to preview safely");
+    return tarBytes.slice(matches[0].dataOffset, matches[0].dataOffset + matches[0].size);
+  }
+  if (format === "gzip") {
+    if (normalized !== documentArchiveSingleGzipEntryPath(file)) throw new Error("Archive entry was not found");
+    const output = gunzipSync(bytes);
+    if (output.byteLength > DOCUMENT_ARCHIVE_ENTRY_PREVIEW_MAX_BYTES) throw new Error("Archive entry is too large to preview safely");
+    return output;
+  }
+  throw new Error(`${format.toUpperCase()} entry preview is unavailable in this runtime`);
+}
+
+function replaceDocumentArchiveEntryBytes(file: TFile, bytes: Uint8Array, path: string, replacement: Uint8Array): Uint8Array {
+  if (bytes.byteLength > DOCUMENT_ARCHIVE_EDIT_MAX_BYTES) throw new Error("Archive is too large to rebuild safely");
+  const format = documentArchiveFormat(file);
+  if (!documentArchiveCanRebuild(file)) throw new Error(`${file.extension.toUpperCase()} containers are preview-only to preserve their package structure`);
+  const normalized = normalizeDocumentArchiveEntryPath(path);
+  if (!normalized) throw new Error("Archive entry path is invalid");
+  if (format === "zip") {
+    const warnings: string[] = [];
+    const entries = readZipEntries(bytes, warnings);
+    if (entries.length > DOCUMENT_ARCHIVE_EDIT_MAX_ENTRIES) throw new Error("Archive has too many entries to rebuild safely");
+    if (entries.reduce((sum, entry) => sum + entry.uncompressedSize, 0) > DOCUMENT_ARCHIVE_EDIT_MAX_EXPANDED_BYTES) {
+      throw new Error("Expanded archive is too large to rebuild safely");
+    }
+    if (entries.some((entry) => (entry.flags & 1) !== 0)) throw new Error("Encrypted ZIP archives cannot be safely rebuilt");
+    if (entries.some((entry) => entry.compression !== 0 && entry.compression !== 8)) throw new Error("ZIP uses an unsupported compression method");
+    const archive = unzipSync(bytes);
+    const keys = Object.keys(archive).filter((key) => normalizeDocumentArchiveEntryPath(key) === normalized);
+    if (keys.length !== 1) throw new Error(keys.length ? "Archive entry path is ambiguous" : "Archive entry was not found");
+    archive[keys[0]] = replacement;
+    return zipSync(archive, { level: 6 });
+  }
+  if (format === "tar") return replaceTarEntryBytes(bytes, normalized, replacement);
+  if (format === "tar-gzip") return gzipSync(replaceTarEntryBytes(gunzipSync(bytes), normalized, replacement), { level: 6 });
+  if (format === "gzip") {
+    if (normalized !== documentArchiveSingleGzipEntryPath(file)) throw new Error("Archive entry was not found");
+    return gzipSync(replacement, { level: 6 });
+  }
+  throw new Error(`${format.toUpperCase()} archives are read-only in this runtime`);
+}
+
+function documentArchiveDirectoryMarkdown(file: TFile, archive: DocumentArchiveSnapshot, mimeType: string): string {
+  const rows = archive.entries.slice(0, DOCUMENT_ARCHIVE_EDIT_MAX_ENTRIES).map((entry) => (
+    `| ${markdownTableCell(entry.path)} | ${formatFileSize(entry.size)} | ${entry.previewKind} | ${entry.editable ? "yes" : "no"} |`
+  ));
+  return [
+    documentMetadataMarkdown(file, "archive", mimeType),
+    "",
+    `- **Archive format**: ${archive.format.toUpperCase()}`,
+    `- **Files**: ${archive.entries.length}`,
+    archive.warning ? `- **Warning**: ${archive.warning}` : "",
+    "",
+    "| Path | Size | Preview | Editable |",
+    "| --- | ---: | --- | --- |",
+    ...rows
+  ].filter(Boolean).join("\n");
 }
 
 function normalizePrimeTtsZipEntry(name: string): string | null {
