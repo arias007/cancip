@@ -8981,6 +8981,7 @@ export default class CancipPlugin extends Plugin {
   private contextEditBubbleSurface: HTMLElement | null = null;
   private contextEditBubbleAnchor: ContextualEditAnchor | null = null;
   private contextEditMarkerEl: HTMLElement | null = null;
+  private nativeSelectionToolbarUntil = 0;
   private contextEditPendingProposal: { anchor: ContextualEditAnchor; instruction: string; proposal: ContextualEditProposal } | null = null;
   private contextEditAnchorFrame: number | null = null;
   private contextEditAnchorCleanup: (() => void) | null = null;
@@ -17230,6 +17231,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
           ? this.contextEditSelectionAnchor(doc)
           : null;
         if (contextAnchor) {
+          if (contextAnchor.kind === "selection" && this.isNativeSelectionToolbarProtected(doc)) {
+            this.hideSelectionSendBubble();
+            return;
+          }
           this.hideSelectionSendBubble();
           if (this.contextEditBubbleEl) {
             this.contextEditBubbleAnchor = contextAnchor;
@@ -17286,7 +17291,8 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ? this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY)
         : null;
       if (contextAnchor?.kind === "selection") {
-        armContextEditLongPress(contextAnchor, event.clientX, event.clientY);
+        // A text selection belongs to the platform toolbar first. Its Copy action must not
+        // be displaced by a delayed Cancip long-press bubble.
         return;
       }
       const rawElement = event.target as Element | null;
@@ -17346,12 +17352,17 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ? this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY)
         : null;
       if (contextAnchor) {
-        // Keep Obsidian/Android's native selection toolbar (especially Copy) for text selections.
-        // Blank-caret and positional anchors still need Cancip to own the context menu.
-        if (contextAnchor.kind !== "selection") {
-          event.preventDefault();
-          event.stopPropagation();
+        if (contextAnchor.kind === "selection") {
+          // Let Obsidian/Android own the selected-text toolbar. Creating an input here makes
+          // Android dismiss Copy shortly after it appears.
+          this.nativeSelectionToolbarUntil = Date.now() + 1500;
+          this.clearButtonEditLongPress();
+          contextEditLongPressOpened = true;
+          this.hideSelectionSendBubble();
+          return;
         }
+        event.preventDefault();
+        event.stopPropagation();
         this.clearButtonEditLongPress();
         contextEditLongPressOpened = true;
         this.showContextEditBubble(contextAnchor, event.clientX, event.clientY);
@@ -17497,6 +17508,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         opened = false;
         const anchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY, file, doc?.body);
         if (!anchor) return;
+        if (anchor.kind === "selection") return;
         arm(anchor, event.clientX, event.clientY);
       };
       const move = (event: PointerEvent) => {
@@ -17514,10 +17526,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         if (!this.settings.contextualEditingEnabled) return;
         const anchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY, file, doc?.body);
         if (!anchor) return;
-        if (anchor.kind !== "selection") {
-          event.preventDefault();
-          event.stopPropagation();
+        if (anchor.kind === "selection") {
+          this.nativeSelectionToolbarUntil = Date.now() + 1500;
+          this.clearButtonEditLongPress();
+          opened = true;
+          this.hideSelectionSendBubble();
+          return;
         }
+        event.preventDefault();
+        event.stopPropagation();
         this.clearButtonEditLongPress();
         opened = true;
         const point = parentPoint(event.clientX, event.clientY);
@@ -17608,6 +17625,14 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     }
     this.buttonEditLongPressTarget = null;
     this.contextEditLongPressTarget = null;
+  }
+
+  private isNativeSelectionToolbarProtected(doc: Document): boolean {
+    return Date.now() < this.nativeSelectionToolbarUntil
+      || Platform.isMobile
+      || Platform.isMobileApp
+      || doc.body.classList.contains("is-mobile")
+      || doc.body.classList.contains("is-phone");
   }
 
   private contextEditSelectionAnchor(doc: Document): ContextualEditAnchor | null {
@@ -18059,7 +18084,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
   }
 
   private showContextEditInputMarker(anchor: ContextualEditAnchor, loading: boolean): void {
-    if (anchor.kind === "blank-caret") {
+    if (anchor.kind !== "selection") {
       this.contextEditMarkerEl?.remove();
       this.contextEditMarkerEl = null;
       return;
