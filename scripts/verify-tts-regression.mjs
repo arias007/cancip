@@ -18,7 +18,11 @@ const workerMarker = `/* Cancip PrimeTTS worker ${manifest.version} */`;
 assert.equal(workerVersion, manifest.version, "Bundled PrimeTTS worker version must match manifest.json");
 assert.ok(bundledWorkerSource.startsWith(workerMarker), "Bundled PrimeTTS worker marker is stale");
 assert.ok(releaseWorkerSource.startsWith(workerMarker), "Release PrimeTTS worker marker is stale");
-assert.equal(bundledWorkerSource, releaseWorkerSource, "Bundled fallback and release PrimeTTS workers must be identical");
+assert.equal(
+  bundledWorkerSource.replace(/\r\n/g, "\n"),
+  releaseWorkerSource.replace(/\r\n/g, "\n"),
+  "Bundled fallback and release PrimeTTS workers must be identical"
+);
 const sourceFile = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 const declarations = new Map();
 
@@ -169,6 +173,29 @@ assert.ok(!journalText.includes("外部前言"), "External Markdown embeds must 
 assert.ok(journalText.includes("待办 主体任务一"), "Unchecked task state must align with the rendered viewport text");
 assert.ok(journalText.includes("已完成 主体任务二"), "Checked task state must align with the rendered viewport text");
 
+const codeMarkdown = [
+  "## Code sample",
+  "```ts",
+  "const answer = 42;",
+  "console.log(answer);",
+  "```",
+  "Inline `npm run build` and indented code:",
+  "    return answer;"
+].join("\n");
+const codeText = api.markdownToTtsText(codeMarkdown, Number.MAX_SAFE_INTEGER);
+assert.ok(codeText.includes("const answer = 42;"), "Fenced code contents must remain in the spoken document");
+assert.ok(codeText.includes("console.log(answer);"), "Every readable fenced code line must remain available to TTS");
+assert.ok(codeText.includes("npm run build"), "Inline code must remain readable");
+assert.ok(codeText.includes("return answer;"), "Indented code must remain readable");
+assert.ok(!codeText.includes("```") && !codeText.includes("Code sample ts"), "Code fence markers and language metadata must not be pronounced");
+const codePlan = api.makeTtsPartPlan(codeText, "builtin-prime-tts", 96);
+assert.equal(codePlan.displayIndexByPlayIndex.length, codePlan.playParts.length, "Every spoken code chunk must have a highlight mapping");
+assert.equal(
+  Array.from(new Set(codePlan.displayIndexByPlayIndex)).join(","),
+  Array.from({ length: codePlan.displayParts.length }, (_, index) => index).join(","),
+  "Every readable code sentence must remain reachable by sentence-level highlighting"
+);
+
 const propertyText = api.markdownToTtsText(`---
 tags:
   - 日记
@@ -244,7 +271,8 @@ const chineseParts = api.splitPrimeTtsMicroPlayText(chinese, 96);
 assert.equal(chineseParts[0], "朗", "Chinese startup should use one character for the earliest possible first sound");
 const secondSentenceIndex = chineseParts.findIndex((part) => part.startsWith("后"));
 assert.ok(secondSentenceIndex > 0, "The second sentence must remain in the playback plan");
-assert.equal(chineseParts[secondSentenceIndex], "后", "Every new Chinese sentence should restart with a one-character handoff");
+assert.ok(chineseParts[secondSentenceIndex].length > 1, "Later sentences must use prefetched phrases instead of restarting with a one-character handoff");
+assert.equal(chineseParts.filter((part) => api.normalizeTtsHighlightText(part).length === 1).length, 1, "Only the document startup may use a one-character audio chunk");
 assert.ok(chineseParts.every((part) => part.length <= 32), "Chinese steady chunks must stay short enough for continuous prefetch");
 assert.ok(chineseParts.length <= 18, "Sentence handoff chunks must stay bounded");
 assert.ok(chineseParts.at(-1)?.endsWith("结尾。"), "Chinese final sentence must remain complete");

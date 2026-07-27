@@ -13494,6 +13494,8 @@ export default class CancipPlugin extends Plugin {
       this.activeTtsPrimeDecodedCache.clear();
       this.activeTtsPrimeDecodedCacheRunId = this.activeTtsPrimeCacheSessionId;
     }
+    this.prefetchPrimeTtsWindow(runtime, playChunks, this.activeTtsPartIndex, runId);
+    this.prefetchPrimeTtsBlockLookahead(runtime, playChunks, this.activeTtsPartIndex, runId);
     for (let index = this.activeTtsPartIndex; index < playChunks.length; index += 1) {
       if (this.activeTtsRunId !== runId || !this.activeTtsParts.length) return true;
       let playable: PrimeTtsPlayable | null = null;
@@ -74824,12 +74826,46 @@ function markdownTtsEmbedReferences(input: string): MarkdownTtsEmbedReference[] 
     .filter((reference, index, sorted) => index === 0 || reference.start >= sorted[index - 1].end);
 }
 
+type MarkdownTtsProtectedCodeBlock = {
+  token: string;
+  text: string;
+};
+
+function protectMarkdownTtsFencedCode(input: string): { source: string; blocks: MarkdownTtsProtectedCodeBlock[] } {
+  const output: string[] = [];
+  const blocks: MarkdownTtsProtectedCodeBlock[] = [];
+  let activeFence: { marker: string; block: MarkdownTtsProtectedCodeBlock; lines: string[] } | null = null;
+  for (const line of input.split(/\r?\n/)) {
+    if (activeFence) {
+      const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (closing?.[1]?.startsWith(activeFence.marker[0]) && closing[1].length >= activeFence.marker.length) {
+        activeFence.block.text = activeFence.lines.join("\n").trim();
+        activeFence = null;
+        continue;
+      }
+      activeFence.lines.push(line);
+      continue;
+    }
+    const opening = /^ {0,3}(`{3,}|~{3,})(?:[^\n]*)$/.exec(line);
+    if (!opening?.[1]) {
+      output.push(line);
+      continue;
+    }
+    let token = `CANCIPTTSFENCEDCODEBLOCK${blocks.length}TOKEN`;
+    while (input.includes(token)) token += "X";
+    const block = { token, text: "" };
+    blocks.push(block);
+    output.push(token);
+    activeFence = { marker: opening[1], block, lines: [] };
+  }
+  if (activeFence) activeFence.block.text = activeFence.lines.join("\n").trim();
+  return { source: output.join("\n"), blocks };
+}
+
 function markdownToTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): string {
-  const source = ttsSourceWithReadableFrontmatter(input);
-  return trimContext(
-    source
+  const protectedCode = protectMarkdownTtsFencedCode(ttsSourceWithReadableFrontmatter(input));
+  let readable = protectedCode.source
       .replace(/<!--[\s\S]*?-->/g, " ")
-      .replace(/```[\s\S]*?```/g, " ")
       .replace(/`([^`]+)`/g, "$1")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -74845,9 +74881,9 @@ function markdownToTtsText(input: string, maxChars = TTS_CAPTURE_MAX_CHARS): str
       .replace(/\|/g, " ")
       .replace(/[ \t]{2,}/g, " ")
       .replace(/\n{3,}/g, "\n\n")
-      .trim(),
-    maxChars
-  );
+      .trim();
+  for (const block of protectedCode.blocks) readable = readable.replace(block.token, block.text);
+  return trimContext(readable.replace(/\n{3,}/g, "\n\n").trim(), maxChars);
 }
 
 function extractVisibleRenderedText(root: HTMLElement): string {
@@ -75685,12 +75721,14 @@ function makeTtsPartPlan(input: string, provider: TtsProvider | undefined, targe
   const displayParts: string[] = [];
   const playParts: string[] = [];
   const displayIndexByPlayIndex: number[] = [];
+  let adaptiveStage: PrimeTtsAdaptiveStage = 0;
   for (const display of sourceDisplayParts) {
     const spokenDisplay = spokenTransform ? spokenTransform(display) : display;
     let spokenChunks: string[];
     if (usePrimeFastPlan) {
-      const split = splitPrimeTtsMicroPlayTextWithStage(spokenDisplay, playTarget, 0);
+      const split = splitPrimeTtsMicroPlayTextWithStage(spokenDisplay, playTarget, adaptiveStage);
       spokenChunks = split.parts.filter(Boolean);
+      adaptiveStage = split.nextStage;
     } else {
       spokenChunks = splitTtsText(spokenDisplay, targetLength, true).filter(Boolean);
     }
@@ -75856,16 +75894,15 @@ function splitPrimeTtsMicroPlayTextWithStage(
   targetLength = PRIME_TTS_FAST_DEFAULT_CHARS,
   initialStage: PrimeTtsAdaptiveStage = 0
 ): PrimeTtsAdaptiveSplit {
-  void initialStage;
   const text = normalizePrimeTtsMicroText(input);
   const configuredTarget = Number(targetLength);
   const target = Number.isFinite(configuredTarget) && configuredTarget < 64
     ? Math.max(16, Math.min(PRIME_TTS_MICRO_TARGET_CHARS, Math.floor(configuredTarget)))
     : PRIME_TTS_MICRO_TARGET_CHARS;
   const parts: string[] = [];
-  let stage: PrimeTtsAdaptiveStage = 0;
+  let stage: PrimeTtsAdaptiveStage = initialStage;
   for (const fragment of splitPrimeTtsSentenceFragments(text)) {
-    const split = splitPrimeTtsAdaptiveFragment(fragment.text, target, 0);
+    const split = splitPrimeTtsAdaptiveFragment(fragment.text, target, stage);
     parts.push(...split.parts);
     stage = split.nextStage;
     if (parts.length >= TTS_MAX_PARTS) break;
