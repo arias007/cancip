@@ -59216,12 +59216,18 @@ class CancipView extends ItemView {
     let semanticHits: SearchHit[] = [];
     const hitKey = (hit: SearchHit): string => searchHitStrictKey(hit);
     const appendUniqueHits = (target: SearchHit[], incoming: SearchHit[], hiddenKeys: Set<string> = new Set()): number => {
-      const known = new Set([...hiddenKeys, ...target.map(hitKey)]);
+      const known = new Map(target.map((hit, index) => [hitKey(hit), index]));
       let added = 0;
       for (const hit of incoming) {
         const key = hitKey(hit);
-        if (!key || known.has(key)) continue;
-        known.add(key);
+        if (!key || hiddenKeys.has(key)) continue;
+        const existingIndex = known.get(key);
+        if (existingIndex !== undefined) {
+          const existing = target[existingIndex];
+          if (existing) target[existingIndex] = mergeSearchHitEvidence(existing, hit);
+          continue;
+        }
+        known.set(key, target.length);
         target.push(hit);
         added += 1;
       }
@@ -59329,6 +59335,34 @@ class CancipView extends ItemView {
       }
       setActiveSearchCategory(activeSearchCategory, true, false);
     };
+    const hydrateKeywordHitEvidence = async (expectedRequestId: number): Promise<void> => {
+      const candidates = keywordHits.filter((hit) => !searchHitEvidenceSnippet(hit));
+      if (!candidates.length) return;
+      const terms = searchHighlightTerms(input.value, activeHighlightSignals);
+      for (let offset = 0; offset < candidates.length; offset += 6) {
+        if (expectedRequestId !== requestId || !this.searchPopoverEl) return;
+        const batch = candidates.slice(offset, offset + 6);
+        const enriched = (await Promise.all(batch.map(async (hit): Promise<SearchHit | null> => {
+          try {
+            const content = redactSensitiveText(await withTimeout(
+              this.plugin.universalSearchDocumentText(hit.path, hit.kind, 12000),
+              VAULT_SEARCH_DOCUMENT_READ_TIMEOUT_MS,
+              "search evidence read timed out"
+            ));
+            const excerpt = trimContext(makeExcerpt(content, terms), 420);
+            return excerpt ? { ...hit, excerpt } : null;
+          } catch {
+            return null;
+          }
+        }))).filter((hit): hit is SearchHit => Boolean(hit));
+        if (expectedRequestId !== requestId || !this.searchPopoverEl) return;
+        if (enriched.length) {
+          appendUniqueHits(keywordHits, enriched);
+          renderSearchPages(visibleSearchHits());
+        }
+        if (Platform.isMobileApp) await sleep(0);
+      }
+    };
     const run = async (): Promise<void> => {
       const query = input.value.trim();
       const currentRequestId = ++requestId;
@@ -59361,8 +59395,10 @@ class CancipView extends ItemView {
         const hardHits = await this.searchVault(query, aiEnabled.checked ? 36 : 48, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         rememberKeywordHits(hardHits.filter((hit) => hit.route !== "soft"));
+        const evidenceUpgradePromise = hydrateKeywordHitEvidence(currentRequestId);
         if (!aiEnabled.checked) {
           rememberKeywordHits(hardHits);
+          await evidenceUpgradePromise;
           renderSearchPages(visibleSearchHits());
           setAiExplanation("");
           setSearchStatus("complete", searchStatusWithCount(this.t("searchCompleted"), keywordHits.length));
@@ -59392,6 +59428,8 @@ class CancipView extends ItemView {
               : (isChineseLanguage(this.plugin.language()) ? "正在整理结果" : "Ranking results");
           setSearchStatus("searching", [this.t("searchSearching"), phase, this.t("hitCount", { count: visibleHits.length })].join(" · "));
         });
+        if (currentRequestId !== requestId || !this.searchPopoverEl) return;
+        await evidenceUpgradePromise;
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         const aiHits = aiSearch.hits;
         rememberSemanticHits(aiHits);
@@ -64110,16 +64148,113 @@ function partitionSearchHitsByOriginalQuery(
   return { precise, more };
 }
 
-function nonStrictSearchHitExplanation(query: string, hit: SearchHit, language: Language): string {
-  if (hit.reason?.trim()) return `${aiSearchRelationLabel(hit.relation, language)} · ${hit.reason.trim()}`;
-  if (hit.route === "hard") {
-    return isChineseLanguage(language)
-      ? `仅匹配到“${trimContext(query.trim(), 36)}”的部分词或词根，未满足严格原词匹配`
-      : `Matched only part or a word root of “${trimContext(query.trim(), 36)}”; not a strict original-term match`;
+function searchHitExplanationSignals(query: string, hit: SearchHit): { terms: string[]; locations: Array<"title" | "path" | "content"> } {
+  const title = hit.title.normalize("NFKC").toLowerCase();
+  const path = normalizePath(hit.path).normalize("NFKC").toLowerCase();
+  const content = searchHitOriginalContent(hit);
+  const terms: string[] = [];
+  const locations = new Set<"title" | "path" | "content">();
+  const candidates = uniqueStrings([
+    ...originalSearchQueryGroups(query).flatMap((group) => group.filter((clause) => !clause.excluded).map((clause) => clause.value)),
+    ...searchHighlightTerms(query)
+  ]).filter((term) => {
+    const length = Array.from(term.trim()).length;
+    return length >= 2 && length <= 48;
+  });
+  for (const candidate of candidates) {
+    const normalized = candidate.normalize("NFKC").toLowerCase().trim();
+    if (!normalized) continue;
+    let matched = false;
+    if (title.includes(normalized)) {
+      locations.add("title");
+      matched = true;
+    }
+    if (path.includes(normalized)) {
+      locations.add("path");
+      matched = true;
+    }
+    if (content.includes(normalized)) {
+      locations.add("content");
+      matched = true;
+    }
+    if (matched) terms.push(candidate.trim());
   }
-  return isChineseLanguage(language)
-    ? `${aiSearchRelationLabel(hit.relation, language)} · 由语义扩展、RAG 或相近主题关联`
-    : `${aiSearchRelationLabel(hit.relation, language)} · Related through semantic expansion, RAG, or a similar topic`;
+  return { terms: uniqueStrings(terms).slice(0, 4), locations: [...locations] };
+}
+
+function searchHitEvidenceSnippet(hit: SearchHit): string {
+  const excerpt = hit.excerpt
+    .replace(/^\[[^\]\n]+\]\s*/u, "")
+    .replace(/^(?:硬搜索|hard search)\s*·[^\n]*\n?/iu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const normalized = normalizePath(excerpt).normalize("NFKC").toLowerCase();
+  const path = normalizePath(hit.path).normalize("NFKC").toLowerCase();
+  const title = hit.title.normalize("NFKC").toLowerCase();
+  if (!normalized || normalized === path || normalized === title || normalized === reviewFileName(path)) return "";
+  return trimContext(excerpt, 120);
+}
+
+function searchHitEvidenceQuality(hit: SearchHit): number {
+  const snippet = searchHitEvidenceSnippet(hit);
+  const reason = hit.reason?.trim() ?? "";
+  return Math.min(180, Array.from(snippet).length)
+    + (hit.excerpt.includes("\n") ? 80 : 0)
+    + (/^(?:硬搜索|hard search)\s*·/iu.test(hit.excerpt) ? 80 : 0)
+    + Math.min(180, Array.from(reason).length * 2);
+}
+
+function mergeSearchHitEvidence(existing: SearchHit, incoming: SearchHit): SearchHit {
+  const incomingHasBetterEvidence = searchHitEvidenceQuality(incoming) > searchHitEvidenceQuality(existing);
+  const evidenceSource = incomingHasBetterEvidence ? incoming : existing;
+  const incomingReason = incoming.reason?.trim() ?? "";
+  const existingReason = existing.reason?.trim() ?? "";
+  return {
+    ...existing,
+    ...incoming,
+    path: existing.path || incoming.path,
+    title: evidenceSource.title || existing.title || incoming.title,
+    excerpt: evidenceSource.excerpt || existing.excerpt || incoming.excerpt,
+    score: Math.max(existing.score, incoming.score),
+    kind: incoming.kind ?? existing.kind,
+    route: existing.route === "hard" || incoming.route === "hard" ? "hard" : incoming.route ?? existing.route,
+    archived: incoming.archived ?? existing.archived,
+    relation: incomingReason ? incoming.relation : existingReason ? existing.relation : incoming.relation ?? existing.relation,
+    reason: incomingReason || existingReason || undefined
+  };
+}
+
+function nonStrictSearchHitExplanation(query: string, hit: SearchHit, language: Language): string {
+  const chinese = isChineseLanguage(language);
+  const title = trimContext(hit.title.trim() || reviewFileName(hit.path), 48);
+  const subject = trimContext(parseSearchQueryIntent(query).subjectQuery || query.trim(), 48);
+  const reason = trimContext(hit.reason?.replace(/\s+/g, " ").trim() ?? "", 140);
+  const snippet = searchHitEvidenceSnippet(hit);
+  const signals = searchHitExplanationSignals(query, hit);
+  const locations = signals.locations.map((location) => {
+    if (!chinese) return ({ title: "file name", path: "path", content: "content/OCR/index" } as const)[location];
+    return ({ title: "文件名", path: "路径", content: "正文/OCR/索引内容" } as const)[location];
+  });
+  const fileLabel = chinese ? `《${title}》` : `“${title}”`;
+  const evidence = snippet
+    ? (chinese ? `；内容证据：“${snippet}”` : `; content evidence: “${snippet}”`)
+    : (chinese ? `；路径证据：“${trimContext(hit.path, 96)}”` : `; path evidence: “${trimContext(hit.path, 96)}”`);
+  if (reason) {
+    return chinese
+      ? `${fileLabel}：${aiSearchRelationLabel(hit.relation, language)}；${reason}${evidence}`
+      : `${fileLabel}: ${aiSearchRelationLabel(hit.relation, language)}; ${reason}${evidence}`;
+  }
+  if (hit.route === "hard") {
+    const matched = signals.terms.length
+      ? (chinese ? `${locations.join("、") || "当前索引"}命中“${signals.terms.join("、")}”` : `${locations.join(", ") || "the current index"} matched “${signals.terms.join(", ")}”`)
+      : (chinese ? "本地搜索返回该文件" : "Local search returned this file");
+    return chinese
+      ? `${fileLabel}：${matched}，但未完整匹配“${subject}”${evidence}`
+      : `${fileLabel}: ${matched}, but did not fully match “${subject}”${evidence}`;
+  }
+  return chinese
+    ? `${fileLabel}：${aiSearchRelationLabel(hit.relation, language)}；相关内容与“${subject}”相近${evidence}`
+    : `${fileLabel}: ${aiSearchRelationLabel(hit.relation, language)}; its content is related to “${subject}”${evidence}`;
 }
 
 function universalSearchKindsForQuery(
