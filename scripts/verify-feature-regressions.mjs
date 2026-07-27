@@ -60,6 +60,7 @@ const migratedIdentityCache = ocrSemanticApi.migrateOcrIndexEntry({
   pages: []
 });
 const searchIntentModule = ts.transpileModule([
+  "const normalizePath = (value: string) => value.replace(/\\\\/g, '/');",
   functionSource("uniqueStrings"),
   functionSource("tokenize"),
   functionSource("searchWordRootVariants"),
@@ -70,7 +71,9 @@ const searchIntentModule = ts.transpileModule([
   functionSource("searchHitIntentRank"),
   functionSource("rankSearchHitsForIntent"),
   functionSource("partitionSearchHitsForIntent"),
-  "export { parseSearchQueryIntent, rankSearchHitsForIntent, partitionSearchHitsForIntent };"
+  functionSource("searchResultCategoryForHit"),
+  functionSource("searchHitsForCategory"),
+  "export { parseSearchQueryIntent, rankSearchHitsForIntent, partitionSearchHitsForIntent, searchResultCategoryForHit, searchHitsForCategory };"
 ].join("\n\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
 }).outputText;
@@ -82,6 +85,13 @@ const imageSearchHits = [
   { path: "附件/风景.jpg", title: "风景", excerpt: "海边照片", score: 80, kind: "image", route: "hard" }
 ];
 const imageSearchGroups = searchIntentApi.partitionSearchHitsForIntent("身份证图片", imageSearchHits);
+const categorizedSearchHits = [
+  ...imageSearchHits,
+  { path: "媒体/访谈.mp4", title: "访谈", excerpt: "视频", score: 8, kind: "file", route: "hard" },
+  { path: "媒体/录音.flac", title: "录音", excerpt: "音频", score: 7, kind: "file", route: "hard" },
+  { path: "资料/报告.pdf", title: "报告", excerpt: "PDF", score: 6, kind: "pdf", route: "hard" },
+  { path: "资料/统计.xlsx", title: "统计", excerpt: "工作簿", score: 5, kind: "office", route: "hard" }
+];
 
 const checks = [
   ["OCR command", source.includes('id: "recognize-active-file-ocr"')],
@@ -94,12 +104,14 @@ const checks = [
   ["PDF OCR preserves page visual semantics in its searchable index", source.includes("semanticTags: pageEntry.semanticTags") && source.includes("pages.flatMap((page) => page.semanticTags)") && source.includes("allBlocks, pageSemanticTags")],
   ["legacy OCR caches gain semantic tags without repeating recognition", migratedIdentityCache.schemaVersion === 3 && migratedIdentityCache.semanticTags.includes("身份证") && source.includes("entry.schemaVersion !== OCR_CACHE_SCHEMA_VERSION - 1") && source.includes("await adapter.write(path")],
   ["described image queries rank exact image matches and fold weak text matches", imageIntent.requestedKinds.includes("image") && imageIntent.subjectQuery === "身份证" && imageSearchGroups.precise.length === 1 && imageSearchGroups.precise[0].path.endsWith("身份证-正面.jpg") && imageSearchGroups.more.some((hit) => hit.kind === "note") && source.includes("parseSearchQueryIntent") && source.includes("partitionSearchHitsForIntent") && source.includes("obcc-search-more")],
+  ["search categories preserve all-results first and classify media by extension", source.includes('{ id: "all", icon: "library-big" }') && source.indexOf('{ id: "image", icon: "image" }') < source.indexOf('{ id: "video", icon: "video" }') && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "all").length === categorizedSearchHits.length && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "image").length === 2 && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "video")[0]?.path.endsWith(".mp4") && searchIntentApi.searchHitsForCategory(categorizedSearchHits, "audio")[0]?.path.endsWith(".flac")],
+  ["search category pages support tabs, swipe snapping, and independent vertical scrolling", source.includes('cls: "obcc-search-category-tabs"') && source.includes('cls: "obcc-search-page-viewport"') && source.includes("const categoryTrack = categoryViewport") && source.includes('categoryViewport.addEventListener("scroll"') && source.includes("setActiveSearchCategory(definition.id, true, true)") && source.includes('event.key === "ArrowRight"') && styles.includes("scroll-snap-type: x mandatory") && styles.includes("scroll-snap-align: start") && styles.includes(".obcc-search-page") && styles.includes("overflow-y: auto")],
   ["explicit attachment types receive an early index ranking boost", source.includes("const kindBoost = intent.requestedKinds.length") && source.includes("const queryIntent = parseSearchQueryIntent(normalizedQuery)") && source.includes("? 1800 : 0")],
   ["background index shares automation startup grace and only fills missing image OCR", source.includes("Math.max(delayMs, UNIVERSAL_SEARCH_MOBILE_BACKGROUND_DELAY_MS, startupDelay)") && source.includes("missingImageOcr") && source.includes("ocrIndexed: true") && source.includes("rescheduleUniversalSearchBuildForStartupGrace")],
   ["search UI has no hard-result pane", !source.includes('const hardSection = results.createEl("details"') && !source.includes("renderHits(hardResults")],
   ["AI search checkbox is visible and enabled by default", source.includes('const aiEnabled = aiLabel.createEl("input"') && source.includes("aiEnabled.checked = true") && source.includes('aiEnabled.addEventListener("change"')],
-  ["one search pane also renders base results when AI is off", source.includes("if (!aiEnabled.checked)") && source.includes("rememberKeywordHits(hardHits)") && source.includes("renderHits(aiResults, visibleSearchHits())")],
-  ["single search pane overrides the legacy split grid and scrolls", styles.includes("grid-template-rows: minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-body") && styles.includes("grid-template-rows: auto minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-results") && styles.includes("overflow-y: auto")],
+  ["one search pane also renders base results when AI is off", source.includes("if (!aiEnabled.checked)") && source.includes("rememberKeywordHits(hardHits)") && source.includes("renderSearchPages(visibleSearchHits())")],
+  ["single search pane overrides the legacy split grid and scrolls", styles.includes("grid-template-rows: minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-body") && styles.includes("grid-template-rows: auto auto minmax(0, 1fr) !important") && styles.includes(".obcc-search-section.is-ai .obcc-search-section-results") && styles.includes("overflow-y: auto")],
   ["AI search keeps keyword results first and only appends semantic/RAG hits", source.includes("includeAttachments: !aiEnabled.checked") && source.includes("rememberKeywordHits(exactHits)") && source.includes("rememberSemanticHits(progress.hits)") && source.includes("visibleSearchHits") && source.includes('aiExplanation.setText(semanticHits.length ?')],
   ["search renders fast local hits then incremental AI/RAG phases", source.includes("private async fastIndexedVaultSearchHits") && source.includes('phase: "expansion"') && source.includes('phase: "retrieval"') && source.includes("onProgress?.({ phase: \"ranked\"") && source.includes("expansion.styleSignals.slice(0, 2)") && source.includes("Math.ceil(resultLimit / 2)")],
   ["search highlights multi-character and word-root matches", source.includes("function searchHighlightTerms") && source.includes("function searchWordRootVariants") && source.includes("appendHighlightedSearchText") && styles.includes(".obcc-search-match")],

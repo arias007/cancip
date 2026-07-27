@@ -892,6 +892,13 @@ type SearchQueryIntent = {
   subjectTerms: string[];
 };
 
+type SearchResultCategory = "all" | "image" | "video" | "audio" | "note" | "pdf" | "office" | "archive" | "other";
+
+type SearchResultCategoryDefinition = {
+  id: SearchResultCategory;
+  icon: string;
+};
+
 type SearchPaneState = "split" | "ai" | "hard";
 type AiSearchRelation = "direct" | "concept" | "context" | "style" | "inspiration";
 
@@ -58805,9 +58812,88 @@ class CancipView extends ItemView {
     const aiSummaryLabel = aiSummary.createSpan({ text: this.t("searchFuzzy") });
     const aiBody = aiSection.createDiv({ cls: "obcc-search-section-body" });
     const aiExplanation = aiBody.createDiv({ cls: "obcc-search-section-explanation" });
-    const aiResults = aiBody.createDiv({ cls: "obcc-search-section-results" });
-    aiResults.addEventListener("wheel", (event) => event.stopPropagation(), { passive: true });
-    aiResults.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
+    const categoryTabs = aiBody.createDiv({
+      cls: "obcc-search-category-tabs",
+      attr: { role: "tablist", "aria-label": isChineseLanguage(this.plugin.language()) ? "搜索结果分类" : "Search result categories" }
+    });
+    const categoryViewport = aiBody.createDiv({ cls: "obcc-search-page-viewport" });
+    const categoryTrack = categoryViewport;
+    const categoryViews = new Map<SearchResultCategory, {
+      button: HTMLButtonElement;
+      count: HTMLElement;
+      page: HTMLElement;
+      results: HTMLElement;
+    }>();
+    let activeSearchCategory: SearchResultCategory = "all";
+    for (const definition of SEARCH_RESULT_CATEGORIES) {
+      const label = searchResultCategoryLabel(definition.id, this.plugin.language());
+      const button = categoryTabs.createEl("button", {
+        cls: "obcc-search-category-tab",
+        attr: { type: "button", role: "tab", "aria-selected": definition.id === "all" ? "true" : "false", title: label }
+      });
+      setIcon(button.createSpan({ cls: "obcc-search-category-icon" }), definition.icon);
+      button.createSpan({ cls: "obcc-search-category-label", text: label });
+      const count = button.createSpan({ cls: "obcc-search-category-count", text: "0" });
+      const page = categoryTrack.createDiv({
+        cls: "obcc-search-page",
+        attr: { role: "tabpanel", "aria-label": label }
+      });
+      page.dataset.category = definition.id;
+      const pageResults = page.createDiv({ cls: "obcc-search-section-results" });
+      pageResults.addEventListener("wheel", (event) => event.stopPropagation(), { passive: true });
+      pageResults.addEventListener("touchmove", (event) => event.stopPropagation(), { passive: true });
+      categoryViews.set(definition.id, { button, count, page, results: pageResults });
+    }
+    const setActiveSearchCategory = (category: SearchResultCategory, scrollPage = false, smooth = true): void => {
+      activeSearchCategory = category;
+      const activeIndex = Math.max(0, SEARCH_RESULT_CATEGORIES.findIndex((definition) => definition.id === category));
+      for (const definition of SEARCH_RESULT_CATEGORIES) {
+        const view = categoryViews.get(definition.id);
+        if (!view) continue;
+        const active = definition.id === category;
+        view.button.classList.toggle("is-active", active);
+        view.button.setAttribute("aria-selected", active ? "true" : "false");
+        view.button.tabIndex = active ? 0 : -1;
+        view.page.classList.toggle("is-active", active);
+      }
+      const activeButton = categoryViews.get(category)?.button;
+      if (activeButton) {
+        const desiredLeft = activeButton.offsetLeft - Math.max(0, (categoryTabs.clientWidth - activeButton.offsetWidth) / 2);
+        categoryTabs.scrollTo({
+          left: Math.max(0, Math.min(desiredLeft, categoryTabs.scrollWidth - categoryTabs.clientWidth)),
+          behavior: smooth ? "smooth" : "auto"
+        });
+      }
+      if (scrollPage && categoryViewport.clientWidth > 0) {
+        categoryViewport.scrollLeft = activeIndex * categoryViewport.clientWidth;
+      }
+    };
+    for (const [definitionIndex, definition] of SEARCH_RESULT_CATEGORIES.entries()) {
+      const button = categoryViews.get(definition.id)?.button;
+      button?.addEventListener("click", () => {
+        setActiveSearchCategory(definition.id, true, true);
+      });
+      button?.addEventListener("keydown", (event) => {
+        let nextIndex = definitionIndex;
+        if (event.key === "ArrowRight") nextIndex = (definitionIndex + 1) % SEARCH_RESULT_CATEGORIES.length;
+        else if (event.key === "ArrowLeft") nextIndex = (definitionIndex - 1 + SEARCH_RESULT_CATEGORIES.length) % SEARCH_RESULT_CATEGORIES.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = SEARCH_RESULT_CATEGORIES.length - 1;
+        else return;
+        event.preventDefault();
+        const nextCategory = SEARCH_RESULT_CATEGORIES[nextIndex]?.id ?? "all";
+        setActiveSearchCategory(nextCategory, true, true);
+        categoryViews.get(nextCategory)?.button.focus();
+      });
+    }
+    categoryViewport.addEventListener("scroll", () => {
+      const width = categoryViewport.clientWidth;
+      if (width <= 0) return;
+      const index = Math.max(0, Math.min(SEARCH_RESULT_CATEGORIES.length - 1, Math.round(categoryViewport.scrollLeft / width)));
+      const category = SEARCH_RESULT_CATEGORIES[index]?.id ?? "all";
+      if (category !== activeSearchCategory) setActiveSearchCategory(category, false, false);
+    }, { passive: true });
+    setActiveSearchCategory("all", false, false);
     let requestId = 0;
     let timer: number | null = null;
     const scoredQueries = new Set<string>();
@@ -58820,7 +58906,7 @@ class CancipView extends ItemView {
     let activeHighlightSignals: string[] = [];
     let keywordHits: SearchHit[] = [];
     let semanticHits: SearchHit[] = [];
-    let moreResultsOpen = false;
+    const moreResultsOpen = new Map<SearchResultCategory, boolean>();
     let moreResultsQuery = "";
     const hitKey = (hit: SearchHit): string => `${hit.kind}:${normalizePath(hit.path)}`;
     const appendUniqueHits = (target: SearchHit[], incoming: SearchHit[], hiddenKeys: Set<string> = new Set()): number => {
@@ -58846,7 +58932,7 @@ class CancipView extends ItemView {
       appendUniqueHits(semanticHits, rankSearchHitsForIntent(input.value, hits), new Set(keywordHits.map(hitKey)))
     );
     const visibleSearchHits = (): SearchHit[] => [...keywordHits, ...semanticHits];
-    const renderHits = (parent: HTMLElement, hits: SearchHit[]): void => {
+    const renderHits = (parent: HTMLElement, hits: SearchHit[], category: SearchResultCategory): void => {
       const previousScrollTop = parent.scrollTop;
       const highlightTerms = searchHighlightTerms(input.value, activeHighlightSignals);
       parent.empty();
@@ -58862,7 +58948,7 @@ class CancipView extends ItemView {
           attr: { role: "button", tabindex: "0", title: this.t("searchOpenResult") }
           });
           row.classList.toggle("is-secondary", secondary);
-          setIcon(row.createSpan({ cls: "obcc-search-result-icon" }), searchResultIcon(hit.kind));
+          setIcon(row.createSpan({ cls: "obcc-search-result-icon" }), searchResultIcon(hit.kind, hit.path));
           const copy = row.createDiv({ cls: "obcc-search-result-copy" });
           appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-title" }), hit.title || reviewFileName(hit.path), highlightTerms);
           appendHighlightedSearchText(copy.createDiv({ cls: "obcc-search-result-path" }), hit.path, highlightTerms);
@@ -58896,7 +58982,7 @@ class CancipView extends ItemView {
       }
       if (groups.more.length) {
         const more = parent.createEl("details", { cls: "obcc-search-more" });
-        more.open = moreResultsOpen;
+        more.open = moreResultsOpen.get(category) === true;
         const summary = more.createEl("summary", { cls: "obcc-search-more-summary" });
         summary.createSpan({
           text: `${isChineseLanguage(this.plugin.language()) ? "更多相关结果" : "More related results"} · ${groups.more.length}`
@@ -58904,17 +58990,26 @@ class CancipView extends ItemView {
         const moreRows = more.createDiv({ cls: "obcc-search-more-results" });
         renderRows(moreRows, groups.more, true);
         more.addEventListener("toggle", () => {
-          moreResultsOpen = more.open;
+          moreResultsOpen.set(category, more.open);
         });
       }
       parent.scrollTop = Math.min(previousScrollTop, Math.max(0, parent.scrollHeight - parent.clientHeight));
+    };
+    const renderSearchPages = (hits: SearchHit[]): void => {
+      for (const definition of SEARCH_RESULT_CATEGORIES) {
+        const view = categoryViews.get(definition.id);
+        if (!view) continue;
+        const categoryHits = searchHitsForCategory(hits, definition.id);
+        view.count.setText(String(categoryHits.length));
+        renderHits(view.results, categoryHits, definition.id);
+      }
     };
     const run = async (): Promise<void> => {
       const query = input.value.trim();
       const currentRequestId = ++requestId;
       if (query !== moreResultsQuery) {
         moreResultsQuery = query;
-        moreResultsOpen = false;
+        moreResultsOpen.clear();
       }
       if (!query) {
         status.setText("");
@@ -58922,7 +59017,7 @@ class CancipView extends ItemView {
         aiSummaryLabel.setText(aiEnabled.checked ? this.t("searchFuzzy") : this.t("searchOpen"));
         keywordHits = [];
         semanticHits = [];
-        renderHits(aiResults, []);
+        renderSearchPages([]);
         return;
       }
       status.setText(this.t("searchSearching"));
@@ -58940,7 +59035,7 @@ class CancipView extends ItemView {
         const fastHits = await this.fastIndexedVaultSearchHits(query, aiEnabled.checked ? 36 : 48, hardOptions);
         if (currentRequestId !== requestId || !this.searchPopoverEl) return;
         rememberKeywordHits(fastHits, true);
-        renderHits(aiResults, visibleSearchHits());
+        renderSearchPages(visibleSearchHits());
         aiSummaryLabel.setText(`${this.t("searchOpen")} · ${keywordHits.length}`);
         aiExplanation.setText("");
         status.setText(this.t("hitCount", { count: keywordHits.length }));
@@ -58949,7 +59044,7 @@ class CancipView extends ItemView {
         rememberKeywordHits(hardHits.filter((hit) => hit.route !== "soft"));
         if (!aiEnabled.checked) {
           rememberKeywordHits(hardHits);
-          renderHits(aiResults, visibleSearchHits());
+          renderSearchPages(visibleSearchHits());
           aiSummaryLabel.setText(`${this.t("searchOpen")} · ${keywordHits.length}`);
           aiExplanation.setText("");
           status.setText(this.t("hitCount", { count: keywordHits.length }));
@@ -58960,7 +59055,7 @@ class CancipView extends ItemView {
         // Show verified Vault matches immediately. Semantic expansion can then
         // refine the same pane without leaving it blank while a model times out.
         rememberKeywordHits(exactHits);
-        renderHits(aiResults, visibleSearchHits());
+        renderSearchPages(visibleSearchHits());
         aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${keywordHits.length}`);
         status.setText(this.t("hitCount", { count: keywordHits.length }));
         aiExplanation.setText("");
@@ -58973,7 +59068,7 @@ class CancipView extends ItemView {
           ]);
           rememberSemanticHits(progress.hits);
           const visibleHits = visibleSearchHits();
-          renderHits(aiResults, visibleHits);
+          renderSearchPages(visibleHits);
           aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${visibleHits.length}`);
           const phase = progress.phase === "expansion"
             ? (isChineseLanguage(this.plugin.language()) ? "语义线索已生成；正在检索…" : "Semantic signals ready; retrieving...")
@@ -58987,7 +59082,7 @@ class CancipView extends ItemView {
         const aiHits = aiSearch.hits;
         rememberSemanticHits(aiHits);
         const visibleHits = visibleSearchHits();
-        renderHits(aiResults, visibleHits);
+        renderSearchPages(visibleHits);
         aiSummaryLabel.setText(`${this.t("searchFuzzy")} · ${visibleHits.length}`);
         const semanticSignals = uniqueStrings([
           ...aiSearch.expansion.queries,
@@ -59005,7 +59100,7 @@ class CancipView extends ItemView {
         const reason = error instanceof Error ? error.message : String(error);
         status.setText(reason);
         aiExplanation.setText(semanticHits.length ? reason : "");
-        renderHits(aiResults, visibleSearchHits());
+        renderSearchPages(visibleSearchHits());
         recordSearchScore(query, "reject", 0.2);
       }
     };
@@ -59027,7 +59122,10 @@ class CancipView extends ItemView {
     archived.addEventListener("change", () => void run());
     configs.addEventListener("change", () => void run());
     const viewWindow = this.containerEl.ownerDocument.defaultView ?? window;
-    const reposition = () => this.positionSearchPopover();
+    const reposition = () => {
+      this.positionSearchPopover();
+      viewWindow.requestAnimationFrame(() => setActiveSearchCategory(activeSearchCategory, true, false));
+    };
     viewWindow.addEventListener("resize", reposition);
     viewWindow.visualViewport?.addEventListener("resize", reposition);
     this.searchPopoverCleanup = () => {
@@ -63708,7 +63806,64 @@ function universalSearchKindLabel(kind: UniversalSearchDocumentKind, language: L
   return labels[kind];
 }
 
-function searchResultIcon(kind?: UniversalSearchDocumentKind): string {
+const SEARCH_RESULT_CATEGORIES: readonly SearchResultCategoryDefinition[] = [
+  { id: "all", icon: "library-big" },
+  { id: "image", icon: "image" },
+  { id: "video", icon: "video" },
+  { id: "audio", icon: "audio-lines" },
+  { id: "note", icon: "notebook-text" },
+  { id: "pdf", icon: "file-type-2" },
+  { id: "office", icon: "files" },
+  { id: "archive", icon: "archive" },
+  { id: "other", icon: "file-question" }
+];
+
+function searchResultCategoryLabel(category: SearchResultCategory, language: Language): string {
+  const chinese: Record<SearchResultCategory, string> = {
+    all: "全库",
+    image: "图片",
+    video: "视频",
+    audio: "音频",
+    note: "笔记",
+    pdf: "PDF",
+    office: "Office",
+    archive: "压缩包",
+    other: "其他"
+  };
+  const english: Record<SearchResultCategory, string> = {
+    all: "All",
+    image: "Images",
+    video: "Videos",
+    audio: "Audio",
+    note: "Notes",
+    pdf: "PDF",
+    office: "Office",
+    archive: "Archives",
+    other: "Other"
+  };
+  return (isChineseLanguage(language) ? chinese : english)[category];
+}
+
+function searchResultCategoryForHit(hit: SearchHit): Exclude<SearchResultCategory, "all"> {
+  const path = normalizePath(hit.path).toLowerCase().replace(/[?#].*$/, "");
+  if (hit.kind === "image" || /\.(?:png|jpe?g|webp|gif|bmp|svg|avif|heic|heif|tiff?)$/.test(path)) return "image";
+  if (/\.(?:mp4|mov|mkv|webm|avi|m4v|mpe?g|3gp|flv|mts|m2ts|ts)$/.test(path)) return "video";
+  if (/\.(?:mp3|wav|m4a|flac|ogg|opus|aac|wma|amr|aiff?)$/.test(path)) return "audio";
+  if (hit.kind === "note" || /\.(?:md|markdown)$/.test(path)) return "note";
+  if (hit.kind === "pdf" || /\.pdf$/.test(path)) return "pdf";
+  if (hit.kind === "office" || /\.(?:docx?|xlsx?|pptx?|odt|ods|odp)$/.test(path)) return "office";
+  if (hit.kind === "archive" || /\.(?:zip|rar|7z|tar|gz|tgz|bz2|xz)$/.test(path)) return "archive";
+  return "other";
+}
+
+function searchHitsForCategory(hits: SearchHit[], category: SearchResultCategory): SearchHit[] {
+  return category === "all" ? hits : hits.filter((hit) => searchResultCategoryForHit(hit) === category);
+}
+
+function searchResultIcon(kind?: UniversalSearchDocumentKind, path = ""): string {
+  const normalizedPath = normalizePath(path).toLowerCase().replace(/[?#].*$/, "");
+  if (/\.(?:mp4|mov|mkv|webm|avi|m4v|mpe?g|3gp|flv|mts|m2ts|ts)$/.test(normalizedPath)) return "video";
+  if (/\.(?:mp3|wav|m4a|flac|ogg|opus|aac|wma|amr|aiff?)$/.test(normalizedPath)) return "audio-lines";
   if (kind === "session") return "messages-square";
   if (kind === "memory") return "brain-circuit";
   if (kind === "config") return "settings-2";
