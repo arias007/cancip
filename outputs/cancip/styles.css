@@ -1944,7 +1944,7 @@ body .obcc-code-action-layer.obcc-code-action-layer > button.copy-code-button.co
   overflow: hidden;
 }
 
-details.obcc-process-step {
+.obcc-process-step {
   margin-top: 7px;
   padding: 7px 0 0;
   border-top: 1px solid var(--background-modifier-border);
@@ -1963,7 +1963,7 @@ details.obcc-process-step {
   line-height: 1.35;
 }
 
-.obcc-root details.obcc-process-step > summary.obcc-process-step-head::before {
+.obcc-root details.obcc-process-step-details > summary.obcc-process-step-head::before {
   width: 14px;
   height: 18px;
   margin-right: 0;
@@ -1982,16 +1982,43 @@ details.obcc-process-step {
 }
 
 .obcc-process-step-title {
+  display: grid;
+  gap: 2px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.obcc-process-step-plan-button {
+.obcc-process-step-thought {
+  min-width: 0;
+  color: var(--text-normal);
+  font-weight: 500;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.obcc-process-step-next {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.obcc-process-step-next-label {
+  flex: 0 0 auto;
+  color: var(--text-accent);
+  font-weight: 600;
+}
+
+.obcc-process-step-files-button {
   display: inline-flex;
   align-items: center;
-  justify-self: start;
+  justify-self: end;
   gap: 3px;
-  min-width: 0;
+  min-width: 22px;
   min-height: 20px;
   padding: 1px 5px;
   border: 1px solid var(--background-modifier-border);
@@ -2003,21 +2030,17 @@ details.obcc-process-step {
   white-space: nowrap;
 }
 
-.obcc-process-step-plan-button:hover,
-.obcc-process-step-plan-button:focus-visible {
+.obcc-process-step-files-button:hover,
+.obcc-process-step-files-button:focus-visible {
   border-color: var(--interactive-accent);
   color: var(--text-normal);
 }
 
-.obcc-process-step-plan-icon,
-.obcc-process-step-plan-icon svg {
+.obcc-process-step-files-icon,
+.obcc-process-step-files-icon svg {
   display: inline-flex;
-  width: 13px;
-  height: 13px;
-}
-
-.obcc-process-step-plan-number {
-  color: var(--text-faint);
+  width: 12px;
+  height: 12px;
 }
 
 .obcc-process-automation-badge {
@@ -2133,53 +2156,11 @@ details.obcc-process-step {
   margin-bottom: 0;
 }
 
-.obcc-process-record-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  margin: 10px 0 2px 25px;
-  padding-top: 8px;
-  border-top: 1px solid var(--background-modifier-border);
-}
-
-.obcc-process-record-meta-button {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  min-height: 28px;
-  padding: 3px 7px;
-  border: 1px solid var(--background-modifier-border);
-  border-radius: 6px;
-  background: var(--background-primary);
-  color: var(--text-muted);
-  font-size: 11px;
-  line-height: 1.3;
-}
-
-.obcc-process-record-meta-button:hover,
-.obcc-process-record-meta-button:focus-visible {
-  border-color: var(--interactive-accent);
-  color: var(--text-normal);
-}
-
-.obcc-process-record-meta-icon {
-  display: inline-flex;
-  width: 14px;
-  height: 14px;
-}
-
-.obcc-process-record-meta-icon svg {
-  width: 14px;
-  height: 14px;
-}
-
-.obcc-process-record-meta-delta.is-added {
+.obcc-process-step-files-delta.is-added {
   color: var(--color-green);
 }
 
-.obcc-process-record-meta-delta.is-removed {
+.obcc-process-step-files-delta.is-removed {
   color: var(--color-red);
 }
 
@@ -11714,7 +11695,7 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   display: grid;
   gap: 4px;
   min-width: 0;
-  margin: 6px 0;
+  margin: 6px 0 2px 39px;
   padding: 6px 0;
   border-block: 1px solid var(--background-modifier-border);
 }

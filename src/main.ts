@@ -36065,22 +36065,6 @@ class CancipView extends ItemView {
     ].includes(normalizeCommandBusName(run.action.command)));
   }
 
-  private processStepPlanReference(step: ProcessRecordStep): string {
-    for (const run of uniqueToolRunsById([
-      ...(step.rendered.message.toolRuns ?? []),
-      ...(step.rendered.message.changedFileRuns ?? [])
-    ])) {
-      if (run.action.type === "command") {
-        const args = isRecord(run.action.args) ? run.action.args : {};
-        const reference = stringArg(args.planStepId) || stringArg(args.stepId);
-        if (reference) return reference;
-      } else if (run.action.type === "todo") {
-        return run.action.items?.[0]?.id?.trim() || "plan";
-      }
-    }
-    return "";
-  }
-
   private async hydrateProcessSubagentCards(parent: HTMLElement, step: ProcessRecordStep): Promise<void> {
     const runs = this.processStepSubagentRuns(step);
     if (!runs.length) return;
@@ -40879,12 +40863,18 @@ class CancipView extends ItemView {
             : "action";
     const reasoning = stage === "context"
       ? (chinese
-          ? `先提取与${task ? `“${task}”` : "当前任务"}直接相关的上下文，减少无关发送。`
-          : `First gather only context directly relevant to ${task ? `"${task}"` : "the task"} to avoid unrelated input.`)
+          ? `为${task ? `“${task}”` : "当前任务"}准备最小上下文，只提取直接相关来源。`
+          : `Prepare minimal context for ${task ? `"${task}"` : "the task"}, using only directly relevant sources.`)
       : stage === "model"
         ? (chinese
-            ? `已有上下文需要转成${task ? `“${task}”` : "当前任务"}的可执行动作或终态结论。`
-            : `Turn the available context into an executable action or terminal conclusion for ${task ? `"${task}"` : "the task"}.`)
+            ? /验证结果|复核|最终回答/.test(action)
+              ? `按已返回的真实结果复核${task ? `“${task}”` : "当前任务"}，证据充分才形成最终回答。`
+              : /判断任务|交给模型判断/.test(action)
+                ? `判断${task ? `“${task}”` : "当前任务"}能否直接回答；缺少依据时转向具体来源。`
+                : `把已收集证据整理成${task ? `“${task}”` : "当前任务"}的下一动作或最终结论。`
+            : /verification results?|review|final answer/i.test(action)
+              ? `Review ${task ? `"${task}"` : "the task"} against actual returned results and conclude only when evidence is sufficient.`
+              : `Turn collected evidence into the next action or final conclusion for ${task ? `"${task}"` : "the task"}.`)
         : stage === "automation"
           ? (chinese
               ? `该请求由自动化任务执行，必须保留本次真实运行结果。`
@@ -40921,10 +40911,18 @@ class CancipView extends ItemView {
         : planNext && !samePromptForDedup(planNext, action)
           ? (chinese ? `继续计划：${trimContext(planNext.replace(/\s+/g, " "), 96)}` : `Continue the plan: ${trimContext(planNext.replace(/\s+/g, " "), 96)}`)
           : executing
-            ? (chinese ? "收到真实返回后核对结果，再决定下一动作。" : "Check the actual result when it returns, then choose the next action.")
-            : (chinese
-                ? `核对该结果是否满足${task ? `“${task}”` : "原始要求"}；未满足则继续下一动作。`
-                : `Check whether this satisfies ${task ? `"${task}"` : "the original request"}; continue with the next action if not.`);
+            ? stage === "model"
+              ? (chinese ? "等待模型返回；若提出工具动作就执行并核对真实结果。" : "Wait for the model; execute and verify any proposed tool action.")
+              : (chinese ? `等待“${action}”返回，再按真实结果继续。` : `Wait for "${action}" and continue from its actual result.`)
+            : stage === "context"
+              ? (chinese ? "把最小上下文交给模型，判断是否还需读取具体来源。" : "Pass the minimal context to the model and decide whether a specific source still needs reading.")
+              : stage === "model"
+                ? (chinese
+                    ? `检查回复是否直接满足${task ? `“${task}”` : "原始要求"}；缺证据就继续查具体来源。`
+                    : `Check whether the response directly satisfies ${task ? `"${task}"` : "the request"}; verify a specific source if evidence is missing.`)
+                : (chinese
+                    ? `核对该结果是否满足${task ? `“${task}”` : "原始要求"}；未满足则继续下一动作。`
+                    : `Check whether this satisfies ${task ? `"${task}"` : "the original request"}; continue with the next action if not.`);
     return { reasoning, action, result, next };
   }
 
@@ -47112,10 +47110,31 @@ class CancipView extends ItemView {
     const run = this.latestUsefulStatusRun(runs);
     const promptSnippet = trimContext(originalPrompt.replace(/\s+/g, " ").trim(), 42);
     if (!run) return chinese ? `把“${promptSnippet}”转成一个具体 cancip-action 或具体阻塞` : `turn "${promptSnippet}" into one concrete cancip-action or exact blocker`;
+    const action = run.action;
+    const command = action.type === "command" ? normalizeCommandBusName(action.command) : "";
+    const args = action.type === "command" && isRecord(action.args) ? action.args : {};
+    const commandTarget = action.type === "command"
+      ? compactProcessText(stringArg(args.path) || stringArg(args.query) || stringArg(args.sessionId) || "", 64)
+      : "";
     if (run.status === "pending") return run.reviewRequired
       ? chinese ? `等待审核面板处理 ${this.toolRunStatusActionLabel(run)}` : `wait for review panel decision on ${this.toolRunStatusActionLabel(run)}`
       : chinese ? `等待批准或拒绝 ${this.toolRunStatusActionLabel(run)}` : `wait for approve/reject on ${this.toolRunStatusActionLabel(run)}`;
-    if (run.status === "blocked" || run.status === "rejected") return chinese ? `针对 ${this.toolRunStatusActionLabel(run)} 改用允许路线，或说明这条路的阻塞原因` : `use an allowed route for ${this.toolRunStatusActionLabel(run)}, or state the blocker`;
+    if (run.status === "blocked" || run.status === "rejected") {
+      const duplicate = /重复动作已合并|duplicate action|previous result/i.test(`${run.error ?? ""}\n${run.result ?? ""}`);
+      if (duplicate && command === "cancip.sessionHistory") return chinese
+        ? "复用前次会话回查结果，不再重复调用；按记录中尚缺的来源继续核对"
+        : "reuse the previous session-history result; verify only the source still missing from it";
+      if (duplicate && command === "cancip.openFile") return chinese
+        ? `复用前次已打开的${commandTarget ? `“${trimContext(commandTarget, 52)}”` : "目标文件"}，不再重复打开；继续读取或核对内容`
+        : `reuse the already opened ${commandTarget || "target file"}; read or verify its content instead of reopening it`;
+      if (duplicate && command === "cancip.searchVault") return chinese
+        ? `复用“${trimContext(commandTarget || promptSnippet, 42)}”的前次搜索结果；核对最相关候选，不再重复搜索`
+        : `reuse the prior search for "${trimContext(commandTarget || promptSnippet, 42)}"; verify its best candidate instead of searching again`;
+      if (duplicate) return chinese
+        ? `复用 ${this.toolRunStatusActionLabel(run)} 的前次结果，不再重试相同动作`
+        : `reuse the prior result of ${this.toolRunStatusActionLabel(run)} instead of repeating it`;
+      return chinese ? `针对 ${this.toolRunStatusActionLabel(run)} 改用允许路线，或说明这条路的阻塞原因` : `use an allowed route for ${this.toolRunStatusActionLabel(run)}, or state the blocker`;
+    }
     if (run.status === "failed") {
       const alias = this.commandAliasSuggestionForRun(run);
       if (alias) return chinese ? `把命令改成 ${alias} 后继续执行` : `retry with ${alias}`;
@@ -47127,7 +47146,9 @@ class CancipView extends ItemView {
       }
       return chinese ? `针对${detail ? `“${trimContext(detail, 36)}”` : ` ${this.toolRunStatusActionLabel(run)} 失败`}换更小的读/写/命令动作` : `use a smaller read/write/command for ${detail || this.toolRunStatusActionLabel(run)}`;
     }
-    if (run.status === "executing") return chinese ? "等待工具返回真实结果" : "wait for the tool result";
+    if (run.status === "executing") return chinese
+      ? `等待 ${this.toolRunStatusActionLabel(run)} 返回真实结果`
+      : `wait for the actual result from ${this.toolRunStatusActionLabel(run)}`;
     if (vaultTargetDiscoveryCouldNotFindRequestedOpen(originalPrompt, runs)) {
       return chinese
         ? "没有与用户目标可信匹配的文件；直接说明未找到且未打开无关候选"
@@ -47139,12 +47160,25 @@ class CancipView extends ItemView {
         ? `用 cancip.openFile 打开 ${resolvedOpenPath}；该命令会回读 activeFile，不能用 currentView 代替打开`
         : `open ${resolvedOpenPath} with cancip.openFile; it returns activeFile evidence, so currentView cannot replace the open action`;
     }
-    const action = run.action;
     if (action.type === "command") {
-      const command = normalizeCommandBusName(action.command);
       if (command === "cancip.tools.index") return chinese ? "从索引里选择具体 read/write/command 执行" : "choose a concrete read/write/command from the index";
       if (command === "cancip.findTarget") return chinese ? "读取或操作最匹配目标" : "read or operate on the best target";
       if (command === "obsidian.currentView") return chinese ? "用当前页信息定位目标并继续" : "use the current view to locate the target";
+      if (command === "cancip.subagents.parallel" || command === "cancip.subagents.start") {
+        const childFailed = /子 agent 失败|subagent failed|\[失败\]/i.test(`${run.result ?? ""}\n${run.error ?? ""}`);
+        return childFailed
+          ? chinese ? "子 Agent 未取得证据；直接核对它们指向的原始文件或记忆来源" : "the subagents returned no evidence; verify the original files or memories they identified"
+          : chinese ? "汇总各子 Agent 的证据；有冲突时回查原始来源后再下结论" : "merge the subagent evidence; resolve conflicts against the original sources before concluding";
+      }
+      if (command === "cancip.sessionHistory") return chinese
+        ? "按会话记录确认已执行动作和证据缺口，只补查缺失来源"
+        : "use the session record to identify completed actions and verify only missing evidence";
+      if (command === "cancip.openFile") return chinese
+        ? `核对${commandTarget ? `“${trimContext(commandTarget, 52)}”` : "已打开文件"}的实际内容；仅打开不等于完成`
+        : `verify the actual content of ${commandTarget || "the opened file"}; opening alone is not completion`;
+      if (command === "cancip.searchVault") return chinese
+        ? `从“${trimContext(commandTarget || promptSnippet, 42)}”结果中核对最相关候选，再回答或执行`
+        : `verify the best candidate from the "${trimContext(commandTarget || promptSnippet, 42)}" results before answering or acting`;
     }
     if (this.isFileChangeAction(action)) {
       return hasUnverifiedWriteAction(runs)
@@ -47559,12 +47593,12 @@ class CancipView extends ItemView {
   }
 
   private toolRunResultDetailSnippet(run: ToolRun): string {
-    const source = run.error || run.result || "";
+    const source = cleanProgrammaticTruncationMarkers(run.error || run.result || "");
     if (!source.trim()) return "";
     const line = usefulResultLines(source)
       .map((item) => item.replace(/\s+/g, " ").trim())
       .find((item) => item && !item.includes(PROCESS_MESSAGE_MARKER));
-    return line ? trimContext(redactSensitiveText(line), 72) : "";
+    return line ? compactProcessText(redactSensitiveText(line), 72) : "";
   }
 
   private commandAliasSuggestionForRun(run: ToolRun): string {
@@ -48166,20 +48200,79 @@ class CancipView extends ItemView {
     const target = this.actionStatusTarget(run.action) || this.toolRunStatusActionLabel(run);
     const taskSource = taskOverride ?? this.taskControl?.taskGoal ?? this.previousActionableUserPrompt();
     const task = this.conciseProcessTask(taskSource);
-    const action = trimContext(`${this.toolActionKindLabel(run.action)} ${target}`.replace(/\s+/g, " ").trim(), 120);
-    const reasoning = run.action.type === "read"
-      ? (chinese ? `回答或处理${task ? `“${task}”` : "当前任务"}前，先读取 ${target} 的真实内容。` : `Read the actual content of ${target} before answering or handling ${task || "the task"}.`)
+    const action = trimContext(this.describeActionForProcessHeadline(run.action).replace(/\s+/g, " ").trim(), 160);
+    const duplicate = (run.status === "blocked" || run.status === "rejected")
+      && /重复动作已合并|duplicate action|previous result/i.test(`${run.error ?? ""}\n${run.result ?? ""}`);
+    const reasoning = duplicate
+      ? this.duplicateToolRunReasoning(run.action)
+      : run.action.type === "read"
+      ? (chinese ? `读取“${target}”的真实内容，核对${task ? `“${task}”` : "当前任务"}所需证据。` : `Read the actual content of ${target} to verify evidence needed for ${task || "the task"}.`)
       : run.action.type === "command"
-        ? (chinese ? `${target} 提供所需能力，应调用真实命令而不是用文字模拟。` : `${target} provides the needed capability and must be called rather than simulated in prose.`)
+        ? this.commandRunReasoning(run.action, task)
         : this.isFileChangeAction(run.action)
-          ? (chinese ? `目标和改动要求已明确，需要对 ${target} 执行受审核的真实修改。` : `The target and requested change are known, so apply a real reviewed change to ${target}.`)
-          : (chinese ? `${task ? `完成“${task}”` : "完成当前任务"}需要执行 ${action} 并检查返回。` : `${task ? `Completing "${task}"` : "Completing the task"} requires ${action} and checking its result.`);
+          ? (chinese ? `按要求修改“${target}”，并保留审核与读回证据。` : `Change ${target} as requested and retain review and readback evidence.`)
+          : (chinese ? `执行“${action}”，取得${task ? `“${task}”` : "当前任务"}所需的可核对结果。` : `Run ${action} to obtain a verifiable result for ${task || "the task"}.`);
     return {
       reasoning,
       action,
       result: this.structuredToolResultLine(run),
       next: this.toolRunsNextStepText([run], task || this.previousActionableUserPrompt())
     };
+  }
+
+  private commandRunReasoning(action: Extract<CancipAction, { type: "command" }>, task: string): string {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const command = normalizeCommandBusName(action.command);
+    const args = isRecord(action.args) ? action.args : {};
+    const query = compactProcessText(stringArg(args.query), 60);
+    const path = compactProcessText(stringArg(args.path), 68);
+    const sessionId = compactProcessText(stringArg(args.sessionId), 56);
+    if (command === "cancip.subagents.parallel" || command === "cancip.subagents.start") {
+      const agents = Array.isArray(args.agents) ? args.agents.filter(isRecord) : [];
+      const tasks = uniqueStrings(agents
+        .map((agent) => stringArg(agent.task))
+        .filter(Boolean)
+        .map(subagentProcessTaskLabel))
+        .slice(0, 2);
+      const count = Math.max(agents.length, command === "cancip.subagents.start" ? 1 : 0);
+      const focus = tasks.length ? tasks.map((item) => `“${item}”`).join("、") : (task ? `“${task}”` : "当前任务");
+      return chinese
+        ? `并行让 ${count || 2} 个子 Agent 分别核对${focus}${task ? `，交叉验证“${task}”` : ""}。`
+        : `Run ${count || 2} subagents in parallel on ${focus} and cross-check their independent results.`;
+    }
+    if (command === "cancip.sessionHistory") return chinese
+      ? `回查会话“${trimContext(sessionId || "当前会话", 48)}”，确认已执行动作和仍缺证据。`
+      : `Review session ${trimContext(sessionId || "current session", 48)} to identify completed actions and missing evidence.`;
+    if (command === "cancip.searchVault") return chinese
+      ? `在 Vault 搜索“${trimContext(query || task || "当前目标", 52)}”，找到可核对的相关来源。`
+      : `Search the Vault for "${trimContext(query || task || "the current target", 52)}" to find verifiable sources.`;
+    if (command === "cancip.openFile") return chinese
+      ? `打开“${trimContext(path || query || "目标文件", 58)}”，核对其中与${task ? `“${task}”` : "当前任务"}相关的内容。`
+      : `Open ${trimContext(path || query || "the target file", 58)} and verify content relevant to ${task || "the task"}.`;
+    const argsText = commandArgsForProcessHeadline(action.args);
+    return chinese
+      ? `调用 ${command}${argsText ? `（${argsText}）` : ""}，取得${task ? `“${task}”` : "当前任务"}所需的真实结果。`
+      : `Call ${command}${argsText ? ` (${argsText})` : ""} to obtain an actual result for ${task || "the task"}.`;
+  }
+
+  private duplicateToolRunReasoning(action: CancipAction): string {
+    const chinese = isChineseLanguage(this.plugin.language());
+    if (action.type !== "command") return chinese
+      ? `识别到“${compactProcessText(describeActionPlain(action), 72)}”与前次动作重复，复用已有结果。`
+      : `Detected that ${compactProcessText(describeActionPlain(action), 72)} repeats a prior action; reuse its result.`;
+    const command = normalizeCommandBusName(action.command);
+    const args = isRecord(action.args) ? action.args : {};
+    const target = compactProcessText(stringArg(args.path) || stringArg(args.query) || stringArg(args.sessionId), 64);
+    const label = command === "cancip.sessionHistory"
+      ? (chinese ? "会话回查" : "session review")
+      : command === "cancip.searchVault"
+        ? (chinese ? "Vault 搜索" : "Vault search")
+        : command === "cancip.openFile"
+          ? (chinese ? "文件打开" : "file open")
+          : command;
+    return chinese
+      ? `识别到${label}${target ? `“${target}”` : ""}重复，阻止重跑并复用前次结果。`
+      : `Detected a duplicate ${label}${target ? ` for "${target}"` : ""}; block the rerun and reuse the prior result.`;
   }
 
   private startToolRunTimer(run: ToolRun, startedAt: number): void {
@@ -57841,6 +57934,62 @@ class CancipView extends ItemView {
     return output;
   }
 
+  private mergeToolContinuationSteps(steps: ProcessRecordStep[]): ProcessRecordStep[] {
+    const output: ProcessRecordStep[] = [];
+    for (const step of steps) {
+      const previous = output[output.length - 1];
+      const previousRuns = previous
+        ? uniqueToolRunsById([...(previous.rendered.message.toolRuns ?? []), ...(previous.rendered.message.changedFileRuns ?? [])])
+        : [];
+      const content = step.rendered.message.content;
+      const continuation = previousRuns.length > 0
+        && !(step.rendered.message.toolRuns?.length || step.rendered.message.changedFileRuns?.length)
+        && isProgressMessage(content)
+        && /(?:^|\s)(?:结果|result)\s*[:：]/i.test(content)
+        && /(?:下一步|next)\s*[:：]/i.test(content);
+      if (!previous || !continuation) {
+        output.push(step);
+        continue;
+      }
+      const merged = this.mergeProcessRecordSteps(previous, step);
+      merged.brief = { ...previous.brief };
+      merged.count = previous.count;
+      merged.elapsedMs = Math.max(0, previous.elapsedMs) + Math.max(0, step.elapsedMs);
+      output[output.length - 1] = merged;
+    }
+    return output;
+  }
+
+  private collapseProgrammaticModelSteps(steps: ProcessRecordStep[]): ProcessRecordStep[] {
+    const output: ProcessRecordStep[] = [];
+    for (let index = 0; index < steps.length; index += 1) {
+      const step = steps[index];
+      const runs = uniqueToolRunsById([...(step.rendered.message.toolRuns ?? []), ...(step.rendered.message.changedFileRuns ?? [])]);
+      if (runs.length || !isProgressMessage(step.rendered.message.content)) {
+        output.push(step);
+        continue;
+      }
+      const continuation = /(?:^|\s)(?:结果|result)\s*[:：]/i.test(step.rendered.message.content)
+        && /(?:下一步|next)\s*[:：]/i.test(step.rendered.message.content);
+      if (continuation) {
+        output.push(step);
+        continue;
+      }
+      const next = steps[index + 1];
+      const nextRuns = next
+        ? uniqueToolRunsById([...(next.rendered.message.toolRuns ?? []), ...(next.rendered.message.changedFileRuns ?? [])])
+        : [];
+      if (!next || !nextRuns.length) continue;
+      const merged = this.mergeProcessRecordSteps(next, step);
+      merged.brief = { ...next.brief };
+      merged.count = next.count;
+      merged.elapsedMs = Math.max(0, step.elapsedMs) + Math.max(0, next.elapsedMs);
+      output.push(merged);
+      index += 1;
+    }
+    return output;
+  }
+
   private mergeProcessRecordSteps(left: ProcessRecordStep, right: ProcessRecordStep): ProcessRecordStep {
     const mergedMessage: ChatMessage = {
       ...left.rendered.message,
@@ -57938,7 +58087,8 @@ class CancipView extends ItemView {
         };
       })
       .filter((step) => step.headline && (step.hasDetail || step.headline.length > 0));
-    const steps = this.dedupeProcessRecordSteps(rawSteps);
+    const concreteSteps = this.collapseProgrammaticModelSteps(rawSteps);
+    const steps = this.dedupeProcessRecordSteps(this.mergeToolContinuationSteps(concreteSteps));
     if (!steps.length) return;
     const processFoldKey = this.processRecordFoldKey(items);
     const item = this.messagesEl.createDiv({ cls: "obcc-message obcc-assistant is-process-record" });
@@ -57953,17 +58103,19 @@ class CancipView extends ItemView {
     const body = details.createDiv({ cls: "obcc-process-body" });
     for (const [index, stepInfo] of steps.entries()) {
       const stepFoldKey = `${processFoldKey}:step-${stepInfo.rendered.message.id}`;
-      const step = body.createEl("details", { cls: "obcc-process-step" });
+      const step = body.createDiv({ cls: "obcc-process-step" });
+      const stepDetails = step.createEl("details", { cls: "obcc-process-step-details" });
       const subagentRuns = this.processStepSubagentRuns(stepInfo);
       const stepRuns = uniqueToolRunsById([...(stepInfo.rendered.message.toolRuns ?? []), ...(stepInfo.rendered.message.changedFileRuns ?? [])]);
-      const isLiveStep = this.progressStepTimers.has(stepInfo.rendered.message.id)
-        || stepRuns.some((run) => run.status === "executing");
       const needsIntervention = stepRuns.some((run) => run.status === "pending");
-      this.wireDetails(step, `process-step:${stepFoldKey}`, isLiveStep || needsIntervention, false, true);
-      const stepHead = this.createProcessSummary(step, "");
+      this.wireDetails(stepDetails, `process-step:${stepFoldKey}`, needsIntervention, false, true);
+      const stepHead = this.createProcessSummary(stepDetails, "");
       stepHead.addClass("obcc-process-step-head");
       stepHead.createSpan({ cls: "obcc-process-step-index", text: String(index + 1) });
-      const stepTitle = stepHead.createSpan({ cls: "obcc-process-step-title" });
+      const stepTitle = stepHead.createSpan({
+        cls: "obcc-process-step-title",
+        attr: { title: stepInfo.count > 1 ? `${stepInfo.headline} x${stepInfo.count}` : stepInfo.headline }
+      });
       if (stepInfo.rendered.message.automationTitle) {
         const automationBadge = stepTitle.createSpan({
           cls: "obcc-process-automation-badge",
@@ -57972,28 +58124,34 @@ class CancipView extends ItemView {
         setIcon(automationBadge.createSpan({ cls: "obcc-process-automation-badge-icon" }), "clock-3");
         automationBadge.createSpan({ text: trimContext(stepInfo.rendered.message.automationTitle, 28) });
       }
-      stepTitle.createSpan({ text: stepInfo.count > 1 ? `${stepInfo.headline} x${stepInfo.count}` : stepInfo.headline });
-      const planReference = this.processStepPlanReference(stepInfo);
-      if (planReference) {
-        const todos = this.modelPlanTodos();
-        const done = todos.filter((todo) => todo.done).length;
-        const current = todos.length ? Math.max(1, Math.min(todos.length, done + 1)) : index + 1;
-        const planButton = stepHead.createEl("button", {
-          cls: "obcc-process-step-plan-button",
-          attr: {
-            type: "button",
-            title: this.t("planPanelTitle"),
-            "aria-label": `${this.t("planPanelTitle")} ${index + 1}`,
-            "data-plan-step-reference": planReference
-          }
+      const thought = compactProcessText(stepInfo.brief.reasoning || stepInfo.headline, 180);
+      stepTitle.createSpan({ cls: "obcc-process-step-thought", text: stepInfo.count > 1 ? `${thought} x${stepInfo.count}` : thought });
+      const next = compactProcessText(stepInfo.brief.next, 150);
+      if (next && !samePromptForDedup(next, thought)) {
+        const nextRow = stepTitle.createSpan({ cls: "obcc-process-step-next" });
+        nextRow.createSpan({ cls: "obcc-process-step-next-label", text: isChineseLanguage(this.plugin.language()) ? "下一步" : "Next" });
+        nextRow.createSpan({ text: next });
+      }
+      const changedFiles = this.changedFileEntriesForRuns(stepRuns);
+      if (changedFiles.length) {
+        const totals = this.liveChangedFileTotals(changedFiles);
+        const compact = [
+          `${this.t("changedFiles")} ${changedFiles.length}`,
+          totals.added ? `+${totals.added}` : "",
+          totals.removed ? `-${totals.removed}` : ""
+        ].filter(Boolean).join(" · ");
+        const filesButton = stepHead.createEl("button", {
+          cls: "obcc-process-step-files-button",
+          attr: { type: "button", title: compact, "aria-label": compact }
         });
-        setIcon(planButton.createSpan({ cls: "obcc-process-step-plan-icon" }), "list-checks");
-        planButton.createSpan({ text: todos.length ? this.t("planProgress", { current, total: todos.length }) : this.t("planPanelTitle") });
-        planButton.createSpan({ cls: "obcc-process-step-plan-number", text: `#${index + 1}` });
-        planButton.addEventListener("click", (event) => {
+        setIcon(filesButton.createSpan({ cls: "obcc-process-step-files-icon" }), "files");
+        filesButton.createSpan({ text: String(changedFiles.length) });
+        if (totals.added) filesButton.createSpan({ cls: "obcc-process-step-files-delta is-added", text: `+${totals.added}` });
+        if (totals.removed) filesButton.createSpan({ cls: "obcc-process-step-files-delta is-removed", text: `-${totals.removed}` });
+        filesButton.addEventListener("click", (event) => {
           event.preventDefault();
           event.stopPropagation();
-          this.togglePlanMenu();
+          this.openLiveFilesMenu(changedFiles);
         });
       }
       const fallbackElapsed = index + 1 < steps.length
@@ -58004,29 +58162,29 @@ class CancipView extends ItemView {
         text: formatStepElapsed(stepInfo.elapsedMs || fallbackElapsed),
         attr: { "data-process-step-timer-message-id": stepInfo.rendered.message.id }
       });
-      if (!stepInfo.hasDetail) continue;
-      const stepBody = step.createDiv({ cls: "obcc-process-step-detail-body" });
-      this.renderProcessStepBrief(stepBody, stepInfo.brief);
-      if (stepInfo.readableDetail) {
-        const readableSection = stepBody.createDiv({ cls: "obcc-process-inline-section is-explanation" });
-        this.createProcessInlineSectionTitle(readableSection, isChineseLanguage(this.plugin.language()) ? "说明" : "Explanation", "message-square-text");
-        const readable = readableSection.createDiv({ cls: "obcc-process-step-readable markdown-rendered" });
-        this.renderWhenProcessStepOpen(readable, () => this.renderMarkdown(readable, stepInfo.readableDetail));
-      }
-      if (stepInfo.auditSections.length || stepInfo.detail) {
-        this.renderStructuredProcessDetail(stepBody, stepInfo.detail, stepFoldKey, stepInfo.auditSections);
+      if (stepInfo.hasDetail) {
+        const stepBody = stepDetails.createDiv({ cls: "obcc-process-step-detail-body" });
+        if (!stepRuns.length) this.renderProcessStepBrief(stepBody, stepInfo.brief);
+        if (stepInfo.readableDetail) {
+          const readableSection = stepBody.createDiv({ cls: "obcc-process-inline-section is-explanation" });
+          this.createProcessInlineSectionTitle(readableSection, isChineseLanguage(this.plugin.language()) ? "说明" : "Explanation", "message-square-text");
+          const readable = readableSection.createDiv({ cls: "obcc-process-step-readable markdown-rendered" });
+          this.renderWhenProcessStepOpen(readable, () => this.renderMarkdown(readable, stepInfo.readableDetail));
+        }
+        if (stepInfo.auditSections.length || stepInfo.detail) {
+          this.renderStructuredProcessDetail(stepBody, stepInfo.detail, stepFoldKey, stepInfo.auditSections);
+        }
+        this.renderHiddenToolJson(stepBody, stepInfo.blocks, stepInfo.rendered.display.hasProcessFold, true);
+        this.renderToolRuns(stepBody, stepInfo.rendered.message, true);
       }
       if (subagentRuns.length) {
-        const cards = stepBody.createDiv({
+        const cards = step.createDiv({
           cls: "obcc-process-subagent-cards is-loading",
           attr: { "data-process-subagent-message-id": stepInfo.rendered.message.id }
         });
         void this.hydrateProcessSubagentCards(cards, stepInfo);
       }
-      this.renderHiddenToolJson(stepBody, stepInfo.blocks, stepInfo.rendered.display.hasProcessFold, true);
-      this.renderToolRuns(stepBody, stepInfo.rendered.message, true);
     }
-    this.renderProcessRecordMeta(body, items);
   }
 
   private processBriefForMessage(message: ChatMessage, headline: string, readableDetail: string): ProcessStepBrief {
@@ -58061,13 +58219,10 @@ class CancipView extends ItemView {
   private renderProcessStepBrief(parent: HTMLElement, brief: ProcessStepBrief): void {
     const chinese = isChineseLanguage(this.plugin.language());
     const section = parent.createDiv({ cls: "obcc-process-step-brief" });
-    const rows: Array<[string, string, string]> = [
-      [chinese ? "推理摘要" : "Reasoning", brief.reasoning, "brain"],
-      [chinese ? "执行动作" : "Action", brief.action, "play"],
-      [chinese ? "实际结果" : "Result", brief.result, "circle-check-big"],
-      [chinese ? "下一步" : "Next", brief.next, "arrow-right"]
-    ];
+    const actionAndResult = [brief.action.trim(), brief.result.trim()].filter(Boolean).join(chinese ? "；结果：" : "; result: ");
+    const rows: Array<[string, string, string]> = [[chinese ? "动作与结果" : "Action & result", actionAndResult, "play"]];
     for (const [label, value, icon] of rows) {
+      if (!value.trim()) continue;
       const row = section.createDiv({ cls: "obcc-process-step-brief-row" });
       const labelEl = row.createDiv({ cls: "obcc-process-step-brief-label" });
       setIcon(labelEl.createSpan({ cls: "obcc-process-step-brief-icon" }), icon);
@@ -58087,60 +58242,6 @@ class CancipView extends ItemView {
     const stored = progressElapsedMsFromContent(message.content);
     if (stored !== null) return stored;
     return this.progressStepTimers.has(message.id) ? Math.max(0, Date.now() - message.createdAt) : 0;
-  }
-
-  private processRecordMetaLabel(items: RenderedMessage[]): string {
-    const todos = this.modelPlanTodos();
-    const processRuns = uniqueToolRunsById(items.flatMap((item) => [
-      ...(item.message.toolRuns ?? []),
-      ...(item.message.changedFileRuns ?? [])
-    ]));
-    const files = this.changedFileEntriesForRuns(processRuns);
-    const parts: string[] = [];
-    if (todos.length) {
-      const done = todos.filter((todo) => todo.done).length;
-      const current = Math.max(1, Math.min(todos.length, done + 1));
-      parts.push(this.t("planProgress", { current, total: todos.length }));
-    }
-    if (files.length) {
-      const totals = this.liveChangedFileTotals(files);
-      parts.push([
-        `${this.t("changedFiles")} ${files.length}`,
-        totals.added ? `+${totals.added}` : "",
-        totals.removed ? `-${totals.removed}` : ""
-      ].filter(Boolean).join(" "));
-    }
-    return parts.join(" · ");
-  }
-
-  private renderProcessRecordMeta(parent: HTMLElement, items: RenderedMessage[]): void {
-    const processRuns = uniqueToolRunsById(items.flatMap((item) => [
-      ...(item.message.toolRuns ?? []),
-      ...(item.message.changedFileRuns ?? [])
-    ]));
-    const files = this.changedFileEntriesForRuns(processRuns);
-    if (!files.length) return;
-    const meta = parent.createDiv({ cls: "obcc-process-record-meta" });
-    if (files.length) {
-      const totals = this.liveChangedFileTotals(files);
-      const compact = [
-        `${this.t("changedFiles")} ${files.length}`,
-        totals.added ? `+${totals.added}` : "",
-        totals.removed ? `-${totals.removed}` : ""
-      ].filter(Boolean).join(" · ");
-      const button = meta.createEl("button", {
-        cls: "obcc-process-record-meta-button is-files",
-        attr: { type: "button", title: compact, "aria-label": compact }
-      });
-      button.createSpan({ text: `${this.t("changedFiles")} ${files.length}` });
-      if (totals.added) button.createSpan({ cls: "obcc-process-record-meta-delta is-added", text: `+${totals.added}` });
-      if (totals.removed) button.createSpan({ cls: "obcc-process-record-meta-delta is-removed", text: `-${totals.removed}` });
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        this.toggleLiveFilesMenu();
-      });
-    }
   }
 
   private splitProcessAuditSections(detail: string, depth = 0): ProcessAuditSection[] {
@@ -58270,9 +58371,8 @@ class CancipView extends ItemView {
     copy.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const value = preserveRaw ? content : maxChars > 0
-        ? trimContext(redactSensitiveText(content), maxChars)
-        : redactSensitiveText(content);
+      const cleanContent = preserveRaw ? content : cleanProgrammaticTruncationMarkers(redactSensitiveText(content));
+      const value = !preserveRaw && maxChars > 0 ? trimContext(cleanContent, maxChars) : cleanContent;
       void this.copyTextDirect(value, this.t("copyDone"));
     });
     const wrapButton = actions.createEl("button", {
@@ -58304,9 +58404,8 @@ class CancipView extends ItemView {
     let pendingScrollLeft = this.processDetailScrollLeft.get(stateKey) ?? 0;
     const load = () => {
       if (pre.dataset.loaded === "true") return;
-      const value = preserveRaw ? content : maxChars > 0
-        ? trimContext(redactSensitiveText(content), maxChars)
-        : redactSensitiveText(content);
+      const cleanContent = preserveRaw ? content : cleanProgrammaticTruncationMarkers(redactSensitiveText(content));
+      const value = !preserveRaw && maxChars > 0 ? trimContext(cleanContent, maxChars) : cleanContent;
       code.setText(value);
       pre.dataset.loaded = "true";
       if (pendingScrollLeft > 0) window.requestAnimationFrame(() => { scroller.scrollLeft = pendingScrollLeft; });
@@ -58343,7 +58442,7 @@ class CancipView extends ItemView {
   }
 
   private renderWhenProcessStepOpen(parent: HTMLElement, render: () => void): void {
-    const step = parent.closest<HTMLDetailsElement>("details.obcc-process-step");
+    const step = parent.closest<HTMLDetailsElement>("details.obcc-process-step-details");
     const record = parent.closest<HTMLDetailsElement>("details.obcc-process-record-details");
     let rendered = false;
     const cleanup = () => {
@@ -58843,8 +58942,13 @@ class CancipView extends ItemView {
         head.createSpan({ cls: "obcc-tool-run-summary", text: group.count > 1 ? `${conciseSummary} x${group.count}` : conciseSummary });
       } else {
         const explanation = row.createDiv({ cls: "obcc-process-tool-explanation" });
-        this.createProcessInlineSectionTitle(explanation, isChineseLanguage(this.plugin.language()) ? "动作" : "Action", "play");
-        explanation.createDiv({ cls: "obcc-process-tool-explanation-text", text: this.toolRunProcessExplanation(run, group.count) });
+        this.createProcessInlineSectionTitle(explanation, isChineseLanguage(this.plugin.language()) ? "动作与结果" : "Action & result", "play");
+        const action = trimContext(this.describeActionForProcessHeadline(run.action).replace(/\s+/g, " ").trim(), 160);
+        const result = this.structuredToolResultLine(run);
+        explanation.createDiv({
+          cls: "obcc-process-tool-explanation-text",
+          text: [group.count > 1 ? `${action} x${group.count}` : action, result].filter(Boolean).join(isChineseLanguage(this.plugin.language()) ? "；结果：" : "; result: ")
+        });
       }
       if (run.status === "pending") {
         row.addClass("is-approval-required");
@@ -58882,7 +58986,7 @@ class CancipView extends ItemView {
       if (detail) {
         if (inlineDetails) {
           const details = row.createDiv({ cls: "obcc-tool-run-details obcc-process-inline-section" });
-          this.createProcessInlineSectionTitle(details, isChineseLanguage(this.plugin.language()) ? "结果" : "Result", "file-output");
+          this.createProcessInlineSectionTitle(details, isChineseLanguage(this.plugin.language()) ? "原始结果" : "Raw result", "file-output");
           const raw = this.createProcessRawBlock(
             details,
             detail,
@@ -70063,10 +70167,37 @@ function commandArgsForProcessHeadline(args: Record<string, unknown> | undefined
   const parts: string[] = [];
   for (const key of keys) {
     const value = args[key];
-    if (typeof value === "string" && value.trim()) parts.push(`${key}=${JSON.stringify(trimContext(value.trim(), 50))}`);
+    if (typeof value === "string" && value.trim()) parts.push(`${key}=${JSON.stringify(compactProcessText(value, 50))}`);
     else if (typeof value === "number" || typeof value === "boolean") parts.push(`${key}=${String(value)}`);
   }
   return parts.slice(0, 4).join(" ");
+}
+
+function compactProcessText(value: string, maxChars: number): string {
+  const normalized = redactSensitiveText(value)
+    .replace(/\s*\.{0,3}\[truncated(?::|\s)[^\]]+\]\s*/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const limit = Math.max(8, Math.floor(maxChars));
+  if (normalized.length <= limit) return normalized;
+  return `${normalized.slice(0, Math.max(1, limit - 1)).trimEnd()}…`;
+}
+
+function cleanProgrammaticTruncationMarkers(value: string): string {
+  return value
+    .replace(/\s*\.{0,3}\[truncated(?::|\s)[^\]]+\]\s*/gi, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function subagentProcessTaskLabel(value: string): string {
+  const normalized = compactProcessText(value, 120);
+  if (/(?:检索|搜索|search).{0,36}(?:记忆|memor)/i.test(normalized) && /身份|称呼|identity|name/i.test(normalized)) return "身份与称呼记忆";
+  if (/profile\.md/i.test(normalized) && /身份|identity/i.test(normalized)) return "PROFILE.md 身份字段";
+  if (/记忆|memor/i.test(normalized) && /身份|称呼|identity|name/i.test(normalized)) return "身份与称呼记忆";
+  const path = normalized.match(/(?:[\w.-]+\/)+[\w .()\-]+\.(?:md|json|pdf|txt|html?)/i)?.[0];
+  if (path) return `文件 ${compactProcessText(path, 34)}`;
+  return compactProcessText(normalized.split(/[，。；;.!?]/)[0] || normalized, 34);
 }
 
 function formatInstalledPluginsSummary(plugins: InstalledPluginInfo[], enabledCount: number, includeDisabled: boolean): string {
@@ -74517,7 +74648,7 @@ function prepareMessageDisplay(content: string): MessageDisplay {
     || baseContent.includes(PROCESS_MESSAGE_MARKER)
     || isLegacyProgressStatusMessage(baseContent);
   let processOnly = explicitlyProcessOnly || isModelFailureVisibleText(baseContent);
-  let visibleContent = stripFinalReviewMetadata(stripModelRunStatsLines(baseContent)).replace(/(`{3,})([^\n`]*)\n?([\s\S]*?)\1/g, (full: string, _fence: string, rawLang: string, body: string) => {
+  let visibleContent = cleanProgrammaticTruncationMarkers(stripFinalReviewMetadata(stripModelRunStatsLines(baseContent))).replace(/(`{3,})([^\n`]*)\n?([\s\S]*?)\1/g, (full: string, _fence: string, rawLang: string, body: string) => {
     const lang = rawLang.replace(/^`+/, "").trim().toLowerCase();
     const trimmed = body.trim();
     if (trimmed && shouldFoldCodeBlock(lang, trimmed)) {
