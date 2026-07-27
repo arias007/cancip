@@ -17235,7 +17235,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
             this.contextEditBubbleAnchor = contextAnchor;
             this.contextEditBubbleSurface = contextAnchor.surface;
             if (!this.contextEditBubbleEl.hasClass("is-loading") && !this.contextEditBubbleEl.querySelector(".obcc-context-edit-proposal")) {
-              this.showContextEditMarker(contextAnchor, false);
+              this.showContextEditInputMarker(contextAnchor, false);
             }
             return;
           }
@@ -17346,8 +17346,12 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         ? this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY)
         : null;
       if (contextAnchor) {
-        event.preventDefault();
-        event.stopPropagation();
+        // Keep Obsidian/Android's native selection toolbar (especially Copy) for text selections.
+        // Blank-caret and positional anchors still need Cancip to own the context menu.
+        if (contextAnchor.kind !== "selection") {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         this.clearButtonEditLongPress();
         contextEditLongPressOpened = true;
         this.showContextEditBubble(contextAnchor, event.clientX, event.clientY);
@@ -17510,8 +17514,10 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         if (!this.settings.contextualEditingEnabled) return;
         const anchor = this.contextEditAnchorForTarget(event.target, event.clientX, event.clientY, file, doc?.body);
         if (!anchor) return;
-        event.preventDefault();
-        event.stopPropagation();
+        if (anchor.kind !== "selection") {
+          event.preventDefault();
+          event.stopPropagation();
+        }
         this.clearButtonEditLongPress();
         opened = true;
         const point = parentPoint(event.clientX, event.clientY);
@@ -18052,6 +18058,15 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     return result.join("\n");
   }
 
+  private showContextEditInputMarker(anchor: ContextualEditAnchor, loading: boolean): void {
+    if (anchor.kind === "blank-caret") {
+      this.contextEditMarkerEl?.remove();
+      this.contextEditMarkerEl = null;
+      return;
+    }
+    this.showContextEditMarker(anchor, loading);
+  }
+
   private showContextEditBubble(anchor: ContextualEditAnchor, x: number, y: number): void {
     if (!this.settings.contextualEditingEnabled) return;
     this.hideContextEditBubble();
@@ -18067,7 +18082,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
     const bubble = doc.body.createDiv({ cls: "obcc-context-edit-bubble" });
     this.contextEditBubbleSurface = surface;
     this.contextEditBubbleAnchor = anchor;
-    this.showContextEditMarker(anchor, false);
+    this.showContextEditInputMarker(anchor, false);
     const input = bubble.createEl("textarea", {
       cls: "obcc-context-edit-input",
       attr: { rows: "2", placeholder, "aria-label": placeholder }
@@ -18116,7 +18131,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
       setIcon(submit, "ellipsis");
       bubble.addClass("is-loading");
       const effectiveAnchor = this.contextEditBubbleAnchor ?? anchor;
-      this.showContextEditMarker(effectiveAnchor, true);
+      this.showContextEditInputMarker(effectiveAnchor, true);
       try {
         const proposal = await this.submitContextualEdit(effectiveAnchor, instruction);
         if (!bubble.isConnected) {
@@ -18336,7 +18351,7 @@ Short-term and project-specific state for Cancip. Keep this file concise and upd
         bubble.removeClass("is-proposal-ready");
         this.contextEditMarkerEl?.remove();
         this.contextEditMarkerEl = null;
-        if (this.contextEditBubbleAnchor) this.showContextEditMarker(this.contextEditBubbleAnchor, false);
+        if (this.contextEditBubbleAnchor) this.showContextEditInputMarker(this.contextEditBubbleAnchor, false);
         input.disabled = false;
         input.removeClass("is-hidden");
         cancip.disabled = false;
