@@ -2785,12 +2785,59 @@ details.obcc-process-step {
 }
 
 .obcc-search-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-height: 16px;
   color: var(--text-muted);
   font-size: var(--font-ui-smaller);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.obcc-search-status.is-empty .obcc-search-status-icon {
+  display: none;
+}
+
+.obcc-search-status-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-search-status-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-search-status-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.obcc-search-status.is-searching {
+  color: var(--interactive-accent);
+}
+
+.obcc-search-status.is-searching .obcc-search-status-icon {
+  animation: obcc-search-status-spin 900ms linear infinite;
+}
+
+.obcc-search-status.is-complete {
+  color: var(--color-green);
+}
+
+.obcc-search-status.is-error {
+  color: var(--color-red);
+}
+
+@keyframes obcc-search-status-spin {
+  to { transform: rotate(360deg); }
 }
 
 .obcc-search-results {
@@ -2885,17 +2932,50 @@ details.obcc-process-step {
 }
 
 .obcc-search-more {
-  margin-top: 5px;
-  border-top: 1px solid var(--background-modifier-border);
+  margin-top: 8px;
+  padding-top: 2px;
+  border-top: 0;
 }
 
-.obcc-search-more-summary {
+.obcc-search-more-divider {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   min-height: 30px;
-  padding: 6px 8px;
-  color: var(--text-muted);
-  cursor: pointer;
+  margin: 2px 5px 5px;
+  padding: 5px 9px;
+  overflow: hidden;
+  border-block: 1px solid color-mix(in srgb, var(--interactive-accent) 46%, var(--background-modifier-border));
+  color: color-mix(in srgb, var(--interactive-accent) 72%, var(--text-normal));
+  background: color-mix(in srgb, var(--interactive-accent) 7%, var(--background-primary));
   font-size: var(--font-ui-small);
   font-weight: 600;
+  letter-spacing: 0;
+}
+
+.obcc-search-more-divider::after {
+  content: "";
+  position: absolute;
+  right: 8px;
+  bottom: 4px;
+  left: 8px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--interactive-accent), var(--color-cyan, var(--interactive-accent)), transparent);
+  opacity: 0.68;
+}
+
+.obcc-search-more-divider-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  filter: drop-shadow(0 0 5px color-mix(in srgb, var(--interactive-accent) 70%, transparent));
+}
+
+.obcc-search-more-divider-icon svg {
+  width: 15px;
+  height: 15px;
 }
 
 .obcc-search-more-results {
@@ -5130,11 +5210,65 @@ details.obcc-process-step {
 }
 
 .obcc-search-section-explanation {
-  padding: 0 8px 5px;
+  min-width: 0;
+  margin: 0 4px 3px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--interactive-accent) 22%, var(--background-modifier-border));
+  border-radius: 4px;
   color: var(--text-muted);
+  background: color-mix(in srgb, var(--interactive-accent) 4%, var(--background-primary));
   font-size: var(--font-ui-smaller);
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+.obcc-search-section-explanation.is-empty {
+  display: none;
+}
+
+.obcc-search-explanation-summary {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 7px;
+  color: var(--text-muted);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.obcc-search-explanation-summary::-webkit-details-marker {
+  display: none;
+}
+
+.obcc-search-explanation-summary::after {
+  content: "›";
+  margin-inline-start: auto;
+  color: var(--text-faint);
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.obcc-search-section-explanation[open] > .obcc-search-explanation-summary::after {
+  transform: rotate(-90deg);
+}
+
+.obcc-search-explanation-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--interactive-accent);
+}
+
+.obcc-search-explanation-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-search-explanation-text {
+  padding: 0 8px 7px 26px;
+  color: var(--text-muted);
 }
 
 .obcc-search-section-results {
