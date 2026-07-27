@@ -83,6 +83,7 @@ type ChatMessage = {
   };
   automationTaskId?: string;
   automationTitle?: string;
+  processBrief?: ProcessStepBrief;
   processAuditSections?: ProcessAuditSection[];
 };
 
@@ -1680,6 +1681,13 @@ type ProcessAuditSection = {
   raw?: boolean;
 };
 
+type ProcessStepBrief = {
+  reasoning: string;
+  action: string;
+  result: string;
+  next: string;
+};
+
 type RenderedMessage = {
   message: ChatMessage;
   display: MessageDisplay;
@@ -1689,6 +1697,7 @@ type RenderedMessage = {
 type ProcessRecordStep = {
   rendered: RenderedMessage;
   headline: string;
+  brief: ProcessStepBrief;
   readableDetail: string;
   detail: string;
   blocks: FoldedMessageBlock[];
@@ -36373,6 +36382,7 @@ class CancipView extends ItemView {
       changedFileRuns: normalizeToolRuns(item.changedFileRuns),
       automationTaskId: typeof item.automationTaskId === "string" ? item.automationTaskId : undefined,
       automationTitle: typeof item.automationTitle === "string" ? item.automationTitle : undefined,
+      processBrief: normalizeProcessStepBrief(item.processBrief),
       processAuditSections: normalizeProcessAuditSections(item.processAuditSections)
     };
   }
@@ -37578,8 +37588,10 @@ class CancipView extends ItemView {
   }
 
   private addProgressStep(summary: ProgressStepSummary, detail = "", status = this.t("toolRunExecuting")): ChatMessage {
-    const body = this.formatProgressStep(this.resolveProgressStepSummary(summary), detail, status, 0);
+    const resolvedSummary = this.resolveProgressStepSummary(summary);
+    const body = this.formatProgressStep(resolvedSummary, detail, status, 0);
     const message = this.addMessage("assistant", body);
+    message.processBrief = this.progressStepBrief(resolvedSummary, detail, status);
     this.startProgressStepTimer(message, summary, detail, status);
     this.renderMessagesAfterMutation();
     return message;
@@ -37589,7 +37601,9 @@ class CancipView extends ItemView {
     if (!message) return;
     this.stopProgressStepTimer(message.id);
     const elapsed = Date.now() - message.createdAt;
-    message.content = this.formatProgressStep(this.resolveProgressStepSummary(summary), detail, status, elapsed);
+    const resolvedSummary = this.resolveProgressStepSummary(summary);
+    message.content = this.formatProgressStep(resolvedSummary, detail, status, elapsed);
+    message.processBrief = this.progressStepBrief(resolvedSummary, detail, status);
     void this.saveCurrentSession();
     this.renderMessagesAfterMutation();
   }
@@ -37658,6 +37672,7 @@ class CancipView extends ItemView {
       const now = Date.now();
       const resolvedSummary = this.resolveProgressStepSummary(summary);
       current.content = this.formatProgressStep(resolvedSummary, detail, status, now - current.createdAt);
+      current.processBrief = this.progressStepBrief(resolvedSummary, detail, status);
       const signature = stableTextHash(`${resolvedSummary}\n${detail}\n${status}`);
       if (signature !== renderedSignature && now >= nextRenderAt) {
         renderedSignature = signature;
@@ -40183,6 +40198,116 @@ class CancipView extends ItemView {
       `- ${this.t("subagentDeadline")}: ${deadlineAt}`,
       `- ${this.t("subagentHistoryHint")}`
     ].filter(Boolean).join("\n");
+  }
+
+  private progressStepBrief(
+    summary: string,
+    detail: string,
+    status: string,
+    context: { task?: string; planNext?: string | null } = {}
+  ): ProcessStepBrief {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const action = trimContext(redactSensitiveText(summary).replace(/\s+/g, " ").trim(), 120)
+      || (chinese ? "确认当前步骤" : "Confirm the current step");
+    const taskSource = context.task ?? this.taskControl?.taskGoal ?? this.previousActionableUserPrompt();
+    const task = this.conciseProcessTask(taskSource);
+    const normalized = `${status} ${summary}`.toLowerCase();
+    const failed = /失败|错误|中止|failed|error|aborted/.test(normalized);
+    const blocked = /阻塞|拒绝|blocked|rejected/.test(normalized);
+    const pending = /等待|审核|批准|pending|approval|review/.test(normalized);
+    const executing = !failed && !blocked && !pending && /执行中|生成中|准备中|running|executing|generating|preparing/.test(normalized);
+    const stage = /上下文|context/.test(action)
+      ? "context"
+      : /生成|模型|回复|generat|model|response/.test(action)
+        ? "model"
+        : /自动化|automation/.test(action)
+          ? "automation"
+          : /验证|复核|审核|verify|review/.test(action)
+            ? "verification"
+            : "action";
+    const reasoning = stage === "context"
+      ? (chinese
+          ? `先提取与${task ? `“${task}”` : "当前任务"}直接相关的上下文，减少无关发送。`
+          : `First gather only context directly relevant to ${task ? `"${task}"` : "the task"} to avoid unrelated input.`)
+      : stage === "model"
+        ? (chinese
+            ? `已有上下文需要转成${task ? `“${task}”` : "当前任务"}的可执行动作或终态结论。`
+            : `Turn the available context into an executable action or terminal conclusion for ${task ? `"${task}"` : "the task"}.`)
+        : stage === "automation"
+          ? (chinese
+              ? `该请求由自动化任务执行，必须保留本次真实运行结果。`
+              : "This request runs through automation, so its actual run result must be retained.")
+          : stage === "verification"
+            ? (chinese
+                ? `完成前要用真实结果核对${task ? `“${task}”` : "原始要求"}，不能只凭模型自述。`
+                : `Verify ${task ? `"${task}"` : "the original request"} from actual results before completion, not model claims.`)
+            : (chinese
+                ? `${task ? `完成“${task}”` : "完成当前任务"}需要先取得“${action}”的可验证结果。`
+                : `${task ? `Completing "${task}"` : "Completing the task"} requires a verifiable result from "${action}" first.`);
+    const detailSnippet = this.progressStepDetailSnippet(detail);
+    const result = failed
+      ? (chinese ? `失败：${detailSnippet || action}` : `Failed: ${detailSnippet || action}`)
+      : blocked
+        ? (chinese ? `阻塞：${detailSnippet || action}` : `Blocked: ${detailSnippet || action}`)
+        : pending
+          ? (chinese ? `等待干预：${detailSnippet || action}` : `Waiting for intervention: ${detailSnippet || action}`)
+          : executing
+            ? (chinese ? `进行中：等待“${action}”的真实返回。` : `Running: waiting for the actual result of "${action}".`)
+            : stage === "context"
+              ? (chinese ? "上下文已按需准备；详细来源保留在折叠区。" : "Relevant context is ready; detailed sources remain folded.")
+              : stage === "model"
+                ? (chinese ? "模型回复已返回；原始收发保留在折叠区。" : "The model reply returned; raw exchange remains folded.")
+                : (chinese ? `完成：${detailSnippet || action}` : `Completed: ${detailSnippet || action}`);
+    const candidatePlanNext = context.planNext === undefined
+      ? this.modelPlanTodos().find((todo) => !todo.done)?.text?.trim() ?? ""
+      : context.planNext ?? "";
+    const planNext = this.processPlanStepMatchesTask(candidatePlanNext, task, action) ? candidatePlanNext : "";
+    const next = pending
+      ? (chinese ? "在审核或批准入口通过、指正或拒绝当前动作。" : "Approve, correct, or reject the current action in the review/approval entry.")
+      : failed || blocked
+        ? (chinese ? "根据失败详情缩小动作或改用可用路线；无法继续时返回具体阻塞。" : "Use a smaller or available route from the failure detail; report the exact blocker if progress is impossible.")
+        : planNext && !samePromptForDedup(planNext, action)
+          ? (chinese ? `继续计划：${trimContext(planNext.replace(/\s+/g, " "), 96)}` : `Continue the plan: ${trimContext(planNext.replace(/\s+/g, " "), 96)}`)
+          : executing
+            ? (chinese ? "收到真实返回后核对结果，再决定下一动作。" : "Check the actual result when it returns, then choose the next action.")
+            : (chinese
+                ? `核对该结果是否满足${task ? `“${task}”` : "原始要求"}；未满足则继续下一动作。`
+                : `Check whether this satisfies ${task ? `"${task}"` : "the original request"}; continue with the next action if not.`);
+    return { reasoning, action, result, next };
+  }
+
+  private processPlanStepMatchesTask(planStep: string, task: string, action: string): boolean {
+    if (!planStep.trim()) return false;
+    const stop = new Set([
+      "cancip", "task", "step", "plan", "run", "check", "current", "execute", "verify",
+      "任务", "步骤", "计划", "执行", "验证", "复核", "当前", "完成", "自动", "自动化", "并行"
+    ]);
+    const sourceTokens = tokenize(`${task} ${action}`)
+      .filter((token) => token.length >= 2 && !stop.has(token));
+    const planTokens = new Set(tokenize(planStep).filter((token) => token.length >= 2 && !stop.has(token)));
+    return sourceTokens.some((token) => planTokens.has(token));
+  }
+
+  private conciseProcessTask(rawTask: string): string {
+    const raw = redactSensitiveText(rawTask).replace(/<!--[^>]*-->/g, " ").trim();
+    if (!raw) return "";
+    const automation = raw.match(/(?:自动化任务|automation task)\s*[:：]\s*(.*?)(?=\s+(?:自动化任务|automation task)\s*[:：]|\s+(?:read|run) the automation|\s+运行要求\s*[:：]|$)/i)?.[1]?.trim();
+    if (automation) return trimContext(`自动化任务：${automation.replace(/\s+/g, " ")}`, 72);
+    const firstLine = raw
+      .split(/\r?\n/)
+      .map((line) => line.replace(/^\s*(?:[-*#>]+|\d+[.)、])\s*/, "").trim())
+      .find((line) => line && !isProcessProtocolLeakLine(line)) ?? "";
+    const firstSentence = firstLine.match(/^[^。！？!?；;]*[。！？!?；;]/)?.[0]?.trim() || firstLine;
+    return trimContext((messageOutlineText(firstSentence) || firstSentence).replace(/\s+/g, " ").trim(), 72);
+  }
+
+  private progressStepDetailSnippet(detail: string): string {
+    const lines = usefulResultLines(redactSensitiveText(detail))
+      .map((line) => line.replace(/^#{1,6}\s+/, "").replace(/\s+/g, " ").trim())
+      .filter((line) => line
+        && !/^(?:readable progress|api profile|token usage|model exchange raw contents|actual api call audit|input sizes|reply filter|raw sent|raw received|sent |received |original user prompt)/i.test(line)
+        && !isProcessProtocolLeakLine(line));
+    return lines.length ? trimContext(lines[0], 120) : "";
   }
 
   private availableSubagentProfiles(preferredModels: string[] = []): ApiProfile[] {
@@ -46932,6 +47057,7 @@ class CancipView extends ItemView {
     const previousUserPrompt = this.previousUserPromptForModel(prompt);
     const previousConclusion = this.previousAssistantConclusion();
     const recentSteps = this.recentToolStepContextForModel();
+    const recentProcessBrief = this.recentProcessBriefContextForModel();
     const queueSummary = queuedToSend.length
       ? `Queue: ${queuedLines.replace(/\n/g, " | ")}`
       : "";
@@ -46944,6 +47070,7 @@ class CancipView extends ItemView {
       previousUserPrompt ? `Previous user: ${trimContext(redactSensitiveText(previousUserPrompt), 130)}` : "",
       previousConclusion ? `Previous answer: ${trimContext(redactSensitiveText(previousConclusion), 220)}` : "",
       recentSteps ? `Previous tool result: ${recentSteps}` : "",
+      recentProcessBrief ? `Previous step trace: ${recentProcessBrief}` : "",
       queueSummary
     ].filter(Boolean).join("\n"), TASK_CONTROL_MAX_CHARS);
   }
@@ -47318,16 +47445,54 @@ class CancipView extends ItemView {
       meta
     ].filter(Boolean).join("\n\n");
     const existing = this.messages.find((message) => message.role === "assistant" && message.content.includes(marker));
+    const processBrief = this.toolRunProcessBrief(run);
     if (existing) {
       existing.content = body;
       existing.toolRuns = [run];
+      existing.processBrief = processBrief;
       this.syncSessionChrome();
       if (persist) void this.saveCurrentSession();
       return existing;
     }
     const created = this.addMessage("assistant", body);
     created.toolRuns = [run];
+    created.processBrief = processBrief;
     return created;
+  }
+
+  private recentProcessBriefContextForModel(): string {
+    const brief = [...this.messages]
+      .reverse()
+      .find((message) => message.processBrief && !message.toolRuns?.length)
+      ?.processBrief;
+    if (!brief) return "";
+    return trimContext([
+      `reason=${brief.reasoning}`,
+      `action=${brief.action}`,
+      `result=${brief.result}`,
+      `next=${brief.next}`
+    ].join("; "), 420);
+  }
+
+  private toolRunProcessBrief(run: ToolRun, taskOverride?: string): ProcessStepBrief {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const target = this.actionStatusTarget(run.action) || this.toolRunStatusActionLabel(run);
+    const taskSource = taskOverride ?? this.taskControl?.taskGoal ?? this.previousActionableUserPrompt();
+    const task = this.conciseProcessTask(taskSource);
+    const action = trimContext(`${this.toolActionKindLabel(run.action)} ${target}`.replace(/\s+/g, " ").trim(), 120);
+    const reasoning = run.action.type === "read"
+      ? (chinese ? `回答或处理${task ? `“${task}”` : "当前任务"}前，先读取 ${target} 的真实内容。` : `Read the actual content of ${target} before answering or handling ${task || "the task"}.`)
+      : run.action.type === "command"
+        ? (chinese ? `${target} 提供所需能力，应调用真实命令而不是用文字模拟。` : `${target} provides the needed capability and must be called rather than simulated in prose.`)
+        : this.isFileChangeAction(run.action)
+          ? (chinese ? `目标和改动要求已明确，需要对 ${target} 执行受审核的真实修改。` : `The target and requested change are known, so apply a real reviewed change to ${target}.`)
+          : (chinese ? `${task ? `完成“${task}”` : "完成当前任务"}需要执行 ${action} 并检查返回。` : `${task ? `Completing "${task}"` : "Completing the task"} requires ${action} and checking its result.`);
+    return {
+      reasoning,
+      action,
+      result: this.structuredToolResultLine(run),
+      next: this.toolRunsNextStepText([run], task || this.previousActionableUserPrompt())
+    };
   }
 
   private startToolRunTimer(run: ToolRun, startedAt: number): void {
@@ -56959,7 +57124,17 @@ class CancipView extends ItemView {
     }
     const blocks = step.blocks.map((block) => `${block.title}:${stableTextHash(block.content).slice(0, 12)}`).join("|");
     const audits = step.auditSections.map((section) => `${section.group}:${section.title}:${stableTextHash(section.content).slice(0, 12)}`).join("|");
-    const detail = stableTextHash([step.headline, step.readableDetail, step.detail, blocks, audits].join("\n")).slice(0, 16);
+    const detail = stableTextHash([
+      step.headline,
+      step.brief.reasoning,
+      step.brief.action,
+      step.brief.result,
+      step.brief.next,
+      step.readableDetail,
+      step.detail,
+      blocks,
+      audits
+    ].join("\n")).slice(0, 16);
     return `detail:${detail}`;
   }
 
@@ -57002,6 +57177,12 @@ class CancipView extends ItemView {
     return {
       ...left,
       rendered: { ...left.rendered, message: mergedMessage },
+      brief: {
+        reasoning: right.brief.reasoning || left.brief.reasoning,
+        action: right.brief.action || left.brief.action,
+        result: right.brief.result || left.brief.result,
+        next: right.brief.next || left.brief.next
+      },
       readableDetail: uniqueStrings([left.readableDetail, right.readableDetail].filter(Boolean)).join("\n\n"),
       detail: uniqueStrings([left.detail, right.detail].filter(Boolean)).join("\n\n"),
       blocks: [...blockMap.values()],
@@ -57048,7 +57229,9 @@ class CancipView extends ItemView {
         const structuredSet = new Set(structuredBlocks.map((item) => item.block));
         const blocks = allBlocks.filter((block) => !structuredSet.has(block));
         const detail = structuredBlocks.map((item) => item.content).filter(Boolean).join("\n\n");
-        const hasDetail = Boolean(visibleDetail)
+        const brief = this.processBriefForMessage(normalizedRendered.message, headline, visibleDetail);
+        const hasDetail = Object.values(brief).some((value) => Boolean(value.trim()))
+          || Boolean(visibleDetail)
           || Boolean(detail)
           || blocks.length > 0
           || auditSections.length > 0
@@ -57057,6 +57240,7 @@ class CancipView extends ItemView {
         return {
           rendered: normalizedRendered,
           headline,
+          brief,
           readableDetail: visibleDetail,
           detail,
           blocks,
@@ -57084,7 +57268,11 @@ class CancipView extends ItemView {
       const stepFoldKey = `${processFoldKey}:step-${stepInfo.rendered.message.id}`;
       const step = body.createEl("details", { cls: "obcc-process-step" });
       const subagentRuns = this.processStepSubagentRuns(stepInfo);
-      this.wireDetails(step, `process-step:${stepFoldKey}`, false, false, true);
+      const stepRuns = uniqueToolRunsById([...(stepInfo.rendered.message.toolRuns ?? []), ...(stepInfo.rendered.message.changedFileRuns ?? [])]);
+      const isLiveStep = this.progressStepTimers.has(stepInfo.rendered.message.id)
+        || stepRuns.some((run) => run.status === "executing");
+      const needsIntervention = stepRuns.some((run) => run.status === "pending");
+      this.wireDetails(step, `process-step:${stepFoldKey}`, isLiveStep || needsIntervention, false, true);
       const stepHead = this.createProcessSummary(step, "");
       stepHead.addClass("obcc-process-step-head");
       stepHead.createSpan({ cls: "obcc-process-step-index", text: String(index + 1) });
@@ -57131,6 +57319,7 @@ class CancipView extends ItemView {
       });
       if (!stepInfo.hasDetail) continue;
       const stepBody = step.createDiv({ cls: "obcc-process-step-detail-body" });
+      this.renderProcessStepBrief(stepBody, stepInfo.brief);
       if (stepInfo.readableDetail) {
         const readableSection = stepBody.createDiv({ cls: "obcc-process-inline-section is-explanation" });
         this.createProcessInlineSectionTitle(readableSection, isChineseLanguage(this.plugin.language()) ? "说明" : "Explanation", "message-square-text");
@@ -57151,6 +57340,53 @@ class CancipView extends ItemView {
       this.renderToolRuns(stepBody, stepInfo.rendered.message, true);
     }
     this.renderProcessRecordMeta(body, items);
+  }
+
+  private processBriefForMessage(message: ChatMessage, headline: string, readableDetail: string): ProcessStepBrief {
+    const messageTask = this.taskPromptBeforeMessage(message);
+    const runs = uniqueToolRunsById([...(message.toolRuns ?? []), ...(message.changedFileRuns ?? [])]);
+    const latestRun = [...runs].reverse().find((run) => run.status !== "pending") ?? runs[runs.length - 1];
+    if (latestRun) return this.toolRunProcessBrief(latestRun, messageTask);
+    if (message.processBrief) return message.processBrief;
+    const normalized = message.content.toLowerCase();
+    const status = /失败|failed|error/.test(normalized)
+      ? this.t("toolRunFailed")
+      : /等待|审核|批准|pending|approval|review/.test(normalized)
+        ? this.t("toolRunPending")
+        : this.progressStepTimers.has(message.id)
+          ? this.t("toolRunExecuting")
+          : this.t("toolRunExecuted");
+    return this.progressStepBrief(headline, readableDetail, status, { task: messageTask, planNext: null });
+  }
+
+  private taskPromptBeforeMessage(message: ChatMessage): string {
+    const messageIndex = this.messages.findIndex((item) => item.id === message.id);
+    for (let index = messageIndex >= 0 ? messageIndex - 1 : this.messages.length - 1; index >= 0; index -= 1) {
+      const candidate = this.messages[index];
+      if (candidate.role !== "user") continue;
+      const text = candidate.content.trim();
+      if (!text || isContinuePrompt(text) || isTrivialChatPrompt(text)) continue;
+      return messageOutlineText(text) || text;
+    }
+    return "";
+  }
+
+  private renderProcessStepBrief(parent: HTMLElement, brief: ProcessStepBrief): void {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const section = parent.createDiv({ cls: "obcc-process-step-brief" });
+    const rows: Array<[string, string, string]> = [
+      [chinese ? "推理摘要" : "Reasoning", brief.reasoning, "brain"],
+      [chinese ? "执行动作" : "Action", brief.action, "play"],
+      [chinese ? "实际结果" : "Result", brief.result, "circle-check-big"],
+      [chinese ? "下一步" : "Next", brief.next, "arrow-right"]
+    ];
+    for (const [label, value, icon] of rows) {
+      const row = section.createDiv({ cls: "obcc-process-step-brief-row" });
+      const labelEl = row.createDiv({ cls: "obcc-process-step-brief-label" });
+      setIcon(labelEl.createSpan({ cls: "obcc-process-step-brief-icon" }), icon);
+      labelEl.createSpan({ text: label });
+      row.createDiv({ cls: "obcc-process-step-brief-value", text: trimContext(value.replace(/\s+/g, " ").trim(), 240) });
+    }
   }
 
   private processRecordStepElapsedMs(message: ChatMessage): number {
@@ -57503,6 +57739,8 @@ class CancipView extends ItemView {
     const stepHead = step.createDiv({ cls: "obcc-process-step-head" });
     stepHead.createSpan({ cls: "obcc-process-step-index", text: "1" });
     stepHead.createSpan({ cls: "obcc-process-step-title", text: this.t("preparingContext") });
+    const stepBody = step.createDiv({ cls: "obcc-process-step-detail-body" });
+    this.renderProcessStepBrief(stepBody, this.progressStepBrief(this.t("preparingContext"), "", this.t("toolRunExecuting")));
   }
 
   private createProcessSummary(details: HTMLDetailsElement, text: string, icon = ""): HTMLElement {
@@ -75799,8 +76037,19 @@ function normalizeChatMessage(raw: Record<string, unknown>): ChatMessage | null 
     accessMode: isAccessMode(raw.accessMode) ? raw.accessMode : undefined,
     automationTaskId: typeof raw.automationTaskId === "string" ? raw.automationTaskId : undefined,
     automationTitle: typeof raw.automationTitle === "string" ? raw.automationTitle : undefined,
+    processBrief: normalizeProcessStepBrief(raw.processBrief),
     processAuditSections: normalizeProcessAuditSections(raw.processAuditSections)
   };
+}
+
+function normalizeProcessStepBrief(raw: unknown): ProcessStepBrief | undefined {
+  if (!isRecord(raw)) return undefined;
+  const reasoning = typeof raw.reasoning === "string" ? raw.reasoning.trim() : "";
+  const action = typeof raw.action === "string" ? raw.action.trim() : "";
+  const result = typeof raw.result === "string" ? raw.result.trim() : "";
+  const next = typeof raw.next === "string" ? raw.next.trim() : "";
+  if (!reasoning && !action && !result && !next) return undefined;
+  return { reasoning, action, result, next };
 }
 
 function normalizeProcessAuditSections(raw: unknown): ProcessAuditSection[] | undefined {
