@@ -6131,7 +6131,7 @@ details.obcc-process-step {
   background: color-mix(in srgb, var(--color-red) 14%, transparent);
 }
 
-.obcc-context-edit-marker-group.is-loading .obcc-context-edit-marker {
+.obcc-context-edit-marker-group.is-context-loading .obcc-context-edit-marker {
   opacity: .7;
 }
 
