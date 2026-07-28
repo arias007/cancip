@@ -48,6 +48,7 @@ const roots = [
   "primeTtsSynthesisText",
   "splitPrimeTtsDisplayText",
   "makeTtsPartPlan",
+  "primeTtsPrefetchOrder",
   "findSequentialNormalizedNeedleMatch",
   "normalizeTtsHighlightText",
   "ttsSyntheticTaskPrefixRemainingUnits",
@@ -82,6 +83,22 @@ const transpiled = ts.transpileModule(runtimeSource + expose, {
 const sandbox = { console };
 vm.runInNewContext(transpiled, sandbox, { filename: "cancip-tts-regression-runtime.js" });
 const api = sandbox.__cancipTtsTest;
+
+assert.match(
+  source,
+  /activeTtsHighlightKey === key && this\.hasLiveTtsSourceHighlight\(\)/,
+  "A virtualized Markdown/PDF node must be repainted when the cached highlight node disappears"
+);
+assert.match(
+  source,
+  /this\.activeTtsPrimeCacheSessionId \+= 1;[\s\S]{0,240}this\.activeTtsPrimeCache\.clear\(\);[\s\S]{0,240}this\.activeTtsPrimeDecodedCache\.clear\(\);/,
+  "Manual sentence seeking must invalidate stale PrimeTTS synthesis and decode work"
+);
+assert.ok(
+  ["highlightActiveRenderedTtsPart", "highlightTextStreamElementsFromRoots", "highlightRenderedPart", "readActivePdfLayerText"]
+    .every((name) => source.slice(source.indexOf(`private ${name}`), source.indexOf("\n  private ", source.indexOf(`private ${name}`) + 12)).includes("isOwnDocumentHTMLElement")),
+  "Markdown and PDF TTS nodes must be checked against their own document realm"
+);
 
 const repeatedHaystack = "开头重复内容中间重复内容结尾";
 const firstRepeated = api.findSequentialNormalizedNeedleMatch(repeatedHaystack, "重复内容", true, 0, 0);
@@ -276,6 +293,25 @@ assert.equal(chineseParts.filter((part) => api.normalizeTtsHighlightText(part).l
 assert.ok(chineseParts.every((part) => part.length <= 32), "Chinese steady chunks must stay short enough for continuous prefetch");
 assert.ok(chineseParts.length <= 18, "Sentence handoff chunks must stay bounded");
 assert.ok(chineseParts.at(-1)?.endsWith("结尾。"), "Chinese final sentence must remain complete");
+
+const transitionPrefetchOrder = Array.from(api.primeTtsPrefetchOrder(
+  12,
+  0,
+  [0, 0, 0, 0, 1, 1, 1, 2, 2, 2, 2, 2],
+  5,
+  2,
+  12
+));
+assert.deepEqual(
+  transitionPrefetchOrder,
+  [0, 1, 2, 4, 3, 5],
+  "PrimeTTS must synthesize the next sentence start before non-immediate linear lookahead"
+);
+assert.deepEqual(
+  Array.from(api.primeTtsPrefetchOrder(5, 3, [0, 0, 1, 1, 1], 5, 2, 12)),
+  [3, 4],
+  "PrimeTTS prefetch ordering must stay within the remaining playback chunks"
+);
 
 const mixedJournalLine = "领域：💰经济 · 💻计算机 · 📖知识\n📅 2026-07-26，继续朗读引用和主体。";
 const mixedJournalPlan = api.makeTtsPartPlan(mixedJournalLine, "builtin-prime-tts", 96);

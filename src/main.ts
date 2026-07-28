@@ -55,6 +55,11 @@ function createDetachedElement<K extends keyof HTMLElementTagNameMap>(doc: Docum
   return element;
 }
 
+function isOwnDocumentHTMLElement(value: Element | null | undefined): value is HTMLElement {
+  const constructor = value?.ownerDocument.defaultView?.HTMLElement;
+  return Boolean(constructor && value instanceof constructor);
+}
+
 type ChatRole = "system" | "user" | "assistant";
 
 type ChatMessage = {
@@ -9059,6 +9064,9 @@ export default class CancipPlugin extends Plugin {
   private activeTtsSourceClassNodes: HTMLElement[] = [];
   private activeTtsEditorSelectionSnapshot: { anchor: { line: number; ch: number }; head: { line: number; ch: number }; filePath: string } | null = null;
   private ttsHighlightFrame: number | null = null;
+  private ttsHighlightRecoveryTimer: number | null = null;
+  private ttsHighlightRecoveryKey = "";
+  private ttsHighlightRecoveryAttempts = 0;
   private activeNativeBridge: NativeTtsBridge | null = null;
   private activeWebAudioContext: AudioContext | null = null;
   private activeWebAudioSource: AudioBufferSourceNode | null = null;
@@ -11651,9 +11659,11 @@ export default class CancipPlugin extends Plugin {
     this.activeTtsStartedAudio = false;
     this.activeTtsRunId += 1;
     if (provider === "builtin-prime-tts") {
+      this.activeTtsPrimeCacheSessionId += 1;
+      this.activeTtsPrimeCache.clear();
+      this.activeTtsPrimeDecodedCache.clear();
       this.activeTtsPrimeCacheRunId = this.activeTtsPrimeCacheSessionId;
       this.activeTtsPrimeDecodedCacheRunId = this.activeTtsPrimeCacheSessionId;
-      this.prunePrimeTtsCache(index);
     } else {
       this.activeTtsPrimeCache.clear();
       this.activeTtsPrimeCacheRunId = 0;
@@ -12230,10 +12240,16 @@ export default class CancipPlugin extends Plugin {
     return resolved instanceof TFile ? resolved : null;
   }
 
-  private clearTtsSourceHighlight(): void {
+  private clearTtsSourceHighlight(resetRecovery = true): void {
     if (this.ttsHighlightFrame !== null) {
       window.cancelAnimationFrame(this.ttsHighlightFrame);
       this.ttsHighlightFrame = null;
+    }
+    if (resetRecovery) {
+      if (this.ttsHighlightRecoveryTimer !== null) window.clearTimeout(this.ttsHighlightRecoveryTimer);
+      this.ttsHighlightRecoveryTimer = null;
+      this.ttsHighlightRecoveryKey = "";
+      this.ttsHighlightRecoveryAttempts = 0;
     }
     if (this.activeTtsEditorSelectionSnapshot) {
       const editor = this.app.workspace.activeEditor?.editor;
@@ -12245,7 +12261,7 @@ export default class CancipPlugin extends Plugin {
     }
     for (const node of this.activeTtsSourceHighlightNodes) {
       if (!node.isConnected) continue;
-      const text = activeDocument.createTextNode(node.textContent ?? "");
+      const text = node.ownerDocument.createTextNode(node.textContent ?? "");
       node.replaceWith(text);
       text.parentElement?.normalize();
     }
@@ -12254,17 +12270,53 @@ export default class CancipPlugin extends Plugin {
       if (node.isConnected) node.removeClass("obcc-tts-source-highlight");
     }
     this.activeTtsSourceClassNodes = [];
-    activeDocument.querySelectorAll(".obcc-tts-source-highlight").forEach((node) => {
-      if (!node.instanceOf(activeDocument.defaultView!.HTMLElement)) return;
-      if (!node.hasClass("obcc-tts-source-wrap")) {
-        node.removeClass("obcc-tts-source-highlight");
-        return;
-      }
-      const text = activeDocument.createTextNode(node.textContent ?? "");
-      node.replaceWith(text);
-      text.parentElement?.normalize();
-    });
+    const cleanupRoots = new Set<HTMLElement>(this.ttsSourceContainers());
+    for (const root of cleanupRoots) {
+      root.querySelectorAll(".obcc-tts-source-highlight").forEach((node) => {
+        if (!isOwnDocumentHTMLElement(node)) return;
+        if (!node.hasClass("obcc-tts-source-wrap")) {
+          node.removeClass("obcc-tts-source-highlight");
+          return;
+        }
+        const text = node.ownerDocument.createTextNode(node.textContent ?? "");
+        node.replaceWith(text);
+        text.parentElement?.normalize();
+      });
+    }
     this.activeTtsHighlightKey = "";
+  }
+
+  private hasLiveTtsSourceHighlight(): boolean {
+    const tracked = [...this.activeTtsSourceHighlightNodes, ...this.activeTtsSourceClassNodes];
+    if (!tracked.length) {
+      return Boolean(this.activeTtsEditorSelectionSnapshot
+        && this.app.workspace.activeEditor?.file?.path === this.activeTtsSourcePath);
+    }
+    const containers = this.ttsSourceContainers();
+    return tracked.some((node) => node.isConnected
+      && node.hasClass("obcc-tts-source-highlight")
+      && containers.some((container) => container.ownerDocument === node.ownerDocument && container.contains(node)));
+  }
+
+  private scheduleTtsHighlightRecovery(key: string): void {
+    if (this.ttsHighlightRecoveryKey !== key) {
+      if (this.ttsHighlightRecoveryTimer !== null) window.clearTimeout(this.ttsHighlightRecoveryTimer);
+      this.ttsHighlightRecoveryTimer = null;
+      this.ttsHighlightRecoveryKey = key;
+      this.ttsHighlightRecoveryAttempts = 0;
+    }
+    if (this.ttsHighlightRecoveryTimer !== null || this.ttsHighlightRecoveryAttempts >= 2) return;
+    const delay = this.ttsHighlightRecoveryAttempts === 0 ? 90 : 220;
+    this.ttsHighlightRecoveryTimer = window.setTimeout(() => {
+      this.ttsHighlightRecoveryTimer = null;
+      this.ttsHighlightRecoveryAttempts += 1;
+      if (this.activeTtsHighlightKey !== key || this.ttsHighlightRecoveryKey !== key) return;
+      if (!this.hasLiveTtsSourceHighlight()) {
+        this.activeTtsHighlightKey = "";
+        this.scheduleTtsSourceHighlightUpdate();
+      }
+      this.scheduleTtsHighlightRecovery(key);
+    }, delay);
   }
 
   private scheduleTtsSourceHighlightUpdate(): void {
@@ -12283,11 +12335,14 @@ export default class CancipPlugin extends Plugin {
       this.clearTtsSourceHighlight();
       return;
     }
-    if (this.activeTtsHighlightKey === key) return;
-    this.clearTtsSourceHighlight();
+    if (this.activeTtsHighlightKey === key && this.hasLiveTtsSourceHighlight()) return;
+    this.clearTtsSourceHighlight(false);
     const highlightedRendered = this.highlightActiveRenderedTtsPart(displayText);
     const highlightedEditor = highlightedRendered ? false : this.highlightActiveEditorTtsPart(displayText);
-    if (highlightedRendered || highlightedEditor) this.activeTtsHighlightKey = key;
+    if (highlightedRendered || highlightedEditor) {
+      this.activeTtsHighlightKey = key;
+      this.scheduleTtsHighlightRecovery(key);
+    }
   }
 
   private highlightActiveEditorTtsPart(current: string): boolean {
@@ -12349,7 +12404,7 @@ export default class CancipPlugin extends Plugin {
         return rect.width > 0 && rect.height > 0 && style?.display !== "none" && style?.visibility !== "hidden";
       });
       for (const root of visibleRoots.length ? visibleRoots : roots) {
-        if (!root.instanceOf(activeDocument.defaultView!.HTMLElement)) continue;
+        if (!isOwnDocumentHTMLElement(root)) continue;
         if (root.matches(".cm-content, .markdown-source-view") || root.closest(".markdown-source-view")) continue;
         if (this.wrapFirstTextMatch(root, current)) return true;
         if (this.highlightRenderedPart(root, current)) return true;
@@ -13318,7 +13373,7 @@ export default class CancipPlugin extends Plugin {
     for (const root of roots) {
       const elements = Array.from(root.querySelectorAll(selector));
       for (const element of elements) {
-        if (!element.instanceOf(activeDocument.defaultView!.HTMLElement)) continue;
+        if (!isOwnDocumentHTMLElement(element)) continue;
         if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
         const rawText = element.tagName === "BR" ? "\n" : (element.innerText || element.textContent || "");
         const text = normalizeTtsHighlightText(rawText);
@@ -13355,7 +13410,7 @@ export default class CancipPlugin extends Plugin {
     let haystack = "";
     const elements = markdownViewportReadableItems(root, { top: Number.NEGATIVE_INFINITY, bottom: Number.POSITIVE_INFINITY });
     for (const { element } of elements) {
-      if (!element.instanceOf(activeDocument.defaultView!.HTMLElement)) continue;
+      if (!isOwnDocumentHTMLElement(element)) continue;
       if (element.closest(".obcc-tts-floating, .obcc-view-tts-action, script, style, textarea, input, button")) continue;
       const text = normalizeTtsHighlightText(renderedElementReadableText(element));
       if (!text) continue;
@@ -13579,12 +13634,22 @@ export default class CancipPlugin extends Plugin {
 
   private prefetchPrimeTtsWindow(runtime: PrimeTtsRuntime, chunks: string[], startIndex: number, runId: number): void {
     const safeStart = Math.max(0, Math.min(chunks.length - 1, startIndex));
-    const from = safeStart;
     const ahead = BUILTIN_PRIME_TTS_PREFETCH_AHEAD;
-    const to = Math.min(chunks.length, safeStart + ahead + 1);
-    for (let index = from; index < to; index += 1) {
+    const order = primeTtsPrefetchOrder(
+      chunks.length,
+      safeStart,
+      this.activeTtsDisplayIndexByPart,
+      ahead,
+      BUILTIN_PRIME_TTS_DECODE_AHEAD,
+      BUILTIN_PRIME_TTS_CACHE_KEEP_AHEAD
+    );
+    const currentDisplay = this.activeTtsDisplayIndexByPart[safeStart] ?? safeStart;
+    for (const index of order) {
       this.prefetchPrimeTtsAudioUrl(runtime, chunks, index, runId);
-      if (index >= safeStart && index <= safeStart + BUILTIN_PRIME_TTS_DECODE_AHEAD) {
+      const isNextDisplayStart = index > safeStart
+        && (this.activeTtsDisplayIndexByPart[index] ?? index) > currentDisplay
+        && (this.activeTtsDisplayIndexByPart[index - 1] ?? index - 1) === currentDisplay;
+      if (index <= safeStart + BUILTIN_PRIME_TTS_DECODE_AHEAD || isNextDisplayStart) {
         this.prefetchPrimeTtsDecodedAudio(chunks, index, runId);
       }
     }
@@ -13595,7 +13660,8 @@ export default class CancipPlugin extends Plugin {
     const currentDisplay = this.activeTtsDisplayIndexByPart[Math.max(0, Math.min(chunks.length - 1, startIndex))] ?? 0;
     const nextDisplayStart = this.playIndexForDisplayIndex(currentDisplay + 1);
     if (nextDisplayStart > startIndex && nextDisplayStart < chunks.length) {
-      this.prefetchPrimeTtsWindow(runtime, chunks, nextDisplayStart, runId);
+      this.prefetchPrimeTtsAudioUrl(runtime, chunks, nextDisplayStart, runId);
+      this.prefetchPrimeTtsDecodedAudio(chunks, nextDisplayStart, runId);
     }
   }
 
@@ -14981,7 +15047,7 @@ export default class CancipPlugin extends Plugin {
     const chunks: string[] = [];
     const seen = new Set<string>();
     for (const root of roots) {
-      if (!root.instanceOf(activeDocument.defaultView!.HTMLElement)) continue;
+      if (!isOwnDocumentHTMLElement(root)) continue;
       const text = extractVisiblePdfViewportText(root, maxChars);
       const key = normalizeTtsHighlightText(text);
       if (!key || seen.has(key)) continue;
@@ -75940,6 +76006,42 @@ function mapTtsPlayPartsToDisplayParts(playParts: string[], displayParts: string
     }
     return Math.max(0, Math.min(displayParts.length - 1, cursor));
   });
+}
+
+function primeTtsPrefetchOrder(
+  chunkCount: number,
+  startIndex: number,
+  displayIndexByPart: number[],
+  ahead: number,
+  decodeAhead: number,
+  boundaryAhead: number
+): number[] {
+  if (chunkCount <= 0) return [];
+  const safeStart = Math.max(0, Math.min(chunkCount - 1, Math.floor(startIndex)));
+  const order: number[] = [];
+  const seen = new Set<number>();
+  const add = (index: number) => {
+    if (index < safeStart || index >= chunkCount || seen.has(index)) return;
+    seen.add(index);
+    order.push(index);
+  };
+  const immediateEnd = Math.min(chunkCount - 1, safeStart + Math.max(0, decodeAhead));
+  for (let index = safeStart; index <= immediateEnd; index += 1) add(index);
+
+  const currentDisplay = displayIndexByPart[safeStart];
+  if (typeof currentDisplay === "number") {
+    const boundaryEnd = Math.min(chunkCount - 1, safeStart + Math.max(ahead, boundaryAhead));
+    for (let index = safeStart + 1; index <= boundaryEnd; index += 1) {
+      if ((displayIndexByPart[index] ?? currentDisplay) > currentDisplay) {
+        add(index);
+        break;
+      }
+    }
+  }
+
+  const linearEnd = Math.min(chunkCount - 1, safeStart + Math.max(0, ahead));
+  for (let index = safeStart; index <= linearEnd; index += 1) add(index);
+  return order;
 }
 
 function ttsLongSegmentTakeLength(text: string, targetLength: number, hardLength: number): number {
