@@ -1,15 +1,16 @@
 {
   "name": "cancip",
-  "version": "3.3.12",
+  "version": "3.3.13",
   "private": true,
   "main": "main.js",
   "scripts": {
     "verify:source-parity": "node scripts/verify-source-runtime-parity.mjs",
     "verify:feature-regressions": "node scripts/verify-feature-regressions.mjs",
     "verify:obsidian-community": "node scripts/verify-obsidian-community-standards.mjs",
+    "test:office-context-edit": "node scripts/verify-office-context-edit.mjs",
     "test:tts": "node scripts/verify-tts-regression.mjs",
     "build:ocr-package": "node scripts/prepare-ocr-package.mjs",
-    "build": "npm run verify:source-parity && npm run verify:feature-regressions && npm run verify:obsidian-community && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
+    "build": "npm run verify:source-parity && npm run verify:feature-regressions && npm run verify:obsidian-community && npm run test:office-context-edit && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
     "check": "tsc --noEmit --skipLibCheck",
     "verify": "npm run check && npm run build"
   },
