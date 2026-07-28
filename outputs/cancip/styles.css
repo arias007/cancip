@@ -12548,36 +12548,3 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
 .obcc-process-step-head {
   grid-template-columns: 14px 20px minmax(0, 1fr) max-content max-content;
 }
-.obcc-notedraw-completion {
-  position: fixed;
-  z-index: 1208;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  max-width: min(520px, calc(100vw - 16px));
-  min-height: 34px;
-  padding: 4px 5px 4px 9px;
-  border: 1px solid var(--interactive-accent);
-  border-radius: 6px;
-  color: var(--text-normal);
-  background: var(--background-primary);
-  box-shadow: 0 3px 14px rgba(0, 0, 0, 0.18);
-}
-
-.obcc-notedraw-completion-value {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-  color: var(--interactive-accent);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.obcc-notedraw-completion button {
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
-  min-width: 28px;
-  min-height: 28px;
-  padding: 4px;
-}
