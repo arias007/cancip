@@ -6151,13 +6151,34 @@ details.obcc-process-step {
   overflow: auto;
   border: 1px solid color-mix(in srgb, var(--color-green) 72%, transparent);
   border-radius: 4px;
-  background: var(--background-primary);
+  background: color-mix(in srgb, var(--color-green) 10%, var(--background-primary));
   box-shadow: 0 2px 8px var(--background-modifier-box-shadow);
-  color: var(--color-green);
+  color: var(--text-normal);
   font-size: 12px;
   line-height: 1.4;
   overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  white-space: normal;
+}
+
+.obcc-context-edit-inline-preview > :first-child {
+  margin-top: 0;
+}
+
+.obcc-context-edit-inline-preview > :last-child {
+  margin-bottom: 0;
+}
+
+.obcc-context-edit-inline-rendered-preview {
+  position: relative;
+  inset: auto;
+  box-sizing: border-box;
+  width: auto;
+  min-width: 0;
+  max-width: 100%;
+  max-height: none;
+  margin: 5px 0;
+  border-left-width: 3px;
+  overflow: auto;
 }
 
 .obcc-context-edit-marker-group.has-proposal .obcc-context-edit-inline-preview,
@@ -6182,8 +6203,8 @@ details.obcc-process-step {
 
 .obcc-context-edit-input {
   min-width: 0;
-  flex: 1 1 auto;
-  width: min(230px, calc(100% - 106px));
+  flex: 1 1 150px;
+  width: auto;
   min-height: 38px;
   max-height: min(36dvh, 280px);
   padding: 7px 8px;
@@ -6197,6 +6218,17 @@ details.obcc-process-step {
   overscroll-behavior: contain;
   touch-action: pan-x pan-y pinch-zoom;
   transition: none;
+}
+
+.obcc-context-edit-clipboard-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+}
+
+.obcc-context-edit-clipboard-actions.is-hidden {
+  display: none;
 }
 
 .obcc-context-edit-input:focus {

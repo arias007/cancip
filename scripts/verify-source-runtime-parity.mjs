@@ -37,6 +37,7 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "hydrateSubagentCards",
   "insertPersonalizedDiary",
   "installReviewTreeTouchScroll",
+  "isNativeSelectionToolbarProtected",
   "noteDrawControllerForStage",
   "noteDrawRuntime",
   "reviewGateTerminalDecisionPaths",
