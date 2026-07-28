@@ -12194,6 +12194,12 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   touch-action: none;
 }
 
+.obcc-context-edit-bubble:not(.is-proposal-ready) > .obcc-context-edit-drag {
+  flex: 0 0 30px;
+  width: 30px;
+  margin-inline-end: 0;
+}
+
 .obcc-context-edit-bubble.is-dragging,
 .obcc-context-edit-bubble.is-dragging .obcc-context-edit-drag {
   cursor: grabbing;
