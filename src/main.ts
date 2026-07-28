@@ -1996,6 +1996,7 @@ type SessionEventKind =
   | "prompt.protocol_retry"
   | "prompt.final_missing"
   | "prompt.final_programmatic_convergence"
+  | "prompt.final_concrete_failure_summary"
   | "tool.start"
   | "tool.finish"
   | "tool.reject";
@@ -2265,6 +2266,16 @@ type ToolRunStatus = "pending" | "executing" | "executed" | "blocked" | "failed"
 type ReviewGateDecision = "approved" | "correction" | "cancelled";
 type ReviewGateTerminalDecision = ReviewGateDecision | "rejected";
 type FinalReviewStatus = "complete" | "awaiting-approval" | "blocked" | "failed";
+type FinalReviewCandidate = {
+  visible: string;
+  status: FinalReviewStatus | "";
+  failure: string;
+};
+
+type ConcreteFailureConclusion = {
+  text: string;
+  choices: string[];
+};
 
 type ToolRun = {
   id: string;
@@ -37654,7 +37665,8 @@ class CancipView extends ItemView {
   private async sendPromptNow(rawPrompt: string): Promise<void> {
     const startedAt = Date.now();
     const requirePlanPanel = this.composerPlanPrompts.delete(rawPrompt);
-    const requireMultiAgent = this.composerMultiAgentPrompts.delete(rawPrompt);
+    const requireMultiAgent = this.composerMultiAgentPrompts.delete(rawPrompt)
+      || explicitlyRequestsMultiAgentExecution(rawPrompt);
     const suggestMultiAgent = !requireMultiAgent
       && this.plugin.settings.multiAgentEnabled
       && this.plugin.settings.multiAgentAutoDelegate
@@ -50060,7 +50072,8 @@ class CancipView extends ItemView {
     context: { system: string; contextText: string; images?: ImageAttachmentContext[] },
     result: ActionHandlingResult,
     request: AbortController,
-    originalPrompt: string
+    originalPrompt: string,
+    onCandidate?: (candidate: FinalReviewCandidate) => void
   ): Promise<ActionHandlingResult | "answered" | "failed"> {
     if (this.hasPendingToolRuns(result.runs)) return result;
     if (request.signal.aborted || !this.isCurrentRequest(request)) return "failed";
@@ -50215,6 +50228,9 @@ class CancipView extends ItemView {
           choiceRepairCandidate = { visible: visibleAnswer, status: reviewStatus };
         }
         const requirementFailure = nonChoiceFailure || choiceFailure;
+        if (visibleAnswer && requirementFailure) {
+          onCandidate?.({ visible: visibleAnswer, status: reviewStatus, failure: requirementFailure });
+        }
         const acceptedVisibleAnswer = requirementFailure ? "" : visibleAnswer;
         const finalAnswerContent = acceptedVisibleAnswer && reviewStatus
           ? `${acceptedVisibleAnswer}\n\n<!-- cancip-final ${JSON.stringify({ status: reviewStatus })} -->`
@@ -50313,7 +50329,10 @@ class CancipView extends ItemView {
       ? prepareMessageDisplay(redactSensitiveText(visibleAfterTools.content)).visibleContent.trim()
       : "";
     if (visibleAfterTools && !replaceVisible && !replaceActionOnlyFallback && !this.finalAnswerRequirementFailure(visibleAfterToolsText, originalPrompt, effectiveResult.runs)) {
-      const enriched = normalizeSingleConclusionNumbering(this.ensureFinalAnswerAuditSections(visibleAfterTools.content, effectiveResult.runs, originalPrompt, visibleAfterToolsText));
+      const auditedContent = promptRequestsResultOnly(originalPrompt)
+        ? visibleAfterTools.content
+        : this.ensureFinalAnswerAuditSections(visibleAfterTools.content, effectiveResult.runs, originalPrompt, visibleAfterToolsText);
+      const enriched = normalizeSingleConclusionNumbering(auditedContent);
       visibleAfterTools.content = this.withInlineChoiceMetadata(this.appendFinalRunStats(enriched, startedAt), originalPrompt || enriched);
       visibleAfterTools.changedFileRuns = this.finalConclusionChangedFileRuns(effectiveResult.runs);
       void this.saveCurrentSession();
@@ -50443,6 +50462,103 @@ class CancipView extends ItemView {
     } catch {
       return [];
     }
+  }
+
+  private async concreteFailureConclusion(
+    originalPrompt: string,
+    runs: ToolRun[],
+    candidate: FinalReviewCandidate | null
+  ): Promise<ConcreteFailureConclusion> {
+    const chinese = isChineseLanguage(this.plugin.language());
+    const candidateText = candidate?.visible
+      ? sanitizePersonalizationText(candidate.visible, 1000, false)
+      : "";
+    const fallback = concreteFailedFinalFallback(
+      originalPrompt,
+      candidateText,
+      runs,
+      candidate?.failure ?? "",
+      chinese
+    );
+    const requestedChoices = requestedFinalChoiceCount(originalPrompt);
+    const actualToolRuns = runs.slice(-8).map((run) => ({
+      status: run.status,
+      action: concreteFinalActionLabel(run),
+      result: trimContext(redactSensitiveText(run.error || this.toolRunResultDetailSnippet(run) || run.result || ""), 360)
+    }));
+    const system = chinese
+      ? [
+          "你负责修复一次未通过终态协议的最终回答。只返回严格 JSON：{\"answer\":\"...\",\"choices\":[\"...\"]}。",
+          "answer 必须根据原始要求、最后一个具体模型候选和真实工具结果，先保留有依据的具体结果，再准确说明已执行动作和未完成部分。",
+          "不能复述整段原始问题，不能使用‘当前动作还不足以证明任务完成’、‘需要继续 patch/write/验证’或‘任务尚未完成’等套话，不能把未执行的动作说成已完成。",
+          "若原要求使用真实子 Agent，而工具结果里没有 cancip.subagents.parallel，必须明确写出真实子 Agent 未启动、实际执行了什么，因此哪项独立工作或交叉核对未完成。",
+          `choices 必须恰好 ${requestedChoices} 项；未要求推荐项时返回空数组。每项都要与本题的具体对象、结果或缺口直接相关。`,
+          "不要输出 Markdown、隐藏标记、工具调用或 JSON 以外的内容。"
+        ].join(" ")
+      : [
+          "Repair a final answer that failed the terminal protocol. Return strict JSON only: {\"answer\":\"...\",\"choices\":[\"...\"]}.",
+          "Preserve any supported concrete result from the last model candidate, then state the exact actions actually run and the exact unmet requirement.",
+          "Do not repeat the full request, use generic unfinished-work boilerplate, mention patch/write unless that was the actual task, or claim unexecuted work completed.",
+          "If real subagents were requested but cancip.subagents.parallel is absent, explicitly state that no real child agents started, what did run, and which independent or cross-check work remains unverified.",
+          `Return exactly ${requestedChoices} choices, or an empty array when none were requested. Every choice must name a concrete object, result, or missing action from this task.`,
+          "Do not emit Markdown, hidden markers, tool calls, or anything outside the JSON object."
+        ].join(" ");
+    let text = "";
+    let choices: string[] = [];
+    try {
+      const raw = await withTimeout(
+        this.callLightweightModel(JSON.stringify({
+          originalRequest: trimContext(originalPrompt, 1600),
+          lastModelCandidate: candidateText,
+          candidateValidationFailure: candidate?.failure ?? "",
+          actualToolRuns
+        }), system, 560, this.activeRequestApiProfile ?? this.plugin.activeApiProfile()),
+        30000,
+        "concrete final summary timed out"
+      );
+      const parsed = parseFirstJsonObject(raw);
+      const parsedText = isRecord(parsed) && typeof parsed.answer === "string"
+        ? sanitizePersonalizationText(parsed.answer, 1200, false)
+        : "";
+      if (this.isSpecificFailureConclusion(parsedText, originalPrompt, runs, candidateText)) text = parsedText;
+      if (requestedChoices > 0) {
+        choices = choiceOptionsFromTexts(choiceTextsFromParsedJson(parsed)).map((choice) => choice.text).slice(0, requestedChoices);
+      }
+    } catch (error) {
+      void this.recordSessionEvent({
+        kind: "prompt.recoverable_error",
+        detail: error instanceof Error ? error.message : String(error),
+        status: "concrete-final-summary-failed"
+      });
+    }
+    if (!text) text = fallback;
+    if (requestedChoices > 0 && choices.length !== requestedChoices) {
+      choices = await this.repairFinalChoicesForCandidate(text, originalPrompt, requestedChoices);
+    }
+    if (requestedChoices > 0 && choices.length !== requestedChoices) {
+      choices = deterministicFinalChoiceFallback(originalPrompt, text, requestedChoices);
+    }
+    return { text, choices: choices.length === requestedChoices ? choices : [] };
+  }
+
+  private isSpecificFailureConclusion(
+    text: string,
+    originalPrompt: string,
+    runs: ToolRun[],
+    candidateText: string
+  ): boolean {
+    const clean = text.replace(/\s+/g, " ").trim();
+    if (!clean || /当前动作还不足以证明任务完成|需要继续(?:做)?实际\s*patch\/write\/验证|任务尚未完成|current actions? (?:are|is) not enough|task remains incomplete/i.test(clean)) return false;
+    if (candidateText && candidateText.length <= 80 && !clean.includes(candidateText)) return false;
+    const parallelRan = runs.some((run) => run.status === "executed"
+      && run.action.type === "command"
+      && normalizeCommandBusName(run.action.command) === "cancip.subagents.parallel");
+    if (explicitlyRequestsMultiAgentExecution(originalPrompt) && !parallelRan) {
+      if (!/(?:子\s*agent|subagents?|child agents?)/i.test(clean) || !/(?:未|没有|并未|未曾|not|no\s+real)/i.test(clean)) return false;
+      const executedLabels = runs.filter((run) => run.status === "executed").map((run) => concreteFinalActionLabel(run));
+      if (executedLabels.length && !executedLabels.some((label) => clean.includes(label))) return false;
+    }
+    return true;
   }
 
   private ensureFinalAnswerAuditSections(content: string, runs: ToolRun[], originalPrompt = "", visibleText = ""): string {
@@ -50651,6 +50767,7 @@ class CancipView extends ItemView {
     originalPrompt: string
   ): Promise<{ status: "answered" | "pending" | "failed"; handling: ActionHandlingResult }> {
     let handling = result;
+    const failedCandidateState: { value: FinalReviewCandidate | null } = { value: null };
     const existingBoundary = this.latestProcessOrToolMessageIndex();
     const existingFinal = this.latestVisibleAssistantAfter(existingBoundary);
     if (existingFinal && hasFinalConclusion(existingFinal.content)) {
@@ -50661,7 +50778,9 @@ class CancipView extends ItemView {
       }
     }
     for (let attempt = 0; attempt < 4; attempt += 1) {
-      const decision = await this.requestModelFinalAfterToolRuns(context, handling, request, originalPrompt);
+      const decision = await this.requestModelFinalAfterToolRuns(context, handling, request, originalPrompt, (candidate) => {
+        failedCandidateState.value = candidate;
+      });
       if (decision === "answered") return { status: "answered", handling };
       if (decision === "failed") break;
       this.addActionReportMessage(decision);
@@ -50672,6 +50791,35 @@ class CancipView extends ItemView {
       if (continued) merged = this.mergeActionHandlingResults(merged, continued);
       if (this.hasPendingToolRuns(merged.runs)) return { status: "pending", handling: merged };
       handling = merged;
+    }
+    const protocolCandidate = failedCandidateState.value;
+    if (!request.signal.aborted
+      && this.isCurrentRequest(request)
+      && protocolCandidate
+      && this.canConcludeProtocolCandidate(protocolCandidate, handling.runs, originalPrompt)) {
+      const requiredChoices = requestedFinalChoiceCount(originalPrompt);
+      let choices = requiredChoices > 0
+        ? await this.repairFinalChoicesForCandidate(protocolCandidate.visible, originalPrompt, requiredChoices)
+        : [];
+      if (requiredChoices > 0 && choices.length !== requiredChoices) {
+        choices = deterministicFinalChoiceFallback(originalPrompt, protocolCandidate.visible, requiredChoices);
+      }
+      if (choices.length === requiredChoices) {
+        const content = `${protocolCandidate.visible}\n\n<!-- cancip-final {"status":"complete"} -->`;
+        const existing = this.latestVisibleAssistantAfter(this.latestUserMessageIndex());
+        const message = existing ?? this.addMessage("assistant", content);
+        message.content = content;
+        message.choiceOptions = undefined;
+        message.choiceSourceText = undefined;
+        if (choices.length) this.attachExactFinalChoices(message, choices);
+        void this.recordSessionEvent({
+          kind: "prompt.final_programmatic_convergence",
+          detail: `Preserved the concrete model candidate after verified tool completion; repaired choices=${choices.length}.`,
+          status: "completed"
+        });
+        this.renderMessages();
+        return { status: "answered", handling };
+      }
     }
     if (!request.signal.aborted
       && this.isCurrentRequest(request)
@@ -50694,15 +50842,28 @@ class CancipView extends ItemView {
     }
     if (!request.signal.aborted && this.isCurrentRequest(request)) {
       const status: FinalReviewStatus = handling.runs.some((run) => run.status === "blocked") ? "blocked" : "failed";
-      const fallback = this.humanFinalConclusion(handling.runs, true, originalPrompt).trim()
-        || this.silentTurnFinalConclusion(originalPrompt);
-      const content = `${fallback}\n\n<!-- cancip-final ${JSON.stringify({ status })} -->`;
+      const conclusion = await this.concreteFailureConclusion(originalPrompt, handling.runs, failedCandidateState.value);
+      const content = `${conclusion.text}\n\n<!-- cancip-final ${JSON.stringify({ status })} -->`;
       const existing = this.latestVisibleAssistantAfter(this.latestUserMessageIndex());
       const message = existing ?? this.addMessage("assistant", content);
       message.content = content;
+      message.choiceOptions = undefined;
+      message.choiceSourceText = undefined;
+      if (conclusion.choices.length) this.attachExactFinalChoices(message, conclusion.choices);
+      void this.recordSessionEvent({
+        kind: "prompt.final_concrete_failure_summary",
+        detail: `candidate=${failedCandidateState.value?.visible ? "preserved" : "missing"}; toolRuns=${handling.runs.length}; choices=${conclusion.choices.length}`,
+        status
+      });
       this.renderMessages();
     }
     return { status: "failed", handling };
+  }
+
+  private canConcludeProtocolCandidate(candidate: FinalReviewCandidate, runs: ToolRun[], originalPrompt: string): boolean {
+    if (!candidate.visible.trim() || candidate.status === "failed" || candidate.status === "blocked" || candidate.status === "awaiting-approval") return false;
+    if (this.finalAnswerRequirementFailure(candidate.visible, originalPrompt, runs)) return false;
+    return this.canProgrammaticallyConcludeToolRuns(runs, originalPrompt);
   }
 
   private humanFinalConclusion(runs: ToolRun[], needsMoreAction = false, originalPrompt = ""): string {
@@ -50886,7 +51047,10 @@ class CancipView extends ItemView {
       if (patchFindFailed) lines.push("补丁没找到文本时，下一步必须读取当前片段，换更小锚点或 regex patch，不能重复同一个失败补丁。");
     }
     if (args.needsMoreAction) {
-      lines.push("当前动作还不足以证明任务完成，需要继续做实际 patch/write/验证；如果受限，必须说明具体缺少什么能力。");
+      const actualActions = uniqueStrings(args.runs
+        .filter((run) => run.status === "executed")
+        .map((run) => concreteFinalActionLabel(run)));
+      if (actualActions.length) lines.push(`本轮实际执行：${actualActions.join("、")}。`);
     }
     if (args.reads.length && !args.writes.length && !args.effectRuns.length && shouldExpectToolActionForPrompt(args.originalPrompt)
       && !vaultTargetDiscoveryCouldNotFindRequestedOpen(args.originalPrompt, args.runs)) {
@@ -58667,9 +58831,14 @@ class CancipView extends ItemView {
     const choiceContent = [message.choiceSourceText, content].filter(Boolean).join("\n\n");
     if (isModelFailureVisibleText(choiceContent)) return;
     const localChoices = this.choiceOptionsForMessage(choiceContent);
-    const mergedChoices = this.mergeChoiceOptions([...(message.choiceOptions ?? []), ...localChoices], 3);
+    const storedChoices = message.choiceOptionsStatus === "ready"
+      ? exactFinalChoiceOptionsFromTexts((message.choiceOptions ?? []).map((choice) => choice.text))
+      : [];
+    const mergedChoices = storedChoices.length
+      ? exactFinalChoiceOptionsFromTexts([...storedChoices.map((choice) => choice.text), ...localChoices.map((choice) => choice.text)])
+      : this.mergeChoiceOptions([...(message.choiceOptions ?? []), ...localChoices], 3);
     if (mergedChoices.length) {
-      message.choiceOptions = this.mergeChoiceOptions(mergedChoices);
+      message.choiceOptions = storedChoices.length ? mergedChoices : this.mergeChoiceOptions(mergedChoices);
       message.choiceOptionsStatus = "ready";
     }
     const safeChoices = this.plugin.sortComposerSuggestionChoices(mergedChoices.map((choice) => ({ text: choice.text, steps: [] })))
@@ -59219,6 +59388,14 @@ class CancipView extends ItemView {
         message.choiceOptionsStatus = "ready";
       }
     }
+  }
+
+  private attachExactFinalChoices(message: ChatMessage, rawChoices: string[]): void {
+    const choices = exactFinalChoiceOptionsFromTexts(rawChoices);
+    if (!choices.length) return;
+    message.choiceSourceText = `<!-- cancip-choices ${JSON.stringify({ choices: choices.map((choice) => choice.text) })} -->`;
+    message.choiceOptions = choices;
+    message.choiceOptionsStatus = "ready";
   }
 
   private renderToolRunReviewFiles(parent: HTMLElement, run: ToolRun): void {
@@ -76917,6 +77094,22 @@ function choiceOptionsFromTexts(texts: string[]): ChoiceOption[] {
   return options.map((text, index) => ({ prefix: String(index + 1), text }));
 }
 
+function exactFinalChoiceOptionsFromTexts(texts: string[]): ChoiceOption[] {
+  const unique = new Map<string, string>();
+  for (const raw of texts) {
+    const text = raw
+      .replace(/<!--[^>]*-->/g, "")
+      .replace(/^\s*(?:(?:\d{1,2})[.)、]|(?:[A-Ha-h])[.)]|[-*])\s*/, "")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (text.length < 2 || text.length > 140 || /[\r\n`{}]/.test(text)) continue;
+    const key = text.toLocaleLowerCase();
+    if (!unique.has(key)) unique.set(key, text);
+    if (unique.size >= 3) break;
+  }
+  return [...unique.values()].map((text, index) => ({ prefix: String(index + 1), text }));
+}
+
 function normalizeChoiceOptions(raw: unknown[]): ChoiceOption[] {
   return raw
     .filter(isRecord)
@@ -77926,6 +78119,122 @@ function responseStartsParallelSubagents(answer: string, minimumAgents: number):
     const count = typeof action.args?.count === "number" ? Math.round(action.args.count) : agents.length;
     return Math.max(agents.length, count) >= minimumAgents;
   });
+}
+
+function explicitlyRequestsMultiAgentExecution(prompt: string): boolean {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+  if (!normalized || /(?:不要|别|无需|禁止|do not|don't|without)\s*.{0,16}(?:多\s*agent|子\s*agent|subagents?|multi[- ]?agent)/i.test(normalized)) return false;
+  const directRequest = /(?:请(?:用|使用|调用|启动|创建|运行|安排)?|使用|调用|启动|创建|运行|安排|让|use|run|start|launch|create)\s*(?:至少|最少|不少于|at least)?\s*(?:\d+|两|二|三|四|五|六|七|八|九|十|two|three|four|five|six|seven|eight|nine|ten)?\s*(?:个|名)?\s*(?:真实|real)?\s*(?:多\s*agent|子\s*agent|subagents?|child agents?|multi[- ]?agent)/i;
+  const independentRequest = /(?:\d+|两|二|三|四|五|六|七|八|九|十|two|three|four|five|six|seven|eight|nine|ten)\s*(?:个|名)?\s*(?:真实|real)?\s*(?:子\s*agent|subagents?|child agents?|agents?).{0,36}(?:分别|独立|并行|互相|交叉|independent|parallel|cross[- ]?(?:check|review))/i;
+  return directRequest.test(normalized) || independentRequest.test(normalized);
+}
+
+function promptRequestsResultOnly(prompt: string): boolean {
+  const normalized = prompt.replace(/\s+/g, " ").trim();
+  if (!normalized) return false;
+  return /(?:最终|最后)?\s*(?:只|仅)\s*(?:回答|回复|输出|给出|保留)?\s*(?:最终)?\s*(?:结果|答案|结论|数值|版本号?)(?:即可|就行)?/i.test(normalized)
+    || /(?:answer|respond|reply|output|return)\s+(?:only|just)\s+(?:with\s+)?(?:the\s+)?(?:result|answer|conclusion|value|version)(?:\s+number)?/i.test(normalized)
+    || /(?:only|just)\s+(?:answer|response|reply|output|result|answer|conclusion|value|version)(?:\s+number)?/i.test(normalized);
+}
+
+function requestedMultiAgentCount(prompt: string): number {
+  const match = prompt.replace(/\s+/g, " ").match(/(?:至少|最少|不少于|at least)?\s*(\d+|两|二|三|四|五|六|七|八|九|十|two|three|four|five|six|seven|eight|nine|ten)\s*(?:个|名)?\s*(?:真实|real)?\s*(?:多\s*agent|子\s*agent|subagents?|child agents?|agents?)/i);
+  const token = match?.[1]?.toLocaleLowerCase() ?? "";
+  if (/^\d+$/.test(token)) return Math.max(2, Math.min(10, Number(token)));
+  const counts: Record<string, number> = {
+    两: 2, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10,
+    two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10
+  };
+  return counts[token] ?? 2;
+}
+
+function concreteFinalActionLabel(run: ToolRun): string {
+  if (run.action.type === "command") return run.action.command.trim();
+  if ("path" in run.action && typeof run.action.path === "string" && run.action.path.trim()) {
+    return `${run.action.type} ${run.action.path.trim()}`;
+  }
+  if (run.action.type === "automation") return `${run.action.type} ${run.action.op}${run.action.title ? ` ${run.action.title}` : ""}`.trim();
+  if (run.action.type === "todo") return `${run.action.type} ${run.action.op}`;
+  return run.action.type;
+}
+
+function conciseFinalRequirementFailure(reason: string, chinese: boolean): string {
+  if (/missing hidden final-review status/i.test(reason)) return chinese ? "模型没有给出终态标记" : "the model omitted the terminal status marker";
+  const choices = reason.match(/requires\s+(\d+)\s+concrete recommendation choices?.*received\s+(\d+)/i);
+  if (choices) return chinese ? `要求 ${choices[1]} 个推荐项，模型只给出 ${choices[2]} 个` : `${choices[1]} recommendations were required but only ${choices[2]} were returned`;
+  if (/missing visible final answer|missing a concrete user-visible result/i.test(reason)) return chinese ? "模型没有给出可见的具体结论" : "the model did not return a concrete visible conclusion";
+  if (/only read-only discovery ran/i.test(reason)) return chinese ? "只执行了只读发现，没有完成要求的改动" : "only read-only discovery ran; the requested change was not made";
+  const clean = reason.replace(/\s+/g, " ").trim();
+  return clean || (chinese ? "终态校验没有通过" : "terminal validation did not pass");
+}
+
+function concreteFailedFinalFallback(
+  originalPrompt: string,
+  candidateText: string,
+  runs: ToolRun[],
+  requirementFailure: string,
+  chinese: boolean
+): string {
+  const candidate = candidateText.trim();
+  const executed = [...new Set(runs.filter((run) => run.status === "executed").map(concreteFinalActionLabel).filter(Boolean))];
+  const parallelRan = runs.some((run) => run.status === "executed"
+    && run.action.type === "command"
+    && run.action.command.trim().toLocaleLowerCase() === "cancip.subagents.parallel");
+  if (explicitlyRequestsMultiAgentExecution(originalPrompt) && !parallelRan) {
+    const count = requestedMultiAgentCount(originalPrompt);
+    const subject = chinese ? `${count === 2 ? "两个" : `${count} 个`}真实子 Agent` : `${count} real child agents`;
+    const detail = chinese
+      ? `${subject}未启动；本轮${executed.length ? `只执行了 ${executed.join("、")}` : "没有执行任何子 Agent 动作"}，因此独立处理和交叉核对没有完成。`
+      : `${subject} did not start; this turn ${executed.length ? `only ran ${executed.join(", ")}` : "ran no subagent action"}, so the independent work and cross-check were not completed.`;
+    return [candidate, detail].filter(Boolean).join("\n\n");
+  }
+  const failed = runs.find((run) => run.status === "failed" || run.status === "blocked" || run.status === "rejected");
+  if (failed) {
+    const reason = (failed.error || failed.result || requirementFailure).replace(/\s+/g, " ").trim();
+    const detail = chinese
+      ? `${concreteFinalActionLabel(failed)} ${failed.status === "blocked" ? "被阻止" : failed.status === "rejected" ? "被拒绝" : "执行失败"}${reason ? `：${reason.slice(0, 320)}` : "。"}`
+      : `${concreteFinalActionLabel(failed)} was ${failed.status}${reason ? `: ${reason.slice(0, 320)}` : "."}`;
+    return [candidate, detail].filter(Boolean).join("\n\n");
+  }
+  const issue = conciseFinalRequirementFailure(requirementFailure, chinese);
+  const detail = chinese
+    ? `${executed.length ? `本轮实际执行了 ${executed.join("、")}` : "本轮没有执行工具动作"}；未通过原因：${issue}。`
+    : `${executed.length ? `This turn actually ran ${executed.join(", ")}` : "No tool action ran in this turn"}; terminal failure: ${issue}.`;
+  return [candidate, detail].filter(Boolean).join("\n\n");
+}
+
+function deterministicFinalChoiceFallback(originalPrompt: string, finalText: string, count: number): string[] {
+  if (count <= 0) return [];
+  const chinese = /[\u3400-\u9fff]/.test(originalPrompt);
+  const expression = originalPrompt.match(/-?\d+(?:\.\d+)?\s*(?:\+|-|×|\*|\/|÷)\s*-?\d+(?:\.\d+)?/)?.[0]?.replace(/\s+/g, " ") ?? "";
+  const result = finalText.replace(/<!--[^>]*-->/g, "").split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? "";
+  const agentCount = requestedMultiAgentCount(originalPrompt);
+  const subject = expression || originalPrompt.replace(/\s+/g, " ").trim().slice(0, 48);
+  const base = explicitlyRequestsMultiAgentExecution(originalPrompt)
+    ? chinese
+      ? [
+          `查看${agentCount === 2 ? "两个" : `${agentCount} 个`}子 Agent 对 ${subject} 的独立结果`,
+          `核对共识：${subject}${result ? ` = ${result}` : ""}`,
+          `用另一模型复算 ${subject}`,
+          `查看子 Agent 对 ${subject} 的原始收发`,
+          `重新运行 ${subject} 的交叉验证`
+        ]
+      : [
+          `View ${agentCount} independent agent results for ${subject}`,
+          `Check the consensus for ${subject}${result ? ` = ${result}` : ""}`,
+          `Recalculate ${subject} with another model`,
+          `Inspect the raw agent exchanges for ${subject}`,
+          `Run another cross-check for ${subject}`
+        ]
+    : chinese
+      ? [`查看 ${subject} 的验证证据`, `重试 ${subject} 的未完成动作`, `继续处理 ${subject}`]
+      : [`View verification evidence for ${subject}`, `Retry the unfinished action for ${subject}`, `Continue working on ${subject}`];
+  const choices = [...new Set(base.map((item) => item.replace(/\s+/g, " ").trim()).filter(Boolean))];
+  while (choices.length < count) {
+    const index = choices.length + 1;
+    choices.push(chinese ? `复查 ${subject} 的第 ${index} 项证据` : `Review evidence ${index} for ${subject}`);
+  }
+  return choices.slice(0, count);
 }
 
 function shouldAutoDelegateToSubagents(prompt: string): boolean {

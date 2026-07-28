@@ -257,6 +257,37 @@ const categorizedSearchHits = [
   { path: "资料/报告.pdf", title: "报告", excerpt: "PDF", score: 6, kind: "pdf", route: "hard" },
   { path: "资料/统计.xlsx", title: "统计", excerpt: "工作簿", score: 5, kind: "office", route: "hard" }
 ];
+const finalFailureModule = ts.transpileModule([
+  functionSource("promptRequestsResultOnly"),
+  functionSource("explicitlyRequestsMultiAgentExecution"),
+  functionSource("requestedMultiAgentCount"),
+  functionSource("concreteFinalActionLabel"),
+  functionSource("conciseFinalRequirementFailure"),
+  functionSource("concreteFailedFinalFallback"),
+  functionSource("deterministicFinalChoiceFallback"),
+  functionSource("exactFinalChoiceOptionsFromTexts"),
+  "export { promptRequestsResultOnly, explicitlyRequestsMultiAgentExecution, concreteFailedFinalFallback, deterministicFinalChoiceFallback, exactFinalChoiceOptionsFromTexts };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const finalFailureApi = await import(`data:text/javascript;base64,${Buffer.from(finalFailureModule).toString("base64")}`);
+const failedMultiAgentPrompt = "请用两个子 Agent 分别独立计算 12+30 并互相核对，最终只回答结果，并给出3个与本题直接相关的推荐项。";
+const failedMultiAgentFallback = finalFailureApi.concreteFailedFinalFallback(
+  failedMultiAgentPrompt,
+  "42",
+  [{
+    id: "fixture-index-run",
+    action: { type: "command", command: "cancip.tools.index", args: { query: "subagents" } },
+    summary: "command cancip.tools.index",
+    status: "executed",
+    createdAt: "2026-07-27T23:28:05.079Z",
+    result: "能力解析（只读索引，不替模型决定动作）"
+  }],
+  "missing hidden final-review status",
+  true
+);
+const failedMultiAgentChoices = finalFailureApi.deterministicFinalChoiceFallback(failedMultiAgentPrompt, "42", 3);
+const exactMultiAgentChoices = finalFailureApi.exactFinalChoiceOptionsFromTexts(failedMultiAgentChoices);
 
 const checks = [
   ["OCR command", source.includes('id: "recognize-active-file-ocr"')],
@@ -309,6 +340,7 @@ const checks = [
   ["live progress avoids unconditional Markdown rerender", source.includes("signature !== renderedSignature && now >= nextRenderAt")],
   ["subagents launch concurrently", source.includes("await Promise.allSettled(specs.map((spec)")],
   ["explicit multi-agent lets the main agent choose strategy but requires real children", source.includes("Your first executable action batch must call cancip.subagents.parallel with at least 2 real child sessions") && source.includes("price, latency, capability, recent success, and current availability") && source.includes("!responseStartsParallelSubagents(answer, 2)")],
+  ["explicit textual multi-agent requests also require the real parallel route", finalFailureApi.explicitlyRequestsMultiAgentExecution(failedMultiAgentPrompt) && !finalFailureApi.explicitlyRequestsMultiAgentExecution("修复多 Agent 设置里的按钮样式") && source.includes("|| explicitlyRequestsMultiAgentExecution(rawPrompt)")],
   ["parallel subagents distribute configured models", source.includes("const availableProfiles = this.availableSubagentProfiles(requestedModels)") && source.includes("model: assignedProfile.model")],
   ["failed subagent models fall back automatically", source.includes("private subagentFallbackProfiles") && source.includes("Retrying with fallback model") && source.includes("completedProfile")],
   ["parallel subagents infer a missing top-level goal", source.includes("const inferredAgentGoal = uniqueStrings(requestedRows") && source.includes('this.resolveTaskGoal("").trim()')],
@@ -318,6 +350,10 @@ const checks = [
   ["accepted final messages retain terminal metadata", source.includes("const finalAnswerContent = acceptedVisibleAnswer && reviewStatus") && source.includes("JSON.stringify({ status: reviewStatus })")],
   ["explicit recommendation counts are part of terminal validation", source.includes("private finalChoiceRequirementFailure") && source.includes("function requestedFinalChoiceCount") && source.includes("const requirementFailure = nonChoiceFailure || choiceFailure") && source.includes("Count the array items before returning") && source.includes("const required = requestedFinalChoiceCount(originalPrompt) || 3")],
   ["terminal recommendation repair preserves one final message", source.includes("private async repairFinalChoicesForCandidate") && source.includes("repaired terminal recommendations") && source.includes("this.attachChoiceSource(assistantMessage, choiceSource)")],
+  ["failed terminal review preserves concrete AI output and exact real-session evidence", failedMultiAgentFallback.startsWith("42") && /两个真实子\s*Agent未启动/i.test(failedMultiAgentFallback) && failedMultiAgentFallback.includes("cancip.tools.index") && !failedMultiAgentFallback.includes("请用两个") && !failedMultiAgentFallback.includes("patch/write") && source.includes("private async concreteFailureConclusion") && source.includes("prompt.final_concrete_failure_summary") && source.includes("failedCandidateState.value = candidate")],
+  ["verified protocol candidates complete with exact local recommendation fallback", failedMultiAgentChoices.length === 3 && failedMultiAgentChoices.every((choice) => choice.includes("12+30") || choice.includes("12 + 30")) && failedMultiAgentChoices.some((choice) => choice.includes("42")) && source.includes("private canConcludeProtocolCandidate") && source.includes("Preserved the concrete model candidate after verified tool completion")],
+  ["result-only requests keep the visible answer free of programmatic audit prose", finalFailureApi.promptRequestsResultOnly(failedMultiAgentPrompt) && finalFailureApi.promptRequestsResultOnly("Only answer the result") && !finalFailureApi.promptRequestsResultOnly("请解释结果并给出验证过程") && source.includes("promptRequestsResultOnly(originalPrompt)") && source.includes("? visibleAfterTools.content")],
+  ["verified final recommendations preserve every exact structured choice", exactMultiAgentChoices.length === 3 && exactMultiAgentChoices.map((choice) => choice.text).join("\n") === failedMultiAgentChoices.join("\n") && source.includes("private attachExactFinalChoices") && source.includes("this.attachExactFinalChoices(message, choices)") && source.includes("this.attachExactFinalChoices(message, conclusion.choices)") && source.includes("message.choiceOptions = storedChoices.length ? mergedChoices")],
   ["parallel session index writes are merged without rescanning or frozen timer waits", source.includes("sessionHistoryWriteQueue: Promise<void>") && source.includes("const run = this.sessionHistoryWriteQueue.then") && source.includes("readSessionHistoryIndexUncached(false)") && !source.includes("Math.max(0, 650 - (Date.now() - this.sessionSaveLastAt))")],
   ["subagent cards render inside their launching process step, not the Plan panel", source.includes("obcc-process-subagent-cards") && source.includes("hydrateProcessSubagentCards") && !source.includes("data-subagent-step-id") && styles.includes(".obcc-subagent-track") && styles.includes("overflow-x: auto")],
   ["subagent cards appear as soon as child sessions are created", source.includes("Make the child visible in the parent process record before its model call finishes") && source.includes("if (parentSessionId === this.sessionId) this.renderMessagesAfterMutation()")],
