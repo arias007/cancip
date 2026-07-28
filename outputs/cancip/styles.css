@@ -6181,6 +6181,17 @@ details.obcc-process-step {
   overflow: auto;
 }
 
+.obcc-context-edit-inline-editor-preview {
+  display: block;
+  box-sizing: border-box;
+  width: calc(100% - 8px);
+  max-width: none;
+  max-height: none;
+  margin: 5px 4px 7px;
+  overflow: visible;
+  pointer-events: none;
+}
+
 .obcc-context-edit-marker-group.has-proposal .obcc-context-edit-inline-preview,
 .obcc-context-edit-marker-group.has-proposal .obcc-context-edit-proposal-actions,
 .obcc-context-edit-proposal-actions button {
@@ -6304,6 +6315,14 @@ details.obcc-process-step {
   max-height: min(44vh, 320px);
 }
 
+.obcc-context-edit-proposal.is-collapsed {
+  max-height: none;
+}
+
+.obcc-context-edit-proposal.is-collapsed .obcc-context-edit-diff {
+  display: none;
+}
+
 .obcc-context-edit-diff {
   min-width: 0;
   overflow: auto;
@@ -6351,6 +6370,7 @@ details.obcc-process-step {
 
 .obcc-context-edit-proposal-actions {
   display: flex;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 4px;
 }
