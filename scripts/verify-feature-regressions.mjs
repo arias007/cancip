@@ -21,6 +21,47 @@ const functionSource = (name) => {
   if (!match) throw new Error(`Missing source function: ${name}`);
   return match;
 };
+const greetingCacheModule = ts.transpileModule([
+  "type Language = string;",
+  "const trimContext = (value: string, maxLength: number) => value.length <= maxLength ? value : value.slice(0, maxLength);",
+  "const redactSensitiveText = (value: string) => value;",
+  "const isChineseLanguage = (language: string) => language === 'zh';",
+  functionSource("escapeRegExp"),
+  functionSource("sanitizePersonalizationText"),
+  functionSource("sanitizePersonalizationName"),
+  functionSource("personalizationPeriodLabel"),
+  functionSource("personalizationGreetingCacheIsFresh"),
+  functionSource("personalizationGreetingBody"),
+  functionSource("composePersonalizationGreeting"),
+  "export { personalizationGreetingCacheIsFresh, composePersonalizationGreeting };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const greetingCacheApi = await import(`data:text/javascript;base64,${Buffer.from(greetingCacheModule).toString("base64")}`);
+const greetingNow = new Date(2026, 6, 28, 20, 0, 0, 0);
+const greetingNowMs = greetingNow.getTime();
+const reusedGreeting = greetingCacheApi.composePersonalizationGreeting(
+  greetingNow,
+  "zh",
+  "Murat",
+  "Murat，上午好。昨晚的日记里还剩一个复盘待办。"
+);
+const greetingCachePassed = reusedGreeting === "Murat，晚上好。昨晚的日记里还剩一个复盘待办。"
+  && greetingCacheApi.composePersonalizationGreeting(greetingNow, "zh", "Murat", "Murat，你好。") === "Murat，晚上好。"
+  && greetingCacheApi.composePersonalizationGreeting(
+    greetingNow,
+    "zh",
+    "Murat",
+    "Murat，下午快五点了，最近整理的国际音标笔记里保留了复习标签。"
+  ) === "Murat，晚上好。最近整理的国际音标笔记里保留了复习标签。"
+  && greetingCacheApi.composePersonalizationGreeting(
+    greetingNow,
+    "zh",
+    "木拉提",
+    "下午好，木拉提。今天的日记列着医务科远程与转诊、交易日志等未勾选事项。"
+  ) === "木拉提，晚上好。今天的日记列着医务科远程与转诊、交易日志等未勾选事项。"
+  && greetingCacheApi.personalizationGreetingCacheIsFresh(new Date(greetingNowMs - 47 * 60 * 60 * 1000).toISOString(), 48, greetingNowMs)
+  && !greetingCacheApi.personalizationGreetingCacheIsFresh(new Date(greetingNowMs - 49 * 60 * 60 * 1000).toISOString(), 48, greetingNowMs);
 const ocrSemanticModule = ts.transpileModule([
   "const OCR_CACHE_SCHEMA_VERSION = 3;",
   functionSource("uniqueStrings"),
@@ -373,6 +414,8 @@ const checks = [
   ["final verification uses concrete results without generic success filler", source.includes('sections.push(`验证结果：${verificationLines[0]}`)') && source.includes("private concreteVerificationResult") && !source.includes("命令/界面动作已返回成功") && !source.includes("写入/修改已验证成功")],
   ["one conclusion stays unnumbered while multiple Plan results stay numbered", source.includes("if (planTodos.length > 1)") && source.includes("normalizeSingleConclusionNumbering") && source.includes("numbered.length !== 1") && source.includes("Do not number a single conclusion") && source.includes("一个结论不编号")],
   ["greeting fallback is time-only and model greetings reject stock continuation templates", !localGreetingSource.includes("刚看到") && !localGreetingSource.includes("Continue from there") && source.includes("isTemplateLikePersonalizationGreeting") && source.includes("could not be produced from the filename alone")],
+  ["greeting immediately combines current time with the latest completed 48-hour body", greetingCachePassed && source.includes("personalizationGreetingCacheHours: 48") && source.includes("current.modelUpdatedAt") && source.includes("await this.personalizationFriendlyNameFromMemory()")],
+  ["failed or pending greeting refresh preserves the last successful model result", source.includes("if (!next.modelUpdatedAt && personalizationGreetingCacheIsFresh(") && source.includes("modelUpdatedAt: acceptedModelGreeting ? generatedAt : fallback.modelUpdatedAt")],
   ["automation stays background and 1-2 actions never create a Plan", !source.includes("if (!this.settings.preventAutomaticSessionOpen && !task.silent") && source.includes("1-2 项任务无需计划待办") && source.includes("if (concreteCount < 3) return omitShortPlan()")],
   ["automation process keeps recent raw exchanges and shows a task badge", source.includes("const protectedTail = this.messages.slice(-12)") && source.includes("automationTitle?: string") && source.includes("obcc-process-automation-badge") && styles.includes(".obcc-process-automation-badge")],
   ["subagents are hidden from ordinary history but retained for process cards", !source.includes("const renderSubagentGroup") && source.includes("!entry.parentSessionId") && source.includes("includeSubagents = args.includeSubagents === true") && source.includes("entry.eventOnly || entry.parentSessionId")],
