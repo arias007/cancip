@@ -745,6 +745,19 @@ body .view-content.obcc-review-leaf {
   line-height: 1.45;
 }
 
+.obcc-context-edit-textarea-selection-viewport {
+  position: fixed;
+  overflow: hidden;
+  visibility: hidden;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.obcc-context-edit-textarea-selection-mirror {
+  position: absolute;
+  white-space: pre-wrap;
+}
+
 .obcc-context-edit-actions {
   display: flex;
   justify-content: flex-end;

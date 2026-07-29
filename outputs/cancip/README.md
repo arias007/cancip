@@ -39,7 +39,7 @@ Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-f
 - Structured Plan todos are available as `cancip-action` tools, so the agent can set/add/update/remove/list/clear the visible Plan panel during an agent run instead of only describing a plan in prose.
 - The composer keeps the access selector visible and wider for mobile tapping, with a paperclip attachment button beside it for quickly adding file/folder context.
 - Settings expose common settings and every advanced category as peer horizontal pages. The tab strip scrolls on mobile, only the selected page is rendered, and changing an option no longer collapses an outer advanced section.
-- The settings page can show two local payment QR codes at the bottom from `extras/code-1.jpg` and `extras/code-2.png`; the QR images are local plugin resources and are not included in prompts or JSON exports.
+- The settings page can show two payment QR codes embedded directly in `main.js`; no extra image files are required, and the images are not included in prompts or JSON exports.
 - Built-in model presets include GPT, Claude, Gemini, DeepSeek, Qwen, and Kimi-style names while still allowing a custom model string.
 - Hierarchical `@` picker for sessions, Skills, automations, files/folders, plugins, Cancip functions, command bus entries, and real Obsidian commands. Empty `@` first shows human-readable categories with Session history, Skill, and Automations fixed at the top; selecting a category loads and filters only that list. Stable session/automation mentions survive title changes, and an automation mention plus follow-up text runs that task directly with a one-time supplemental prompt.
 - Mobile composer geometry follows the active Obsidian WebView visual viewport, keeping the input and `@` picker above the Android keyboard. The Review detail shell reserves the Obsidian mobile status bar and keeps structure changes directly beside the content diff.
@@ -325,8 +325,6 @@ prime-tts-worker.js
 styles.css
 versions.json
 README.md
-extras/code-1.jpg
-extras/code-2.png
 ```
 
 Then enable `Cancip` in Obsidian.

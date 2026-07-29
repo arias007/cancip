@@ -63,6 +63,13 @@ await esbuild.build({
 
 const cssColorKey = "WHITE" + "\x53" + "MOKE";
 const mainSource = await readFile(mainOutput, "utf8");
+const embeddedSupportCodeDataUrls = await Promise.all([
+  "src/support/code-1.png",
+  "src/support/code-2.png"
+].map(async (assetPath) => `data:image/png;base64,${(await readFile(assetPath)).toString("base64")}`));
+for (const dataUrl of embeddedSupportCodeDataUrls) {
+  if (!mainSource.includes(dataUrl)) throw new Error("Payment QR image was not embedded in main.js");
+}
 await writeFile(
   mainOutput,
   mainSource

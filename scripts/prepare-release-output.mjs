@@ -5,7 +5,8 @@ import esbuild from "esbuild";
 const outputDir = "outputs/cancip";
 const version = JSON.parse(await readFile("manifest.json", "utf8")).version;
 const minAppVersion = JSON.parse(await readFile("manifest.json", "utf8")).minAppVersion;
-const versionsPath = `${outputDir}/versions.json`;
+const versionsPath = "versions.json";
+const outputVersionsPath = `${outputDir}/versions.json`;
 
 await mkdir(outputDir, { recursive: true });
 await mkdir("src/generated", { recursive: true });
@@ -40,4 +41,6 @@ try {
   versions = {};
 }
 versions[version] = minAppVersion;
-await writeFile(versionsPath, `${JSON.stringify(versions, null, 2)}\n`);
+const versionsJson = `${JSON.stringify(versions, null, 2)}\n`;
+await writeFile(versionsPath, versionsJson);
+await writeFile(outputVersionsPath, versionsJson);
