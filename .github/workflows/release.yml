@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   release:
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -30,17 +31,27 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Publish release
+      - name: Create draft release with assets
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag="${GITHUB_REF_NAME:-manual}"
-          gh release view "$tag" >/dev/null 2>&1 || gh release create "$tag" --title "$tag" --notes "Cancip $tag"
-          gh release upload "$tag" \
-            outputs/cancip/main.js \
-            outputs/cancip/manifest.json \
-            outputs/cancip/styles.css \
-            --clobber
+          tag="$GITHUB_REF_NAME"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release edit "$tag" --draft=true
+            gh release upload "$tag" \
+              outputs/cancip/main.js \
+              outputs/cancip/manifest.json \
+              outputs/cancip/styles.css \
+              --clobber
+          else
+            gh release create "$tag" \
+              --title "$tag" \
+              --notes "Cancip $tag" \
+              --draft \
+              outputs/cancip/main.js \
+              outputs/cancip/manifest.json \
+              outputs/cancip/styles.css
+          fi
 
       - name: Attest release assets
         uses: actions/attest-build-provenance@v4.1.1
@@ -49,3 +60,17 @@ jobs:
             outputs/cancip/main.js
             outputs/cancip/manifest.json
             outputs/cancip/styles.css
+
+      - name: Verify assets and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          for asset in main.js manifest.json styles.css; do
+            state="$(gh release view "$tag" --json assets --jq ".assets[] | select(.name == \"$asset\") | .state" | tr '[:upper:]' '[:lower:]')"
+            if [ "$state" != "uploaded" ]; then
+              echo "Release asset $asset is missing or not uploaded (state=$state). The release remains a draft."
+              exit 1
+            fi
+          done
+          gh release edit "$tag" --draft=false --latest

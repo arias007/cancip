@@ -17,6 +17,7 @@ const checks = [
   ["versions.json contains only SemVer compatibility entries", Object.entries(versions).every(([version, minAppVersion]) => semver.test(version) && typeof minAppVersion === "string" && semver.test(minAppVersion))],
   ["versions.json maps the current release to minAppVersion", versions[manifest.version] === manifest.minAppVersion],
   ["release workflow accepts current SemVer tags", /tags:\s*[\r\n]+\s*-\s*["']\*\.\*\.\*["']/.test(releaseWorkflow)],
+  ["release workflow publishes only after draft assets are uploaded", releaseWorkflow.includes("--draft") && releaseWorkflow.includes("state=\"$(gh release view") && releaseWorkflow.indexOf("gh release edit \"$tag\" --draft=false --latest") > releaseWorkflow.indexOf("Attest release assets")],
   ["manifest declares minimum app version and mobile compatibility", semver.test(manifest.minAppVersion ?? "") && manifest.isDesktopOnly === false],
   ["manifest contains description author and main entry", typeof manifest.description === "string" && manifest.description.trim().length >= 20 && typeof manifest.author === "string" && manifest.author.trim().length > 0 && packageJson.main === "main.js"],
   ["source avoids unsafe HTML assignment APIs", !/\.(?:innerHTML|outerHTML)\s*=/.test(source) && !/\binsertAdjacentHTML\s*\(/.test(source)],

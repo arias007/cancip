@@ -12561,3 +12561,17 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
 .obcc-process-step-head {
   grid-template-columns: 14px 20px minmax(0, 1fr) max-content max-content;
 }
+
+.obcc-package-install-desc,
+.obcc-package-install-row,
+.obcc-package-install-link,
+.obcc-package-install-files {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.obcc-package-install-row,
+.obcc-package-install-files {
+  margin-top: 4px;
+}
