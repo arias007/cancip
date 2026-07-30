@@ -10737,7 +10737,8 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 
 .obcc-document-stage.is-edit-md-mode > .notedraw-canvas,
 .obcc-document-stage.is-edit-md-mode > .notedraw-static-canvas {
-  pointer-events: none;
+  /* NoteDraw's active drawing rule loads after this stylesheet; text mode must pass taps to the preview. */
+  pointer-events: none !important;
 }
 
 .obcc-document-note-draw-edit-surface [contenteditable="true"],
