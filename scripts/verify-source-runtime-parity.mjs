@@ -3,6 +3,7 @@ import process from "node:process";
 import ts from "typescript";
 
 const sourceText = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
+const bridgeSourceText = await readFile(new URL("../src/agentBridge.ts", import.meta.url), "utf8");
 const runtimeText = await readFile(new URL("../outputs/cancip/main.js", import.meta.url), "utf8");
 
 function namedMethods(text, kind, label) {
@@ -19,7 +20,10 @@ function namedMethods(text, kind, label) {
   return methods;
 }
 
-const sourceMethods = namedMethods(sourceText, ts.ScriptKind.TS, "src/main.ts");
+const sourceMethods = new Set([
+  ...namedMethods(sourceText, ts.ScriptKind.TS, "src/main.ts"),
+  ...namedMethods(bridgeSourceText, ts.ScriptKind.TS, "src/agentBridge.ts")
+]);
 const runtimeMethods = namedMethods(runtimeText, ts.ScriptKind.JS, "outputs/cancip/main.js");
 
 const intentionallyRemovedRuntimeMethods = new Set([

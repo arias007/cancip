@@ -527,6 +527,26 @@ GitHub settings live in the advanced Command bus group and mirror to the Cancip 
 
 Use the official API or a trusted self-owned relay; do not send GitHub tokens through public accelerators.
 
+## Cancip CLI and local Agent bridge
+
+Desktop Cancip can connect bidirectionally with Codex, Claude Code, and other MCP-compatible local agents. Cancip remains the Obsidian interface and execution layer: it supplies Vault search/read/open tools, displays the conversation and progress, and applies its existing confirmation/full-access and Review rules to every write-like action. The local agent can be selected as Cancip's text-model brain without gaining a direct write route around Cancip.
+
+Open `Cancip settings -> Advanced -> Agent bridge and Cancip CLI`, enable the bridge, then copy the generated link command. The CLI discovers the open Vault and reads its private bridge credential locally; it never prints that credential. Typical commands are:
+
+```bash
+node "/path/to/.obsidian/plugins/cancip/cli/cancip-cli.mjs" status
+node "/path/to/.obsidian/plugins/cancip/cli/cancip-cli.mjs" link obsidian cancip
+node "/path/to/.obsidian/plugins/cancip/cli/cancip-cli.mjs" connect codex
+node "/path/to/.obsidian/plugins/cancip/cli/cancip-cli.mjs" connect claude
+node "/path/to/.obsidian/plugins/cancip/cli/cancip-cli.mjs" send "Summarize the active project"
+```
+
+`link obsidian cancip` detects installed Codex/Claude Code CLIs and registers Cancip with each available agent; `connect codex` and `connect claude` provide explicit routes. Cancip also writes `cli/CANCIP_AGENT_CONNECT.md` beside the installed CLI so an agent can discover the exact local command after the user says “link Obsidian Cancip”. `doctor` reports CLI availability and real MCP registration state. Other MCP clients can start the same CLI with the `mcp` command.
+
+Available Codex and Claude Code CLIs appear directly in Cancip's model selector and can be used by normal chat, automation, planning, subagents, Review, and final-answer flows. For local models, the model-source presets include Ollama (`127.0.0.1:11434`), LM Studio (`127.0.0.1:1234`), and vLLM (`127.0.0.1:8000`); arbitrary OpenAI-compatible local/private endpoints can be added as normal model sources. Local/private sources may omit the API key. “Refresh local models” discovers both Ollama `/api/tags` and OpenAI-compatible `/v1/models` catalogs.
+
+The HTTP bridge listens only on `127.0.0.1`, requires a random Bearer credential on every route, limits request/output sizes and request rate, and is disabled on mobile. When Cancip invokes a local Agent as its brain, Codex keeps the user's existing authentication/model provider but runs read-only with MCP and project rules disabled for that child invocation; Claude Code runs with tools disabled. This prevents recursive bridge calls or direct writes without reading or copying Agent credentials. Confirmation mode queues writes for approval; Full access executes them through Cancip and records Review data as usual.
+
 `autoContinueAfterTools` controls whether completed tool runs are sent back to the model for another reasoning step. `maxToolIterations` caps the loop so a bad prompt cannot run forever.
 
 ## Roadmap
