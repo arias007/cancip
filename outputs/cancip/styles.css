@@ -10687,8 +10687,10 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 .obcc-document-stage {
   position: relative;
   box-sizing: border-box;
+  contain: inline-size;
   flex: 1 1 auto;
   width: 100%;
+  max-width: 100%;
   height: 100%;
   min-width: 0;
   min-height: 0;
@@ -10696,7 +10698,21 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 
 .obcc-document-stage.markdown-preview-view {
   padding: 0;
-  overflow: visible;
+  overflow-x: hidden;
+  overflow-y: visible;
+  overflow-wrap: anywhere;
+}
+
+.obcc-document-stage.markdown-preview-view :is(h1, h2, h3, h4, h5, h6, p, li, blockquote, a, strong, em, code) {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.obcc-document-stage.markdown-preview-view table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .obcc-document-drawing-overlay {
@@ -11281,10 +11297,14 @@ body.is-phone .view-content.obcc-document-workbench .obcc-document-body.is-nativ
 .obcc-document-image-preview,
 .obcc-document-media-preview {
   display: block;
+  box-sizing: border-box;
+  width: 100%;
   max-width: 100%;
+  height: auto;
   max-height: 100%;
   margin: 0 auto;
   object-fit: contain;
+  object-position: top center;
 }
 
 .obcc-document-media-preview {
