@@ -1,6 +1,6 @@
 {
   "name": "cancip",
-  "version": "3.3.25",
+  "version": "3.3.26",
   "private": true,
   "main": "main.js",
   "scripts": {
@@ -9,9 +9,10 @@
     "verify:agent-bridge": "node scripts/verify-agent-bridge.mjs",
     "verify:obsidian-community": "node scripts/verify-obsidian-community-standards.mjs",
     "test:office-context-edit": "node scripts/verify-office-context-edit.mjs",
+    "test:document-package-edit": "node scripts/verify-document-package-edit.mjs",
     "test:tts": "node scripts/verify-tts-regression.mjs",
     "build:ocr-package": "node scripts/prepare-ocr-package.mjs",
-    "build": "npm run verify:source-parity && npm run verify:feature-regressions && npm run verify:agent-bridge && npm run verify:obsidian-community && npm run test:office-context-edit && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
+    "build": "npm run verify:source-parity && npm run verify:feature-regressions && npm run verify:agent-bridge && npm run verify:obsidian-community && npm run test:office-context-edit && npm run test:document-package-edit && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
     "check": "tsc --noEmit --skipLibCheck",
     "verify": "npm run check && npm run build"
   },
