@@ -10657,6 +10657,7 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   padding: 16px clamp(12px, 4%, 38px) 28px;
   overflow: auto;
   overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
 }
 
 .obcc-document-body > :first-child {
@@ -11213,6 +11214,50 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 }
 
 @container (max-width: 520px) {
+  .view-content.obcc-document-workbench .obcc-document-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 4px;
+    padding: 5px 7px;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-identity,
+  .view-content.obcc-document-workbench .obcc-document-toolbar {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+    justify-content: stretch;
+    overflow: visible;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-modes {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-actions {
+    width: 100%;
+    flex: 0 0 auto;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-actions > button.obcc-document-action {
+    flex: 0 0 28px;
+    width: 28px;
+    height: 28px;
+    min-width: 28px;
+    min-height: 28px;
+    padding: 4px;
+  }
+
   .view-content.obcc-document-workbench.is-compact-header .obcc-document-header {
     display: grid;
     grid-template-columns: minmax(0, 1fr);
@@ -11345,6 +11390,21 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 .obcc-document-body.is-native-preview.is-html-preview .obcc-document-preview-host,
 .obcc-document-body.is-native-preview.is-html-preview .obcc-document-html-preview {
   height: var(--obcc-document-html-height, 100%);
+  min-height: 100%;
+}
+
+.obcc-document-body.is-zoomed {
+  align-items: flex-start;
+  overflow: auto;
+}
+
+.obcc-document-body.is-zoomed > .obcc-document-stage,
+.obcc-document-body.is-zoomed > .obcc-document-editor {
+  flex: 0 0 auto;
+}
+
+.obcc-document-body.is-zoomed > .obcc-document-editor {
+  height: 100%;
   min-height: 100%;
 }
 
@@ -11574,6 +11634,112 @@ body.is-phone .obcc-document-native-preview {
 .obcc-search-results {
   min-height: 0;
   overflow: hidden;
+}
+
+/* 3.3.29: keep workbench actions reachable on narrow mobile panes. */
+body.is-mobile .view-content.obcc-document-workbench .obcc-document-toolbar,
+body.is-phone .view-content.obcc-document-workbench .obcc-document-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: stretch;
+  justify-content: stretch;
+  width: 100%;
+  min-width: 0;
+  gap: 4px;
+  overflow: visible;
+}
+
+body.is-mobile .view-content.obcc-document-workbench .obcc-document-modes,
+body.is-phone .view-content.obcc-document-workbench .obcc-document-modes {
+  display: inline-flex;
+  width: 100%;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+body.is-mobile .view-content.obcc-document-workbench .obcc-document-mode,
+body.is-phone .view-content.obcc-document-workbench .obcc-document-mode {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+body.is-mobile .view-content.obcc-document-workbench .obcc-document-actions,
+body.is-phone .view-content.obcc-document-workbench .obcc-document-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+@container (max-width: 520px) {
+  .view-content.obcc-document-workbench .obcc-document-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    gap: 4px;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-toolbar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+    width: 100%;
+    height: auto;
+    gap: 4px;
+    overflow: visible;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-modes,
+  .view-content.obcc-document-workbench .obcc-document-actions {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-actions {
+    display: grid;
+    grid-template-columns: repeat(3, 28px);
+    align-items: center;
+    justify-content: start;
+    gap: 3px;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-actions > button.obcc-document-action {
+    width: 100%;
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+}
+
+@container (max-width: 179px) {
+  .view-content.obcc-document-workbench .obcc-document-toolbar {
+    height: auto;
+    overflow: visible;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-modes {
+    width: 100%;
+    flex: 0 0 auto;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-actions > button.obcc-document-action {
+    flex: 0 0 24px;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    padding: 3px;
+  }
+
+  .view-content.obcc-document-workbench .obcc-document-actions {
+    grid-template-columns: repeat(3, 24px);
+  }
 }
 
 .obcc-search-section {
