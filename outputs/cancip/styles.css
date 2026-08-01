@@ -11436,6 +11436,7 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 .obcc-document-body.is-zoomed {
   align-items: flex-start;
   overflow: auto;
+  touch-action: none;
 }
 
 .obcc-document-body.is-zoomed > .obcc-document-stage {
