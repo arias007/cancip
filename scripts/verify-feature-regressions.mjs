@@ -520,7 +520,10 @@ const checks = [
   ["automation stays background and 1-2 actions never create a Plan", !source.includes("if (!this.settings.preventAutomaticSessionOpen && !task.silent") && source.includes("1-2 项任务无需计划待办") && source.includes("if (concreteCount < 3) return omitShortPlan()")],
   ["automation process keeps recent raw exchanges and shows a task badge", source.includes("const protectedTail = this.messages.slice(-12)") && source.includes("automationTitle?: string") && source.includes("obcc-process-automation-badge") && styles.includes(".obcc-process-automation-badge")],
   ["subagents are hidden from ordinary history but retained for process cards", !source.includes("const renderSubagentGroup") && source.includes("!entry.parentSessionId") && source.includes("includeSubagents = args.includeSubagents === true") && source.includes("entry.eventOnly || entry.parentSessionId")],
-  ["verified successful workflows retain a reusable route", source.includes("Reusable verified route:") && source.includes('run.status === "executed"')]
+  ["verified successful workflows retain a reusable route", source.includes("Reusable verified route:") && source.includes('run.status === "executed"')],
+  ["Mobile Webviewer uses a dedicated versioned Cancip bridge", source.includes("interface MobileWebviewerApiLike") && source.includes("receiveExternalContext(input: CancipExternalContextInput)") && source.includes('normalized.startsWith("cancip.webviewer.")') && source.includes("private async mobileWebviewerCommand") && source.includes('"cancip.webviewer.read"') && source.includes('"cancip.webviewer.send"')],
+  ["Mobile Webviewer reads remain approval-free while navigation and sends stay effectful", source.match(/"cancip\.webviewer\.read"/g)?.length >= 4 && source.includes('|| command === "cancip.webviewer.open"') && source.includes('|| command === "cancip.webviewer.send"')],
+  ["external web context is attached without an implicit model request", source.includes("view.addDraftContext(label, content") && source.includes("if (prompt && input.submit)") && source.includes("view.setExternalDraft(prompt")]
 ];
 
 const failed = checks.filter(([, passed]) => !passed).map(([name]) => name);
