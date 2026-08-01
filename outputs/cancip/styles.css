@@ -12441,6 +12441,15 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   touch-action: none;
 }
 
+.obcc-context-edit-lock.is-active {
+  background: color-mix(in srgb, var(--interactive-accent) 14%, transparent);
+  color: var(--text-accent);
+}
+
+.obcc-context-edit-bubble.is-position-locked {
+  outline: 1px solid color-mix(in srgb, var(--interactive-accent) 35%, transparent);
+}
+
 .obcc-context-edit-bubble:not(.is-proposal-ready) > .obcc-context-edit-drag {
   flex: 0 0 30px;
   width: 30px;
