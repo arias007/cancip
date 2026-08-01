@@ -3259,6 +3259,7 @@ details.obcc-process-step {
 
 .obcc-model-menu-text {
   min-width: 0;
+  overflow: hidden;
 }
 
 .obcc-model-menu-actions {
@@ -5092,8 +5093,9 @@ details.obcc-process-step {
 }
 
 .obcc-model-button {
-  flex: 0 1 auto;
+  flex: 0 1 clamp(96px, 42vw, 168px);
   gap: 5px;
+  width: clamp(96px, 42vw, 168px);
   max-width: min(168px, 42vw);
   padding: 0 4px;
   color: var(--text-muted);
@@ -5955,6 +5957,13 @@ details.obcc-process-step {
 .obcc-access-label,
 .obcc-model-name {
   color: inherit;
+}
+
+.obcc-model-name {
+  display: block;
+  flex: 1 1 0;
+  width: 0;
+  max-width: 100%;
 }
 
 .obcc-model-effort {
