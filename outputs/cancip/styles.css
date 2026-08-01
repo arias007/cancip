@@ -10713,6 +10713,16 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   overflow-wrap: anywhere;
 }
 
+.obcc-document-zoom-content {
+  position: relative;
+  z-index: 1;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  transform-origin: top left;
+}
+
 .obcc-document-stage.markdown-preview-view :is(h1, h2, h3, h4, h5, h6, p, li, blockquote, a, strong, em, code) {
   max-width: 100%;
   overflow-wrap: anywhere;
@@ -10773,9 +10783,9 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   outline-offset: 2px;
 }
 
-.obcc-document-stage > .obcc-document-preview-host,
-.obcc-document-stage > .obcc-document-html-preview,
-.obcc-document-stage > .obcc-document-native-preview {
+.obcc-document-zoom-content > .obcc-document-preview-host,
+.obcc-document-zoom-content > .obcc-document-html-preview,
+.obcc-document-zoom-content > .obcc-document-native-preview {
   position: relative;
   z-index: 1;
 }
@@ -11389,6 +11399,10 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   min-height: 0;
 }
 
+.obcc-document-body.is-native-preview .obcc-document-zoom-content {
+  height: 100%;
+}
+
 .obcc-document-body.is-native-preview.is-html-preview {
   display: block;
   overflow: auto;
@@ -11396,6 +11410,11 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 
 .obcc-document-body.is-native-preview.is-html-preview > .obcc-document-stage {
   height: auto;
+  min-height: 100%;
+}
+
+.obcc-document-body.is-native-preview.is-html-preview .obcc-document-zoom-content {
+  height: var(--obcc-document-html-height, 100%);
   min-height: 100%;
 }
 
@@ -11408,6 +11427,10 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 .obcc-document-body.is-zoomed {
   align-items: flex-start;
   overflow: auto;
+}
+
+.obcc-document-body.is-zoomed > .obcc-document-stage {
+  overflow: visible;
 }
 
 .obcc-document-body.is-zoomed > .obcc-document-stage,
