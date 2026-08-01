@@ -10488,10 +10488,19 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
 
 .obcc-document-toolbar {
   flex: 1 1 340px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
   min-width: 0;
   gap: 8px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+.obcc-document-toolbar::-webkit-scrollbar {
+  display: none;
 }
 
 .obcc-document-actions,
@@ -11229,23 +11238,26 @@ body.is-phone.obcc-force-statusbar-visible .view-content.obcc-document-workbench
   }
 
   .view-content.obcc-document-workbench .obcc-document-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
+    display: flex;
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: center;
     gap: 4px;
-    justify-content: stretch;
-    overflow: visible;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
   }
 
   .view-content.obcc-document-workbench .obcc-document-modes {
-    width: 100%;
-    flex: 0 0 auto;
+    width: auto;
+    flex: 0 0 132px;
   }
 
   .view-content.obcc-document-workbench .obcc-document-actions {
-    width: 100%;
+    width: auto;
     flex: 0 0 auto;
-    justify-content: flex-end;
-    flex-wrap: wrap;
+    justify-content: flex-start;
+    flex-wrap: nowrap;
     gap: 4px;
   }
 
@@ -11483,15 +11495,19 @@ body.is-phone .obcc-document-header {
 body.is-mobile .obcc-document-toolbar,
 body.is-phone .obcc-document-toolbar {
   display: flex;
-  justify-content: space-between;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  justify-content: flex-start;
   width: 100%;
   min-width: 0;
   gap: 5px;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 body.is-mobile .obcc-document-modes,
 body.is-phone .obcc-document-modes {
-  flex: 1 1 auto;
+  flex: 0 0 132px;
   min-width: 0;
 }
 
@@ -11504,6 +11520,8 @@ body.is-phone .obcc-document-mode {
 
 body.is-mobile .obcc-document-actions,
 body.is-phone .obcc-document-actions {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
   max-width: 100%;
 }
 
@@ -11634,112 +11652,6 @@ body.is-phone .obcc-document-native-preview {
 .obcc-search-results {
   min-height: 0;
   overflow: hidden;
-}
-
-/* 3.3.29: keep workbench actions reachable on narrow mobile panes. */
-body.is-mobile .view-content.obcc-document-workbench .obcc-document-toolbar,
-body.is-phone .view-content.obcc-document-workbench .obcc-document-toolbar {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  align-items: stretch;
-  justify-content: stretch;
-  width: 100%;
-  min-width: 0;
-  gap: 4px;
-  overflow: visible;
-}
-
-body.is-mobile .view-content.obcc-document-workbench .obcc-document-modes,
-body.is-phone .view-content.obcc-document-workbench .obcc-document-modes {
-  display: inline-flex;
-  width: 100%;
-  min-width: 0;
-  flex: 0 0 auto;
-}
-
-body.is-mobile .view-content.obcc-document-workbench .obcc-document-mode,
-body.is-phone .view-content.obcc-document-workbench .obcc-document-mode {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-body.is-mobile .view-content.obcc-document-workbench .obcc-document-actions,
-body.is-phone .view-content.obcc-document-workbench .obcc-document-actions {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  width: 100%;
-  max-width: none;
-  min-width: 0;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-@container (max-width: 520px) {
-  .view-content.obcc-document-workbench .obcc-document-header {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    align-items: stretch;
-    gap: 4px;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-toolbar {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr);
-    align-items: stretch;
-    width: 100%;
-    height: auto;
-    gap: 4px;
-    overflow: visible;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-modes,
-  .view-content.obcc-document-workbench .obcc-document-actions {
-    width: 100%;
-    min-width: 0;
-    flex: 0 0 auto;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-actions {
-    display: grid;
-    grid-template-columns: repeat(3, 28px);
-    align-items: center;
-    justify-content: start;
-    gap: 3px;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-actions > button.obcc-document-action {
-    width: 100%;
-    min-width: 0;
-    flex: 0 0 auto;
-  }
-}
-
-@container (max-width: 179px) {
-  .view-content.obcc-document-workbench .obcc-document-toolbar {
-    height: auto;
-    overflow: visible;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-modes {
-    width: 100%;
-    flex: 0 0 auto;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-actions > button.obcc-document-action {
-    flex: 0 0 24px;
-    width: 24px;
-    height: 24px;
-    min-width: 24px;
-    min-height: 24px;
-    padding: 3px;
-  }
-
-  .view-content.obcc-document-workbench .obcc-document-actions {
-    grid-template-columns: repeat(3, 24px);
-  }
 }
 
 .obcc-search-section {
