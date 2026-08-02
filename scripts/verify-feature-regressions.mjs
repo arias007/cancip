@@ -356,6 +356,7 @@ const safeOfficeLink = documentInlineApi.renderDocumentMarkdownInline("**粗体*
 const unsafeOfficeLink = documentInlineApi.renderDocumentMarkdownInline("[危险](javascript:alert(1))");
 
 const checks = [
+  ["session notifications prefer the Ntfy hub and keep direct ntfy as unavailable-plugin fallback", source.includes("type NotificationHubApi") && source.includes("notificationHubApi(): NotificationHubApi | null") && source.includes('runtime.api.send !== "function"') && source.includes('source: "cancip"') && source.includes('event: `session-${input.status}`') && source.indexOf("const hub = this.notificationHubApi()") < source.indexOf('const topic = settings.ntfyTopic.trim()') && source.includes('if (!result || result.ok !== true)')],
   ["OCR command", source.includes('id: "recognize-active-file-ocr"')],
   ["OCR file-menu action", source.includes('setIcon("scan-text")') && source.includes("void this.openOcrResult(file)")],
   ["manual PDF OCR requests every page", source.includes("readOcrForVaultFile(file, false, undefined, true)") && source.includes("Number.MAX_SAFE_INTEGER")],

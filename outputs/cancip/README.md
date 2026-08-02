@@ -4,6 +4,7 @@ Obsidian Cancip AI is a right-side AI chat panel shaped toward a mobile-first ag
 
 Cancip is a lightweight prototype for managing an Obsidian vault from a mobile-friendly AI panel:
 
+- Session completion and failure notifications use the installed Ntfy Notifications hub first, so its selected default Channel, recent-conversation routing, review, quiet hours, receipts, and error handling apply consistently. Cancip's legacy direct ntfy topic remains only as a compatibility fallback when the hub plugin/API is unavailable.
 - Process-record raw blocks keep Copy and Wrap controls in a fixed header above an independent scroll layer. Hidden process/tool blocks share the same controls, so long lines stay horizontally scrollable by default and can be wrapped on demand.
 - Separate model sources and models: each source stores its own Base URL, key, and API mode, while each model ID is explicitly bound to one source and a single default model drives AI modules unless they override it.
 - Multilingual UI with auto device-language detection for Simplified Chinese, Traditional Chinese, English, Uyghur, Turkish, Russian, Japanese, Korean, Spanish, French, German, and Arabic; missing low-frequency strings fall back to English, and Arabic/Uyghur use RTL layout hints.
