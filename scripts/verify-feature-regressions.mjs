@@ -392,6 +392,29 @@ const documentInlineModule = ts.transpileModule([
 const documentInlineApi = await import(`data:text/javascript;base64,${Buffer.from(documentInlineModule).toString("base64")}`);
 const safeOfficeLink = documentInlineApi.renderDocumentMarkdownInline("**粗体**，[Obsidian 链接](https://obsidian.md?a=1&b=2)。");
 const unsafeOfficeLink = documentInlineApi.renderDocumentMarkdownInline("[危险](javascript:alert(1))");
+const markdownEmbedModule = ts.transpileModule([
+  functionSource("decodeUriComponentSafely"),
+  functionSource("markdownEmbedLinkpaths"),
+  functionSource("markdownEmbedResourceCandidates"),
+  "export { markdownEmbedLinkpaths, markdownEmbedResourceCandidates };"
+].join("\n\n"), {
+  compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
+}).outputText;
+const markdownEmbedApi = await import(`data:text/javascript;base64,${Buffer.from(markdownEmbedModule).toString("base64")}`);
+const parsedMarkdownEmbedTargets = markdownEmbedApi.markdownEmbedLinkpaths([
+  "![](文档/报告.docx)",
+  "![表格](文档/统计.xlsx)",
+  "![](<文档/项目 说明.pptx>)",
+  "![[文档/演示.html|网页]]"
+].join("\n"));
+const desktopMarkdownEmbedCandidates = markdownEmbedApi.markdownEmbedResourceCandidates(
+  "app://local/D:/Vault/%E6%96%87%E6%A1%A3/%E6%8A%A5%E5%91%8A.docx?mtime=1",
+  "D:/Vault"
+);
+const encodedDesktopMarkdownEmbedCandidates = markdownEmbedApi.markdownEmbedResourceCandidates(
+  "app://obsidian.md/D%3A/Vault/%E6%96%87%E6%A1%A3/%E7%BB%9F%E8%AE%A1.xlsx#page=1",
+  "D:/Vault"
+);
 
 const checks = [
   ["session notifications prefer the Ntfy hub and keep direct ntfy as unavailable-plugin fallback", source.includes("type NotificationHubApi") && source.includes("notificationHubApi(): NotificationHubApi | null") && source.includes('runtime.api.send !== "function"') && source.includes('source: "cancip"') && source.includes('event: `session-${input.status}`') && source.indexOf("const hub = this.notificationHubApi()") < source.indexOf('const topic = settings.ntfyTopic.trim()') && source.includes('if (!result || result.ok !== true)')],
@@ -410,6 +433,7 @@ const checks = [
   ["empty search catalogs the Vault by category and keeps config filters explicit", source.includes("async allVaultSearchHits(options") && source.includes("includeConfigs: configs.checked") && source.includes("setSearchStatus(\"complete\", searchStatusWithCount(this.t(\"searchCatalogReady\")") && source.includes("!input.value.trim()")],
   ["search results use bounded thumbnails for images and file-type fallback markers", source.includes('cls: "obcc-search-result-thumb"') && source.includes('cls: "obcc-search-result-thumbnail"') && source.includes('image.loading = "lazy"') || (source.includes('cls: "obcc-search-result-thumbnail"') && styles.includes(".obcc-search-result-thumb") && styles.includes("object-fit: cover"))],
   ["native Markdown PDF image audio and video embeds stay native while unsupported files use the workbench", source.includes("registerMarkdownPostProcessor") && inlineEmbedSource.includes('kind === "markdown"') && inlineEmbedSource.includes('kind === "pdf"') && inlineEmbedSource.includes('kind === "image"') && inlineEmbedSource.includes('kind === "audio"') && inlineEmbedSource.includes('kind === "video"') && !source.includes('"a.internal-link"') && inlineEmbedSource.includes("renderMarkdownWorkbenchEmbed")],
+  ["standard Markdown embeds and rendered desktop resource URLs resolve to Vault workbench files", parsedMarkdownEmbedTargets.join("|") === "文档/报告.docx|文档/统计.xlsx|文档/项目 说明.pptx|文档/演示.html" && desktopMarkdownEmbedCandidates.includes("文档/报告.docx") && encodedDesktopMarkdownEmbedCandidates.includes("文档/统计.xlsx") && source.includes("context.getSectionInfo(element)?.text") && inlineEmbedSource.includes("fallbackTarget")],
   ["unsupported inline workbench previews fit short content and cap long iframe content", source.includes("inlineWorkbenchPreviewWithHeightReporter") && source.includes('cancip-inline-workbench-height-v1') && inlineEmbedSource.includes("Math.ceil(reportedHeight) + 2") && styles.includes("height: auto;") && styles.includes("max-height: min(68vh, 660px);") && styles.includes("height: clamp(160px, 34vh, 360px);")],
   ["workbench viewport state persists scroll, zoom, and editor caret per file", source.includes("document-viewports.json") && source.includes("documentViewportStateFor") && source.includes("rememberDocumentViewport") && source.includes("caretStart") && source.includes("scrollLeft") && workbenchSource.includes("restoreDocumentViewport(body)")],
   ["search categories sort by live result count while all-results stays first", source.includes('orderedSearchCategories = [') && source.includes('"all",') && source.includes('(hitCounts.get(right) ?? 0) - (hitCounts.get(left) ?? 0)') && source.includes('view.button.style.order = String(order)') && source.includes('view.page.style.order = String(order)')],
@@ -494,7 +518,7 @@ const checks = [
   ["OCR auto-installs on first use but respects the OCR disabled switch", source.includes("private async ensureOcrPackageForUse(showNotice = false): Promise<boolean>") && source.includes('const message = this.t("ocrDisabled")') && source.includes("await this.installOcrPackage(showNotice)") && source.includes("if (!(await this.ensureOcrPackageForUse(false))) return null")],
   ["new-file and greeting automations stay silent and notification-free by default", source.includes("notifyMode: schemaVersion < 12 && dedicated.notifyMode === \"inherit\" ? \"never\" : dedicated.notifyMode") && source.includes('id: VAULT_CURATION_AUTOMATION_ID') && source.includes('notifyMode: "never",\n      silent: true') && source.includes('id: "auto-personalized-greeting-refresh"') && source.includes('notifyMode: "never",\n      silent: true')],
   ["context edit stays off in native reading view while workbench anchors remain tracked", source.includes("startContextEditAnchorTracking") && source.includes("refreshContextualEditAnchorGeometry") && source.includes('containingLeaf?.view instanceof MarkdownView && element.closest(".markdown-preview-view, .markdown-rendered")') && source.includes("resolvedWorkbenchContext.isEnabled?.() === false")],
-  ["context edit defaults to Markdown source only unless spread switch is enabled", source.includes("contextualEditSpreadToOtherInputs: false") && source.includes("settingsContextualEditSpreadToOtherInputs") && source.includes("if (!this.settings.contextualEditSpreadToOtherInputs && !isMarkdownSourceEdit) return null") && source.includes("!this.settings.contextualEditSpreadToOtherInputs || !frame.isConnected")],
+  ["context edit defaults to Markdown live preview while pure source requires the spread switch", source.includes("contextualEditSpreadToOtherInputs: false") && source.includes("settingsContextualEditSpreadToOtherInputs") && source.includes('classList.contains("is-live-preview")') && source.includes("if (!this.settings.contextualEditSpreadToOtherInputs && !isMarkdownLivePreviewEdit) return null") && source.includes("contextEditAnchorIsMarkdownSource") && source.includes("!this.settings.contextualEditSpreadToOtherInputs || !frame.isConnected")],
   ["context edit covers main and archive workbench text surfaces with entry identity", source.includes('const CONTEXTUAL_EDIT_TEXTAREA_SELECTOR = "textarea.obcc-document-editor, textarea.obcc-archive-entry-editor"') && source.includes(".obcc-archive-entry-surface, .obcc-archive-entry-editor") && source.includes("contextualEditWorkbenchContext(element: Element)") && source.includes('"data-cancip-archive-entry-path": content.path') && source.includes("registerContextEditFrame(iframe, snapshot.file, {") && source.includes("entryPath: content.path")],
   ["workbench preview contextual edits require the live magic-wand edit mode", source.includes("isEnabled?: () => boolean") && source.includes("resolvedWorkbenchContext.isEnabled?.() === false") && source.includes("isEnabled: () => this.noteDrawMarkdownEditMode") && source.match(/isEnabled: \(\) => this\.noteDrawMarkdownEditMode/g)?.length >= 4],
   ["explicit workbench opening accepts every file type without changing default routing", source.includes('const DOCUMENT_EXPORT_FORMATS = ["md", "html", "pdf", "docx", "png", "pptx"]') && source.includes("canAcceptExtension(extension: string)") && source.includes("void extension") && source.includes("return true;") && source.includes("isDocumentWorkbenchExtension(file.extension)") && source.includes('if (normalized === "md" || normalized === "markdown") return false')],
