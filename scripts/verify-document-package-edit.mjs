@@ -20,7 +20,8 @@ const requiredFunctions = new Set([
   "replaceOfficeArchiveTextAtLocator",
   "moveOfficeArchiveBlock",
   "zipEpubArchive",
-  "documentHtmlPreviewBridgeScript"
+  "documentHtmlPreviewBridgeScript",
+  "inlineWorkbenchPreviewWithHeightReporter"
 ]);
 const snippets = [];
 
@@ -52,6 +53,7 @@ globalThis.__mpeKeys = mobilePdfExporterEditedLocatorKeys;
 globalThis.__mpeMoveLocators = mobilePdfExporterMovePreviewLocators;
 globalThis.__zipEpub = zipEpubArchive;
 globalThis.__bridge = documentHtmlPreviewBridgeScript;
+globalThis.__inlineHeight = inlineWorkbenchPreviewWithHeightReporter;
 `;
 const compiled = ts.transpileModule(
   `${snippets.join("\n")}\n${bootstrap}`,
@@ -164,11 +166,18 @@ const bridgeScript = bridgeMarkup.match(/<script data-cancip-bridge>([\s\S]*)<\/
 assert.ok(bridgeScript.includes('post("move",{moving,target:destination,placeAfter})'));
 assert.doesNotThrow(() => new vm.Script(bridgeScript));
 
+const inlineHeightMarkup = context.__inlineHeight("<html><body><p>Preview</p></body></html>", "height-token");
+const inlineHeightScript = inlineHeightMarkup.match(/<script data-cancip-inline-height>([\s\S]*?)<\/script>/)?.[1] ?? "";
+assert.ok(inlineHeightScript.includes("cancip-inline-workbench-height-v1"));
+assert.ok(inlineHeightScript.includes("height-token"));
+assert.doesNotThrow(() => new vm.Script(inlineHeightScript));
+
 console.log(JSON.stringify({
-  cases: 7,
+  cases: 8,
   exactOfficeLocatorWriteback: true,
   docxFlowAnchorAndPptxBlockMovement: true,
   editedOfficeBlocksOverrideStalePageImages: true,
   epubMimetypeStoredFirst: true,
-  iframeBridgeSyntaxValid: true
+  iframeBridgeSyntaxValid: true,
+  inlineHeightReporterSyntaxValid: true
 }, null, 2));
