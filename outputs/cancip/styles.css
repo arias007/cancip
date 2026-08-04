@@ -13048,7 +13048,7 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   min-width: 0;
   overflow: auto;
   overscroll-behavior: contain;
-  touch-action: pan-y;
+  touch-action: pan-x pan-y;
   -webkit-overflow-scrolling: touch;
   background: var(--background-primary);
 }
@@ -13092,6 +13092,8 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
   max-height: min(68vh, 660px);
   min-height: 120px;
   border: 0;
+  overscroll-behavior: contain;
+  touch-action: pan-x pan-y;
   background: var(--background-primary);
 }
 
