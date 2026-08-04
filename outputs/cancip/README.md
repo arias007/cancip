@@ -601,3 +601,6 @@ mobile GitHub and local versioning design.
 - Chat/session display times now show local seconds without the `+08:00` suffix.
 - Mobile composer footer records visual-viewport bottom/side offsets and fixes the input box above the Android keyboard while focused.
 - Mobile Review Gate constrains the outer shell above the Obsidian status bar and lets the file tree, diff body, and detail rail own their vertical scrolling.
+## Plugin compatibility API
+
+Plugins can register structured capabilities through `app.plugins.plugins.cancip.api.v1.registerPluginAdapter()`, or ship a declarative `cancip-plugin.json` beside their manifest. Cancip falls back through Obsidian commands, public plugin APIs, and verified visible UI actions for plugins without a dedicated adapter. See [the compatibility guide](docs/CANCIP_PLUGIN_COMPATIBILITY.md) and [descriptor schema](docs/cancip-plugin.schema.json).
