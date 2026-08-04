@@ -12799,3 +12799,28 @@ body.is-phone .obcc-review-leaf.has-review-nav .obcc-review-file-nav-tree,
 .obcc-package-install-files {
   margin-top: 4px;
 }
+
+.obcc-workspace-tab-has-thumbnail {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+}
+
+.obcc-workspace-tab-thumbnail {
+  position: absolute;
+  z-index: 0;
+  inset: 3px 4px 3px auto;
+  width: 88px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 4px;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.obcc-workspace-tab-has-thumbnail > :not(.obcc-workspace-tab-thumbnail) {
+  position: relative;
+  z-index: 1;
+}

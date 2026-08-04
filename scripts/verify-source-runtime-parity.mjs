@@ -45,10 +45,12 @@ const intentionallyRemovedRuntimeMethods = new Set([
   "isNativeSelectionToolbarProtected",
   "noteDrawControllerForStage",
   "noteDrawRuntime",
+  "prewarmBuiltinPrimeTts",
   "reviewGateTerminalDecisionPaths",
   "renderReviewBlockControls",
   "schedulePersonalizedDiaryButtons",
   "scheduleNativeNoteDrawSurfaceSync",
+  "scheduleBuiltinPrimeTtsWarmup",
   "shouldGenerateModelChoiceOptions",
   "shouldPreferPluginDataSettings",
   "syncNativeNoteDrawSurface"
