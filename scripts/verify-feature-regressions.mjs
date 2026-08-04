@@ -21,8 +21,42 @@ const documentZoomSurfaceSource = workbenchSource.slice(
   workbenchSource.indexOf("private documentZoomSurfaceSelector"),
   workbenchSource.indexOf("private syncDocumentZoomSurfaces")
 );
+const htmlVaultBridgeSource = workbenchSource.slice(
+  workbenchSource.indexOf("private async handleHtmlVaultRequest"),
+  workbenchSource.indexOf("private async executeHtmlPreviewCommand")
+);
+const aiOverviewSource = source.slice(
+  source.indexOf("private renderAiOverview"),
+  source.indexOf("private renderMessages(", source.indexOf("private renderAiOverview"))
+);
+const settingsModuleSource = source.slice(
+  source.indexOf("const SETTINGS_PAGE_KEYS"),
+  source.indexOf("private displayCommonSettings", source.indexOf("const SETTINGS_PAGE_KEYS"))
+);
 
 const parsedSource = ts.createSourceFile("main.ts", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+const settingsModuleCoveragePassed = (() => {
+  const settingsKeys = [];
+  const mappedKeys = [];
+  const visit = (node) => {
+    if (ts.isTypeAliasDeclaration(node) && node.name.text === "Settings" && ts.isTypeLiteralNode(node.type)) {
+      for (const member of node.type.members) {
+        if (member.name) settingsKeys.push(member.name.getText(parsedSource).replace(/^["']|["']$/g, ""));
+      }
+    }
+    if (ts.isVariableDeclaration(node) && node.name.getText(parsedSource) === "SETTINGS_PAGE_KEYS" && ts.isObjectLiteralExpression(node.initializer)) {
+      for (const property of node.initializer.properties) {
+        if (!ts.isPropertyAssignment(property) || !ts.isArrayLiteralExpression(property.initializer)) continue;
+        for (const item of property.initializer.elements) if (ts.isStringLiteral(item)) mappedKeys.push(item.text);
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(parsedSource);
+  return settingsKeys.length > 0
+    && settingsKeys.every((key) => key === "agentBridgeToken" || mappedKeys.includes(key))
+    && !mappedKeys.includes("agentBridgeToken");
+})();
 const functionSource = (name) => {
   let match = "";
   const visit = (node) => {
@@ -439,7 +473,11 @@ const checks = [
   ["disconnected stable Cancip buttons remain verifiable", source.includes("const stableDescriptor = Boolean(stableSelectorId") && source.includes("connectedTarget || stableDescriptor")],
   ["legacy button rules remain compatible", source.includes('legacyTargetKey: ["v2"') && source.includes("legacyTargetKeyV1")],
   ["running sessions coalesce one foreground mirror without recursively opening views", source.includes("private sessionOpenRequests = new Map<string, Promise<boolean>>()") && source.includes("const pending = this.sessionOpenRequests.get(entry.id)") && source.includes("allowRunningMirror: true") && source.includes("options.allowRunningMirror !== true") && source.includes("prepareForExplicitSessionLoad()") && source.includes("leaf.view.prepareForExplicitSessionLoad()")],
-  ["automatic blank chat views do not persist empty session files", source.includes("ensureCurrentSessionRecord(false)") && source.includes("ensureCurrentSessionRecord(true)") && source.includes("if (!explicit && !hasMeaningfulState) return")],
+  ["automatic blank chat views do not persist empty session files", source.includes("private hasPersistableSessionState(): boolean") && source.match(/if \(!this\.hasPersistableSessionState\(\)\) return;/g)?.length >= 2 && source.includes("ensureCurrentSessionRecord(false)") && !source.includes("ensureCurrentSessionRecord(true)")],
+  ["new-chat AI overview stays local, lightweight, configurable, and optional", source.includes('aiOverviewEnabled: true') && source.includes('aiOverviewCards: ["sessions", "reviews", "automations", "vault"]') && source.includes("this.renderAiOverview(empty)") && aiOverviewSource.includes("readSessionHistoryIndex({ mergeFiles: false })") && aiOverviewSource.includes("pendingReviewGateAttentionCount(50)") && aiOverviewSource.includes("loadAutomations()") && aiOverviewSource.includes("this.app.vault.getFiles().length") && !aiOverviewSource.includes("buildContext(") && !aiOverviewSource.includes("callModel") && source.includes("if (!Array.isArray(raw) && typeof raw !== \"string\")") && source.includes("return normalized;") && styles.includes(".obcc-ai-overview-card")],
+  ["every non-secret setting belongs to a reviewed AI-adjustable and independently resettable module", settingsModuleCoveragePassed && source.includes('id: "overview", label: this.plugin.t("settingsGroupOverview")') && settingsModuleSource.includes("displaySettingsModuleActions(body, active.id, active.label)") && settingsModuleSource.includes("SETTINGS_PAGE_KEYS[pageId]") && settingsModuleSource.includes("settingsModuleAiPrompt") && settingsModuleSource.includes("submitExternalPrompt(prompt)") && settingsModuleSource.includes("confirmCancipAction(") && settingsModuleSource.includes("cloneSettingsModuleValue(DEFAULT_SETTINGS[key])") && settingsModuleSource.includes("normalizeSettings(next)") && source.includes("AI overview management:") && source.includes("Never apply it silently") && styles.includes(".obcc-settings-module-actions")],
+  ["HTML mini-app panel lists every Vault HTML file with newest discovery, pinning, manual order, and workbench opening", source.includes('data-cancip-button-id": "header:html-apps"') && source.includes('setIcon(htmlAppsButton, "app-window")') && source.includes("async htmlAppsForPanel()") && source.includes("right.stat.ctime || right.stat.mtime") && source.includes("setHtmlAppPinned") && source.includes("moveHtmlApp") && source.includes("groupPositions") && source.includes('activateDocumentWorkbench(app.file, "preview")') && styles.includes(".obcc-history-popover.is-html-apps") && styles.includes(".obcc-html-app-list")],
+  ["HTML mini apps receive a safe Vault interaction library without bypassing Cancip review", source.includes("const vault={") && source.includes('read(path,options={}){return vaultRequest("read"') && source.includes('search(query,options={}){return vaultRequest("search"') && source.includes('write(path,content,options={}){return vaultRequest("write"') && workbenchSource.includes('event.data.type === "vault-request"') && htmlVaultBridgeSource.includes('const path = operation === "search" ? ""') && htmlVaultBridgeSource.includes("readUniversalSearchIndex()") && !htmlVaultBridgeSource.includes(".slice(0, 1200)") && htmlVaultBridgeSource.includes("submitBridgeRawActions([action])") && !htmlVaultBridgeSource.includes("adapter.write") && source.includes("htmlMiniAppVaultPathAllowed") && source.includes("segment.startsWith(\".\")") && source.includes("Cancip.vault.list(folder?")],
   ["TTS highlight uses one strict sentence key while playback remains micro-chunked", source.includes("splitPrimeTtsSentenceFragments(normalized)") && source.includes('const key = `${this.activeTtsSourcePath}:${displayIndex}') && source.includes("highlightActiveRenderedTtsPart(displayText)") && !source.includes("for (const candidate of ttsHighlightCandidateTexts(playText, displayText")],
   ["TTS reads properties and expands embedded Markdown notes", source.includes("ttsSourceWithReadableFrontmatter") && source.includes("expandMarkdownTtsEmbeds") && source.includes("markdownTtsEmbedReferences")],
   ["TTS disabled state blocks reading and local package auto-download", source.includes("ttsEnabled: true") && source.includes('if (!this.settings.ttsEnabled) throw new Error(this.t("ttsDisabled"))') && source.includes('if (!this.settings.ttsEnabled) return this.t("ttsDisabled")') && source.includes("ttsEnabled: settings.ttsEnabled") && source.includes('if (typeof raw.ttsEnabled === "boolean") config.ttsEnabled = raw.ttsEnabled')],

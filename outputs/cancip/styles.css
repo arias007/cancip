@@ -668,6 +668,63 @@ body .view-content.obcc-review-leaf {
   white-space: pre-wrap;
 }
 
+.obcc-ai-overview {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.obcc-ai-overview-card {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 6px 8px;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+  background: var(--background-primary);
+  color: var(--text-normal);
+  text-align: start;
+}
+
+.obcc-ai-overview-card:hover,
+.obcc-ai-overview-card:focus-visible {
+  border-color: var(--interactive-accent);
+  background: var(--background-modifier-hover);
+}
+
+.obcc-ai-overview-icon {
+  display: inline-flex;
+  color: var(--text-muted);
+}
+
+.obcc-ai-overview-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.obcc-ai-overview-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.obcc-ai-overview-label {
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 10.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-ai-overview-value {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .obcc-welcome-choices {
   display: flex;
   flex-wrap: wrap;
@@ -3436,6 +3493,96 @@ details.obcc-process-step {
   gap: 6px;
   max-height: min(520px, calc(100% - 16px));
   overflow: hidden;
+}
+
+.obcc-history-popover.is-html-apps {
+  grid-template-rows: auto minmax(0, 1fr);
+  max-height: min(520px, calc(100% - 16px));
+  overflow: hidden;
+}
+
+.obcc-html-app-list {
+  display: grid;
+  align-content: start;
+  gap: 3px;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.obcc-html-app-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+
+.obcc-html-app-row.is-pinned {
+  border-color: color-mix(in srgb, var(--interactive-accent) 36%, var(--background-modifier-border));
+  background: color-mix(in srgb, var(--interactive-accent) 6%, var(--background-primary));
+}
+
+.obcc-html-app-open {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  min-height: 40px;
+  padding: 5px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--text-normal);
+  text-align: start;
+}
+
+.obcc-html-app-open:hover,
+.obcc-html-app-open:focus-visible {
+  background: var(--background-modifier-hover);
+}
+
+.obcc-html-app-icon {
+  display: inline-flex;
+  color: var(--interactive-accent);
+}
+
+.obcc-html-app-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.obcc-html-app-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.obcc-html-app-title,
+.obcc-html-app-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.obcc-html-app-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.obcc-html-app-path {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.obcc-html-app-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding-inline-end: 3px;
 }
 
 .obcc-live-files-summary {
@@ -8772,6 +8919,30 @@ input.obcc-review-correction-input {
   min-width: 0;
   max-width: 100%;
   padding-bottom: 16px;
+}
+
+.obcc-settings-module-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.obcc-settings-module-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+}
+
+.obcc-settings-module-action svg {
+  width: 14px;
+  height: 14px;
 }
 
 .obcc-settings-page-body > .setting-item:first-child {
