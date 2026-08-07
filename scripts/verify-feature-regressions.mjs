@@ -3,7 +3,7 @@ import process from "node:process";
 import ts from "typescript";
 import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
-const source = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
+const source = (await readFile(new URL("../src/main.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
 const styles = await readFile(new URL("../outputs/cancip/styles.css", import.meta.url), "utf8");
 const localGreetingSource = source.slice(
   source.indexOf("function localPersonalizationCache("),
