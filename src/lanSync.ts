@@ -725,7 +725,7 @@ export class CancipLanSync {
   }
 
   requestSync(): void {
-    this.scheduleSync(0);
+    this.scheduleSync(0, true);
   }
 
   private settings(): LanSyncRuntimeSettings {
@@ -1066,8 +1066,9 @@ export class CancipLanSync {
     }
   }
 
-  private scheduleSync(delay: number): void {
+  private scheduleSync(delay: number, force = false): void {
     if (!this.runningValue || !this.syncTargets().length) return;
+    if (!force && !this.settings().autoDiscovery) return;
     if (this.syncRunning) {
       this.syncQueued = true;
       return;

@@ -259,7 +259,7 @@ try {
   const progressB = [];
   const commonOptions = (storage, port, deviceId, progress) => ({
     desktop: true,
-    getSettings: () => ({ enabled: true, autoDiscovery: false, port, maxFileBytes: 1024 * 1024 }),
+    getSettings: () => ({ enabled: true, autoDiscovery: true, port, maxFileBytes: 1024 * 1024 }),
     storage,
     httpRequest,
     onProgress: (value) => progress.push(value),
@@ -271,8 +271,7 @@ try {
     await serviceB.start();
     await serviceA.start();
     await waitFor(() => serviceA.status().peerCount === 1, "authenticated same-Vault peer");
-    serviceA.requestSync();
-    await waitFor(() => storageA.text("Notes/from-b.md") === "from B" && storageB.text("Notes/from-a.md") === "from A", "bidirectional LAN transfer");
+    await waitFor(() => storageA.text("Notes/from-b.md") === "from B" && storageB.text("Notes/from-a.md") === "from A", "automatic bidirectional LAN transfer");
     await waitFor(() => storageA.text("Notes/shared.md") === "newer B" && storageB.text("Notes/shared.md") === "newer B", "conflict convergence");
     const conflictPath = [...storageA.files.keys()].find((path) => path.includes("LAN conflict"));
     assert.ok(conflictPath, "Conflict copy was not created");
@@ -314,8 +313,7 @@ try {
     await desktopService.start();
     await mobileService.start();
     await waitFor(() => mobileService.status().peerCount === 1, "mobile authenticated desktop endpoint");
-    mobileService.requestSync();
-    await waitFor(() => desktopStorage.text("Mobile/client-created.md") === "from mobile client", "mobile-initiated LAN synchronization");
+    await waitFor(() => desktopStorage.text("Mobile/client-created.md") === "from mobile client", "automatic mobile-initiated LAN synchronization");
     assert.ok(mobileProgress.some((value) => value.phase === "complete"), "Mobile client waited for the lower desktop device ID");
   } finally {
     await Promise.all([mobileService.stop(), desktopService.stop()]);
