@@ -114,6 +114,44 @@ body .view-content.obcc-review-leaf {
   display: inline-flex;
 }
 
+.obcc-lan-statusbar {
+  display: inline-flex;
+  align-items: center;
+  align-self: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: min(220px, 38vw);
+  height: 18px;
+  padding: 0 3px;
+  color: var(--color-green, #15803d);
+  font-size: var(--font-ui-smaller);
+  line-height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+}
+
+.obcc-lan-statusbar-icon {
+  display: inline-flex;
+  flex: 0 0 14px;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-lan-statusbar-icon svg {
+  display: block;
+  width: 13px;
+  height: 13px;
+}
+
+.obcc-lan-statusbar-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .obcc-root {
   --obcc-radius-xs: 4px;
   --obcc-radius-control: 6px;

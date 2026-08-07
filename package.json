@@ -1,19 +1,20 @@
 {
   "name": "cancip",
-  "version": "3.3.61",
+  "version": "3.3.62",
   "private": true,
   "main": "main.js",
   "scripts": {
     "verify:source-parity": "node scripts/verify-source-runtime-parity.mjs",
     "verify:feature-regressions": "node scripts/verify-feature-regressions.mjs",
     "verify:agent-bridge": "node scripts/verify-agent-bridge.mjs",
+    "verify:lan-sync": "node scripts/verify-lan-sync.mjs",
     "verify:plugin-compatibility": "node scripts/verify-plugin-compatibility.mjs",
     "verify:obsidian-community": "node scripts/verify-obsidian-community-standards.mjs",
     "test:office-context-edit": "node scripts/verify-office-context-edit.mjs",
     "test:document-package-edit": "node scripts/verify-document-package-edit.mjs",
     "test:tts": "node scripts/verify-tts-regression.mjs",
     "build:ocr-package": "node scripts/prepare-ocr-package.mjs",
-    "build": "npm run verify:source-parity && npm run verify:feature-regressions && npm run verify:agent-bridge && npm run verify:plugin-compatibility && npm run verify:obsidian-community && npm run test:office-context-edit && npm run test:document-package-edit && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
+    "build": "npm run verify:source-parity && npm run verify:feature-regressions && npm run verify:agent-bridge && npm run verify:lan-sync && npm run verify:plugin-compatibility && npm run verify:obsidian-community && npm run test:office-context-edit && npm run test:document-package-edit && tsc --noEmit --skipLibCheck && node scripts/prepare-release-output.mjs && node esbuild.config.mjs production",
     "check": "tsc --noEmit --skipLibCheck",
     "verify": "npm run check && npm run build"
   },

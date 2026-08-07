@@ -4,6 +4,7 @@ import ts from "typescript";
 
 const sourceText = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
 const bridgeSourceText = await readFile(new URL("../src/agentBridge.ts", import.meta.url), "utf8");
+const lanSyncSourceText = await readFile(new URL("../src/lanSync.ts", import.meta.url), "utf8");
 const runtimeText = await readFile(new URL("../outputs/cancip/main.js", import.meta.url), "utf8");
 
 function namedMethods(text, kind, label) {
@@ -22,7 +23,8 @@ function namedMethods(text, kind, label) {
 
 const sourceMethods = new Set([
   ...namedMethods(sourceText, ts.ScriptKind.TS, "src/main.ts"),
-  ...namedMethods(bridgeSourceText, ts.ScriptKind.TS, "src/agentBridge.ts")
+  ...namedMethods(bridgeSourceText, ts.ScriptKind.TS, "src/agentBridge.ts"),
+  ...namedMethods(lanSyncSourceText, ts.ScriptKind.TS, "src/lanSync.ts")
 ]);
 const runtimeMethods = namedMethods(runtimeText, ts.ScriptKind.JS, "outputs/cancip/main.js");
 
