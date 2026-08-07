@@ -323,6 +323,9 @@ try {
 
   const source = await readFile(join(root, "src", "main.ts"), "utf8");
   const takeoverSource = source.slice(source.indexOf("private remotelySaveStatusBarElement"), source.indexOf("async restartAgentBridge"));
+  const statusTextSource = source.slice(source.indexOf("private lanSyncStatusText"), source.indexOf("private renderLanSyncStatusBar"));
+  assert.match(statusTextSource, /return `\$\{progress\.completed\}\/\$\{progress\.total\}`;/, "LAN progress should stay compact beside the Wi-Fi icon");
+  assert.doesNotMatch(statusTextSource, /progress\.completed.*percent|·.*%/, "LAN progress should not append a percentage or LAN label");
   assert.match(takeoverSource, /plugins\?\.\["remotely-save"\]\?\.statusBarElement/);
   assert.doesNotMatch(takeoverSource, /isSyncing|currSyncMsg|syncEvent|remotelySave\.settings|candidate\.settings|start-sync/);
   assert.doesNotMatch(source, /plugins\/remotely-save|plugins\\remotely-save/);
