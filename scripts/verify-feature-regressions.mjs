@@ -3,8 +3,8 @@ import process from "node:process";
 import ts from "typescript";
 import { gunzipSync, gzipSync, strFromU8, strToU8, unzipSync, zipSync } from "fflate";
 
-const source = (await readFile(new URL("../src/main.ts", import.meta.url), "utf8")).replace(/\r\n/g, "\n");
-const styles = await readFile(new URL("../outputs/cancip/styles.css", import.meta.url), "utf8");
+const source = (await readFile(new URL("../src/main.ts", import.meta.url), "utf8")).replace(/\r\n?/g, "\n");
+const styles = (await readFile(new URL("../outputs/cancip/styles.css", import.meta.url), "utf8")).replace(/\r\n?/g, "\n");
 const localGreetingSource = source.slice(
   source.indexOf("function localPersonalizationCache("),
   source.indexOf("function normalizePersonalizationCache(")
@@ -197,11 +197,7 @@ const archiveModule = ts.transpileModule([
   functionSource("utf8Decode"),
   functionSource("readUint16"),
   functionSource("readUint32"),
-  functionSource("decodeUriComponentSafely"),
   functionSource("normalizeDocumentArchiveEntryPath"),
-  functionSource("resolvePackagedDocumentPath"),
-  functionSource("documentArchiveLinkHasExternalScheme"),
-  functionSource("resolveDocumentArchiveLinkTarget"),
   functionSource("documentArchiveFormat"),
   functionSource("documentArchiveCanRebuild"),
   functionSource("readZipEntries"),
@@ -214,7 +210,7 @@ const archiveModule = ts.transpileModule([
   functionSource("replaceTarEntryBytes"),
   functionSource("documentArchiveSingleGzipEntryPath"),
   functionSource("replaceDocumentArchiveEntryBytes"),
-  "export { readTarEntries, replaceDocumentArchiveEntryBytes, resolveDocumentArchiveLinkTarget };"
+  "export { readTarEntries, replaceDocumentArchiveEntryBytes };"
 ].join("\n\n"), {
   compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 }
 }).outputText;
@@ -228,19 +224,6 @@ const updatedZip = archiveApi.replaceDocumentArchiveEntryBytes(
 );
 const zipFixturePassed = strFromU8(unzipSync(updatedZip)["docs/note.md"]) === "after"
   && [...unzipSync(updatedZip)["image.bin"]].join(",") === "1,2,3";
-const archiveLinkEntries = [
-  { path: "docs/index.md" },
-  { path: "docs/Guide.md" },
-  { path: "img/a.png" },
-  { path: "README.md" }
-];
-const archiveLinkFixturePassed = archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "guide.md#part", archiveLinkEntries)?.path === "docs/Guide.md"
-  && archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "../img/a.png", archiveLinkEntries)?.path === "img/a.png"
-  && archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "/README.md", archiveLinkEntries)?.path === "README.md"
-  && archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "Guide", archiveLinkEntries)?.path === "docs/Guide.md"
-  && archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "Guide%2Emd", archiveLinkEntries)?.path === "docs/Guide.md"
-  && archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "https://example.com/Guide.md", archiveLinkEntries) === null
-  && archiveApi.resolveDocumentArchiveLinkTarget("docs/index.md", "../../README.md", archiveLinkEntries) === null;
 const tarHeader = new Uint8Array(512);
 tarHeader.set(strToU8("docs/note.md"), 0);
 tarHeader.set(strToU8("00000000000\0"), 100);
@@ -437,6 +420,7 @@ const encodedDesktopMarkdownEmbedCandidates = markdownEmbedApi.markdownEmbedReso
 
 const checks = [
   ["session notifications prefer the Ntfy hub and keep direct ntfy as unavailable-plugin fallback", source.includes("type NotificationHubApi") && source.includes("notificationHubApi(): NotificationHubApi | null") && source.includes('runtime.api.send !== "function"') && source.includes('source: "cancip"') && source.includes('event: `session-${input.status}`') && source.indexOf("const hub = this.notificationHubApi()") < source.indexOf('const topic = settings.ntfyTopic.trim()') && source.includes('if (!result || result.ok !== true)')],
+  ["LAN synchronization is owned by Ntfy and absent from Cancip", !source.includes("lanSync") && !source.includes("CancipLanSync") && !source.includes("settingsLanSync") && !styles.includes("obcc-lan")],
   ["OCR command", source.includes('id: "recognize-active-file-ocr"')],
   ["OCR file-menu action", source.includes('setIcon("scan-text")') && source.includes("void this.openOcrResult(file)")],
   ["manual PDF OCR requests every page", source.includes("readOcrForVaultFile(file, false, undefined, true)") && source.includes("Number.MAX_SAFE_INTEGER")],
@@ -497,8 +481,6 @@ const checks = [
   ["closing search invalidates in-flight local and AI work", source.includes("closed = true;") && source.includes("requestId += 1;") && source.includes("cancelled: () => !isRequestActive(currentRequestId)") && source.includes("}, () => !isRequestActive(currentRequestId));")],
   ["cancelled on-demand batches stop before and after asynchronous reads", /private async onDemandVaultSearchHits[\s\S]*?cancelled: \(\) => boolean = \(\) => false[\s\S]*?for \(let offset[\s\S]*?if \(cancelled\(\)\) return \[\];[\s\S]*?Promise\.all[\s\S]*?if \(cancelled\(\)\) return \[\];/.test(source)],
   ["archive workbench browses folders and opens entries in the same workbench", source.includes("private renderArchiveDirectory") && source.includes("private renderArchiveBreadcrumbs") && source.includes("private async openArchiveEntry") && source.includes("await this.renderArchiveWorkbench(parent, snapshot)") && source.includes('setIcon(root, "archive")') && styles.includes(".obcc-archive-list") && styles.includes(".obcc-archive-breadcrumbs")],
-  ["archive Markdown and HTML links resolve to entries inside the same workbench", archiveLinkFixturePassed && source.includes("private installArchiveMarkdownLinkBridge") && source.includes("private installArchiveHtmlLinkBridge") && source.includes('anchor.getAttribute("data-href")') && source.includes("resolveDocumentArchiveLinkTarget(content.path, href") && source.includes("void this.openArchiveEntry(target.path)")],
-  ["ZIP extraction uses a neighboring non-overwriting folder with preflight safety checks", /exportButton\.addClass\("is-export-menu"\);[\s\S]*?snapshot\.archive\?\.format === "zip"[\s\S]*?folder-output/.test(source) && source.includes("async extractDocumentZip(file: TFile)") && source.includes("includeDirectories: true, strict: true") && source.includes("ZIP contains an unsafe entry path") && source.includes("ZIP contains a duplicate entry path") && source.includes("ZIP contains a file/folder path conflict") && source.includes("Encrypted ZIP archives cannot be extracted safely") && source.includes("Expanded ZIP is too large to extract safely") && source.includes("await this.plugin.extractDocumentZip(snapshot.file)") && source.includes("if (await adapter.stat(targetPath))") && source.includes("ZIP extraction verification failed")],
   ["ZIP TAR and GZIP text entries rebuild safely without losing sibling ZIP files", zipFixturePassed && tarFixturePassed && gzipFixturePassed && source.includes("DOCUMENT_ARCHIVE_EDIT_MAX_EXPANDED_BYTES") && source.includes("Encrypted ZIP archives cannot be safely rebuilt") && source.includes("Archive entry save verification failed") && source.includes("await this.app.vault.modifyBinary(file, rollback)")],
   ["archive entries preview text Markdown HTML images PDF audio and video", source.includes('type DocumentArchiveEntryPreviewKind = "markdown" | "html" | "text" | "pdf" | "image" | "audio" | "video" | "binary"') && source.includes('content.previewKind === "markdown"') && source.includes('content.previewKind === "html"') && source.includes('["image", "pdf", "audio", "video"].includes(content.previewKind)') && source.includes("URL.createObjectURL") && styles.includes(".obcc-archive-entry-surface")],
   ["special ZIP containers plus RAR and 7Z stay explicit read-only formats", source.includes('if (format === "zip") return file.extension.toLowerCase() === "zip"') && source.includes('if (extension === "rar") return "rar"') && source.includes('if (extension === "7z") return "7z"') && source.includes("content preview requires a compatible decompressor") && source.includes("containers are preview-only to preserve their package structure") && source.includes("archives are read-only in this runtime")],
