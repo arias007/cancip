@@ -29,9 +29,16 @@ function arrayBuffer(value) {
 
 class MemoryStorage {
   constructor(identity, files = {}) {
-    this.identityRoot = "data/lan-sync";
+    this.identityRoot = ".obsidian/plugins/cancip/data/lan-sync";
     this.files = new Map();
-    this.folders = new Set(["data", "data/lan-sync", "data/lan-sync/peers"]);
+    this.folders = new Set([
+      ".obsidian",
+      ".obsidian/plugins",
+      ".obsidian/plugins/cancip",
+      ".obsidian/plugins/cancip/data",
+      this.identityRoot,
+      `${this.identityRoot}/peers`
+    ]);
     this.clock = 1000;
     this.putText(`${this.identityRoot}/identity.json`, `${JSON.stringify(identity)}\n`, 1);
     for (const [path, value] of Object.entries(files)) this.putText(path, value.content, value.mtime);
@@ -49,9 +56,9 @@ class MemoryStorage {
     return entry ? new TextDecoder().decode(entry.data) : null;
   }
 
-  async listFiles() {
+  async listFiles(includeConfigFolder = false) {
     return [...this.files.entries()]
-      .filter(([path]) => !path.startsWith("data/"))
+      .filter(([path]) => includeConfigFolder || !path.startsWith(".obsidian/"))
       .map(([path, entry]) => ({ path, size: entry.data.byteLength, mtime: entry.mtime }));
   }
 
@@ -68,6 +75,10 @@ class MemoryStorage {
 
   async writeBinary(path, data) {
     this.files.set(path, { data: new Uint8Array(data), mtime: ++this.clock });
+  }
+
+  async deleteFile(path) {
+    if (!this.files.delete(path)) throw new Error("missing_file");
   }
 
   async exists(path) {
@@ -146,6 +157,22 @@ try {
   for (const unsafe of ["../secret", "/absolute", "C:/drive", ".obsidian/plugins/x", ".trash/a", "folder\\file", "a//b", "a/./b", "a/../b"]) {
     assert.equal(normalizeLanSyncPath(unsafe), null, `Unsafe path accepted: ${unsafe}`);
   }
+  const configPathOptions = {
+    syncConfigFolder: true,
+    configDir: ".obsidian",
+    identityRoot: ".obsidian/plugins/cancip/data/lan-sync"
+  };
+  assert.equal(normalizeLanSyncPath(".obsidian/hotkeys.json", configPathOptions), ".obsidian/hotkeys.json");
+  for (const protectedPath of [
+    ".obsidian/workspace.json",
+    ".obsidian/workspace-mobile.json",
+    ".obsidian/plugins/remotely-save/data.json",
+    ".obsidian/plugins/cancip/data/lan-sync/identity.json",
+    ".obsidian/plugins/example/node_modules/cache.bin"
+  ]) {
+    assert.equal(normalizeLanSyncPath(protectedPath, configPathOptions), null, `Protected config path accepted: ${protectedPath}`);
+  }
+  assert.equal(normalizeLanSyncPath(".obsidian/hotkeys.json"), null, "Config path was enabled without the setting");
   for (const address of ["127.0.0.1", "10.0.0.2", "172.20.1.2", "192.168.1.8", "169.254.2.3"]) assert.equal(isPrivateLanAddress(address), true);
   for (const address of ["8.8.8.8", "1.1.1.1", "example.com"]) assert.equal(isPrivateLanAddress(address), false);
 
@@ -182,6 +209,26 @@ try {
   assert.equal(conflict[0].kind, "conflict");
   assert.equal(conflict[0].winner, "remote");
   assert.equal(buildLanConflictPath("Folder/Note.md", "device-123456", local.hash), "Folder/Note (LAN conflict device-1 aaaaaaaa).md");
+
+  const passivePolicy = {
+    incrementalPush: false,
+    incrementalPull: false,
+    deletePush: false,
+    deletePull: false,
+    syncConfigFolder: false,
+    deleteProtocol: true
+  };
+  const incrementalPushPolicy = { ...passivePolicy, incrementalPush: true };
+  const incrementalPullPolicy = { ...passivePolicy, incrementalPull: true };
+  const deletePushPolicy = { ...incrementalPushPolicy, deletePush: true };
+  const deletePullPolicy = { ...incrementalPullPolicy, deletePull: true };
+  assert.equal(planLanSyncReconciliation([local], [remote], { "Note.md": remote.hash }, incrementalPushPolicy, passivePolicy)[0].kind, "push");
+  assert.equal(planLanSyncReconciliation([local], [remote], { "Note.md": local.hash }, incrementalPullPolicy, passivePolicy)[0].kind, "pull");
+  assert.deepEqual(planLanSyncReconciliation([local], [remote], { "Note.md": local.hash }, incrementalPushPolicy, passivePolicy), []);
+  assert.equal(planLanSyncReconciliation([], [remote], { "Note.md": remote.hash }, deletePushPolicy, passivePolicy)[0].kind, "delete-remote");
+  assert.equal(planLanSyncReconciliation([local], [], { "Note.md": local.hash }, deletePullPolicy, passivePolicy)[0].kind, "delete-local");
+  const locallyChanged = { ...local, hash: "c".repeat(43), mtime: 300 };
+  assert.deepEqual(planLanSyncReconciliation([locallyChanged], [], { "Note.md": local.hash }, deletePullPolicy, passivePolicy), [], "A remote deletion removed a locally changed file");
 
   class FakeElement {
     constructor() {
@@ -222,7 +269,9 @@ try {
   assert.notEqual(portA, portB);
   const storageA = new MemoryStorage(identity, {
     "Notes/from-a.md": { content: "from A", mtime: 100 },
-    "Notes/shared.md": { content: "older A", mtime: 200 }
+    "Notes/shared.md": { content: "older A", mtime: 200 },
+    ".obsidian/hotkeys.json": { content: "hotkeys from A", mtime: 500 },
+    ".obsidian/plugins/remotely-save/data.json": { content: "protected fixture", mtime: 600 }
   });
   const storageB = new MemoryStorage(identity, {
     "Notes/from-b.md": { content: "from B", mtime: 300 },
@@ -237,8 +286,8 @@ try {
     addresses: ["127.0.0.1"],
     updatedAt: new Date().toISOString()
   });
-  storageA.putText(`data/lan-sync/peers/${deviceB}.json`, descriptor(deviceB, portB));
-  storageB.putText(`data/lan-sync/peers/${deviceA}.json`, descriptor(deviceA, portA));
+  storageA.putText(`${storageA.identityRoot}/peers/${deviceB}.json`, descriptor(deviceB, portB));
+  storageB.putText(`${storageB.identityRoot}/peers/${deviceA}.json`, descriptor(deviceA, portA));
 
   const httpRequest = async (request) => {
     const controller = new AbortController();
@@ -257,16 +306,32 @@ try {
   };
   const progressA = [];
   const progressB = [];
-  const commonOptions = (storage, port, deviceId, progress) => ({
-    desktop: true,
-    getSettings: () => ({ enabled: true, autoDiscovery: true, port, maxFileBytes: 1024 * 1024 }),
-    storage,
-    httpRequest,
-    onProgress: (value) => progress.push(value),
-    localStore: memoryLocalStore(deviceId)
-  });
-  const serviceB = new CancipLanSync(commonOptions(storageB, portB, deviceB, progressB));
-  const serviceA = new CancipLanSync(commonOptions(storageA, portA, deviceA, progressA));
+  const commonOptions = (storage, port, deviceId, progress, overrides = {}) => {
+    const runtimeSettings = {
+      enabled: true,
+      autoDiscovery: true,
+      checkIntervalSeconds: 1,
+      mode: "bidirectional",
+      syncConfigFolder: false,
+      configDir: ".obsidian",
+      port,
+      maxFileBytes: 1024 * 1024,
+      ...overrides
+    };
+    return {
+      desktop: true,
+      getSettings: () => runtimeSettings,
+      storage,
+      httpRequest,
+      onProgress: (value) => progress.push(value),
+      localStore: memoryLocalStore(deviceId),
+      runtimeSettings
+    };
+  };
+  const optionsB = commonOptions(storageB, portB, deviceB, progressB);
+  const optionsA = commonOptions(storageA, portA, deviceA, progressA);
+  const serviceB = new CancipLanSync(optionsB);
+  const serviceA = new CancipLanSync(optionsA);
   try {
     await serviceB.start();
     await serviceA.start();
@@ -280,16 +345,36 @@ try {
     assert.ok(progressA.some((value) => value.phase === "syncing" && value.active));
     assert.ok(progressA.some((value) => value.phase === "complete" && value.conflicts === 1));
     assert.ok(progressB.some((value) => value.active), "Receiving peer did not expose LAN status");
+    const firstProgress = progressA.find((value) => value.phase === "syncing" && value.total > 0 && value.completed === 0);
+    assert.ok(firstProgress, "LAN progress did not start at 0/N");
+    for (let completed = 0; completed <= firstProgress.total; completed += 1) {
+      assert.ok(progressA.some((value) => value.total === firstProgress.total && value.completed === completed), `LAN progress skipped ${completed}/${firstProgress.total}`);
+    }
+    assert.equal(storageB.text(".obsidian/hotkeys.json"), null, "Config folder synced while disabled");
 
-    const completedBeforeDelete = progressA.filter((value) => value.phase === "complete").length;
-    storageA.files.delete("Notes/from-a.md");
-    storageB.files.delete("Notes/from-a.md");
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 2700));
+    optionsA.runtimeSettings.syncConfigFolder = true;
     serviceA.requestSync();
-    await waitFor(() => progressA.filter((value) => value.phase === "complete").length > completedBeforeDelete, "deleted baseline pruning");
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
+    assert.equal(storageB.text(".obsidian/hotkeys.json"), null, "Config folder synced before both peers enabled it");
+    optionsB.runtimeSettings.syncConfigFolder = true;
+    serviceA.requestSync();
+    await waitFor(() => storageB.text(".obsidian/hotkeys.json") === "hotkeys from A", "two-sided config-folder synchronization");
+    assert.equal(storageB.text(".obsidian/plugins/remotely-save/data.json"), null, "Protected Remotely Save data was transferred");
+
+    optionsA.runtimeSettings.mode = "delete-push";
+    optionsB.runtimeSettings.mode = "bidirectional";
+    storageA.files.delete("Notes/from-a.md");
+    serviceA.notifyVaultChange("Notes/from-a.md");
+    serviceA.requestSync();
+    await waitFor(() => storageB.text("Notes/from-a.md") === null, "deletion push");
     storageA.putText("Notes/from-a.md", "recreated A", 900);
     serviceA.notifyVaultChange("Notes/from-a.md");
     await waitFor(() => storageB.text("Notes/from-a.md") === "recreated A", "recreated path after cloud deletion");
+
+    optionsA.runtimeSettings.mode = "delete-pull";
+    storageB.files.delete("Notes/from-b.md");
+    serviceA.requestSync();
+    await waitFor(() => storageA.text("Notes/from-b.md") === null, "deletion pull");
   } finally {
     await Promise.all([serviceA.stop(), serviceB.stop()]);
   }
@@ -301,7 +386,7 @@ try {
   const mobileStorage = new MemoryStorage(identity, {
     "Mobile/client-created.md": { content: "from mobile client", mtime: 1200 }
   });
-  mobileStorage.putText(`data/lan-sync/peers/${desktopDevice}.json`, descriptor(desktopDevice, desktopPort));
+  mobileStorage.putText(`${mobileStorage.identityRoot}/peers/${desktopDevice}.json`, descriptor(desktopDevice, desktopPort));
   const desktopProgress = [];
   const mobileProgress = [];
   const desktopService = new CancipLanSync(commonOptions(desktopStorage, desktopPort, desktopDevice, desktopProgress));
@@ -324,6 +409,13 @@ try {
   const statusTextSource = source.slice(source.indexOf("private lanSyncStatusText"), source.indexOf("private renderLanSyncStatusBar"));
   assert.match(statusTextSource, /return `\$\{progress\.completed\}\/\$\{progress\.total\}`;/, "LAN progress should stay compact beside the Wi-Fi icon");
   assert.doesNotMatch(statusTextSource, /progress\.completed.*percent|·.*%/, "LAN progress should not append a percentage or LAN label");
+  assert.doesNotMatch(statusTextSource, /LAN (?:connected|scanning|syncing|synced|unavailable)|局域网|已连接|扫描中|同步中|已同步|暂不可用/, "LAN status text should not show visible words");
+  assert.match(statusTextSource, /return "";/, "Non-transfer LAN status should leave the visible text empty");
+  assert.match(source, /setIcon\(icon, "wifi"\)/, "Connected LAN status should keep the Wi-Fi icon");
+  for (const mode of ["bidirectional", "incremental-push", "incremental-pull", "delete-push", "delete-pull"]) {
+    assert.match(source, new RegExp(`(?:\\"|^)${mode.replace("-", "\\-")}(?:\\"|$)`), `LAN settings are missing mode ${mode}`);
+  }
+  assert.match(source, /lanSyncMaxFileMb[^\n]*512/, "LAN settings should allow selecting files larger than 100 MB");
   assert.match(takeoverSource, /plugins\?\.\["remotely-save"\]\?\.statusBarElement/);
   assert.doesNotMatch(takeoverSource, /isSyncing|currSyncMsg|syncEvent|remotelySave\.settings|candidate\.settings|start-sync/);
   assert.doesNotMatch(source, /plugins\/remotely-save|plugins\\remotely-save/);

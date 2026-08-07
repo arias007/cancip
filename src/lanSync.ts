@@ -4,8 +4,29 @@ import type { RemoteInfo, Socket } from "node:dgram";
 export type LanSyncRuntimeSettings = {
   enabled: boolean;
   autoDiscovery: boolean;
+  checkIntervalSeconds: number;
+  mode: LanSyncMode;
+  syncConfigFolder: boolean;
+  configDir: string;
   port: number;
   maxFileBytes: number;
+};
+
+export type LanSyncMode = "bidirectional" | "incremental-push" | "incremental-pull" | "delete-push" | "delete-pull";
+
+export type LanSyncPolicy = {
+  incrementalPush: boolean;
+  incrementalPull: boolean;
+  deletePush: boolean;
+  deletePull: boolean;
+  syncConfigFolder: boolean;
+  deleteProtocol: boolean;
+};
+
+export type LanSyncPathOptions = {
+  syncConfigFolder?: boolean;
+  configDir?: string;
+  identityRoot?: string;
 };
 
 export type LanSyncFileStat = {
@@ -16,10 +37,11 @@ export type LanSyncFileStat = {
 
 export type LanSyncStorage = {
   identityRoot: string;
-  listFiles(): Promise<LanSyncFileStat[]>;
+  listFiles(includeConfigFolder: boolean): Promise<LanSyncFileStat[]>;
   statFile(path: string): Promise<LanSyncFileStat | null>;
   readBinary(path: string): Promise<ArrayBuffer>;
   writeBinary(path: string, data: ArrayBuffer): Promise<void>;
+  deleteFile(path: string): Promise<void>;
   exists(path: string): Promise<boolean>;
   readText(path: string): Promise<string>;
   writeText(path: string, content: string): Promise<void>;
@@ -74,7 +96,7 @@ export type LanSyncManifestEntry = {
 };
 
 export type LanSyncReconcileAction = {
-  kind: "push" | "pull" | "conflict";
+  kind: "push" | "pull" | "delete-local" | "delete-remote" | "conflict";
   path: string;
   local: LanSyncManifestEntry | null;
   remote: LanSyncManifestEntry | null;
@@ -108,6 +130,7 @@ type LanSyncPeer = {
   lastProbeAt: number;
   lastSyncAt: number;
   probing: boolean;
+  policy: LanSyncPolicy;
 };
 
 type LanSyncEnvelope = {
@@ -131,17 +154,17 @@ const PROTOCOL_NAME = "cancip-lan-sync";
 const API_PREFIX = "/cancip-lan/v1";
 const MULTICAST_ADDRESS = "239.255.67.19";
 const DISCOVERY_PORT = 43189;
-const ANNOUNCE_INTERVAL_MS = 3500;
-const PEER_SWEEP_INTERVAL_MS = 2000;
-const PEER_PROBE_INTERVAL_MS = 10_000;
-const PEER_ACTIVE_MS = 22_000;
+const ANNOUNCE_INTERVAL_MS = 750;
+const PEER_SWEEP_INTERVAL_MS = 350;
 const REMEMBERED_PEER_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
-const SYNC_MIN_INTERVAL_MS = 2500;
+const SYNC_MIN_INTERVAL_MS = 400;
+const HASH_CONCURRENCY = 8;
+const TRANSFER_CONCURRENCY = 4;
 const MAX_CLOCK_SKEW_MS = 120_000;
 const REPLAY_TTL_MS = 180_000;
 const MAX_MANIFEST_FILES = 25_000;
 const MAX_LEDGER_ENTRIES = 12_000;
-const HARD_MAX_REQUEST_BYTES = 192 * 1024 * 1024;
+const HARD_MAX_REQUEST_BYTES = 960 * 1024 * 1024;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 1200;
 const DEVICE_ID_STORAGE_KEY = "cancip.lan-sync.device-id.v1";
@@ -236,7 +259,67 @@ function normalizedPort(value: unknown, fallback = 43190): number {
 
 function normalizedMaxFileBytes(value: unknown): number {
   const parsed = Number(value);
-  return Number.isFinite(parsed) ? Math.max(64 * 1024, Math.min(100 * 1024 * 1024, Math.floor(parsed))) : 50 * 1024 * 1024;
+  return Number.isFinite(parsed) ? Math.max(64 * 1024, Math.min(512 * 1024 * 1024, Math.floor(parsed))) : 50 * 1024 * 1024;
+}
+
+function normalizedCheckIntervalSeconds(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.max(1, Math.min(300, Math.floor(parsed))) : 2;
+}
+
+function normalizedMode(value: unknown): LanSyncMode {
+  return value === "incremental-push"
+    || value === "incremental-pull"
+    || value === "delete-push"
+    || value === "delete-pull"
+    || value === "bidirectional"
+    ? value
+    : "bidirectional";
+}
+
+function normalizedConfigDir(value: unknown): string {
+  if (typeof value !== "string") return ".obsidian";
+  const path = value.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  return path && !path.includes("/") && path !== "." && path !== ".." ? path : ".obsidian";
+}
+
+function fileTransferTimeoutMs(bytes: number): number {
+  const estimatedAtTwoMbPerSecond = Math.ceil(Math.max(0, bytes) / (2 * 1024 * 1024) * 1000) + 15_000;
+  return Math.max(45_000, Math.min(10 * 60_000, estimatedAtTwoMbPerSecond));
+}
+
+function defaultLocalPolicy(): LanSyncPolicy {
+  return {
+    incrementalPush: true,
+    incrementalPull: true,
+    deletePush: false,
+    deletePull: false,
+    syncConfigFolder: false,
+    deleteProtocol: true
+  };
+}
+
+function passivePeerPolicy(): LanSyncPolicy {
+  return {
+    incrementalPush: false,
+    incrementalPull: false,
+    deletePush: false,
+    deletePull: false,
+    syncConfigFolder: false,
+    deleteProtocol: false
+  };
+}
+
+function policyFromRaw(value: unknown): LanSyncPolicy {
+  if (!isRecord(value)) return passivePeerPolicy();
+  return {
+    incrementalPush: value.incrementalPush === true,
+    incrementalPull: value.incrementalPull === true,
+    deletePush: value.deletePush === true,
+    deletePull: value.deletePull === true,
+    syncConfigFolder: value.syncConfigFolder === true,
+    deleteProtocol: value.deleteProtocol === true
+  };
 }
 
 function headerValue(request: IncomingMessage, name: string): string {
@@ -263,19 +346,52 @@ export function isPrivateLanAddress(value: string): boolean {
   return /^f[cd][0-9a-f]{2}:/i.test(host) || /^fe8[0-9a-f]:/i.test(host);
 }
 
-export function normalizeLanSyncPath(value: unknown): string | null {
+export function normalizeLanSyncPath(value: unknown, options: LanSyncPathOptions = {}): string | null {
   if (typeof value !== "string") return null;
   const path = value.trim();
   if (!path || path.length > 1024 || path.includes("\\") || path.includes("\0") || path.startsWith("/") || /^[A-Za-z]:/.test(path)) return null;
   const segments = path.split("/");
   if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  if (segments.some((segment) => segment.toLocaleLowerCase() === "node_modules" || segment.toLocaleLowerCase() === ".git")) return null;
   const root = segments[0].toLocaleLowerCase();
-  if (root.startsWith(".") || root === "node_modules") return null;
-  return segments.join("/");
+  const normalized = segments.join("/");
+  const configDir = normalizedConfigDir(options.configDir);
+  const configRoot = configDir.toLocaleLowerCase();
+  if (root === "node_modules") return null;
+  if (root.startsWith(".") && root !== configRoot) return null;
+  if (root !== configRoot) return normalized;
+  if (!options.syncConfigFolder || segments.length < 2) return null;
+  const lower = normalized.toLocaleLowerCase();
+  const identityRoot = typeof options.identityRoot === "string"
+    ? options.identityRoot.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "").toLocaleLowerCase()
+    : "";
+  if (identityRoot && (lower === identityRoot || lower.startsWith(`${identityRoot}/`))) return null;
+  if (lower === `${configRoot}/workspace.json` || lower === `${configRoot}/workspace-mobile.json`) return null;
+  if (lower.startsWith(`${configRoot}/cache/`) || lower.startsWith(`${configRoot}/.cache/`)) return null;
+  if (lower === `${configRoot}/plugins/remotely-save` || lower.startsWith(`${configRoot}/plugins/remotely-save/`)) return null;
+  return normalized;
 }
 
-export function isLanSyncPathEligible(value: unknown): value is string {
-  return normalizeLanSyncPath(value) !== null;
+export function isLanSyncPathEligible(value: unknown, options: LanSyncPathOptions = {}): value is string {
+  return normalizeLanSyncPath(value, options) !== null;
+}
+
+function isConfigPath(path: string, configDir: string): boolean {
+  return path.toLocaleLowerCase().startsWith(`${normalizedConfigDir(configDir).toLocaleLowerCase()}/`);
+}
+
+async function mapWithConcurrency<T, R>(items: T[], limit: number, task: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  const worker = async (): Promise<void> => {
+    while (cursor < items.length) {
+      const index = cursor;
+      cursor += 1;
+      results[index] = await task(items[index], index);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), items.length) }, worker));
+  return results;
 }
 
 async function sha256Bytes(value: ArrayBuffer | Uint8Array | string): Promise<string> {
@@ -421,12 +537,18 @@ function manifestWinner(local: LanSyncManifestEntry, remote: LanSyncManifestEntr
 export function planLanSyncReconciliation(
   localEntries: LanSyncManifestEntry[],
   remoteEntries: LanSyncManifestEntry[],
-  ledger: Record<string, string>
+  ledger: Record<string, string>,
+  localPolicy: LanSyncPolicy = defaultLocalPolicy(),
+  remotePolicy: LanSyncPolicy = passivePeerPolicy()
 ): LanSyncReconcileAction[] {
   const local = new Map(localEntries.map((entry) => [entry.path, entry]));
   const remote = new Map(remoteEntries.map((entry) => [entry.path, entry]));
   const paths = [...new Set([...local.keys(), ...remote.keys()])].sort((left, right) => left.localeCompare(right));
   const actions: LanSyncReconcileAction[] = [];
+  const canPush = localPolicy.incrementalPush || remotePolicy.incrementalPull;
+  const canPull = localPolicy.incrementalPull || remotePolicy.incrementalPush;
+  const canDeleteRemote = remotePolicy.deleteProtocol && (localPolicy.deletePush || remotePolicy.deletePull);
+  const canDeleteLocal = localPolicy.deletePull || remotePolicy.deletePush;
   for (const path of paths) {
     const localEntry = local.get(path) ?? null;
     const remoteEntry = remote.get(path) ?? null;
@@ -434,25 +556,38 @@ export function planLanSyncReconciliation(
     if (localEntry && remoteEntry) {
       if (localEntry.hash === remoteEntry.hash) continue;
       if (baseline && localEntry.hash === baseline) {
-        actions.push({ kind: "pull", path, local: localEntry, remote: remoteEntry });
+        if (canPull) actions.push({ kind: "pull", path, local: localEntry, remote: remoteEntry });
       } else if (baseline && remoteEntry.hash === baseline) {
-        actions.push({ kind: "push", path, local: localEntry, remote: remoteEntry });
-      } else {
+        if (canPush) actions.push({ kind: "push", path, local: localEntry, remote: remoteEntry });
+      } else if (canPush && canPull) {
         actions.push({ kind: "conflict", path, local: localEntry, remote: remoteEntry, winner: manifestWinner(localEntry, remoteEntry) });
+      } else if (canPush) {
+        actions.push({ kind: "push", path, local: localEntry, remote: remoteEntry });
+      } else if (canPull) {
+        actions.push({ kind: "pull", path, local: localEntry, remote: remoteEntry });
+      } else {
+        continue;
       }
       continue;
     }
-    // A previously synchronized unilateral absence may be a deletion. Cancip
-    // deliberately leaves it for Remotely Save instead of resurrecting or deleting.
-    if (baseline) continue;
-    if (localEntry) actions.push({ kind: "push", path, local: localEntry, remote: null });
-    else if (remoteEntry) actions.push({ kind: "pull", path, local: null, remote: remoteEntry });
+    if (baseline) {
+      if (localEntry) {
+        if (localEntry.hash === baseline && canDeleteLocal) actions.push({ kind: "delete-local", path, local: localEntry, remote: null });
+        else if (localEntry.hash !== baseline && canPush) actions.push({ kind: "push", path, local: localEntry, remote: null });
+      } else if (remoteEntry) {
+        if (remoteEntry.hash === baseline && canDeleteRemote) actions.push({ kind: "delete-remote", path, local: null, remote: remoteEntry });
+        else if (remoteEntry.hash !== baseline && canPull) actions.push({ kind: "pull", path, local: null, remote: remoteEntry });
+      }
+      continue;
+    }
+    if (localEntry && canPush) actions.push({ kind: "push", path, local: localEntry, remote: null });
+    else if (remoteEntry && canPull) actions.push({ kind: "pull", path, local: null, remote: remoteEntry });
   }
   return actions;
 }
 
-export function buildLanConflictPath(path: string, losingDeviceId: string, losingHash: string): string {
-  const normalized = normalizeLanSyncPath(path);
+export function buildLanConflictPath(path: string, losingDeviceId: string, losingHash: string, options: LanSyncPathOptions = {}): string {
+  const normalized = normalizeLanSyncPath(path, options);
   if (!normalized) throw new LanSyncProtocolError("unsafe_path");
   const slash = normalized.lastIndexOf("/");
   const folder = slash >= 0 ? normalized.slice(0, slash + 1) : "";
@@ -623,6 +758,7 @@ export class CancipLanSync {
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
   private syncRunning = false;
   private syncQueued = false;
+  private syncForced = false;
   private lastTransferAt = 0;
   private progressValue = defaultProgress();
   private lastErrorValue = "";
@@ -676,7 +812,7 @@ export class CancipLanSync {
       }
       await this.loadRememberedPeers();
       this.intervals.push(setInterval(() => this.announce(), ANNOUNCE_INTERVAL_MS));
-      this.intervals.push(setInterval(() => void this.probePeers(), PEER_PROBE_INTERVAL_MS));
+      this.intervals.push(setInterval(() => void this.probePeers(), settings.checkIntervalSeconds * 1000));
       this.intervals.push(setInterval(() => this.sweepPeers(), PEER_SWEEP_INTERVAL_MS));
       this.announce();
       this.emit({ ...defaultProgress("discovering"), active: false });
@@ -692,6 +828,7 @@ export class CancipLanSync {
   async stop(): Promise<void> {
     this.runningValue = false;
     this.syncQueued = false;
+    this.syncForced = false;
     if (this.syncTimer) {
       clearTimeout(this.syncTimer);
       this.syncTimer = null;
@@ -710,7 +847,16 @@ export class CancipLanSync {
     const server = this.server;
     this.server = null;
     this.boundPort = 0;
-    if (server) await new Promise<void>((resolve) => server.close(() => resolve()));
+    if (server) {
+      server.closeIdleConnections?.();
+      await Promise.race([
+        new Promise<void>((resolve) => server.close(() => resolve())),
+        new Promise<void>((resolve) => setTimeout(() => {
+          server.closeAllConnections?.();
+          resolve();
+        }, 250))
+      ]);
+    }
     this.peers.clear();
     this.replayCache.clear();
     this.rateByClient.clear();
@@ -718,10 +864,10 @@ export class CancipLanSync {
   }
 
   notifyVaultChange(path: string): void {
-    const normalized = normalizeLanSyncPath(path);
+    const normalized = this.normalizePath(path);
     if (!normalized) return;
     this.hashCache.delete(normalized);
-    this.scheduleSync(700);
+    this.scheduleSync(120);
   }
 
   requestSync(): void {
@@ -733,9 +879,37 @@ export class CancipLanSync {
     return {
       enabled: raw.enabled === true,
       autoDiscovery: raw.autoDiscovery === true,
+      checkIntervalSeconds: normalizedCheckIntervalSeconds(raw.checkIntervalSeconds),
+      mode: normalizedMode(raw.mode),
+      syncConfigFolder: raw.syncConfigFolder === true,
+      configDir: normalizedConfigDir(raw.configDir),
       port: normalizedPort(raw.port),
       maxFileBytes: normalizedMaxFileBytes(raw.maxFileBytes)
     };
+  }
+
+  private policy(): LanSyncPolicy {
+    const settings = this.settings();
+    return {
+      incrementalPush: settings.mode === "bidirectional" || settings.mode === "incremental-push" || settings.mode === "delete-push",
+      incrementalPull: settings.mode === "bidirectional" || settings.mode === "incremental-pull" || settings.mode === "delete-pull",
+      deletePush: settings.mode === "delete-push",
+      deletePull: settings.mode === "delete-pull",
+      syncConfigFolder: settings.syncConfigFolder,
+      deleteProtocol: true
+    };
+  }
+
+  private pathOptions(syncConfigFolder = this.settings().syncConfigFolder): LanSyncPathOptions {
+    return {
+      syncConfigFolder,
+      configDir: this.settings().configDir,
+      identityRoot: this.options.storage.identityRoot
+    };
+  }
+
+  private normalizePath(value: unknown, syncConfigFolder = this.settings().syncConfigFolder): string | null {
+    return normalizeLanSyncPath(value, this.pathOptions(syncConfigFolder));
   }
 
   private now(): number {
@@ -892,7 +1066,7 @@ export class CancipLanSync {
       const port = this.settings().port + offset;
       try {
         const server = http.createServer((request, response) => void this.handleServerRequest(request, response));
-        server.requestTimeout = 45_000;
+        server.requestTimeout = 10 * 60_000;
         server.headersTimeout = 10_000;
         server.keepAliveTimeout = 5000;
         await new Promise<void>((resolve, reject) => {
@@ -989,7 +1163,8 @@ export class CancipLanSync {
         verifiedAt: 0,
         lastProbeAt: 0,
         lastSyncAt: 0,
-        probing: false
+        probing: false,
+        policy: passivePeerPolicy()
       };
       this.peers.set(deviceId, peer);
     }
@@ -1023,17 +1198,19 @@ export class CancipLanSync {
 
   private async verifyPeer(peer: LanSyncPeer): Promise<void> {
     const now = this.now();
-    if (!this.runningValue || !peer.canHost || peer.probing || now - peer.lastProbeAt < 2500 || !peer.addresses.size) return;
+    const minimumProbeInterval = Math.max(300, this.settings().checkIntervalSeconds * 1000);
+    if (!this.runningValue || !peer.canHost || peer.probing || now - peer.lastProbeAt < minimumProbeInterval || !peer.addresses.size) return;
     peer.probing = true;
     peer.lastProbeAt = now;
     try {
       const response = await this.callPeer(peer, "/ping", {});
       if (response.protocolVersion !== PROTOCOL_VERSION || response.deviceId !== peer.deviceId) throw new Error("peer_identity_mismatch");
+      peer.policy = policyFromRaw(response.policy);
       peer.verifiedAt = this.now();
       peer.lastSeenAt = Math.max(peer.lastSeenAt, peer.verifiedAt);
       this.lastErrorValue = "";
       this.emit({ ...defaultProgress("connected"), active: true, peerId: peer.deviceId });
-      this.scheduleSync(200);
+      this.scheduleSync(20);
     } catch {
       // A remembered endpoint can be offline or reassigned. It is not active
       // until the authenticated ping succeeds.
@@ -1050,8 +1227,9 @@ export class CancipLanSync {
 
   private activePeers(): LanSyncPeer[] {
     const now = this.now();
+    const activeMs = Math.max(4500, this.settings().checkIntervalSeconds * 3000 + 1000);
     return [...this.peers.values()]
-      .filter((peer) => peer.verifiedAt > 0 && now - peer.verifiedAt <= PEER_ACTIVE_MS)
+      .filter((peer) => peer.verifiedAt > 0 && now - peer.verifiedAt <= activeMs)
       .sort((left, right) => left.deviceId.localeCompare(right.deviceId));
   }
 
@@ -1061,7 +1239,7 @@ export class CancipLanSync {
       if (this.progressValue.active) this.emit({ ...defaultProgress("discovering"), active: false });
       return;
     }
-    if (this.progressValue.phase === "syncing" && !this.syncRunning && this.now() - this.lastTransferAt > 1600) {
+    if (this.progressValue.phase === "syncing" && !this.syncRunning && this.now() - this.lastTransferAt > 500) {
       this.emit({ ...defaultProgress("connected"), active: true, peerId: active[0].deviceId });
     }
   }
@@ -1069,6 +1247,7 @@ export class CancipLanSync {
   private scheduleSync(delay: number, force = false): void {
     if (!this.runningValue || !this.syncTargets().length) return;
     if (!force && !this.settings().autoDiscovery) return;
+    if (force) this.syncForced = true;
     if (this.syncRunning) {
       this.syncQueued = true;
       return;
@@ -1090,14 +1269,16 @@ export class CancipLanSync {
   }
 
   private async syncActivePeers(): Promise<void> {
-    if (!this.runningValue || this.syncRunning || !this.isCoordinator()) return;
+    const forced = this.syncForced;
+    this.syncForced = false;
+    if (!this.runningValue || this.syncRunning || (!forced && !this.isCoordinator())) return;
     const peers = this.syncTargets();
     if (!peers.length) return;
     this.syncRunning = true;
     try {
       for (const peer of peers) {
         if (!this.runningValue) break;
-        if (this.now() - peer.lastSyncAt < SYNC_MIN_INTERVAL_MS && !this.syncQueued) continue;
+        if (this.now() - peer.lastSyncAt < SYNC_MIN_INTERVAL_MS && !this.syncQueued && !forced) continue;
         await this.syncPeer(peer);
         peer.lastSyncAt = this.now();
       }
@@ -1109,20 +1290,27 @@ export class CancipLanSync {
       this.syncRunning = false;
       if (this.syncQueued) {
         this.syncQueued = false;
-        this.scheduleSync(900);
+        this.scheduleSync(120);
       }
     }
   }
 
   private async syncPeer(peer: LanSyncPeer): Promise<void> {
     this.emit({ ...defaultProgress("scanning"), active: true, peerId: peer.deviceId });
+    const localPolicy = this.policy();
     const [localEntries, remoteResponse, ledger] = await Promise.all([
-      this.buildManifest(),
-      this.callPeer(peer, "/manifest", {}),
+      this.buildManifest(localPolicy.syncConfigFolder),
+      this.callPeer(peer, "/manifest", { syncConfigFolder: localPolicy.syncConfigFolder }),
       Promise.resolve(this.loadLedger(peer.deviceId))
     ]);
-    const remoteEntries = this.parseManifest(remoteResponse.files);
-    const localMap = new Map(localEntries.map((entry) => [entry.path, entry]));
+    const remotePolicy = policyFromRaw(remoteResponse.policy);
+    peer.policy = remotePolicy;
+    const shareConfig = localPolicy.syncConfigFolder && remotePolicy.syncConfigFolder;
+    const filteredLocalEntries = shareConfig
+      ? localEntries
+      : localEntries.filter((entry) => !isConfigPath(entry.path, this.settings().configDir));
+    const remoteEntries = this.parseManifest(remoteResponse.files, shareConfig);
+    const localMap = new Map(filteredLocalEntries.map((entry) => [entry.path, entry]));
     const remoteMap = new Map(remoteEntries.map((entry) => [entry.path, entry]));
     for (const path of Object.keys(ledger.entries)) {
       if (!localMap.has(path) && !remoteMap.has(path)) delete ledger.entries[path];
@@ -1132,7 +1320,7 @@ export class CancipLanSync {
       const remote = remoteMap.get(path);
       if (local && remote && local.hash === remote.hash) ledger.entries[path] = local.hash;
     }
-    const actions = planLanSyncReconciliation(localEntries, remoteEntries, ledger.entries);
+    const actions = planLanSyncReconciliation(filteredLocalEntries, remoteEntries, ledger.entries, localPolicy, remotePolicy);
     const bytesTotal = actions.reduce((sum, action) => sum + Math.max(action.local?.size ?? 0, action.remote?.size ?? 0), 0);
     let completed = 0;
     let bytesTransferred = 0;
@@ -1145,26 +1333,37 @@ export class CancipLanSync {
       total: actions.length,
       bytesTotal
     });
-    for (const action of actions) {
-      if (!this.runningValue) break;
-      const result = await this.executeAction(peer, action, ledger);
-      completed += 1;
-      bytesTransferred += result.bytes;
-      changed += result.changed ? 1 : 0;
-      conflicts += result.conflict ? 1 : 0;
-      this.lastTransferAt = this.now();
-      this.emit({
-        ...defaultProgress("syncing"),
-        active: true,
-        peerId: peer.deviceId,
-        completed,
-        total: actions.length,
-        bytesTransferred,
-        bytesTotal,
-        changed,
-        conflicts
-      });
-    }
+    let cursor = 0;
+    let failure: unknown = null;
+    const transferWorker = async (): Promise<void> => {
+      while (this.runningValue && failure === null && cursor < actions.length) {
+        const index = cursor;
+        cursor += 1;
+        try {
+          const result = await this.executeAction(peer, actions[index], ledger);
+          completed += 1;
+          bytesTransferred += result.bytes;
+          changed += result.changed ? 1 : 0;
+          conflicts += result.conflict ? 1 : 0;
+          this.lastTransferAt = this.now();
+          this.emit({
+            ...defaultProgress("syncing"),
+            active: true,
+            peerId: peer.deviceId,
+            completed,
+            total: actions.length,
+            bytesTransferred,
+            bytesTotal,
+            changed,
+            conflicts
+          });
+        } catch (error) {
+          failure = error;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(TRANSFER_CONCURRENCY, actions.length) }, transferWorker));
+    if (failure !== null) throw failure;
     this.saveLedger(peer.deviceId, ledger);
     peer.verifiedAt = this.now();
     this.lastErrorValue = "";
@@ -1194,13 +1393,23 @@ export class CancipLanSync {
       ledger.entries[action.path] = action.remote.hash;
       return { bytes: bytes.byteLength, changed: true, conflict: false };
     }
+    if (action.kind === "delete-local" && action.local) {
+      await this.deleteLocal(action.path, action.local.hash);
+      delete ledger.entries[action.path];
+      return { bytes: 0, changed: true, conflict: false };
+    }
+    if (action.kind === "delete-remote" && action.remote) {
+      await this.deleteRemote(peer, action.path, action.remote.hash);
+      delete ledger.entries[action.path];
+      return { bytes: 0, changed: true, conflict: false };
+    }
     if (action.kind === "conflict" && action.local && action.remote && action.winner) {
       if (action.winner === "local") {
         const [localBytes, remoteBytes] = await Promise.all([
           this.readLocalVerified(action.path, action.local.hash),
           this.readRemote(peer, action.remote)
         ]);
-        const conflictPath = buildLanConflictPath(action.path, peer.deviceId, action.remote.hash);
+        const conflictPath = buildLanConflictPath(action.path, peer.deviceId, action.remote.hash, this.pathOptions());
         await this.writeLocalIfMissingOrSame(conflictPath, remoteBytes, action.remote.hash);
         await this.writeRemoteIfMissingOrSame(peer, conflictPath, remoteBytes, action.remote.hash);
         await this.writeRemote(peer, action.path, localBytes, action.remote.hash, action.local.hash);
@@ -1210,7 +1419,7 @@ export class CancipLanSync {
       }
       const localBytes = await this.readLocalVerified(action.path, action.local.hash);
       const remoteBytes = await this.readRemote(peer, action.remote);
-      const conflictPath = buildLanConflictPath(action.path, this.deviceId, action.local.hash);
+      const conflictPath = buildLanConflictPath(action.path, this.deviceId, action.local.hash, this.pathOptions());
       await this.writeRemoteIfMissingOrSame(peer, conflictPath, localBytes, action.local.hash);
       await this.writeLocalIfMissingOrSame(conflictPath, localBytes, action.local.hash);
       await this.writeLocal(action.path, remoteBytes, action.local.hash, action.remote.hash);
@@ -1221,32 +1430,30 @@ export class CancipLanSync {
     return { bytes: 0, changed: false, conflict: false };
   }
 
-  private async buildManifest(): Promise<LanSyncManifestEntry[]> {
+  private async buildManifest(includeConfigFolder = this.settings().syncConfigFolder): Promise<LanSyncManifestEntry[]> {
     const maxFileBytes = this.settings().maxFileBytes;
-    const files = (await this.options.storage.listFiles())
-      .map((file) => ({ ...file, path: normalizeLanSyncPath(file.path) }))
+    const files = (await this.options.storage.listFiles(includeConfigFolder))
+      .map((file) => ({ ...file, path: this.normalizePath(file.path, includeConfigFolder) }))
       .filter((file): file is Omit<LanSyncFileStat, "path"> & { path: string } => Boolean(file.path) && file.size >= 0 && file.size <= maxFileBytes)
       .sort((left, right) => left.path.localeCompare(right.path))
       .slice(0, MAX_MANIFEST_FILES);
-    const entries: LanSyncManifestEntry[] = [];
-    for (const file of files) {
+    return await mapWithConcurrency(files, HASH_CONCURRENCY, async (file) => {
       const signature = `${file.mtime}:${file.size}`;
       let hash = this.hashCache.get(file.path)?.signature === signature ? this.hashCache.get(file.path)?.hash ?? "" : "";
       if (!hash) {
         hash = await sha256Bytes(await this.options.storage.readBinary(file.path));
         this.hashCache.set(file.path, { signature, hash });
       }
-      entries.push({ path: file.path, size: file.size, mtime: file.mtime, hash });
-    }
-    return entries;
+      return { path: file.path, size: file.size, mtime: file.mtime, hash };
+    });
   }
 
-  private parseManifest(value: unknown): LanSyncManifestEntry[] {
+  private parseManifest(value: unknown, includeConfigFolder: boolean): LanSyncManifestEntry[] {
     if (!Array.isArray(value) || value.length > MAX_MANIFEST_FILES) throw new LanSyncProtocolError("invalid_manifest");
     const entries: LanSyncManifestEntry[] = [];
     for (const item of value) {
       if (!isRecord(item)) throw new LanSyncProtocolError("invalid_manifest");
-      const path = normalizeLanSyncPath(item.path);
+      const path = this.normalizePath(item.path, includeConfigFolder);
       const size = Number(item.size);
       const mtime = Number(item.mtime);
       const hash = typeof item.hash === "string" ? item.hash : "";
@@ -1270,7 +1477,7 @@ export class CancipLanSync {
       if (parsed.schemaVersion !== 1 || !isRecord(parsed.entries)) return { schemaVersion: 1, entries: {} };
       const entries: Record<string, string> = {};
       for (const [path, hash] of Object.entries(parsed.entries).slice(-MAX_LEDGER_ENTRIES)) {
-        const normalized = normalizeLanSyncPath(path);
+        const normalized = this.normalizePath(path);
         if (normalized && typeof hash === "string" && /^[A-Za-z0-9_-]{32,64}$/.test(hash)) entries[normalized] = hash;
       }
       return { schemaVersion: 1, entries };
@@ -1297,7 +1504,7 @@ export class CancipLanSync {
   }
 
   private async readLocalVerified(path: string, expectedHash: string): Promise<Uint8Array> {
-    const normalized = normalizeLanSyncPath(path);
+    const normalized = this.normalizePath(path);
     if (!normalized) throw new LanSyncProtocolError("unsafe_path");
     const bytes = new Uint8Array(await this.options.storage.readBinary(normalized));
     if (bytes.byteLength > this.settings().maxFileBytes || await sha256Bytes(bytes) !== expectedHash) throw new LanSyncProtocolError("precondition_failed", 409);
@@ -1305,7 +1512,7 @@ export class CancipLanSync {
   }
 
   private async writeLocal(path: string, bytes: Uint8Array, expectedHash: string | null, suppliedHash: string): Promise<void> {
-    const normalized = normalizeLanSyncPath(path);
+    const normalized = this.normalizePath(path);
     if (!normalized || bytes.byteLength > this.settings().maxFileBytes || await sha256Bytes(bytes) !== suppliedHash) throw new LanSyncProtocolError("unsafe_write", 400);
     const current = await this.options.storage.statFile(normalized);
     if (expectedHash === null) {
@@ -1328,8 +1535,20 @@ export class CancipLanSync {
     await this.writeLocal(path, bytes, null, hash);
   }
 
+  private async deleteLocal(path: string, expectedHash: string): Promise<void> {
+    const normalized = this.normalizePath(path);
+    if (!normalized || !/^[A-Za-z0-9_-]{32,64}$/.test(expectedHash)) throw new LanSyncProtocolError("unsafe_delete");
+    const current = await this.options.storage.statFile(normalized);
+    if (!current || await sha256Bytes(await this.options.storage.readBinary(normalized)) !== expectedHash) {
+      throw new LanSyncProtocolError("precondition_failed", 409);
+    }
+    await this.options.storage.deleteFile(normalized);
+    this.hashCache.delete(normalized);
+    if (await this.options.storage.statFile(normalized)) throw new Error("delete_verification_failed");
+  }
+
   private async readRemote(peer: LanSyncPeer, entry: LanSyncManifestEntry): Promise<Uint8Array> {
-    const response = await this.callPeer(peer, "/file/read", { path: entry.path, expectedHash: entry.hash }, 45_000);
+    const response = await this.callPeer(peer, "/file/read", { path: entry.path, expectedHash: entry.hash }, fileTransferTimeoutMs(entry.size));
     if (response.path !== entry.path || response.hash !== entry.hash || typeof response.data !== "string") throw new LanSyncProtocolError("invalid_file_response");
     const bytes = base64UrlToBytes(response.data);
     if (bytes.byteLength !== entry.size || bytes.byteLength > this.settings().maxFileBytes || await sha256Bytes(bytes) !== entry.hash) throw new LanSyncProtocolError("invalid_file_response");
@@ -1342,7 +1561,7 @@ export class CancipLanSync {
       expectedHash,
       hash,
       data: bytesToBase64Url(bytes)
-    }, 45_000);
+    }, fileTransferTimeoutMs(bytes.byteLength));
     if (response.hash !== hash) throw new Error("remote_write_verification_failed");
   }
 
@@ -1351,8 +1570,15 @@ export class CancipLanSync {
       await this.writeRemote(peer, path, bytes, null, hash);
     } catch (error) {
       if (safeErrorCode(error) !== "precondition_failed") throw error;
-      const response = await this.callPeer(peer, "/file/read", { path, expectedHash: hash }, 45_000);
+      const response = await this.callPeer(peer, "/file/read", { path, expectedHash: hash }, fileTransferTimeoutMs(bytes.byteLength));
       if (response.hash !== hash) throw error;
+    }
+  }
+
+  private async deleteRemote(peer: LanSyncPeer, path: string, expectedHash: string): Promise<void> {
+    const response = await this.callPeer(peer, "/file/delete", { path, expectedHash }, 45_000);
+    if (response.path !== path || response.deletedHash !== expectedHash || response.deleted !== true) {
+      throw new Error("remote_delete_verification_failed");
     }
   }
 
@@ -1439,13 +1665,19 @@ export class CancipLanSync {
       this.markInboundPeer(deviceId, remoteAddress, path);
       let result: Record<string, unknown>;
       if (path === `${API_PREFIX}/ping`) {
-        result = { ok: true, protocolVersion: PROTOCOL_VERSION, deviceId: this.deviceId };
+        result = { ok: true, protocolVersion: PROTOCOL_VERSION, deviceId: this.deviceId, policy: this.policy() };
       } else if (path === `${API_PREFIX}/manifest`) {
-        result = { files: await this.buildManifest() };
+        const policy = this.policy();
+        result = {
+          files: await this.buildManifest(policy.syncConfigFolder && payload.syncConfigFolder === true),
+          policy
+        };
       } else if (path === `${API_PREFIX}/file/read`) {
         result = await this.handleReadFile(payload);
       } else if (path === `${API_PREFIX}/file/write`) {
         result = await this.handleWriteFile(payload);
+      } else if (path === `${API_PREFIX}/file/delete`) {
+        result = await this.handleDeleteFile(payload);
       } else {
         throw new LanSyncProtocolError("not_found", 404);
       }
@@ -1457,7 +1689,7 @@ export class CancipLanSync {
   }
 
   private async handleReadFile(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const path = normalizeLanSyncPath(payload.path);
+    const path = this.normalizePath(payload.path);
     const expectedHash = typeof payload.expectedHash === "string" ? payload.expectedHash : "";
     if (!path || !/^[A-Za-z0-9_-]{32,64}$/.test(expectedHash)) throw new LanSyncProtocolError("unsafe_path");
     const stat = await this.options.storage.statFile(path);
@@ -1469,7 +1701,7 @@ export class CancipLanSync {
   }
 
   private async handleWriteFile(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
-    const path = normalizeLanSyncPath(payload.path);
+    const path = this.normalizePath(payload.path);
     const expectedHash = payload.expectedHash === null ? null : typeof payload.expectedHash === "string" ? payload.expectedHash : undefined;
     const hash = typeof payload.hash === "string" ? payload.hash : "";
     const encoded = typeof payload.data === "string" ? payload.data : "";
@@ -1480,5 +1712,13 @@ export class CancipLanSync {
     if (bytes.byteLength > this.settings().maxFileBytes || await sha256Bytes(bytes) !== hash) throw new LanSyncProtocolError("invalid_file_content");
     await this.writeLocal(path, bytes, expectedHash, hash);
     return { ok: true, path, hash, size: bytes.byteLength };
+  }
+
+  private async handleDeleteFile(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const path = this.normalizePath(payload.path);
+    const expectedHash = typeof payload.expectedHash === "string" ? payload.expectedHash : "";
+    if (!path || !/^[A-Za-z0-9_-]{32,64}$/.test(expectedHash)) throw new LanSyncProtocolError("unsafe_delete");
+    await this.deleteLocal(path, expectedHash);
+    return { ok: true, deleted: true, path, deletedHash: expectedHash };
   }
 }
