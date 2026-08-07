@@ -129,6 +129,17 @@ body .view-content.obcc-review-leaf {
   white-space: nowrap;
   overflow: hidden;
   user-select: none;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.obcc-lan-statusbar:hover {
+  background: var(--background-modifier-hover);
+}
+
+.obcc-lan-statusbar:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
 }
 
 .obcc-lan-statusbar-icon {
@@ -150,6 +161,165 @@ body .view-content.obcc-review-leaf {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.obcc-lan-details-modal {
+  width: min(720px, calc(100vw - 24px));
+  max-height: min(760px, calc(100vh - 32px));
+}
+
+.obcc-lan-details {
+  display: flex;
+  flex-direction: column;
+  min-height: 220px;
+  max-height: min(620px, calc(100vh - 150px));
+  overflow: auto;
+}
+
+.obcc-lan-details-summary {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 6px 2px 12px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.obcc-lan-details-summary-icon,
+.obcc-lan-details-file-state,
+.obcc-lan-details-file-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.obcc-lan-details-summary-icon svg {
+  width: 19px;
+  height: 19px;
+  color: var(--color-green, #15803d);
+}
+
+.obcc-lan-details-summary-text {
+  min-width: 0;
+  font-size: var(--font-ui-small);
+}
+
+.obcc-lan-details-meta {
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+}
+
+.obcc-lan-details-list {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.obcc-lan-details-file {
+  display: grid;
+  grid-template-columns: 20px 72px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 3px 2px;
+  border-bottom: 1px solid var(--background-modifier-border-hover);
+  font-size: var(--font-ui-smaller);
+}
+
+.obcc-lan-details-file-state svg,
+.obcc-lan-details-file-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.obcc-lan-details-file.is-syncing .obcc-lan-details-file-state svg {
+  color: var(--interactive-accent);
+  animation: obcc-spin 0.9s linear infinite;
+}
+
+.obcc-lan-details-file.is-complete .obcc-lan-details-file-state svg {
+  color: var(--color-green, #15803d);
+}
+
+.obcc-lan-details-file.is-error .obcc-lan-details-file-state svg {
+  color: var(--color-red, #b91c1c);
+}
+
+.obcc-lan-details-file-action,
+.obcc-lan-details-file-size {
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.obcc-lan-details-file-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-normal);
+  text-align: start;
+  white-space: nowrap;
+}
+
+.obcc-lan-details-file-path > span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+button.obcc-lan-details-file-path {
+  width: 100%;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+button.obcc-lan-details-file-path:hover,
+button.obcc-lan-details-file-path:focus-visible {
+  color: var(--text-accent);
+  background: transparent;
+  box-shadow: none;
+  text-decoration: underline;
+}
+
+.obcc-lan-details-empty {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 150px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-small);
+}
+
+.obcc-lan-details-empty svg {
+  width: 16px;
+  height: 16px;
+}
+
+.obcc-lan-details-limit {
+  padding: 8px 2px 0;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-align: end;
+}
+
+@media (max-width: 520px) {
+  .obcc-lan-details-file {
+    grid-template-columns: 20px 56px minmax(0, 1fr);
+  }
+
+  .obcc-lan-details-file-size {
+    display: none;
+  }
 }
 
 .obcc-root {

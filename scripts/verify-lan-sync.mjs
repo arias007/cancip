@@ -345,6 +345,11 @@ try {
     assert.ok(progressA.some((value) => value.phase === "syncing" && value.active));
     assert.ok(progressA.some((value) => value.phase === "complete" && value.conflicts === 1));
     assert.ok(progressB.some((value) => value.active), "Receiving peer did not expose LAN status");
+    const activityA = serviceA.activity();
+    assert.ok(activityA.files.some((file) => file.path === "Notes/from-a.md" && file.state === "complete"), "Coordinator did not retain completed file activity");
+    assert.ok(activityA.files.some((file) => file.path === "Notes/shared.md" && file.action === "conflict"), "Conflict activity was not exposed");
+    const activityB = serviceB.activity();
+    assert.ok(activityB.files.some((file) => file.path.endsWith(".md")), "Receiving peer did not expose inbound file activity");
     const firstProgress = progressA.find((value) => value.phase === "syncing" && value.total > 0 && value.completed === 0);
     assert.ok(firstProgress, "LAN progress did not start at 0/N");
     for (let completed = 0; completed <= firstProgress.total; completed += 1) {
@@ -412,6 +417,10 @@ try {
   assert.doesNotMatch(statusTextSource, /LAN (?:connected|scanning|syncing|synced|unavailable)|局域网|已连接|扫描中|同步中|已同步|暂不可用/, "LAN status text should not show visible words");
   assert.match(statusTextSource, /return "";/, "Non-transfer LAN status should leave the visible text empty");
   assert.match(source, /setIcon\(icon, "wifi"\)/, "Connected LAN status should keep the Wi-Fi icon");
+  assert.match(source, /registerDomEvent\(item, "click", \(\) => this\.openLanSyncDetails\(\)\)/, "LAN status item should open live details on click");
+  assert.match(source, /class CancipLanSyncDetailsModal extends Modal/, "LAN sync details modal is missing");
+  assert.match(source, /getLeaf\("tab"\)\.openFile\(target, \{ active: true \}\)/, "LAN Markdown activity should open the note in Obsidian");
+  assert.match(source, /lanSyncDetailsModal\?\.refresh\(\)/, "LAN details should refresh with transfer progress");
   for (const mode of ["bidirectional", "incremental-push", "incremental-pull", "delete-push", "delete-pull"]) {
     assert.match(source, new RegExp(`(?:\\"|^)${mode.replace("-", "\\-")}(?:\\"|$)`), `LAN settings are missing mode ${mode}`);
   }

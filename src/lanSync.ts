@@ -78,6 +78,20 @@ export type LanSyncProgress = {
   error: string;
 };
 
+export type LanSyncFileAction = "push" | "pull" | "delete-local" | "delete-remote" | "conflict";
+
+export type LanSyncFileActivity = {
+  path: string;
+  action: LanSyncFileAction;
+  state: "pending" | "syncing" | "complete" | "error";
+  size: number;
+};
+
+export type LanSyncActivitySnapshot = {
+  progress: LanSyncProgress;
+  files: LanSyncFileActivity[];
+};
+
 export type LanSyncServiceOptions = {
   desktop: boolean;
   getSettings(): LanSyncRuntimeSettings;
@@ -96,7 +110,7 @@ export type LanSyncManifestEntry = {
 };
 
 export type LanSyncReconcileAction = {
-  kind: "push" | "pull" | "delete-local" | "delete-remote" | "conflict";
+  kind: LanSyncFileAction;
   path: string;
   local: LanSyncManifestEntry | null;
   remote: LanSyncManifestEntry | null;
@@ -761,6 +775,8 @@ export class CancipLanSync {
   private syncForced = false;
   private lastTransferAt = 0;
   private progressValue = defaultProgress();
+  private activityFiles: LanSyncFileActivity[] = [];
+  private activityUpdatedAt = 0;
   private lastErrorValue = "";
 
   constructor(private readonly options: LanSyncServiceOptions) {}
@@ -775,6 +791,13 @@ export class CancipLanSync {
 
   progress(): LanSyncProgress {
     return { ...this.progressValue };
+  }
+
+  activity(): LanSyncActivitySnapshot {
+    return {
+      progress: { ...this.progressValue },
+      files: this.activityFiles.map((file) => ({ ...file }))
+    };
   }
 
   status(): { running: boolean; port: number; peerCount: number; error: string; desktop: boolean } {
@@ -860,6 +883,8 @@ export class CancipLanSync {
     this.peers.clear();
     this.replayCache.clear();
     this.rateByClient.clear();
+    this.activityFiles = [];
+    this.activityUpdatedAt = this.now();
     this.emit(defaultProgress("stopped"));
   }
 
@@ -1196,6 +1221,54 @@ export class CancipLanSync {
     });
   }
 
+  private beginInboundFileActivity(deviceId: string, route: string, payload: Record<string, unknown>): number | null {
+    if (!route.includes("/file/")) return null;
+    const path = this.normalizePath(payload.path);
+    if (!path) return null;
+    const now = this.now();
+    if (this.progressValue.peerId !== deviceId || now - this.activityUpdatedAt > 1500) this.activityFiles = [];
+    const action: LanSyncFileAction = route.endsWith("/read")
+      ? "push"
+      : route.endsWith("/delete")
+        ? "delete-local"
+        : "pull";
+    const encodedLength = typeof payload.data === "string" ? payload.data.length : 0;
+    const index = this.activityFiles.push({
+      path,
+      action,
+      state: "syncing",
+      size: encodedLength ? Math.floor(encodedLength * 0.75) : 0
+    }) - 1;
+    this.activityUpdatedAt = now;
+    this.emitInboundFileProgress(deviceId);
+    return index;
+  }
+
+  private finishInboundFileActivity(deviceId: string, index: number | null, success: boolean): void {
+    if (index === null || !this.activityFiles[index]) return;
+    this.activityFiles[index].state = success ? "complete" : "error";
+    this.activityUpdatedAt = this.now();
+    this.emitInboundFileProgress(deviceId, success ? "syncing" : "error");
+  }
+
+  private emitInboundFileProgress(deviceId: string, phase: LanSyncProgressPhase = "syncing"): void {
+    const completed = this.activityFiles.filter((file) => file.state === "complete").length;
+    const bytesTransferred = this.activityFiles
+      .filter((file) => file.state === "complete")
+      .reduce((sum, file) => sum + file.size, 0);
+    this.emit({
+      ...defaultProgress(phase),
+      active: true,
+      peerId: deviceId,
+      completed,
+      total: this.activityFiles.length,
+      bytesTransferred,
+      bytesTotal: this.activityFiles.reduce((sum, file) => sum + file.size, 0),
+      changed: completed,
+      error: phase === "error" ? "inbound_transfer_failed" : ""
+    });
+  }
+
   private async verifyPeer(peer: LanSyncPeer): Promise<void> {
     const now = this.now();
     const minimumProbeInterval = Math.max(300, this.settings().checkIntervalSeconds * 1000);
@@ -1296,6 +1369,8 @@ export class CancipLanSync {
   }
 
   private async syncPeer(peer: LanSyncPeer): Promise<void> {
+    this.activityFiles = [];
+    this.activityUpdatedAt = this.now();
     this.emit({ ...defaultProgress("scanning"), active: true, peerId: peer.deviceId });
     const localPolicy = this.policy();
     const [localEntries, remoteResponse, ledger] = await Promise.all([
@@ -1322,6 +1397,13 @@ export class CancipLanSync {
     }
     const actions = planLanSyncReconciliation(filteredLocalEntries, remoteEntries, ledger.entries, localPolicy, remotePolicy);
     const bytesTotal = actions.reduce((sum, action) => sum + Math.max(action.local?.size ?? 0, action.remote?.size ?? 0), 0);
+    this.activityFiles = actions.map((action) => ({
+      path: action.path,
+      action: action.kind,
+      state: "pending",
+      size: Math.max(action.local?.size ?? 0, action.remote?.size ?? 0)
+    }));
+    this.activityUpdatedAt = this.now();
     let completed = 0;
     let bytesTransferred = 0;
     let changed = 0;
@@ -1339,13 +1421,31 @@ export class CancipLanSync {
       while (this.runningValue && failure === null && cursor < actions.length) {
         const index = cursor;
         cursor += 1;
+        const activity = this.activityFiles[index];
+        if (activity) {
+          activity.state = "syncing";
+          this.activityUpdatedAt = this.now();
+          this.emit({
+            ...defaultProgress("syncing"),
+            active: true,
+            peerId: peer.deviceId,
+            completed,
+            total: actions.length,
+            bytesTransferred,
+            bytesTotal,
+            changed,
+            conflicts
+          });
+        }
         try {
           const result = await this.executeAction(peer, actions[index], ledger);
+          if (activity) activity.state = "complete";
           completed += 1;
           bytesTransferred += result.bytes;
           changed += result.changed ? 1 : 0;
           conflicts += result.conflict ? 1 : 0;
           this.lastTransferAt = this.now();
+          this.activityUpdatedAt = this.lastTransferAt;
           this.emit({
             ...defaultProgress("syncing"),
             active: true,
@@ -1358,6 +1458,8 @@ export class CancipLanSync {
             conflicts
           });
         } catch (error) {
+          if (activity) activity.state = "error";
+          this.activityUpdatedAt = this.now();
           failure = error;
         }
       }
@@ -1633,6 +1735,8 @@ export class CancipLanSync {
 
   private async handleServerRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     let authenticated = false;
+    let inboundActivityIndex: number | null = null;
+    let inboundDeviceId = "";
     try {
       if (!this.identity || request.method !== "POST") throw new LanSyncProtocolError("not_found", 404);
       const url = new URL(request.url ?? "/", "http://cancip-lan.local");
@@ -1663,6 +1767,8 @@ export class CancipLanSync {
       if (!this.allowedByRateLimit(`${remoteAddress}:${deviceId}`)) throw new LanSyncProtocolError("rate_limited", 429);
       const payload = await decryptLanSyncPayload(this.identity.secret, body);
       this.markInboundPeer(deviceId, remoteAddress, path);
+      inboundDeviceId = deviceId;
+      inboundActivityIndex = this.beginInboundFileActivity(deviceId, path, payload);
       let result: Record<string, unknown>;
       if (path === `${API_PREFIX}/ping`) {
         result = { ok: true, protocolVersion: PROTOCOL_VERSION, deviceId: this.deviceId, policy: this.policy() };
@@ -1681,8 +1787,10 @@ export class CancipLanSync {
       } else {
         throw new LanSyncProtocolError("not_found", 404);
       }
+      this.finishInboundFileActivity(deviceId, inboundActivityIndex, true);
       sendText(response, 200, await encryptLanSyncPayload(this.identity.secret, result));
     } catch (error) {
+      this.finishInboundFileActivity(inboundDeviceId, inboundActivityIndex, false);
       const protocol = error instanceof LanSyncProtocolError ? error : new LanSyncProtocolError(safeErrorCode(error), 500);
       sendText(response, protocol.status, JSON.stringify({ ok: false, error: authenticated ? protocol.code : "request_rejected" }));
     }
