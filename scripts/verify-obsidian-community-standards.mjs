@@ -10,6 +10,7 @@ const versions = JSON.parse(fs.readFileSync(path.join(root, "versions.json"), "u
 const releaseWorkflow = fs.readFileSync(path.join(root, ".github", "workflows", "release.yml"), "utf8");
 const source = fs.readFileSync(path.join(root, "src", "main.ts"), "utf8");
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+const staticStyleAssignmentPattern = /\.style\.(?:cssText|position|touchAction|color|cursor|textDecoration|zoom|transform|transformOrigin)\s*=/;
 const checks = [
   ["manifest has a stable lowercase plugin id", typeof manifest.id === "string" && /^[a-z0-9][a-z0-9-]*$/.test(manifest.id)],
   ["manifest name is concise and does not impersonate Obsidian", typeof manifest.name === "string" && manifest.name.trim().length > 0 && !/obsidian/i.test(manifest.name)],
@@ -28,7 +29,8 @@ const checks = [
   ["cross-document contextual editing guards iframe access", /try\s*\{\s*doc\s*=\s*frame\.contentDocument;/.test(source) && source.includes("frame.removeEventListener(\"load\", bind)")],
   ["contextual-edit listeners and temporary geometry nodes are cleaned", source.includes("doc?.removeEventListener(\"selectionchange\", selectionChange)") && source.includes("viewport.remove();")],
   ["contextual-edit Markdown previews use scoped components", !/MarkdownRenderer\.render\(\s*cancipContextEditPreviewPlugin\.app\s*,\s*this\.preview\.markdown\s*,\s*element\s*,\s*this\.preview\.path\s*,\s*cancipContextEditPreviewPlugin\s*\)/.test(source) && !/MarkdownRenderer\.render\(\s*this\.app\s*,\s*markdown\s*,\s*preview\s*,\s*anchor\.file\.path\s*,\s*this\s*\)/.test(source)],
-  ["contextual-edit fixed mirror styles use CSS classes", !/(?:viewport|mirror)\.style\.(?:position|overflow|visibility|pointerEvents|zIndex|whiteSpace)\s*=/.test(source)]
+  ["contextual-edit fixed mirror styles use CSS classes", !/(?:viewport|mirror)\.style\.(?:position|overflow|visibility|pointerEvents|zIndex|whiteSpace)\s*=/.test(source)],
+  ["source avoids static style assignments flagged by Obsidian review", !staticStyleAssignmentPattern.test(source)]
 ];
 
 const failed = checks.filter(([, passed]) => !passed).map(([name]) => name);
